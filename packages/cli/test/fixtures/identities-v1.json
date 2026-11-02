@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "default": "personal",
+  "identities": [
+    {
+      "label": "personal",
+      "key": "alice",
+      "home": "/home/u/.bag",
+      "relays": ["https://relay-a.example"],
+      "trust_roots": [
+        "ed25519:1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+        "example.org"
+      ],
+      "keep_alive_records": true
+    },
+    {
+      "label": "lab",
+      "key": "lab",
+      "home": "/home/u/.bag-lab",
+      "relays": ["https://relay-b.example", "https://relay-c.example"],
+      "rendezvous": "https://relay-a.example",
+      "keep_alive_records": true
+    }
+  ]
+}

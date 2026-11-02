@@ -1,0 +1,4 @@
+# Clippy's settings for crates/. The lints themselves (pedantic, warnings as errors) are in Cargo.toml's
+# [workspace.lints] and in the `cargo clippy ... -- -D warnings` of scripts/last_step.sh and CI.
+# Names that doc comments may use without backticks; ".." keeps clippy's own list.
+doc-valid-idents = ["SQLite", "WebSocket", ".."]

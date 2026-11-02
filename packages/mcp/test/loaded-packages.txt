@@ -1,0 +1,12 @@
+# The packages the MCP server may load from node_modules, one per line. The default is to keep the MCP SDK and gate
+# its loaded set. test/loaded-set.test.ts runs the server through a scripted session over every
+# tool and error path and fails when the set it loads differs from this list. If the
+# loaded set grows past these, vendor a stdio MCP layer. Widening this file is a deliberate decision, never a fix.
+@modelcontextprotocol/sdk
+ajv
+ajv-formats
+fast-deep-equal
+fast-uri
+json-schema-traverse
+zod
+zod-to-json-schema

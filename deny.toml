@@ -1,0 +1,56 @@
+# cargo deny check for crates/: advisories, licenses, bans and sources (scripts/last_step.sh, .github/workflows/
+# security.yml). cargo-deny 0.20.2, installed with `cargo install cargo-deny --locked --version 0.20.2`.
+
+[graph]
+# Every target and the default features: the lock is checked as a whole, wasm and Windows crates included.
+all-features = false
+
+[advisories]
+# The RustSec advisory database. Any advisory for a locked crate fails the check, an unmaintained crate's included,
+# and so does a yanked version. An exception goes in `ignore` with the advisory id and a dated reason.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+
+[licenses]
+# The licences the tree uses, all permissive; a crate offered under several (an OR expression) passes when one is
+# here. A new licence is a decision, not a fix: add it here in its own change.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.93
+# Per-crate exceptions, each for the one crate that needs it (2026-10-25; a new licence is a
+# maintainer's decision): the relay's HTTPS client (ureq with rustls on ring) brings ring (Apache-2.0 AND ISC), untrusted
+# and rustls-webpki (ISC), and webpki-roots (CDLA-Permissive-2.0, Mozilla's root store as data). Every rustls-based
+# client needs the first three; the fourth is the root certificates.
+exceptions = [
+  { allow = ["ISC"], crate = "ring" },
+  { allow = ["ISC"], crate = "untrusted" },
+  { allow = ["ISC"], crate = "rustls-webpki" },
+  { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+]
+
+[licenses.private]
+# ac-core and ac-relay are publish = false and carry no licence field: the repository is private (CLAUDE.md).
+ignore = true
+
+[bans]
+# Duplicate versions are listed, not refused: digest 0.10 and 0.11 (sha1 for the WebSocket handshake beside sha2),
+# and a few others, come with the pinned axum and ed25519-dalek.
+multiple-versions = "warn"
+wildcards = "deny"
+# ac-relay's dependency on ac-core is a path, which counts as a wildcard; it never leaves the workspace.
+allow-wildcard-paths = true
+
+[sources]
+# crates.io only: no other registry and no git dependency.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

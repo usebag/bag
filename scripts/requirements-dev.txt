@@ -1,0 +1,14 @@
+# Python for the governance scripts and their tests: scripts/log_check.py, log_render.py, claims_check.py,
+# premise_count.py, verify_vectors.py and tests/python/. Python 3.11 or later (log_check.py uses datetime.UTC).
+# Exact pins, each published at least 7 days before it was pinned (the cooldown of .npmrc's min-release-age). The
+# transitive packages are pinned too, and scripts/last_step.sh installs with --no-deps --only-binary=:all:, so pip
+# resolves nothing and builds nothing. Publish dates from pypi.org, read 2026-10-24.
+pyyaml==6.0.3  # 2025-09-25; claims_check.py
+pytest==9.1.1  # 2026-06-19; tests/python/
+cryptography==50.0.2  # 2026-09-30; verify_vectors.py: Ed25519 and HPKE checks
+iniconfig==2.3.1  # 2026-10-06; via pytest
+packaging==26.3  # 2026-08-04; via pytest
+pluggy==1.7.0  # 2026-10-15; via pytest
+pygments==2.21.0  # 2026-08-17; via pytest
+cffi==2.1.1  # 2026-08-03; via cryptography
+pycparser==3.11  # 2026-10-09; via cffi (3.12 is from 2026-10-22, under 7 days)

@@ -1,0 +1,3 @@
+# Every text file is checked out with LF, on Windows too. spec/vectors/*.json are compared byte for byte
+# (npm run vectors:check, scripts/verify_vectors.py), and with Git's default CRLF conversion they would differ there.
+* text=auto eol=lf

@@ -1,0 +1,21 @@
+{
+  "name": "@usebag/edge",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bag edge library: outbox, inbox, resolver, pins, policy, routing and a hash-chained audit log.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./agent": "./src/agent/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@usebag/core": "0.0.0"
+  }
+}

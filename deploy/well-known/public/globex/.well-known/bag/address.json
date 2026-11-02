@@ -1,0 +1,13 @@
+{
+  "kind": "address",
+  "key": "ed25519:69f8412304bea23c8c562fd380d1d001829d0af6c496c37a3d471d1a9561cd4d",
+  "sealing_key": "59a9dd8667a9a50b7c297c1dd21207b6b25eea35f596d4fd65bb2342e91ed00f",
+  "relays": ["https://relay-globex.usuals.now"],
+  "rotation_key": null,
+  "revoked": [],
+  "ttl": 86400,
+  "iat": 1793001667,
+  "rotated_from": null,
+  "rotation_sig": null,
+  "sig": "644700c36cdb2900106c8064ccd4282ad0d8e24e7665d638d5d31b3b57b426cbe0e134ff4cd63e790a0ad8f1663f3616aad2779a04f712050f381616ef32a30e"
+}

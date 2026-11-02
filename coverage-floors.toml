@@ -1,0 +1,14 @@
+# The Rust coverage floors: crates/ac-core and crates/ac-relay, measured together by
+# `cargo llvm-cov --workspace` in scripts/last_step.sh and CI, which both read this file. One `key = value` per line.
+#
+# Floors, not targets. Raise them when coverage grows; never lower them to make a build pass.
+# scripts/check-ratchet.sh fails a change that lowers a floor against main or changes what coverage measures, and
+# any floor under 90. Branch coverage needs a nightly toolchain, so it is not gated: lines, functions and regions are
+# gated, since 2026-10-24.
+lines = 90
+functions = 90
+regions = 90
+
+# What coverage does not measure: test code only, that is each module's tests.rs, the unit-test fixtures in
+# testkit.rs, and each crate's tests/ directory. Everything else under crates/*/src counts, main.rs included.
+ignore_filename_regex = '(^|/)(tests|testkit)\.rs$|/tests/'

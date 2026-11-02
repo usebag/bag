@@ -1,0 +1,43 @@
+# Third-party research clone (rennerdo30/agent-bridge, MIT). Re-clone per research/agent-bridge-source.md; never part of this repo.
+research/agent-bridge/
+.DS_Store
+# Build and local state (never committed)
+.worktree/
+node_modules/
+.venv/
+# also the symlink forms: a worktree symlinks node_modules and .venv from the repo root (for log_check and biome). A trailing-slash pattern does not match a symlink, so without these a `git add -A` in that worktree commits the symlink (it bit two held commits on 2026-10-28).
+node_modules
+.venv
+coverage/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+/runs/
+data/
+*.tsbuildinfo
+__pycache__/
+.pytest_cache/
+# Cargo's build output for crates/; cargo 1.95 writes no .gitignore inside it
+/target/
+# wrangler's local state and temporary bundles for the well-known Worker; a dry run's --outdir goes outside
+deploy/well-known/.wrangler/
+# What deploy/resign-org-records.sh signs and deploys: the Worker's files copied there and re-signed, wrangler's state
+deploy/well-known/out/
+# Secret-bearing files that never belong here (2026-10-25):
+# Terraform state and plans live in the infra repository and hold a tunnel token; .env files, PEM and key files hold
+# credentials or key material (bag key files live under the CLI's home, never in the tree).
+terraform.tfstate*
+*.tfplan
+.env
+.env.*
+*.pem
+*.key
+# A bag home (AC_HOME) made inside a clone: its key files live under <home>/keys/, and the default home is named
+# .bag. Never commit a home. The one source directory named keys/ is taken back in on the line after.
+.bag/
+keys/
+!/crates/ac-core/src/keys/
+# Other local credentials, by name, as the cut's never lines (cut/MANIFEST): wrangler's .dev.vars, SSH key files, .netrc.
+.dev.vars*
+id_*
+.netrc

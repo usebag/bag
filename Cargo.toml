@@ -1,0 +1,25 @@
+# The Rust workspace: crates/ac-core (verification: canonical form, hashing, Ed25519, envelopes, chains, records)
+# and crates/ac-relay (the reference relay, binary `ac-relay`). Decided 2026-10-24.
+# Every direct dependency is pinned with `=x.y.z`, Cargo.lock is committed, and no
+# locked crate is younger than 7 days (scripts/check-crate-age.py). CONTRIBUTING.md, "Rust", has the rules.
+[workspace]
+resolver = "3"
+members = ["crates/ac-core", "crates/ac-relay"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+[profile.release]
+# A relay is a long-running process: keep panics unwinding so one bad request cannot abort the process, and keep
+# debug assertions off.
+debug = false

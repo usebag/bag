@@ -1,0 +1,388 @@
+{
+  "description": "Org policy records from fixed seeds (org root [0x51; 32], another key [0x52; 32], a peer [0x53; 32]), each as JSON text with the time it is verified at (skew 300) and the result: \"ok\" with the digest of its preimage, or the code. \"cases\" are served records (kind policy), read by both cores; \"members_cases\" are members records (kind policy-members), which never leave the org's edges and are read by the TypeScript core alone. Written by packages/core/test/policy.test.ts, read by crates/ac-core/src/policy/tests.rs.",
+  "skew": 300,
+  "cases": [
+    {
+      "name": "the minimal served record: no scopes, no external rules",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[],\"external\":null,\"inspection\":null,\"iat\":1800000000,\"sig\":\"55373dc307c39f5d26c02d5d7a8633043487309db9f75864e969d310049589649de4e57dc4ff23222ef31f99049fb0648f500ad596da247968b80339a9153c00\"}",
+      "now": 1800000000,
+      "expect": "ok",
+      "digest": "7d6d68b89de6e3c47bc3f91f9051adc0ac8be619f6273114f3540727385daa1f"
+    },
+    {
+      "name": "scopes and external rules",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "ok",
+      "digest": "45da799c84a15605c90ee095aeb7cddc901e62ae4b7dce9da96c051e05212e28"
+    },
+    {
+      "name": "valid at iat - skew",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1799999700,
+      "expect": "ok",
+      "digest": "45da799c84a15605c90ee095aeb7cddc901e62ae4b7dce9da96c051e05212e28"
+    },
+    {
+      "name": "valid 400 days after iat: it does not expire, a newer iat replaces it",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1834560000,
+      "expect": "ok",
+      "digest": "45da799c84a15605c90ee095aeb7cddc901e62ae4b7dce9da96c051e05212e28"
+    },
+    {
+      "name": "external nulls and a non-ASCII <name>=* scope",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"équipe=*\",\"accept_types\":[\"*\"],\"max_bytes\":1}],\"external\":{\"required_caveats\":[],\"max_hop_lifetime\":null,\"max_hops\":null},\"inspection\":null,\"iat\":1800000000,\"sig\":\"e4497ba14aa777b4aceb534a60ac84daeac9377727bdab183964fbf01dab318a32ce9ad8c2f197d20a82874f60b1328a53f72a40c9e1fa7fa9644fb9865d8203\"}",
+      "now": 1800000000,
+      "expect": "ok",
+      "digest": "9bc5090653d69543cf1d71bcd8fcae34e52f34ddec7417acbcd970ddf1250133"
+    },
+    {
+      "name": "signed by another key",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"f5930534b78c68f6cb09f20df2e9b7566aee1cd0267136fed5fd27f2d587f6cf10be3a4e4a4678cc25f9adb699837a2365fd2b811e08b16384819d1f3d911f01\"}",
+      "now": 1800000000,
+      "expect": "bad-record-sig"
+    },
+    {
+      "name": "a member changed after signing",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4097}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record-sig"
+    },
+    {
+      "name": "iat ahead of now + skew",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1799999699,
+      "expect": "future-iat"
+    },
+    {
+      "name": "a members record read as a served one",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a deny list in a served record",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"}}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "an outbound section in a served record",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\",\"outbound\":{\"deny\":[\"domain:evil.example\"]}}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a moderation section in a served record",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\",\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]}}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a ttl, which no policy record has",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\",\"ttl\":86400}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "inspection set: reserved and null",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\",\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "kind is not policy",
+      "text": "{\"kind\":\"address\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "key is not an address",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:zz\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a member missing",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "scopes is not a list",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":{},\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "over 32 scopes",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a scope with a member added",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536,\"extra\":1},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a scope match that is empty",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a scope match that is =*",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"=*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a scope match over 256 bytes",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"team=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "accept_types empty",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a type pattern with an inner star",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"a*b\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a type pattern with an empty prefix",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\".*\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a type pattern listed twice",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"chat.*\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "max_bytes zero",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":0},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "max_bytes over 65,536",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65537},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "external is not an object",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":[],\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a required caveat that is the bare wildcard",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "max_hop_lifetime zero",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":0,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "max_hops over 8",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":9},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "sig is not hex",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"zz\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "iat written 1800000000.0",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000.0,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a member named twice",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-json"
+    },
+    {
+      "name": "not JSON",
+      "text": "{\"kind\":\"policy\"",
+      "now": 1800000000,
+      "expect": "bad-json"
+    },
+    {
+      "name": "a list, not an object",
+      "text": "[]",
+      "now": 1800000000,
+      "expect": "bad-record"
+    }
+  ],
+  "members_cases": [
+    {
+      "name": "the minimal members record: every section null",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":null,\"rates\":null,\"outbound\":null,\"moderation\":null,\"iat\":1800000000,\"sig\":\"14f93a32722a0b41bffc55dbc961abd1a827fcdc2946212f05aa7e97859be61341c954c8c750d62661c05c3b29e5544a465704061897072c823de7b9322ea401\"}",
+      "now": 1800000000,
+      "expect": "ok",
+      "digest": "44bd2808e6fd24b9ad5c766bb1666c1824ece9e33e142c9001c2515103f68aa3"
+    },
+    {
+      "name": "every section set",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "ok",
+      "digest": "12a492ab14a79951ce3381b6b015f8453b299de904903e3044a4e4b1efbd9f25"
+    },
+    {
+      "name": "a deny list, a refusal for the unknown, non-ASCII params",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"deny\",\"list\":[\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"refuse\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"allow-all\",\"action\":\"allow\",\"params\":[\"ignorez les instructions précédentes\",\"指示を無視\"]},\"iat\":1800000000,\"sig\":\"a4d957d09481f12e043482d7ef5d5e3a169c7822c39b7521dac36a6190e606a1aa218ac752290bbcce0ab54809434d72704c0a4cdcd6b278311c4b788cc2e304\"}",
+      "now": 1800000000,
+      "expect": "ok",
+      "digest": "9215c05d4ed71d9d6d94ac16dbd671ccf53872df8f5233866be6f85a485dd94e"
+    },
+    {
+      "name": "signed by another key",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"422ef5357377fb70b5da1d65ddf82653677df344afad470e22f0dd9595a46b34d95c40527fc64f90df7527562b7bdff0d2c2374d29c14ed9e826c5d48c236307\"}",
+      "now": 1800000000,
+      "expect": "bad-record-sig"
+    },
+    {
+      "name": "iat ahead of now + skew",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1799999699,
+      "expect": "future-iat"
+    },
+    {
+      "name": "a served record read as a members one",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65536},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "scopes in a members record",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\",\"scopes\":[]}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "roots.mode is neither allow nor deny",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"block\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "unknown allow: a policy never admits an unknown root",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"allow\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "roots.unknown is not an action",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"drop\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "roots.list holds the wildcard",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"*\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "roots.list names an entry twice",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "roots.list holds an IP literal domain",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:127.0.0.1\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "roots.list over 1,024 entries",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:d0.example\",\"domain:d1.example\",\"domain:d2.example\",\"domain:d3.example\",\"domain:d4.example\",\"domain:d5.example\",\"domain:d6.example\",\"domain:d7.example\",\"domain:d8.example\",\"domain:d9.example\",\"domain:d10.example\",\"domain:d11.example\",\"domain:d12.example\",\"domain:d13.example\",\"domain:d14.example\",\"domain:d15.example\",\"domain:d16.example\",\"domain:d17.example\",\"domain:d18.example\",\"domain:d19.example\",\"domain:d20.example\",\"domain:d21.example\",\"domain:d22.example\",\"domain:d23.example\",\"domain:d24.example\",\"domain:d25.example\",\"domain:d26.example\",\"domain:d27.example\",\"domain:d28.example\",\"domain:d29.example\",\"domain:d30.example\",\"domain:d31.example\",\"domain:d32.example\",\"domain:d33.example\",\"domain:d34.example\",\"domain:d35.example\",\"domain:d36.example\",\"domain:d37.example\",\"domain:d38.example\",\"domain:d39.example\",\"domain:d40.example\",\"domain:d41.example\",\"domain:d42.example\",\"domain:d43.example\",\"domain:d44.example\",\"domain:d45.example\",\"domain:d46.example\",\"domain:d47.example\",\"domain:d48.example\",\"domain:d49.example\",\"domain:d50.example\",\"domain:d51.example\",\"domain:d52.example\",\"domain:d53.example\",\"domain:d54.example\",\"domain:d55.example\",\"domain:d56.example\",\"domain:d57.example\",\"domain:d58.example\",\"domain:d59.example\",\"domain:d60.example\",\"domain:d61.example\",\"domain:d62.example\",\"domain:d63.example\",\"domain:d64.example\",\"domain:d65.example\",\"domain:d66.example\",\"domain:d67.example\",\"domain:d68.example\",\"domain:d69.example\",\"domain:d70.example\",\"domain:d71.example\",\"domain:d72.example\",\"domain:d73.example\",\"domain:d74.example\",\"domain:d75.example\",\"domain:d76.example\",\"domain:d77.example\",\"domain:d78.example\",\"domain:d79.example\",\"domain:d80.example\",\"domain:d81.example\",\"domain:d82.example\",\"domain:d83.example\",\"domain:d84.example\",\"domain:d85.example\",\"domain:d86.example\",\"domain:d87.example\",\"domain:d88.example\",\"domain:d89.example\",\"domain:d90.example\",\"domain:d91.example\",\"domain:d92.example\",\"domain:d93.example\",\"domain:d94.example\",\"domain:d95.example\",\"domain:d96.example\",\"domain:d97.example\",\"domain:d98.example\",\"domain:d99.example\",\"domain:d100.example\",\"domain:d101.example\",\"domain:d102.example\",\"domain:d103.example\",\"domain:d104.example\",\"domain:d105.example\",\"domain:d106.example\",\"domain:d107.example\",\"domain:d108.example\",\"domain:d109.example\",\"domain:d110.example\",\"domain:d111.example\",\"domain:d112.example\",\"domain:d113.example\",\"domain:d114.example\",\"domain:d115.example\",\"domain:d116.example\",\"domain:d117.example\",\"domain:d118.example\",\"domain:d119.example\",\"domain:d120.example\",\"domain:d121.example\",\"domain:d122.example\",\"domain:d123.example\",\"domain:d124.example\",\"domain:d125.example\",\"domain:d126.example\",\"domain:d127.example\",\"domain:d128.example\",\"domain:d129.example\",\"domain:d130.example\",\"domain:d131.example\",\"domain:d132.example\",\"domain:d133.example\",\"domain:d134.example\",\"domain:d135.example\",\"domain:d136.example\",\"domain:d137.example\",\"domain:d138.example\",\"domain:d139.example\",\"domain:d140.example\",\"domain:d141.example\",\"domain:d142.example\",\"domain:d143.example\",\"domain:d144.example\",\"domain:d145.example\",\"domain:d146.example\",\"domain:d147.example\",\"domain:d148.example\",\"domain:d149.example\",\"domain:d150.example\",\"domain:d151.example\",\"domain:d152.example\",\"domain:d153.example\",\"domain:d154.example\",\"domain:d155.example\",\"domain:d156.example\",\"domain:d157.example\",\"domain:d158.example\",\"domain:d159.example\",\"domain:d160.example\",\"domain:d161.example\",\"domain:d162.example\",\"domain:d163.example\",\"domain:d164.example\",\"domain:d165.example\",\"domain:d166.example\",\"domain:d167.example\",\"domain:d168.example\",\"domain:d169.example\",\"domain:d170.example\",\"domain:d171.example\",\"domain:d172.example\",\"domain:d173.example\",\"domain:d174.example\",\"domain:d175.example\",\"domain:d176.example\",\"domain:d177.example\",\"domain:d178.example\",\"domain:d179.example\",\"domain:d180.example\",\"domain:d181.example\",\"domain:d182.example\",\"domain:d183.example\",\"domain:d184.example\",\"domain:d185.example\",\"domain:d186.example\",\"domain:d187.example\",\"domain:d188.example\",\"domain:d189.example\",\"domain:d190.example\",\"domain:d191.example\",\"domain:d192.example\",\"domain:d193.example\",\"domain:d194.example\",\"domain:d195.example\",\"domain:d196.example\",\"domain:d197.example\",\"domain:d198.example\",\"domain:d199.example\",\"domain:d200.example\",\"domain:d201.example\",\"domain:d202.example\",\"domain:d203.example\",\"domain:d204.example\",\"domain:d205.example\",\"domain:d206.example\",\"domain:d207.example\",\"domain:d208.example\",\"domain:d209.example\",\"domain:d210.example\",\"domain:d211.example\",\"domain:d212.example\",\"domain:d213.example\",\"domain:d214.example\",\"domain:d215.example\",\"domain:d216.example\",\"domain:d217.example\",\"domain:d218.example\",\"domain:d219.example\",\"domain:d220.example\",\"domain:d221.example\",\"domain:d222.example\",\"domain:d223.example\",\"domain:d224.example\",\"domain:d225.example\",\"domain:d226.example\",\"domain:d227.example\",\"domain:d228.example\",\"domain:d229.example\",\"domain:d230.example\",\"domain:d231.example\",\"domain:d232.example\",\"domain:d233.example\",\"domain:d234.example\",\"domain:d235.example\",\"domain:d236.example\",\"domain:d237.example\",\"domain:d238.example\",\"domain:d239.example\",\"domain:d240.example\",\"domain:d241.example\",\"domain:d242.example\",\"domain:d243.example\",\"domain:d244.example\",\"domain:d245.example\",\"domain:d246.example\",\"domain:d247.example\",\"domain:d248.example\",\"domain:d249.example\",\"domain:d250.example\",\"domain:d251.example\",\"domain:d252.example\",\"domain:d253.example\",\"domain:d254.example\",\"domain:d255.example\",\"domain:d256.example\",\"domain:d257.example\",\"domain:d258.example\",\"domain:d259.example\",\"domain:d260.example\",\"domain:d261.example\",\"domain:d262.example\",\"domain:d263.example\",\"domain:d264.example\",\"domain:d265.example\",\"domain:d266.example\",\"domain:d267.example\",\"domain:d268.example\",\"domain:d269.example\",\"domain:d270.example\",\"domain:d271.example\",\"domain:d272.example\",\"domain:d273.example\",\"domain:d274.example\",\"domain:d275.example\",\"domain:d276.example\",\"domain:d277.example\",\"domain:d278.example\",\"domain:d279.example\",\"domain:d280.example\",\"domain:d281.example\",\"domain:d282.example\",\"domain:d283.example\",\"domain:d284.example\",\"domain:d285.example\",\"domain:d286.example\",\"domain:d287.example\",\"domain:d288.example\",\"domain:d289.example\",\"domain:d290.example\",\"domain:d291.example\",\"domain:d292.example\",\"domain:d293.example\",\"domain:d294.example\",\"domain:d295.example\",\"domain:d296.example\",\"domain:d297.example\",\"domain:d298.example\",\"domain:d299.example\",\"domain:d300.example\",\"domain:d301.example\",\"domain:d302.example\",\"domain:d303.example\",\"domain:d304.example\",\"domain:d305.example\",\"domain:d306.example\",\"domain:d307.example\",\"domain:d308.example\",\"domain:d309.example\",\"domain:d310.example\",\"domain:d311.example\",\"domain:d312.example\",\"domain:d313.example\",\"domain:d314.example\",\"domain:d315.example\",\"domain:d316.example\",\"domain:d317.example\",\"domain:d318.example\",\"domain:d319.example\",\"domain:d320.example\",\"domain:d321.example\",\"domain:d322.example\",\"domain:d323.example\",\"domain:d324.example\",\"domain:d325.example\",\"domain:d326.example\",\"domain:d327.example\",\"domain:d328.example\",\"domain:d329.example\",\"domain:d330.example\",\"domain:d331.example\",\"domain:d332.example\",\"domain:d333.example\",\"domain:d334.example\",\"domain:d335.example\",\"domain:d336.example\",\"domain:d337.example\",\"domain:d338.example\",\"domain:d339.example\",\"domain:d340.example\",\"domain:d341.example\",\"domain:d342.example\",\"domain:d343.example\",\"domain:d344.example\",\"domain:d345.example\",\"domain:d346.example\",\"domain:d347.example\",\"domain:d348.example\",\"domain:d349.example\",\"domain:d350.example\",\"domain:d351.example\",\"domain:d352.example\",\"domain:d353.example\",\"domain:d354.example\",\"domain:d355.example\",\"domain:d356.example\",\"domain:d357.example\",\"domain:d358.example\",\"domain:d359.example\",\"domain:d360.example\",\"domain:d361.example\",\"domain:d362.example\",\"domain:d363.example\",\"domain:d364.example\",\"domain:d365.example\",\"domain:d366.example\",\"domain:d367.example\",\"domain:d368.example\",\"domain:d369.example\",\"domain:d370.example\",\"domain:d371.example\",\"domain:d372.example\",\"domain:d373.example\",\"domain:d374.example\",\"domain:d375.example\",\"domain:d376.example\",\"domain:d377.example\",\"domain:d378.example\",\"domain:d379.example\",\"domain:d380.example\",\"domain:d381.example\",\"domain:d382.example\",\"domain:d383.example\",\"domain:d384.example\",\"domain:d385.example\",\"domain:d386.example\",\"domain:d387.example\",\"domain:d388.example\",\"domain:d389.example\",\"domain:d390.example\",\"domain:d391.example\",\"domain:d392.example\",\"domain:d393.example\",\"domain:d394.example\",\"domain:d395.example\",\"domain:d396.example\",\"domain:d397.example\",\"domain:d398.example\",\"domain:d399.example\",\"domain:d400.example\",\"domain:d401.example\",\"domain:d402.example\",\"domain:d403.example\",\"domain:d404.example\",\"domain:d405.example\",\"domain:d406.example\",\"domain:d407.example\",\"domain:d408.example\",\"domain:d409.example\",\"domain:d410.example\",\"domain:d411.example\",\"domain:d412.example\",\"domain:d413.example\",\"domain:d414.example\",\"domain:d415.example\",\"domain:d416.example\",\"domain:d417.example\",\"domain:d418.example\",\"domain:d419.example\",\"domain:d420.example\",\"domain:d421.example\",\"domain:d422.example\",\"domain:d423.example\",\"domain:d424.example\",\"domain:d425.example\",\"domain:d426.example\",\"domain:d427.example\",\"domain:d428.example\",\"domain:d429.example\",\"domain:d430.example\",\"domain:d431.example\",\"domain:d432.example\",\"domain:d433.example\",\"domain:d434.example\",\"domain:d435.example\",\"domain:d436.example\",\"domain:d437.example\",\"domain:d438.example\",\"domain:d439.example\",\"domain:d440.example\",\"domain:d441.example\",\"domain:d442.example\",\"domain:d443.example\",\"domain:d444.example\",\"domain:d445.example\",\"domain:d446.example\",\"domain:d447.example\",\"domain:d448.example\",\"domain:d449.example\",\"domain:d450.example\",\"domain:d451.example\",\"domain:d452.example\",\"domain:d453.example\",\"domain:d454.example\",\"domain:d455.example\",\"domain:d456.example\",\"domain:d457.example\",\"domain:d458.example\",\"domain:d459.example\",\"domain:d460.example\",\"domain:d461.example\",\"domain:d462.example\",\"domain:d463.example\",\"domain:d464.example\",\"domain:d465.example\",\"domain:d466.example\",\"domain:d467.example\",\"domain:d468.example\",\"domain:d469.example\",\"domain:d470.example\",\"domain:d471.example\",\"domain:d472.example\",\"domain:d473.example\",\"domain:d474.example\",\"domain:d475.example\",\"domain:d476.example\",\"domain:d477.example\",\"domain:d478.example\",\"domain:d479.example\",\"domain:d480.example\",\"domain:d481.example\",\"domain:d482.example\",\"domain:d483.example\",\"domain:d484.example\",\"domain:d485.example\",\"domain:d486.example\",\"domain:d487.example\",\"domain:d488.example\",\"domain:d489.example\",\"domain:d490.example\",\"domain:d491.example\",\"domain:d492.example\",\"domain:d493.example\",\"domain:d494.example\",\"domain:d495.example\",\"domain:d496.example\",\"domain:d497.example\",\"domain:d498.example\",\"domain:d499.example\",\"domain:d500.example\",\"domain:d501.example\",\"domain:d502.example\",\"domain:d503.example\",\"domain:d504.example\",\"domain:d505.example\",\"domain:d506.example\",\"domain:d507.example\",\"domain:d508.example\",\"domain:d509.example\",\"domain:d510.example\",\"domain:d511.example\",\"domain:d512.example\",\"domain:d513.example\",\"domain:d514.example\",\"domain:d515.example\",\"domain:d516.example\",\"domain:d517.example\",\"domain:d518.example\",\"domain:d519.example\",\"domain:d520.example\",\"domain:d521.example\",\"domain:d522.example\",\"domain:d523.example\",\"domain:d524.example\",\"domain:d525.example\",\"domain:d526.example\",\"domain:d527.example\",\"domain:d528.example\",\"domain:d529.example\",\"domain:d530.example\",\"domain:d531.example\",\"domain:d532.example\",\"domain:d533.example\",\"domain:d534.example\",\"domain:d535.example\",\"domain:d536.example\",\"domain:d537.example\",\"domain:d538.example\",\"domain:d539.example\",\"domain:d540.example\",\"domain:d541.example\",\"domain:d542.example\",\"domain:d543.example\",\"domain:d544.example\",\"domain:d545.example\",\"domain:d546.example\",\"domain:d547.example\",\"domain:d548.example\",\"domain:d549.example\",\"domain:d550.example\",\"domain:d551.example\",\"domain:d552.example\",\"domain:d553.example\",\"domain:d554.example\",\"domain:d555.example\",\"domain:d556.example\",\"domain:d557.example\",\"domain:d558.example\",\"domain:d559.example\",\"domain:d560.example\",\"domain:d561.example\",\"domain:d562.example\",\"domain:d563.example\",\"domain:d564.example\",\"domain:d565.example\",\"domain:d566.example\",\"domain:d567.example\",\"domain:d568.example\",\"domain:d569.example\",\"domain:d570.example\",\"domain:d571.example\",\"domain:d572.example\",\"domain:d573.example\",\"domain:d574.example\",\"domain:d575.example\",\"domain:d576.example\",\"domain:d577.example\",\"domain:d578.example\",\"domain:d579.example\",\"domain:d580.example\",\"domain:d581.example\",\"domain:d582.example\",\"domain:d583.example\",\"domain:d584.example\",\"domain:d585.example\",\"domain:d586.example\",\"domain:d587.example\",\"domain:d588.example\",\"domain:d589.example\",\"domain:d590.example\",\"domain:d591.example\",\"domain:d592.example\",\"domain:d593.example\",\"domain:d594.example\",\"domain:d595.example\",\"domain:d596.example\",\"domain:d597.example\",\"domain:d598.example\",\"domain:d599.example\",\"domain:d600.example\",\"domain:d601.example\",\"domain:d602.example\",\"domain:d603.example\",\"domain:d604.example\",\"domain:d605.example\",\"domain:d606.example\",\"domain:d607.example\",\"domain:d608.example\",\"domain:d609.example\",\"domain:d610.example\",\"domain:d611.example\",\"domain:d612.example\",\"domain:d613.example\",\"domain:d614.example\",\"domain:d615.example\",\"domain:d616.example\",\"domain:d617.example\",\"domain:d618.example\",\"domain:d619.example\",\"domain:d620.example\",\"domain:d621.example\",\"domain:d622.example\",\"domain:d623.example\",\"domain:d624.example\",\"domain:d625.example\",\"domain:d626.example\",\"domain:d627.example\",\"domain:d628.example\",\"domain:d629.example\",\"domain:d630.example\",\"domain:d631.example\",\"domain:d632.example\",\"domain:d633.example\",\"domain:d634.example\",\"domain:d635.example\",\"domain:d636.example\",\"domain:d637.example\",\"domain:d638.example\",\"domain:d639.example\",\"domain:d640.example\",\"domain:d641.example\",\"domain:d642.example\",\"domain:d643.example\",\"domain:d644.example\",\"domain:d645.example\",\"domain:d646.example\",\"domain:d647.example\",\"domain:d648.example\",\"domain:d649.example\",\"domain:d650.example\",\"domain:d651.example\",\"domain:d652.example\",\"domain:d653.example\",\"domain:d654.example\",\"domain:d655.example\",\"domain:d656.example\",\"domain:d657.example\",\"domain:d658.example\",\"domain:d659.example\",\"domain:d660.example\",\"domain:d661.example\",\"domain:d662.example\",\"domain:d663.example\",\"domain:d664.example\",\"domain:d665.example\",\"domain:d666.example\",\"domain:d667.example\",\"domain:d668.example\",\"domain:d669.example\",\"domain:d670.example\",\"domain:d671.example\",\"domain:d672.example\",\"domain:d673.example\",\"domain:d674.example\",\"domain:d675.example\",\"domain:d676.example\",\"domain:d677.example\",\"domain:d678.example\",\"domain:d679.example\",\"domain:d680.example\",\"domain:d681.example\",\"domain:d682.example\",\"domain:d683.example\",\"domain:d684.example\",\"domain:d685.example\",\"domain:d686.example\",\"domain:d687.example\",\"domain:d688.example\",\"domain:d689.example\",\"domain:d690.example\",\"domain:d691.example\",\"domain:d692.example\",\"domain:d693.example\",\"domain:d694.example\",\"domain:d695.example\",\"domain:d696.example\",\"domain:d697.example\",\"domain:d698.example\",\"domain:d699.example\",\"domain:d700.example\",\"domain:d701.example\",\"domain:d702.example\",\"domain:d703.example\",\"domain:d704.example\",\"domain:d705.example\",\"domain:d706.example\",\"domain:d707.example\",\"domain:d708.example\",\"domain:d709.example\",\"domain:d710.example\",\"domain:d711.example\",\"domain:d712.example\",\"domain:d713.example\",\"domain:d714.example\",\"domain:d715.example\",\"domain:d716.example\",\"domain:d717.example\",\"domain:d718.example\",\"domain:d719.example\",\"domain:d720.example\",\"domain:d721.example\",\"domain:d722.example\",\"domain:d723.example\",\"domain:d724.example\",\"domain:d725.example\",\"domain:d726.example\",\"domain:d727.example\",\"domain:d728.example\",\"domain:d729.example\",\"domain:d730.example\",\"domain:d731.example\",\"domain:d732.example\",\"domain:d733.example\",\"domain:d734.example\",\"domain:d735.example\",\"domain:d736.example\",\"domain:d737.example\",\"domain:d738.example\",\"domain:d739.example\",\"domain:d740.example\",\"domain:d741.example\",\"domain:d742.example\",\"domain:d743.example\",\"domain:d744.example\",\"domain:d745.example\",\"domain:d746.example\",\"domain:d747.example\",\"domain:d748.example\",\"domain:d749.example\",\"domain:d750.example\",\"domain:d751.example\",\"domain:d752.example\",\"domain:d753.example\",\"domain:d754.example\",\"domain:d755.example\",\"domain:d756.example\",\"domain:d757.example\",\"domain:d758.example\",\"domain:d759.example\",\"domain:d760.example\",\"domain:d761.example\",\"domain:d762.example\",\"domain:d763.example\",\"domain:d764.example\",\"domain:d765.example\",\"domain:d766.example\",\"domain:d767.example\",\"domain:d768.example\",\"domain:d769.example\",\"domain:d770.example\",\"domain:d771.example\",\"domain:d772.example\",\"domain:d773.example\",\"domain:d774.example\",\"domain:d775.example\",\"domain:d776.example\",\"domain:d777.example\",\"domain:d778.example\",\"domain:d779.example\",\"domain:d780.example\",\"domain:d781.example\",\"domain:d782.example\",\"domain:d783.example\",\"domain:d784.example\",\"domain:d785.example\",\"domain:d786.example\",\"domain:d787.example\",\"domain:d788.example\",\"domain:d789.example\",\"domain:d790.example\",\"domain:d791.example\",\"domain:d792.example\",\"domain:d793.example\",\"domain:d794.example\",\"domain:d795.example\",\"domain:d796.example\",\"domain:d797.example\",\"domain:d798.example\",\"domain:d799.example\",\"domain:d800.example\",\"domain:d801.example\",\"domain:d802.example\",\"domain:d803.example\",\"domain:d804.example\",\"domain:d805.example\",\"domain:d806.example\",\"domain:d807.example\",\"domain:d808.example\",\"domain:d809.example\",\"domain:d810.example\",\"domain:d811.example\",\"domain:d812.example\",\"domain:d813.example\",\"domain:d814.example\",\"domain:d815.example\",\"domain:d816.example\",\"domain:d817.example\",\"domain:d818.example\",\"domain:d819.example\",\"domain:d820.example\",\"domain:d821.example\",\"domain:d822.example\",\"domain:d823.example\",\"domain:d824.example\",\"domain:d825.example\",\"domain:d826.example\",\"domain:d827.example\",\"domain:d828.example\",\"domain:d829.example\",\"domain:d830.example\",\"domain:d831.example\",\"domain:d832.example\",\"domain:d833.example\",\"domain:d834.example\",\"domain:d835.example\",\"domain:d836.example\",\"domain:d837.example\",\"domain:d838.example\",\"domain:d839.example\",\"domain:d840.example\",\"domain:d841.example\",\"domain:d842.example\",\"domain:d843.example\",\"domain:d844.example\",\"domain:d845.example\",\"domain:d846.example\",\"domain:d847.example\",\"domain:d848.example\",\"domain:d849.example\",\"domain:d850.example\",\"domain:d851.example\",\"domain:d852.example\",\"domain:d853.example\",\"domain:d854.example\",\"domain:d855.example\",\"domain:d856.example\",\"domain:d857.example\",\"domain:d858.example\",\"domain:d859.example\",\"domain:d860.example\",\"domain:d861.example\",\"domain:d862.example\",\"domain:d863.example\",\"domain:d864.example\",\"domain:d865.example\",\"domain:d866.example\",\"domain:d867.example\",\"domain:d868.example\",\"domain:d869.example\",\"domain:d870.example\",\"domain:d871.example\",\"domain:d872.example\",\"domain:d873.example\",\"domain:d874.example\",\"domain:d875.example\",\"domain:d876.example\",\"domain:d877.example\",\"domain:d878.example\",\"domain:d879.example\",\"domain:d880.example\",\"domain:d881.example\",\"domain:d882.example\",\"domain:d883.example\",\"domain:d884.example\",\"domain:d885.example\",\"domain:d886.example\",\"domain:d887.example\",\"domain:d888.example\",\"domain:d889.example\",\"domain:d890.example\",\"domain:d891.example\",\"domain:d892.example\",\"domain:d893.example\",\"domain:d894.example\",\"domain:d895.example\",\"domain:d896.example\",\"domain:d897.example\",\"domain:d898.example\",\"domain:d899.example\",\"domain:d900.example\",\"domain:d901.example\",\"domain:d902.example\",\"domain:d903.example\",\"domain:d904.example\",\"domain:d905.example\",\"domain:d906.example\",\"domain:d907.example\",\"domain:d908.example\",\"domain:d909.example\",\"domain:d910.example\",\"domain:d911.example\",\"domain:d912.example\",\"domain:d913.example\",\"domain:d914.example\",\"domain:d915.example\",\"domain:d916.example\",\"domain:d917.example\",\"domain:d918.example\",\"domain:d919.example\",\"domain:d920.example\",\"domain:d921.example\",\"domain:d922.example\",\"domain:d923.example\",\"domain:d924.example\",\"domain:d925.example\",\"domain:d926.example\",\"domain:d927.example\",\"domain:d928.example\",\"domain:d929.example\",\"domain:d930.example\",\"domain:d931.example\",\"domain:d932.example\",\"domain:d933.example\",\"domain:d934.example\",\"domain:d935.example\",\"domain:d936.example\",\"domain:d937.example\",\"domain:d938.example\",\"domain:d939.example\",\"domain:d940.example\",\"domain:d941.example\",\"domain:d942.example\",\"domain:d943.example\",\"domain:d944.example\",\"domain:d945.example\",\"domain:d946.example\",\"domain:d947.example\",\"domain:d948.example\",\"domain:d949.example\",\"domain:d950.example\",\"domain:d951.example\",\"domain:d952.example\",\"domain:d953.example\",\"domain:d954.example\",\"domain:d955.example\",\"domain:d956.example\",\"domain:d957.example\",\"domain:d958.example\",\"domain:d959.example\",\"domain:d960.example\",\"domain:d961.example\",\"domain:d962.example\",\"domain:d963.example\",\"domain:d964.example\",\"domain:d965.example\",\"domain:d966.example\",\"domain:d967.example\",\"domain:d968.example\",\"domain:d969.example\",\"domain:d970.example\",\"domain:d971.example\",\"domain:d972.example\",\"domain:d973.example\",\"domain:d974.example\",\"domain:d975.example\",\"domain:d976.example\",\"domain:d977.example\",\"domain:d978.example\",\"domain:d979.example\",\"domain:d980.example\",\"domain:d981.example\",\"domain:d982.example\",\"domain:d983.example\",\"domain:d984.example\",\"domain:d985.example\",\"domain:d986.example\",\"domain:d987.example\",\"domain:d988.example\",\"domain:d989.example\",\"domain:d990.example\",\"domain:d991.example\",\"domain:d992.example\",\"domain:d993.example\",\"domain:d994.example\",\"domain:d995.example\",\"domain:d996.example\",\"domain:d997.example\",\"domain:d998.example\",\"domain:d999.example\",\"domain:d1000.example\",\"domain:d1001.example\",\"domain:d1002.example\",\"domain:d1003.example\",\"domain:d1004.example\",\"domain:d1005.example\",\"domain:d1006.example\",\"domain:d1007.example\",\"domain:d1008.example\",\"domain:d1009.example\",\"domain:d1010.example\",\"domain:d1011.example\",\"domain:d1012.example\",\"domain:d1013.example\",\"domain:d1014.example\",\"domain:d1015.example\",\"domain:d1016.example\",\"domain:d1017.example\",\"domain:d1018.example\",\"domain:d1019.example\",\"domain:d1020.example\",\"domain:d1021.example\",\"domain:d1022.example\",\"domain:d1023.example\",\"domain:d1024.example\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "rates.window zero",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":0},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "rates.window over a day",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":86401},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "rates.per_root zero",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":0,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "outbound.deny holds the wildcard",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"*\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a module name with a capital",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"Keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a moderation action that is not one",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"block\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "over 64 params",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"p0\",\"p1\",\"p2\",\"p3\",\"p4\",\"p5\",\"p6\",\"p7\",\"p8\",\"p9\",\"p10\",\"p11\",\"p12\",\"p13\",\"p14\",\"p15\",\"p16\",\"p17\",\"p18\",\"p19\",\"p20\",\"p21\",\"p22\",\"p23\",\"p24\",\"p25\",\"p26\",\"p27\",\"p28\",\"p29\",\"p30\",\"p31\",\"p32\",\"p33\",\"p34\",\"p35\",\"p36\",\"p37\",\"p38\",\"p39\",\"p40\",\"p41\",\"p42\",\"p43\",\"p44\",\"p45\",\"p46\",\"p47\",\"p48\",\"p49\",\"p50\",\"p51\",\"p52\",\"p53\",\"p54\",\"p55\",\"p56\",\"p57\",\"p58\",\"p59\",\"p60\",\"p61\",\"p62\",\"p63\",\"p64\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a param over 256 bytes",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "an empty param",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"rates\":{\"per_root\":120,\"window\":60},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    },
+    {
+      "name": "a member missing",
+      "text": "{\"kind\":\"policy-members\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"roots\":{\"mode\":\"allow\",\"list\":[\"domain:globex.example\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\"],\"unknown\":\"quarantine\"},\"outbound\":{\"deny\":[\"domain:evil.example\"]},\"moderation\":{\"module\":\"keyword\",\"action\":\"quarantine\",\"params\":[\"ignore previous instructions\"]},\"iat\":1800000000,\"sig\":\"a47597723941e049cc74545011b1c10043eebf6ccb344fc78172e6f7c6d8593ba8fa394b0af590403ac9ee636444f3831779be65019230194233b3b7ac88da02\"}",
+      "now": 1800000000,
+      "expect": "bad-record"
+    }
+  ]
+}

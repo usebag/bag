@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // tsc -b refuses a referenced project that emits nothing (TS6310), so each package emits declarations only,
+    // into node_modules/.cache/tsc (gitignored, never shipped). No JavaScript is ever written.
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "../../node_modules/.cache/tsc/e2e",
+    "tsBuildInfoFile": "../../node_modules/.cache/tsc/e2e.tsbuildinfo",
+    "rootDir": "."
+  },
+  "include": ["src", "test", "scripts", "vitest.config.ts"],
+  "references": [{ "path": "../core" }, { "path": "../edge" }, { "path": "../cli" }, { "path": "../a2a" }]
+}

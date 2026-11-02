@@ -1,0 +1,13 @@
+{
+  "kind": "address",
+  "key": "ed25519:17ae120ad2cc358ee224219062896417b44aea5a02dab26221b576d36d46d6e5",
+  "sealing_key": "8007d45647e69090f0d20c862a0e95d07aa5a7f0ee416ce089a0ab72919e8d06",
+  "relays": ["https://relay-acme.usuals.now"],
+  "rotation_key": null,
+  "revoked": [],
+  "ttl": 86400,
+  "iat": 1793001667,
+  "rotated_from": null,
+  "rotation_sig": null,
+  "sig": "135840e22579dd46f24f70fff310a2f8c5e27822661a0175bdf3f33141d05da7426799e3a6d65ec0b475053b003e77aa46d7f8bd7dc32daffc678b26cf591e0c"
+}

@@ -1,0 +1,1316 @@
+{
+  "description": "Authority chains that fail (spec/SPEC.md §6): each case names the rule it breaks and the result. The rules run in order, each over every hop before the next, so a chain that breaks several rules fails with the first; the cases named \"order\" pin that.",
+  "generated_by": "packages/core/scripts/gen-vectors.ts",
+  "suite": 1,
+  "suite_parameters": "Ed25519 signatures; sealing with RFC 9180 base mode, DHKEM(X25519, HKDF-SHA256) (kem 0x0020), HKDF-SHA256 (kdf 0x0001), AES-256-GCM (aead 0x0002)",
+  "test_data": "Every seed, private key, content key and nonce in this file is test data, fixed by construction: seeds are one byte repeated 32 times, and the rest comes from a seeded xorshift128+. They are public; never let them protect anything real.",
+  "notes": [
+    "rule: 1 hops <= 8; 2 each hop well-formed; 3 caveats <= 32 per hop; 4 each caveat <= 256 UTF-8 bytes; 5 hop[i].sub == hop[i+1].iss; 6 the last sub is from; 7 hop[i+1].exp <= hop[i].exp; 8 ts <= exp for every hop; 9 every hop sig verifies under its iss."
+  ],
+  "cases": [
+    {
+      "name": "nine hops",
+      "rule": 1,
+      "from": "ed25519:772c8a442b7db06e166cfbc1ccbcbcde6f3eba76a4e98ef3ffc519502237d6ef",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:677a74d964e4a84ffa5025a8b5537b5c4a37ad6d146e854783ac734684a207c4",
+          "sub": "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "caveats": [
+            "type=coding.level0.*"
+          ],
+          "exp": 1802592000,
+          "sig": "c7a05268d913c322d7711cac8b95c94e2e31ac8ad281fa43cd8a2eb074eebf8c03c2312f307a0a74147e5fb233bef3c1893b4715c0abbc1ec19dc901f7973307"
+        },
+        {
+          "iss": "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "sub": "ed25519:2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+          "caveats": [
+            "type=coding.level1.*"
+          ],
+          "exp": 1802505600,
+          "sig": "53f4723e9d09743282f467ef49f2718e97ac3f30e0af92d99ec44df56c945b2a30cbb82614923b7792d89bf775ef4533d5bd2e0c4a83f0ab68510f2131bd8105"
+        },
+        {
+          "iss": "ed25519:2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+          "sub": "ed25519:22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6",
+          "caveats": [
+            "type=coding.level2.*"
+          ],
+          "exp": 1802419200,
+          "sig": "1b24c274eaf11b4dc948f7f48e25e5ccaa7ecbc19a633f4fbb1a2e86828dde07472f0fca3f14dfd19d02a81426594b5b88dfccadec0eb7def6b1cac12ad71a07"
+        },
+        {
+          "iss": "ed25519:22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6",
+          "sub": "ed25519:d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48",
+          "caveats": [
+            "type=coding.level3.*"
+          ],
+          "exp": 1802332800,
+          "sig": "0ea5ecc87af06868ec32a93afe7dc2c31a5c1f9c0dada80dff72e9e37cc7b38e242a5fbe748a8893181f1d505b83305350e2b57793b94d4634857fc1a978aa09"
+        },
+        {
+          "iss": "ed25519:d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48",
+          "sub": "ed25519:6355691c178a8ff91007a7478afb955ef7352c63e7b25703984cf78b26e21a56",
+          "caveats": [
+            "type=coding.level4.*"
+          ],
+          "exp": 1802246400,
+          "sig": "522cfd7f49f9b8ab30aa1ea0f1eb272a91ec96ab7347018d678a2042d0d9b8b930d4385b29681425af33ce686315cc851a855ac77d09e7d5817d46809885080d"
+        },
+        {
+          "iss": "ed25519:6355691c178a8ff91007a7478afb955ef7352c63e7b25703984cf78b26e21a56",
+          "sub": "ed25519:ee93a4f66f8d16b819bb9beb9ffccdfcdc1412e87fee6a324c2a99a1e0e67148",
+          "caveats": [
+            "type=coding.level5.*"
+          ],
+          "exp": 1802160000,
+          "sig": "bb38c6fb8887001a1690e3d5992d7625c1c5ed507fe70c0eb74ead225d45b0a8441ade0544af6450232dd2fa6110665f065348cae88f94ab0dce9cf8ee487709"
+        },
+        {
+          "iss": "ed25519:ee93a4f66f8d16b819bb9beb9ffccdfcdc1412e87fee6a324c2a99a1e0e67148",
+          "sub": "ed25519:e28a8970753332bd72fef413e6b0b2ef1b4aadda7aa2c141f233712a6876b351",
+          "caveats": [
+            "type=coding.level6.*"
+          ],
+          "exp": 1802073600,
+          "sig": "7a052c84ed0f5a6f7b30e177f25c32db7e74e0fc23a91ee0c0f0505b22a98f9d8fd97a9a8cac6fa88fba06b1acfdee1f64afcff78eb34cdc8551370d53ad5605"
+        },
+        {
+          "iss": "ed25519:e28a8970753332bd72fef413e6b0b2ef1b4aadda7aa2c141f233712a6876b351",
+          "sub": "ed25519:d4eec1869fb1b8a4e817516ad5a931557cb56805c3eb16e8f3a803d647df7869",
+          "caveats": [
+            "type=coding.level7.*"
+          ],
+          "exp": 1801987200,
+          "sig": "14ddcb92cdd7709f6fe963c9fb36ab9184625688bac62982e65200921e3b9b659209d7a9bcadb2a1a46bfee9afb2f7bfd74113152f9cbbcf9a6344fa180b4809"
+        },
+        {
+          "iss": "ed25519:d4eec1869fb1b8a4e817516ad5a931557cb56805c3eb16e8f3a803d647df7869",
+          "sub": "ed25519:772c8a442b7db06e166cfbc1ccbcbcde6f3eba76a4e98ef3ffc519502237d6ef",
+          "caveats": [
+            "type=coding.level8.*"
+          ],
+          "exp": 1801900800,
+          "sig": "b9e78781b881c161258e1e9c00e60b406503a4919970f86726263f66f27881390b97a02cc32c0ef6f1db3ac3ca9f2cf1e1b4e0a4b320d44191d42cf815469606"
+        }
+      ],
+      "result": "too-many-hops"
+    },
+    {
+      "name": "a hop without sig",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "a hop with an extra member",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07",
+          "iat": 1800000000
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "iss in upper-case hex",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ED25519:8A88E3DD7409F195FD52DB2D3CBA5D72CA6709BF1D94121BF3748801B40F6F5C",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "sub with another prefix",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "x25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "exp is a fraction",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800000000.5,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "exp is negative",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": -1,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "exp is a string",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": "1800000000",
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "exp is 2^53, past the largest integer",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 9007199254740992,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "caveats is not a list",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": "repo=acme/api",
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "a caveat that is a number",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            7
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "an empty caveat",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            ""
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "sig of 63 bytes",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "7a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "a hop that is a list",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        [
+          "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          [
+            "repo=acme/api"
+          ],
+          1800028800,
+          "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        ]
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "a hop that is null",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        null
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "thirty-three caveats",
+      "rule": 3,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "c0",
+            "c1",
+            "c2",
+            "c3",
+            "c4",
+            "c5",
+            "c6",
+            "c7",
+            "c8",
+            "c9",
+            "c10",
+            "c11",
+            "c12",
+            "c13",
+            "c14",
+            "c15",
+            "c16",
+            "c17",
+            "c18",
+            "c19",
+            "c20",
+            "c21",
+            "c22",
+            "c23",
+            "c24",
+            "c25",
+            "c26",
+            "c27",
+            "c28",
+            "c29",
+            "c30",
+            "c31",
+            "c32"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "too-many-caveats"
+    },
+    {
+      "name": "a caveat of 257 ASCII bytes",
+      "rule": 4,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "caveat-too-long"
+    },
+    {
+      "name": "a caveat of 258 UTF-8 bytes in 129 characters",
+      "rule": 4,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "caveat-too-long"
+    },
+    {
+      "name": "a broken link: hop 0's sub is not hop 1's iss",
+      "rule": 5,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3e10ba023a765c3fda5095fc9c67b0d7fc2dc099b24f8d0b8806a6255d4df3af95c3ad9e4f4440cb47fae43942dafdc32d4eca709b8ccf467f666fd111536104"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "chain-broken"
+    },
+    {
+      "name": "the last sub is not the sender",
+      "rule": 6,
+      "from": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "chain-not-to-sender"
+    },
+    {
+      "name": "a child hop that outlives its parent",
+      "rule": 7,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1802678400,
+          "sig": "c9eb2f48f7aa87ec795dbb848b6a92cbd3c620fc52bf2ba6be65bd73de42cec483b3fb0651e17397007bef4802052339c1856875f67fdd67c285c8226948bb00"
+        }
+      ],
+      "result": "exp-not-monotone"
+    },
+    {
+      "name": "the last hop expired one second before ts",
+      "rule": 8,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800028801,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "hop-expired"
+    },
+    {
+      "name": "the root hop expired",
+      "rule": 8,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800172800,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [],
+          "exp": 1800086400,
+          "sig": "74e223c32a4e6f496362829269c203ea8660cd074a121f2c6ef74fb347b49552738bdf47492b6ec8ebfd9ffa80842d74fc7e904c2a310c4183ce3797d2f5240c"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086400,
+          "sig": "f57892c652a8251be002b5b2067e1998fc5294ab5500d7616b3af8d9a6aaf15e7e00f935a952ffd0d23cecabc07548428dc40fa186b06b14267d8307178e930d"
+        }
+      ],
+      "result": "hop-expired"
+    },
+    {
+      "name": "a hop signed by a key that is not its iss",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "e29a824ff7c393603f6b2803e2a808e26c69341ba54b3be04e77919f82a3574b3b4b76d5e309b2211b870376346dbcd4229e33d6662ff37cafe65efc9f22d50a"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "a caveat stripped from a signed hop",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "adf811ebf7671ad4c8a899c2237ad3743242455cdeddec083b97cbe1a5b13ba350f99f19bb5e3f237b6b0952705a46ef0bdc506dff5c833bdc6affb93d66f501"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "a caveat appended to a signed hop",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api",
+            "type=coding.task.*"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "an exp extended after signing",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028801,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "order: rule 1 before rule 2 (nine hops, one malformed)",
+      "rule": 1,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        null
+      ],
+      "result": "too-many-hops"
+    },
+    {
+      "name": "order: rule 2 before rule 3 (33 caveats, then a malformed hop)",
+      "rule": 2,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "c0",
+            "c1",
+            "c2",
+            "c3",
+            "c4",
+            "c5",
+            "c6",
+            "c7",
+            "c8",
+            "c9",
+            "c10",
+            "c11",
+            "c12",
+            "c13",
+            "c14",
+            "c15",
+            "c16",
+            "c17",
+            "c18",
+            "c19",
+            "c20",
+            "c21",
+            "c22",
+            "c23",
+            "c24",
+            "c25",
+            "c26",
+            "c27",
+            "c28",
+            "c29",
+            "c30",
+            "c31",
+            "c32"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800
+        }
+      ],
+      "result": "bad-hop"
+    },
+    {
+      "name": "order: rule 5 before rule 8 (broken and expired)",
+      "rule": 5,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1803456000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+          "caveats": [],
+          "exp": 1802592000,
+          "sig": "00b1aab3e3b25cc5f7e775fb059498233a30275ca6f00be86c4ee539e23578251bd5f0abb3178eb74030b8318a55dd7c4f41154392e0cfdd6a65cabad2e4e20c"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "chain-broken"
+    },
+    {
+      "name": "order: rule 7 before rule 9 (outlives its parent and a bad signature)",
+      "rule": 7,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1802678400,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "exp-not-monotone"
+    },
+    {
+      "name": "order: rule 8 before rule 9 (expired and a bad signature)",
+      "rule": 8,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800032400,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "result": "hop-expired"
+    },
+    {
+      "name": "the iss is the identity, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:0100000000000000000000000000000000000000000000000000000000000000",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086411,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is the point of order 2, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086407,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is a point of order 4, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:0000000000000000000000000000000000000000000000000000000000000000",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086403,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is the other point of order 4, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:0000000000000000000000000000000000000000000000000000000000000080",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086414,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is a point of order 8, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086415,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is a second point of order 8, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086402,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is a third point of order 8, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086410,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is a fourth point of order 8, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086406,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is the identity with the sign bit set (x = 0), R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:0100000000000000000000000000000000000000000000000000000000000080",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086405,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is the point of order 2 with the sign bit set (x = 0), R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086408,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is the identity written y + p, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086407,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is the identity written y + p, the sign bit set, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086404,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is a point of order 4 written y + p, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086402,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is the other point of order 4 written y + p, R the identity and S = 0, k = 0 mod 8",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086400,
+          "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "S + L in place of the hop signature S",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1800086400,
+          "sig": "d6a9753f917be18992c2ca99df50d50c6d5a0f325f975a43723590f9d70ef31753d5b07ca52693a2e29c393011b06bd4df252e45cd9e1ed6c8d52e09a6d86a13"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "R the identity and S = k·a under the iss's own key",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1800086400,
+          "sig": "010000000000000000000000000000000000000000000000000000000000000038c5693de6acc035b897441ee4d6cc9b0797afe5164e69fd9a51b65fc1ab0d06"
+        }
+      ],
+      "result": "bad-hop-sig"
+    },
+    {
+      "name": "the iss is a mixed-order key (the org's key plus a point of order 8), k not 0 mod 8: the cofactorless equation fails",
+      "rule": 9,
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:9ea3f11f5bd34f0cd7147fd0a436c088f624c6100c1df6a53c0a29e05d60cea0",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086400,
+          "sig": "c73958b360ac321c756e693dd3e160c17c69bd88fa780a568696015b3bc934ab5ecf4608294c4096120e13fab327195784bc2f52a1190de4dbdcca1199f5de08"
+        }
+      ],
+      "result": "bad-hop-sig"
+    }
+  ]
+}

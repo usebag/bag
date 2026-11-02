@@ -1,0 +1,820 @@
+{
+  "description": "Authority chains that verify (spec/SPEC.md §6): each case gives the sender (from), the time the hops are judged at (ts), the hops, each hop preimage canonical string and digest, and what the chain establishes: its root, its principal (the last hop's iss, or from) and the effective caveats in chain order. \"caveats\" (added 2026-10-25) holds effective caveats, a sealed content, and the coding profile's verdict on them (§6.3, §6.4): \"ok\", or the code and the caveat that decided.",
+  "generated_by": "packages/core/scripts/gen-vectors.ts",
+  "suite": 1,
+  "suite_parameters": "Ed25519 signatures; sealing with RFC 9180 base mode, DHKEM(X25519, HKDF-SHA256) (kem 0x0020), HKDF-SHA256 (kdf 0x0001), AES-256-GCM (aead 0x0002)",
+  "test_data": "Every seed, private key, content key and nonce in this file is test data, fixed by construction: seeds are one byte repeated 32 times, and the rest comes from a seeded xorshift128+. They are public; never let them protect anything real.",
+  "notes": [],
+  "cases": [
+    {
+      "name": "the empty chain: self-rooted",
+      "from": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "ts": 1800000000,
+      "auth": [],
+      "hops": [],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "principal": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "caveats": []
+      }
+    },
+    {
+      "name": "one hop: jane to her session",
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800028800,
+          "sig": "32bbd4399e7bacc1e377336d287d70696ab78bf12e6a12fcf8956443d0dc2a50427a2d6053d4642f503de4da1adb9a04f6970240ce76cd528eb794b0145fec03"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[],1800028800]",
+          "digest": "b7e2592d9fbe7a94fb85e92bdac17270d225dab8b483675d932516632ef1dd53"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "principal": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "caveats": []
+      }
+    },
+    {
+      "name": "two hops: org to jane to session, with coding caveats",
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",[\"type=coding.*\"],1802592000]",
+          "digest": "21d6bf4bdd3c65122b6dc4ebbb5848618aa2b990bb351f46e4c0e5679d2c1e99"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[\"repo=acme/api\"],1800028800]",
+          "digest": "90c2a1d3fe1ad05afe4719b58a4301b2885189558a0edf111ba97c7090495991"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "principal": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "caveats": [
+          "type=coding.*",
+          "repo=acme/api"
+        ]
+      }
+    },
+    {
+      "name": "three hops: down to a sub-agent",
+      "from": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        },
+        {
+          "iss": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "sub": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+          "caveats": [
+            "type=coding.task.*"
+          ],
+          "exp": 1800003600,
+          "sig": "44dc0010351fa320fe095444b86ea160ffbc0e12caa345c3396fd2c68c7e7a3416c4e5c4023546f5b7b37bf878b408ddb7e5e33521947dc29857d782ef92fe08"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",[\"type=coding.*\"],1802592000]",
+          "digest": "21d6bf4bdd3c65122b6dc4ebbb5848618aa2b990bb351f46e4c0e5679d2c1e99"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[\"repo=acme/api\"],1800028800]",
+          "digest": "90c2a1d3fe1ad05afe4719b58a4301b2885189558a0edf111ba97c7090495991"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",\"ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c\",[\"type=coding.task.*\"],1800003600]",
+          "digest": "32852ee9b8044d89620e088bf4d7a07039963ac944babdc4fbbdcb28543dc589"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "principal": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+        "caveats": [
+          "type=coding.*",
+          "repo=acme/api",
+          "type=coding.task.*"
+        ]
+      }
+    },
+    {
+      "name": "eight hops, the cap",
+      "from": "ed25519:d4eec1869fb1b8a4e817516ad5a931557cb56805c3eb16e8f3a803d647df7869",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:677a74d964e4a84ffa5025a8b5537b5c4a37ad6d146e854783ac734684a207c4",
+          "sub": "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "caveats": [
+            "type=coding.level0.*"
+          ],
+          "exp": 1802592000,
+          "sig": "c7a05268d913c322d7711cac8b95c94e2e31ac8ad281fa43cd8a2eb074eebf8c03c2312f307a0a74147e5fb233bef3c1893b4715c0abbc1ec19dc901f7973307"
+        },
+        {
+          "iss": "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "sub": "ed25519:2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+          "caveats": [
+            "type=coding.level1.*"
+          ],
+          "exp": 1802505600,
+          "sig": "53f4723e9d09743282f467ef49f2718e97ac3f30e0af92d99ec44df56c945b2a30cbb82614923b7792d89bf775ef4533d5bd2e0c4a83f0ab68510f2131bd8105"
+        },
+        {
+          "iss": "ed25519:2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+          "sub": "ed25519:22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6",
+          "caveats": [
+            "type=coding.level2.*"
+          ],
+          "exp": 1802419200,
+          "sig": "1b24c274eaf11b4dc948f7f48e25e5ccaa7ecbc19a633f4fbb1a2e86828dde07472f0fca3f14dfd19d02a81426594b5b88dfccadec0eb7def6b1cac12ad71a07"
+        },
+        {
+          "iss": "ed25519:22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6",
+          "sub": "ed25519:d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48",
+          "caveats": [
+            "type=coding.level3.*"
+          ],
+          "exp": 1802332800,
+          "sig": "0ea5ecc87af06868ec32a93afe7dc2c31a5c1f9c0dada80dff72e9e37cc7b38e242a5fbe748a8893181f1d505b83305350e2b57793b94d4634857fc1a978aa09"
+        },
+        {
+          "iss": "ed25519:d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48",
+          "sub": "ed25519:6355691c178a8ff91007a7478afb955ef7352c63e7b25703984cf78b26e21a56",
+          "caveats": [
+            "type=coding.level4.*"
+          ],
+          "exp": 1802246400,
+          "sig": "522cfd7f49f9b8ab30aa1ea0f1eb272a91ec96ab7347018d678a2042d0d9b8b930d4385b29681425af33ce686315cc851a855ac77d09e7d5817d46809885080d"
+        },
+        {
+          "iss": "ed25519:6355691c178a8ff91007a7478afb955ef7352c63e7b25703984cf78b26e21a56",
+          "sub": "ed25519:ee93a4f66f8d16b819bb9beb9ffccdfcdc1412e87fee6a324c2a99a1e0e67148",
+          "caveats": [
+            "type=coding.level5.*"
+          ],
+          "exp": 1802160000,
+          "sig": "bb38c6fb8887001a1690e3d5992d7625c1c5ed507fe70c0eb74ead225d45b0a8441ade0544af6450232dd2fa6110665f065348cae88f94ab0dce9cf8ee487709"
+        },
+        {
+          "iss": "ed25519:ee93a4f66f8d16b819bb9beb9ffccdfcdc1412e87fee6a324c2a99a1e0e67148",
+          "sub": "ed25519:e28a8970753332bd72fef413e6b0b2ef1b4aadda7aa2c141f233712a6876b351",
+          "caveats": [
+            "type=coding.level6.*"
+          ],
+          "exp": 1802073600,
+          "sig": "7a052c84ed0f5a6f7b30e177f25c32db7e74e0fc23a91ee0c0f0505b22a98f9d8fd97a9a8cac6fa88fba06b1acfdee1f64afcff78eb34cdc8551370d53ad5605"
+        },
+        {
+          "iss": "ed25519:e28a8970753332bd72fef413e6b0b2ef1b4aadda7aa2c141f233712a6876b351",
+          "sub": "ed25519:d4eec1869fb1b8a4e817516ad5a931557cb56805c3eb16e8f3a803d647df7869",
+          "caveats": [
+            "type=coding.level7.*"
+          ],
+          "exp": 1801987200,
+          "sig": "14ddcb92cdd7709f6fe963c9fb36ab9184625688bac62982e65200921e3b9b659209d7a9bcadb2a1a46bfee9afb2f7bfd74113152f9cbbcf9a6344fa180b4809"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:677a74d964e4a84ffa5025a8b5537b5c4a37ad6d146e854783ac734684a207c4\",\"ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d\",[\"type=coding.level0.*\"],1802592000]",
+          "digest": "e24a36beee65a53e60057b4110fa5babb7d8a46563575fec15c80c214328f585"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d\",\"ed25519:2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12\",[\"type=coding.level1.*\"],1802505600]",
+          "digest": "2c3f512d0c69b2b3d92c1899125b87e41cb0d12008b2c246f3a795e7088f3d17"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12\",\"ed25519:22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6\",[\"type=coding.level2.*\"],1802419200]",
+          "digest": "3e92bb49596a2a73493e5ca563015695609c45799b78d53ba9bb2ce11a801246"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6\",\"ed25519:d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48\",[\"type=coding.level3.*\"],1802332800]",
+          "digest": "0b53060b8ce3dc451c95062d2c2b1974e5225373d69bf2cd20d87a219fdfcc00"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48\",\"ed25519:6355691c178a8ff91007a7478afb955ef7352c63e7b25703984cf78b26e21a56\",[\"type=coding.level4.*\"],1802246400]",
+          "digest": "8cfc5b8a2322aac110f6cbf88b9821f42ce8fc97045c4fb8c66c91ac5f3d2ad9"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:6355691c178a8ff91007a7478afb955ef7352c63e7b25703984cf78b26e21a56\",\"ed25519:ee93a4f66f8d16b819bb9beb9ffccdfcdc1412e87fee6a324c2a99a1e0e67148\",[\"type=coding.level5.*\"],1802160000]",
+          "digest": "61ef3ca78f109dea05958f12182e1330a31ebb00fbabec5d1fc81ef5851a03aa"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:ee93a4f66f8d16b819bb9beb9ffccdfcdc1412e87fee6a324c2a99a1e0e67148\",\"ed25519:e28a8970753332bd72fef413e6b0b2ef1b4aadda7aa2c141f233712a6876b351\",[\"type=coding.level6.*\"],1802073600]",
+          "digest": "2961ceef46b5524e52f62a74527776e5ecc83d9af08efbb807992fbfb21a8d87"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:e28a8970753332bd72fef413e6b0b2ef1b4aadda7aa2c141f233712a6876b351\",\"ed25519:d4eec1869fb1b8a4e817516ad5a931557cb56805c3eb16e8f3a803d647df7869\",[\"type=coding.level7.*\"],1801987200]",
+          "digest": "131b37576094aa83f158c07f74ab360a33d915b8a9127809e3f9c0fd58e21c12"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:677a74d964e4a84ffa5025a8b5537b5c4a37ad6d146e854783ac734684a207c4",
+        "principal": "ed25519:e28a8970753332bd72fef413e6b0b2ef1b4aadda7aa2c141f233712a6876b351",
+        "caveats": [
+          "type=coding.level0.*",
+          "type=coding.level1.*",
+          "type=coding.level2.*",
+          "type=coding.level3.*",
+          "type=coding.level4.*",
+          "type=coding.level5.*",
+          "type=coding.level6.*",
+          "type=coding.level7.*"
+        ]
+      }
+    },
+    {
+      "name": "equal expiries are allowed",
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [],
+          "exp": 1800086400,
+          "sig": "74e223c32a4e6f496362829269c203ea8660cd074a121f2c6ef74fb347b49552738bdf47492b6ec8ebfd9ffa80842d74fc7e904c2a310c4183ce3797d2f5240c"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086400,
+          "sig": "f57892c652a8251be002b5b2067e1998fc5294ab5500d7616b3af8d9a6aaf15e7e00f935a952ffd0d23cecabc07548428dc40fa186b06b14267d8307178e930d"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",[],1800086400]",
+          "digest": "055fa886710beaeeea5053a08f4f6dcf9e1d1e5994ef29b8cf44c4e4e677d107"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[],1800086400]",
+          "digest": "a1f897ebe5afb4c3f5bcc46b9c01b0a4d0af26a3809b1a84470ca4bcc5ac5019"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "principal": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "caveats": []
+      }
+    },
+    {
+      "name": "ts equal to the last hop's exp",
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800028800,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=acme/api"
+          ],
+          "exp": 1800028800,
+          "sig": "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",[\"type=coding.*\"],1802592000]",
+          "digest": "21d6bf4bdd3c65122b6dc4ebbb5848618aa2b990bb351f46e4c0e5679d2c1e99"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[\"repo=acme/api\"],1800028800]",
+          "digest": "90c2a1d3fe1ad05afe4719b58a4301b2885189558a0edf111ba97c7090495991"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "principal": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "caveats": [
+          "type=coding.*",
+          "repo=acme/api"
+        ]
+      }
+    },
+    {
+      "name": "thirty-two caveats, one of exactly 256 UTF-8 bytes",
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "c0",
+            "c1",
+            "c2",
+            "c3",
+            "c4",
+            "c5",
+            "c6",
+            "c7",
+            "c8",
+            "c9",
+            "c10",
+            "c11",
+            "c12",
+            "c13",
+            "c14",
+            "c15",
+            "c16",
+            "c17",
+            "c18",
+            "c19",
+            "c20",
+            "c21",
+            "c22",
+            "c23",
+            "c24",
+            "c25",
+            "c26",
+            "c27",
+            "c28",
+            "c29",
+            "c30",
+            "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+          ],
+          "exp": 1800003600,
+          "sig": "7969bd25b4d160f5c4ffbfda02392493f9af94853c2febada386d445a059de009609ee8cd1d2b15e15a8227f78629268e912f10c88d9e161adaac69df6848406"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[\"c0\",\"c1\",\"c2\",\"c3\",\"c4\",\"c5\",\"c6\",\"c7\",\"c8\",\"c9\",\"c10\",\"c11\",\"c12\",\"c13\",\"c14\",\"c15\",\"c16\",\"c17\",\"c18\",\"c19\",\"c20\",\"c21\",\"c22\",\"c23\",\"c24\",\"c25\",\"c26\",\"c27\",\"c28\",\"c29\",\"c30\",\"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"],1800003600]",
+          "digest": "089fc8a7df5992c042e7a84215d3bdd07e6dd5486237accd0dd6fe0ad202ce70"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "principal": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "caveats": [
+          "c0",
+          "c1",
+          "c2",
+          "c3",
+          "c4",
+          "c5",
+          "c6",
+          "c7",
+          "c8",
+          "c9",
+          "c10",
+          "c11",
+          "c12",
+          "c13",
+          "c14",
+          "c15",
+          "c16",
+          "c17",
+          "c18",
+          "c19",
+          "c20",
+          "c21",
+          "c22",
+          "c23",
+          "c24",
+          "c25",
+          "c26",
+          "c27",
+          "c28",
+          "c29",
+          "c30",
+          "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+        ]
+      }
+    },
+    {
+      "name": "a caveat of exactly 256 ASCII bytes",
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          ],
+          "exp": 1800003600,
+          "sig": "69181d220ec7663113578c73e85ffb3255c95f050f95bb7ea81b3b38514bea85351474a36a36fc954ebeaf7f96204061b59338aa98c344b1fa38bcca0c61a206"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"],1800003600]",
+          "digest": "d43049a21608c5c799e2d05a07729047f5add99fc54aabe46ecffd316b81ad7f"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "principal": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "caveats": [
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      }
+    },
+    {
+      "name": "non-ASCII caveats",
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [
+            "repo=équipe/日本",
+            "type=coding.*"
+          ],
+          "exp": 1800003600,
+          "sig": "83888a600818645b8d04316d47ef0d0d6c94eb89d81535c41dea82be0475f79b218f66ff0cc42b1c438a23ec940393296360caa36f75266ea8e0ddd436b68802"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[\"repo=équipe/日本\",\"type=coding.*\"],1800003600]",
+          "digest": "b21b01bcd3200704b3b40acfb3e1d7e81758893a481e9a44cee8b6040142ced4"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "principal": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "caveats": [
+          "repo=équipe/日本",
+          "type=coding.*"
+        ]
+      }
+    },
+    {
+      "name": "a middle hop that adds no caveat",
+      "from": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "sub": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "caveats": [
+            "type=coding.*"
+          ],
+          "exp": 1802592000,
+          "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+        },
+        {
+          "iss": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800028800,
+          "sig": "32bbd4399e7bacc1e377336d287d70696ab78bf12e6a12fcf8956443d0dc2a50427a2d6053d4642f503de4da1adb9a04f6970240ce76cd528eb794b0145fec03"
+        },
+        {
+          "iss": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "sub": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+          "caveats": [
+            "type=coding.task.*"
+          ],
+          "exp": 1800003600,
+          "sig": "44dc0010351fa320fe095444b86ea160ffbc0e12caa345c3396fd2c68c7e7a3416c4e5c4023546f5b7b37bf878b408ddb7e5e33521947dc29857d782ef92fe08"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",[\"type=coding.*\"],1802592000]",
+          "digest": "21d6bf4bdd3c65122b6dc4ebbb5848618aa2b990bb351f46e4c0e5679d2c1e99"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[],1800028800]",
+          "digest": "b7e2592d9fbe7a94fb85e92bdac17270d225dab8b483675d932516632ef1dd53"
+        },
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",\"ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c\",[\"type=coding.task.*\"],1800003600]",
+          "digest": "32852ee9b8044d89620e088bf4d7a07039963ac944babdc4fbbdcb28543dc589"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "principal": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+        "caveats": [
+          "type=coding.*",
+          "type=coding.task.*"
+        ]
+      }
+    },
+    {
+      "name": "the iss is a mixed-order key and k is 0 mod 8: the cofactorless equation holds, and no reader refuses the key for its order",
+      "from": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "ts": 1800000000,
+      "auth": [
+        {
+          "iss": "ed25519:9ea3f11f5bd34f0cd7147fd0a436c088f624c6100c1df6a53c0a29e05d60cea0",
+          "sub": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+          "caveats": [],
+          "exp": 1800086409,
+          "sig": "cb4bfc359ae5985dcc4ad4ac5798e66f5ca28d3a09d15259fccc5197eebe9bba0ac8c0ad0fd044573918fdba3bd8ff8481d1f787fe82223cea699d2bf58aa302"
+        }
+      ],
+      "hops": [
+        {
+          "canonical": "[\"ac/hop/1\",\"ed25519:9ea3f11f5bd34f0cd7147fd0a436c088f624c6100c1df6a53c0a29e05d60cea0\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[],1800086409]",
+          "digest": "31d853643de4b2cbe872d9bfb5d5bb3364daf6385d1c260da19673adf191f7fc"
+        }
+      ],
+      "result": "ok",
+      "chain": {
+        "root": "ed25519:9ea3f11f5bd34f0cd7147fd0a436c088f624c6100c1df6a53c0a29e05d60cea0",
+        "principal": "ed25519:9ea3f11f5bd34f0cd7147fd0a436c088f624c6100c1df6a53c0a29e05d60cea0",
+        "caveats": []
+      }
+    }
+  ],
+  "caveats": [
+    {
+      "name": "a type pattern that holds",
+      "caveats": [
+        "type=coding.*"
+      ],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "ok"
+    },
+    {
+      "name": "an exact type and a repo that hold",
+      "caveats": [
+        "type=coding.task.v1",
+        "repo=acme/api"
+      ],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "ok"
+    },
+    {
+      "name": "no caveat at all",
+      "caveats": [],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "ok"
+    },
+    {
+      "name": "a caveat of no profile: unknown, so it fails closed",
+      "caveats": [
+        "color=blue"
+      ],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "unknown-caveat",
+      "caveat": "color=blue"
+    },
+    {
+      "name": "a type pattern with a star inside: malformed, so unknown",
+      "caveats": [
+        "type=coding.*.v1"
+      ],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "unknown-caveat",
+      "caveat": "type=coding.*.v1"
+    },
+    {
+      "name": "an empty repo name: malformed, so unknown",
+      "caveats": [
+        "repo="
+      ],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "unknown-caveat",
+      "caveat": "repo="
+    },
+    {
+      "name": "another exact type",
+      "caveats": [
+        "type=chat.v1"
+      ],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "caveat-failed",
+      "caveat": "type=chat.v1"
+    },
+    {
+      "name": "a type pattern needs its dot: coding.* against the type coding",
+      "caveats": [
+        "type=coding.*"
+      ],
+      "content": {
+        "type": "coding",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "caveat-failed",
+      "caveat": "type=coding.*"
+    },
+    {
+      "name": "another repo",
+      "caveats": [
+        "repo=acme/web"
+      ],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "caveat-failed",
+      "caveat": "repo=acme/web"
+    },
+    {
+      "name": "a repo caveat against a string body",
+      "caveats": [
+        "repo=acme/api"
+      ],
+      "content": {
+        "type": "coding.note.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": "a string body"
+      },
+      "result": "caveat-failed",
+      "caveat": "repo=acme/api"
+    },
+    {
+      "name": "order: an unknown caveat before a failing one decides",
+      "caveats": [
+        "color=blue",
+        "type=chat.v1"
+      ],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "unknown-caveat",
+      "caveat": "color=blue"
+    },
+    {
+      "name": "order: a failing caveat before an unknown one decides",
+      "caveats": [
+        "type=chat.v1",
+        "color=blue"
+      ],
+      "content": {
+        "type": "coding.task.v1",
+        "thread": {
+          "id": "5b6a549e3ffdf7fe6c271abe133cfb0b873006e76652616e1830dac62f1a1b7a",
+          "prev": []
+        },
+        "body": {
+          "repo": "acme/api",
+          "task": "run the tests"
+        }
+      },
+      "result": "caveat-failed",
+      "caveat": "type=chat.v1"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { type AuditLine, parseAuditLine, readAuditAnchor, readAuditLines, verifyAuditLog } from '@usebag/edge'
+import { CliError, parse, req, str } from '../args.ts'
+import { checkIdentity, doorbellPath, homeDir } from '../home.ts'
+import type { Io } from '../io.ts'
+import { instant } from '../names.ts'
+
+/** The detail of the edge's end of a subscription (receiver.ts, run). */
+type Ended = { readonly relay: string; readonly refusals: number; readonly end: 'subscription-ended' }
+
+/** The end a subscribe line records: a reject whose detail has the edge's shape, else null. */
+function ended(line: AuditLine | undefined): Ended | null {
+  if (line?.decision !== 'reject') return null
+  const d = JSON.parse(line.detail ?? 'null') as Partial<Ended> | null
+  const ok = typeof d?.relay === 'string' && typeof d.refusals === 'number' && d.end === 'subscription-ended'
+  return ok ? (d as Ended) : null
+}
+
+/**
+ * status --as <name> [--dir <home>]: first, always, `doorbell <path>`, the identity's doorbell (home.ts),
+ * an absolute path whether or not the file exists yet (inbox makes it at the first accepted message). Then what the
+ * identity's audit log, <home>/state/<name>/audit.jsonl, says of its subscriptions. When the log's last
+ * `subscribe` line is the edge's end of a subscription, `subscribe reject <code>` with `subscription-ended` (three
+ * permanent refusals in a row), it prints a second line: `mailbox refused: <code> at <relay> after <n> refusals; edge
+ * errors <e>, last <code> at <time>`; otherwise nothing more. <e> is like the
+ * MCP server's edge_errors but counts the log's audited subscribe errors (retry and reject lines, three per end). The
+ * line names a relay, not a mailbox, though the subscribe lines now carry the mailbox (older ones carry none) and the
+ * log holds the identity's own subscriptions and its groups' (inbox --group): this code does not read the field. The
+ * edge audits no subscription that succeeds, so the line stays after a later inbox subscribed, until any later
+ * `subscribe retry` line, whatever its mailbox, follows it (one refusal or one coded transient error). A log whose
+ * chain or anchor (edge.sqlite beside it, read first, as audit verify reads it) does not verify is bad-audit. No key
+ * is read: the custody checks the name, and a stat finds the identity.
+ */
+export function status(args: readonly string[], io: Io): number {
+  const options = { as: { type: 'string' }, dir: { type: 'string' } } as const
+  const p = parse(args, { positionals: [], options, required: ['as'] })
+  const [home, name] = [homeDir(io, str(p, 'dir')), req(p, 'as')]
+  checkIdentity(io, home, name)
+  io.out(`doorbell ${doorbellPath(home, name)}`)
+  const dir = join(home, 'state', name)
+  const [file, db] = [join(dir, 'audit.jsonl'), join(dir, 'edge.sqlite')]
+  // The anchor before the lines: the edge appends a line, then moves its anchor, so a log read beside a running
+  // inbox is at worst ahead of the anchor read before it, never short of it.
+  const anchor = existsSync(db) ? readAuditAnchor(db, 'audit.jsonl') : null
+  const lines = readAuditLines(file)
+  const chain = verifyAuditLog(lines, anchor)
+  if (!chain.ok) throw new CliError('bad-audit', `${file} line ${chain.line}: ${chain.problem}`)
+  const subscribe = lines.map(parseAuditLine).filter((l) => l.event === 'subscribe')
+  const last = subscribe.at(-1)
+  const end = ended(last)
+  if (last === undefined || end === null) return 0
+  const n = subscribe.filter((l) => l.decision === 'retry' || l.decision === 'reject').length
+  const errors = `edge errors ${n}, last ${last.reason} at ${instant(last.ts)}`
+  io.out(`mailbox refused: ${last.reason} at ${end.relay} after ${end.refusals} refusals; ${errors}`)
+  return 0
+}

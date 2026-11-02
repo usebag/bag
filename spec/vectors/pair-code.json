@@ -1,0 +1,40 @@
+{
+  "note": "Pairing word-code vectors. The code carries no integrity on its own; the six-digit SAS does. These vectors pin the codec and the S (invitation MAC key) derivation so the edge, the CLI and the Python verifier agree. The wordlist that generation draws from is a separate concern (licence pending); these vectors use fixed example words and do not require any word to be in the list.",
+  "codec": {
+    "format": "canonical code = nameplate + '-' + words joined by '-'; nameplate is the leading all-digit token; words are lowercase a-z.",
+    "parse": "split the input on runs of '-' and/or ASCII whitespace; trim; lowercase (NFKC); the first token (all digits) is the nameplate, the rest are the words. A leading/trailing separator is ignored. The parse is lenient on separators and case; generation always emits the canonical hyphen form.",
+    "cases": [
+      { "code": "472-tulip-orbit-cedar", "nameplate": "472", "words": ["tulip", "orbit", "cedar"] },
+      { "input": "  472 Tulip  Orbit\tCedar ", "nameplate": "472", "words": ["tulip", "orbit", "cedar"] },
+      { "input": "8-apple-river-stone", "nameplate": "8", "words": ["apple", "river", "stone"] }
+    ]
+  },
+  "s_derivation": {
+    "alg": "HKDF-SHA256",
+    "ikm": "utf8( NFKC( lowercase( words joined by one ASCII space ) ) )",
+    "salt": "utf8( nameplate + '|' + invitation )   (invitation is the one-time invitation identity I's address, the 'ed25519:'+64hex string, named `invitation` on the wire to match the built edge/relay shape; both sides hold it: the inviter created I, the acceptor reads it from the relay claim; a '|' separator is REQUIRED, not bare concatenation)",
+    "info": "utf8( 'ac/peer-code/1' )",
+    "L": 16,
+    "output": "S, the 16-byte invitation MAC key; the pairing request is MAC'd under S exactly as the existing peer ceremony",
+    "cases": [
+      {
+        "nameplate": "472",
+        "words": ["tulip", "orbit", "cedar"],
+        "invitation": "ed25519:3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
+        "s_hex": "129959107e3ecee229dd3a2e39f390d6"
+      },
+      {
+        "nameplate": "8",
+        "words": ["apple", "river", "stone"],
+        "invitation": "ed25519:3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
+        "s_hex": "5cc6e99357dcba4f7337cd27217ab0c0"
+      },
+      {
+        "nameplate": "1057",
+        "words": ["maple", "signal", "harbor"],
+        "invitation": "ed25519:3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
+        "s_hex": "d62599658cc66e4e85d06aef0e466b79"
+      }
+    ]
+  }
+}

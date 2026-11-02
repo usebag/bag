@@ -1,0 +1,10 @@
+# Coverage-ignore comments allowed in packages/*/src/, one per line:
+#
+#   <path> | <comment text as it appears in the source> | <reason>
+#
+# Example (not active):
+#   packages/relay/src/main.ts | v8 ignore next | the SIGTERM handler runs only in a spawned relay; covered by e2e
+#
+# scripts/check-pragmas.sh fails on any v8, c8 or istanbul ignore comment in packages/*/src/ without a matching
+# entry here, and on any entry without a reason. scripts/check-ratchet.sh fails a change that removes the reason
+# of an entry that stays. The list starts empty; keep it that way where you can.

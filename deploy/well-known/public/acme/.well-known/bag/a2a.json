@@ -1,0 +1,10 @@
+{
+  "uri": "urn:bag:a2a:v1",
+  "description": "The bag A2A extension of acme.usuals.now, not an AgentCard: acme.usuals.now is reached through the caller's local A2A bridge, which seals each request to this address and serves the full AgentCard at /a2a/<address>/.well-known/agent-card.json on its own port. Pre-release sample.",
+  "required": true,
+  "params": {
+    "address": "ed25519:17ae120ad2cc358ee224219062896417b44aea5a02dab26221b576d36d46d6e5",
+    "addressRecord": "https://acme.usuals.now/.well-known/bag/address.json",
+    "envelopeType": "a2a.jsonrpc.v1"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@usebag/a2a",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bag A2A binding: A2A 1.0 JSON-RPC sealed inside bag envelopes, a local bridge and an agent server.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@usebag/edge": "0.0.0"
+  }
+}

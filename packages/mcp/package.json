@@ -1,0 +1,23 @@
+{
+  "name": "@usebag/mcp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bag MCP server: an address and a durable mailbox inside any MCP host, over stdio, on the edge library.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@usebag/core": "0.0.0",
+    "@usebag/edge": "0.0.0",
+    "zod": "4.6.7"
+  }
+}

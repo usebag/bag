@@ -1,0 +1,8 @@
+# Crate versions exempt from the 7-day cooldown of scripts/check-crate-age.py, one per line:
+#
+#   <name> <version> | <YYYY-MM-DD> | <reason>
+#
+# Only a security fix that cannot wait belongs here, with the date it was let in and why. It exempts that exact
+# version from the age rule only (never from the crates.io source, checksum or yank rules) and comes out once the
+# version is 7 days old: an entry fails the check once 7 days (the cooldown) have passed since the end of its
+# date, UTC, so remove the line then. The list starts empty; keep it that way where you can.

@@ -1,0 +1,7 @@
+{
+  // The relay load generator, type-checked on its own: `npx tsc -p packages/e2e/bench` (noEmit, from the base).
+  // It stays outside the e2e project's include (src, test, scripts), so `tsc -b` builds nothing of it and the e2e suite,
+  // which collects test/**/*.test.ts only, never runs it.
+  "extends": "../../../tsconfig.base.json",
+  "include": ["*.ts"]
+}

@@ -1,0 +1,73 @@
+# The size ceilings (decided 2026-10-25):
+# the most physical source lines each component may hold. scripts/check-size.sh reads this file in
+# scripts/last_step.sh and fails a component over its ceiling.
+#
+# The rule: each ceiling is the component's count on main on 2026-10-25, rounded up to a multiple of 100,
+# plus 15 percent, rounded up to a multiple of 100 again: ceiling = 100 * ceil(115 * (100 * ceil(m / 100)) / 10000).
+#
+# The counting command, per component (physical lines, `wc -l` over the concatenation of the files):
+#   TypeScript: find packages/<p>/src -type f -name '*.ts' ! -name '*.test.ts' ! -name '*.spec.ts' ! -path '*/test/*'
+#               ! -path '*/tests/*' ! -path '*/fixtures/*' ! -path '*/__tests__/*' -print0 | xargs -0 cat | wc -l
+#   Rust:       find crates/<c>/src -type f -name '*.rs' ! -name tests.rs ! -name testkit.rs ! -path '*/tests/*'
+#               -print0 | xargs -0 cat | wc -l
+# Rust test files are left out by name, as coverage-floors.toml leaves them out of coverage. An inline
+# `#[cfg(test)] mod tests { ... }` with a body is counted as source (none existed on 2026-10-25: every #[cfg(test)]
+# then declared a module in its own file, and those one-line declarations are counted).
+#
+# Ceilings are floors in reverse: a ceiling is raised only by a maintainer's decision entry, never
+# by the PR that needs the room. scripts/check-size.sh fails any ceiling higher than the same ceiling on main, a
+# component listed here with no files, and a packages/*/src or crates/*/src not listed here.
+#
+# Raised on 2026-10-26 for that night's work: DNS TXT discovery and handle records (the relay and both cores), the
+# client side and petnames (cli, mcp and edge), and two further streams of work (edge and core; edge, core and cli).
+# The rule stays: a ceiling is raised only by a maintainer's decision entry, and the gate still fails a raise
+# against main, so this raise reaches the other branches through main.
+#
+# One table per component: `path` (a single-quoted literal string) and `ceiling` (an integer), one `key = value` per line.
+
+[core]
+path = 'packages/core/src'
+ceiling = 3600 # raised 2026-10-26 from 2900; measured 2461, then 2476
+
+[edge]
+path = 'packages/edge/src'
+# Raised 2026-10-28 from 8165 to 8475 by a decision entry, with cli 3400, for a multi-part change then pending: that change measured 8450, and a pending change (+9 to +16) with the agent's local dating (+3 to +8) reached 8462 to 8474.
+# Raised 2026-10-28 from 8475 to 8900 by a decision entry, with cli 3550: main measured edge 8469 (the pending change measured +16, no longer a draw), and the draws before the next recovery change (the recovery-setting row +3 to +9, no basis) with that change (+250 to +400, an estimate, no basis) reached 8722 to 8878; at the earlier change's overrun (edge 1.36 times its top: +1403 against +1035) that change's top is +544 and the sum 9022, 122 over 8900. A draw over the room left (431) is held and its own number asked.
+# Raised 2026-10-28 from 8900 to 10419 by a decision entry (the measured figure plus 10 percent, rounded up): a scratch merge of main with every change waiting on this raise, read by scripts/check-size.sh, measured edge 9471; 9471 times 1.1 is 10418.1, rounded up.
+# Raised 2026-10-30 from 10419 to 11549 by a decision entry (the measured figure plus 10 percent): the change for N relays (a sender publishes to at most K = 3 of each recipient's relays, with failover) measured packages/edge/src at 10499, and 10499 times 1.1 is 11548.9, rounded up.
+# Raised 2026-11-01 from 11549 to 12828 by a decision entry (the measured figure plus 10 percent, rounded up): the client telemetry switch measured packages/edge/src at 11661 with this file's command, and 11661 times 1.1 is 12827.1.
+ceiling = 12828 # earlier 11549, 10419, 8900, 8475 and 8165; raised 2026-10-27 from 7000 by 15 percent (the recommended 7,100 plus 15%); earlier 7000 (2026-10-26, from 5600); earlier 4300; measured 3625, 4235 and 5578 as main grew
+
+[cli]
+path = 'packages/cli/src'
+# Raised 2026-10-28 from 2875 to 3400 by a decision entry (the same entry as edge 8475): the multi-part change measured 3275, a pending wake-hook change was 2876 on main's 2870, and 3400 is this file's formula on main's 2870 (the change's 3275 would give 3800).
+# Raised 2026-10-28 from 3400 to 3550 by a decision entry (the same entry as edge 8900): main measured cli 3355, and the recovery-setting row (+5 to +10, no basis), a pending change (+6 to +14, no basis) and the next recovery change (+100 to +160, an estimate, no basis) reached 3466 to 3539; at the earlier change's overrun (cli 3.4 times its top: +474 against +140) the next change's top is +544 and the sum 3923, 373 over 3550. A draw over the room left (195) is held and its own number asked.
+# Raised 2026-10-28 from 3550 to 4759 by a decision entry (the measured figure plus 10 percent, rounded up): a scratch merge of main with every change waiting on this raise measured cli 4326; 4326 times 1.1 is 4758.6, rounded up.
+# Raised 2026-10-29 from 4759 to 5241 under the same rule for that night's later raises (the measured figure plus 10 percent, rounded up): the forward-secrecy assembly measured packages/cli/src at 4764 by scripts/check-size.sh, and 4764 times 1.1 is 5240.4, rounded up.
+# Raised 2026-10-30 from 5241 to 6201 by a decision entry (the measured figure plus 10 percent): the multi-identity change (one Claude Code session with many identities: the identities file, host install and remove, the wake hook over every identity) measured packages/cli/src at 5637, and 5637 times 1.1 is 6200.7, rounded up.
+# Raised 2026-11-01 from 6237 to 6884 by a decision entry (the same entry as edge 12828): the client telemetry switch measured packages/cli/src at 6258, and 6258 times 1.1 is 6883.8, rounded up.
+ceiling = 6884 # earlier 6237, 6201, 5241, 4759, 3550, 3400 and 2875; raised 2026-10-27 from 2500 by 15 percent; earlier 2500 (2026-10-26, from 2200); earlier 1900, 1400; measured 1189, 1320, 1888 and 2191 as main grew
+
+[mcp]
+path = 'packages/mcp/src'
+# Raised 2026-11-02 from 6257 to 6939 by a decision entry (the measured figure plus 10 percent): the local telemetry counts (W1.7, mcp/local-counts, src/tally.ts trimmed to 87 lines) measured packages/mcp/src at 6308, and 6308 times 1.1 is 6938.8, rounded up.
+# Earlier: raised 2026-10-30 from 5312 to 6257 by a decision entry (the measured figure plus 10 percent): the multi-identity change (one MCP server holding many identities, after a trim to one per-identity unit and one tool guard) measured packages/mcp/src at 5688, and 5688 times 1.1 is 6256.8, rounded up.
+# Earlier: raised 2026-10-29 from 4417 to 5312 by a decision entry (the measured figure plus 10 percent): the pairing change measured packages/mcp/src at 4829, and 4829 times 1.1 is 5311.9, rounded up.
+# Earlier: raised 2026-10-28 from 3910 to 4417 by a decision entry (the measured figure plus 10 percent): the many-sessions change measured packages/mcp/src at 4015, and 4015 times 1.1 is 4416.5, rounded up.
+ceiling = 6939 # earlier 6257, 5312, 4417 and 3910; raised 2026-10-27 from 3300 by 15 percent (the recommended 3,400 plus 15%); earlier 3300 (2026-10-26, from 2800); measured 2399, then 2363
+
+[ac-core]
+path = 'crates/ac-core/src'
+ceiling = 3500 # raised 2026-10-26 from 2900; measured 2479, then 2482
+
+[ac-relay]
+path = 'crates/ac-relay/src'
+# Raised 2026-10-30 from 6063 to 6679 by a decision entry (the measured figure plus 10 percent): the pairing rendezvous with the signed open measured crates/ac-relay/src at 6071, and 6071 times 1.1 is 6678.1, rounded up.
+# Earlier: raised 2026-10-28 from 5400 to 6063 by a decision entry (the measured figure plus 10 percent, rounded up): a scratch merge of main with every change waiting on this raise measured ac-relay 5511; 5511 times 1.1 is 6062.1, rounded up.
+# Raised 2026-11-01 from 6679 to 7697 by a decision entry (the measured figure plus 10 percent, rounded up): the relay's /metrics (hand-written Prometheus text, no new crate) measured crates/ac-relay/src at 6997 with this file's command before cargo fmt, and 6997 times 1.1 is 7696.7.
+ceiling = 7697 # earlier 6679, 6063 and 5400; raised 2026-10-26 from 4400; measured 3799, then 4393
+
+[a2a]
+path = 'packages/a2a/src'
+# First ceiling 2026-10-28, 1698, under the same rule for that night's later raises (the measured figure plus 10 percent): a window measured packages/a2a/src at 1543, and 1543 times 1.1 is 1697.3, rounded up.
+ceiling = 1698

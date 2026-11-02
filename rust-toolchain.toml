@@ -1,0 +1,8 @@
+# The Rust toolchain for crates/ac-core and crates/ac-relay, pinned to an exact stable release so that every
+# worktree, every agent and CI compile, lint, format and measure coverage with the same compiler. rustup reads
+# this file: on this Mac and on a CI runner, `rustup toolchain install` (or the first cargo call) installs it.
+# Raise it in its own change, with a log entry, once the new release is at least 7 days old.
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]

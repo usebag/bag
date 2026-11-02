@@ -1,0 +1,21 @@
+{
+  "name": "@usebag/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bag end-to-end scenarios through a real relay process, real SQLite files and real sockets.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test:e2e": "vitest run"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@usebag/a2a": "0.0.0",
+    "@usebag/cli": "0.0.0",
+    "@usebag/core": "0.0.0",
+    "@usebag/edge": "0.0.0"
+  }
+}

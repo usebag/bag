@@ -1,0 +1,20 @@
+{
+  "name": "@usebag/core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bag core: canonical form, keys, sealing, envelopes, authority chains and records. Pure, no I/O.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --coverage",
+    "vectors": "node scripts/gen-vectors.ts",
+    "vectors:check": "node scripts/gen-vectors.ts --check",
+    "adversarial:check": "node scripts/gen-adversarial.ts --check"
+  }
+}

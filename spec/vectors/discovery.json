@@ -1,0 +1,1829 @@
+{
+  "description": "Discovery by DNS and handles (spec/SPEC.md §12, L2; added 2026-10-26). \"presentation\" holds TXT records written as text (§12.2 item 7) and their character-strings, as strings_hex, or resolve-failed. \"txt\" holds the TXT records a lookup of txt_name gave (null: none is asked), each a list of strings, and where they lead: the key the record must agree with (null without a bag record), the org's address record URL and its origin, or resolve-failed (§12.2 items 1 to 4). \"agreement\" holds the key a TXT names, an org record, the record a reader had pinned, the verdict of the record's agreement with the TXT (§12.2 item 5) and the key pinned after the reading (§7.3). \"handles\" holds strings read as handles (§12.3 item 1), with their local part, domain and record path, or bad-address. \"cases\" holds signed handle records with their canonical strings, digests and signers, and their verdict for a reader that expects an org key and a handle and holds the org's revoked list, at several times (§12.4 item 3). \"invalid\" holds handle records that break their form, and \"parse\" bytes read as a handle record.",
+  "generated_by": "packages/core/scripts/gen-vectors.ts",
+  "suite": 1,
+  "suite_parameters": "Ed25519 signatures; sealing with RFC 9180 base mode, DHKEM(X25519, HKDF-SHA256) (kem 0x0020), HKDF-SHA256 (kdf 0x0001), AES-256-GCM (aead 0x0002)",
+  "test_data": "Every seed, private key, content key and nonce in this file is test data, fixed by construction: seeds are one byte repeated 32 times, and the rest comes from a seeded xorshift128+. They are public; never let them protect anything real.",
+  "notes": [
+    "A TXT record is a bag record when its first field is v=ac1; a reader joins its strings with nothing between them, ignores spaces and tabs around fields and empty fields, ignores unknown fields and refuses one given twice; key is required, host is exactly bag or absent, and a rec field is refused: DNS names no URL. Two bag records, or a malformed one, are resolve-failed with no fallback to the well-known URL. The origin is https://bag.<domain> with host=bag, else https://<domain>; no TXT is asked for a name over 253 characters or under a special-use name.",
+    "A record agrees with its TXT when its key is the TXT key, or when its rotated_from is the TXT key and its rotation_sig verifies under it (one countersigned step); anything else is resolve-failed before any pin is read. The pin then moves only by §7.3: DNS never moves a pin.",
+    "A handle record is checked in this order: its form, its signature under its org, iat <= now + skew, now <= iat + ttl, its org and handle against the expected ones (resolve-failed), its address against the revoked list (revoked). Relays store no handle record. A handle finds an address and admits no one."
+  ],
+  "presentation": [
+    {
+      "name": "one quoted string",
+      "text": "\"v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\"",
+      "result": "ok",
+      "strings_hex": [
+        "763d6163313b206b65793d656432353531393a38613838653364643734303966313935666435326462326433636261356437326361363730396266316439343132316266333734383830316234306636663563"
+      ]
+    },
+    {
+      "name": "two quoted strings",
+      "text": "\"v=ac1; key=ed25519:\" \"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\"",
+      "result": "ok",
+      "strings_hex": [
+        "763d6163313b206b65793d656432353531393a",
+        "38613838653364643734303966313935666435326462326433636261356437326361363730396266316439343132316266333734383830316234306636663563"
+      ]
+    },
+    {
+      "name": "a bare string",
+      "text": "v=ac1;key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "result": "ok",
+      "strings_hex": [
+        "763d6163313b6b65793d656432353531393a38613838653364643734303966313935666435326462326433636261356437326361363730396266316439343132316266333734383830316234306636663563"
+      ]
+    },
+    {
+      "name": "spaces and tabs around and between strings",
+      "text": "\t\"a\"  \"b\"\tc ",
+      "result": "ok",
+      "strings_hex": [
+        "61",
+        "62",
+        "63"
+      ]
+    },
+    {
+      "name": "an escaped quote and an escaped backslash",
+      "text": "\"a\\\"b\\\\c\"",
+      "result": "ok",
+      "strings_hex": [
+        "6122625c63"
+      ]
+    },
+    {
+      "name": "an escaped character in a bare string",
+      "text": "d\\;e",
+      "result": "ok",
+      "strings_hex": [
+        "643b65"
+      ]
+    },
+    {
+      "name": "a decimal escape",
+      "text": "\"a\\059b\"",
+      "result": "ok",
+      "strings_hex": [
+        "613b62"
+      ]
+    },
+    {
+      "name": "a decimal escape of a byte past ASCII",
+      "text": "\"\\233\"",
+      "result": "ok",
+      "strings_hex": [
+        "e9"
+      ]
+    },
+    {
+      "name": "an empty string",
+      "text": "\"\"",
+      "result": "ok",
+      "strings_hex": [
+        ""
+      ]
+    },
+    {
+      "name": "a string of 255 bytes, the cap",
+      "text": "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+      "result": "ok",
+      "strings_hex": [
+        "787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878"
+      ]
+    },
+    {
+      "name": "a string of 256 bytes",
+      "text": "\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "256 bytes through decimal escapes",
+      "text": "\"\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\\120\"",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "no string",
+      "text": "",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "spaces only",
+      "text": "   ",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a quoted string not closed",
+      "text": "\"abc",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "text right after a closing quote",
+      "text": "\"ab\"cd",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a quote inside a bare string",
+      "text": "ab\"c",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a decimal escape over 255",
+      "text": "\"a\\256\"",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a decimal escape of two digits",
+      "text": "\"a\\05x\"",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a backslash at the end",
+      "text": "\"abc\\",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a character past ASCII",
+      "text": "\"jané\"",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a line feed",
+      "text": "\"a\nb\"",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a parenthesis in a quoted string",
+      "text": "\"a(b)c\"",
+      "result": "ok",
+      "strings_hex": [
+        "6128622963"
+      ]
+    },
+    {
+      "name": "an open parenthesis in a bare string",
+      "text": "a(b",
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a close parenthesis in a bare string",
+      "text": "a)b",
+      "result": "resolve-failed"
+    }
+  ],
+  "txt": [
+    {
+      "name": "a key and host=bag: the origin bag.<domain>",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=bag"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://bag.acme.example/.well-known/bag/address.json",
+      "origin": "https://bag.acme.example"
+    },
+    {
+      "name": "a key and no host: the origin at the domain",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "strings split at a field",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "; host=bag"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://bag.acme.example/.well-known/bag/address.json",
+      "origin": "https://bag.acme.example"
+    },
+    {
+      "name": "strings split inside a name, joined with nothing between",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; ke",
+          "y=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "an empty string among them",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; ",
+          "",
+          "key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "spaces and tabs around fields, names and values, and empty fields",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          " v = ac1 ;;\tkey=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c ; "
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "unknown fields are ignored",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; note=hello; X-Future_1=a=b; host=bag"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://bag.acme.example/.well-known/bag/address.json",
+      "origin": "https://bag.acme.example"
+    },
+    {
+      "name": "no record: the origin at the domain and no key",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [],
+      "result": "ok",
+      "key": null,
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "only records that are not ours",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=spf1 -all"
+        ],
+        [
+          "google-site-verification=abc"
+        ]
+      ],
+      "result": "ok",
+      "key": null,
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "a later version is not ours",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac2; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        ]
+      ],
+      "result": "ok",
+      "key": null,
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "the version field is case-sensitive",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "V=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        ]
+      ],
+      "result": "ok",
+      "key": null,
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "the version field must come first",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; v=ac1"
+        ]
+      ],
+      "result": "ok",
+      "key": null,
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "ours beside records that are not",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=spf1 -all"
+        ],
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        ],
+        [
+          "hello world"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "a domain whose TXT name would be over 253 characters is not asked",
+      "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "txt_name": null,
+      "records": [],
+      "result": "ok",
+      "key": null,
+      "url": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/.well-known/bag/address.json",
+      "origin": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "name": "records handed in for a domain that is not asked are not read",
+      "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "txt_name": null,
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=bag"
+        ]
+      ],
+      "result": "ok",
+      "key": null,
+      "url": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/.well-known/bag/address.json",
+      "origin": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "name": "host=bag on a domain whose TXT name is 253 characters",
+      "domain": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "txt_name": "_bag.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=bag"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://bag.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddd/.well-known/bag/address.json",
+      "origin": "https://bag.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "name": "a domain under a special-use name is not asked",
+      "domain": "acme.local",
+      "txt_name": null,
+      "records": [],
+      "result": "ok",
+      "key": null,
+      "url": "https://acme.local/.well-known/bag/address.json",
+      "origin": "https://acme.local"
+    },
+    {
+      "name": "records handed in for a special-use domain are not read",
+      "domain": "acme.onion",
+      "txt_name": null,
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=bag"
+        ]
+      ],
+      "result": "ok",
+      "key": null,
+      "url": "https://acme.onion/.well-known/bag/address.json",
+      "origin": "https://acme.onion"
+    },
+    {
+      "name": "a special-use name that is not the last label is asked",
+      "domain": "acme.local.example",
+      "txt_name": "_bag.acme.local.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=bag"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://bag.acme.local.example/.well-known/bag/address.json",
+      "origin": "https://bag.acme.local.example"
+    },
+    {
+      "name": "exactly 1,024 bytes",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; x=yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+        ]
+      ],
+      "result": "ok",
+      "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "url": "https://acme.example/.well-known/bag/address.json",
+      "origin": "https://acme.example"
+    },
+    {
+      "name": "two bag records",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        ],
+        [
+          "v=ac1; key=ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "two bag records of one key, as in a rotation done with two",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        ],
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=bag"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "the key given twice",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "an unknown field given twice",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; x=1; x=2"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "the version given twice",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; v=ac1"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "host given twice",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=bag; host=bag"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "no key",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; host=bag"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a key that is not an address",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ED25519:8A88E3DD7409F195FD52DB2D3CBA5D72CA6709BF1D94121BF3748801B40F6F5C"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a rec field: DNS names no URL",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; rec=https://agents.acme.example/org.json"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a rec field that names the well-known URL itself",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; rec=https://acme.example/.well-known/bag/address.json"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a rec field beside host=bag",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=bag; rec=https://bag.acme.example/.well-known/bag/address.json"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a host other than bag",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=agents"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a host in upper case",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=Bag"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a host that names a whole host name",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; host=bag.acme.example"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a field with no =",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; nothing"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "an empty value",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; note="
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a value with a space inside",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; note=a b"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a name that starts with a digit",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; 1x=2"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a name of 33 characters",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn=1"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "a character past ASCII",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; note=café"
+        ]
+      ],
+      "result": "resolve-failed"
+    },
+    {
+      "name": "1,025 bytes",
+      "domain": "acme.example",
+      "txt_name": "_bag.acme.example",
+      "records": [
+        [
+          "v=ac1; key=ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c; x=yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+        ]
+      ],
+      "result": "resolve-failed"
+    }
+  ],
+  "agreement": [
+    {
+      "name": "a record of the TXT's key, at first contact",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "pinned": null,
+      "result": "ok",
+      "pin": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    },
+    {
+      "name": "a record of the TXT's key, its key pinned",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "pinned": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "result": "ok",
+      "pin": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    },
+    {
+      "name": "no TXT: a record of any key, at first contact",
+      "txt_key": null,
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "0160bde5d357ce940c71f27f2f545917236ed121569b41d9c9b67160ed99d3f0ac336cbf984207ad65c609eb919b94a34e82de36169a3d2de1d2707fcb110a0d"
+      },
+      "pinned": null,
+      "result": "ok",
+      "pin": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
+    },
+    {
+      "name": "k11 countersigned by the TXT's key k10, at first contact: k11 is pinned",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "rotation_sig": "5289ac50dddf1912a48b188fb94e07f0ad734ac72c478a351269af3a2c4f9cc2c8cf10748cbe5a5152728cf09c60a7d27f17810d4b817a73c88d210e94462f09",
+        "sig": "13707a112b8900d0a98eb105315e03a9e6db434117576334d26d579f3a72c004f3ecc60e130385c73299ab557243962fc666ecc51e202be74a7ba1c20f9fc40c"
+      },
+      "pinned": null,
+      "result": "ok",
+      "pin": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
+    },
+    {
+      "name": "k11 countersigned by the TXT's key k10, k10 pinned: the pin moves to k11",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "rotation_sig": "5289ac50dddf1912a48b188fb94e07f0ad734ac72c478a351269af3a2c4f9cc2c8cf10748cbe5a5152728cf09c60a7d27f17810d4b817a73c88d210e94462f09",
+        "sig": "13707a112b8900d0a98eb105315e03a9e6db434117576334d26d579f3a72c004f3ecc60e130385c73299ab557243962fc666ecc51e202be74a7ba1c20f9fc40c"
+      },
+      "pinned": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "result": "ok",
+      "pin": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
+    },
+    {
+      "name": "k11 naming k10, countersigned by another key",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "rotation_sig": "372093d7fd480f20861839f5746547d8ed20c913831924e671db88d1020c4d16d643e7b1f86c3a054585b607d70c809447d968ddeb6109c590eaec108772160d",
+        "sig": "13707a112b8900d0a98eb105315e03a9e6db434117576334d26d579f3a72c004f3ecc60e130385c73299ab557243962fc666ecc51e202be74a7ba1c20f9fc40c"
+      },
+      "pinned": null,
+      "result": "resolve-failed",
+      "pin": null
+    },
+    {
+      "name": "k11 naming k10, countersigned by another key, k10 pinned: the pin stays",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "rotation_sig": "372093d7fd480f20861839f5746547d8ed20c913831924e671db88d1020c4d16d643e7b1f86c3a054585b607d70c809447d968ddeb6109c590eaec108772160d",
+        "sig": "13707a112b8900d0a98eb105315e03a9e6db434117576334d26d579f3a72c004f3ecc60e130385c73299ab557243962fc666ecc51e202be74a7ba1c20f9fc40c"
+      },
+      "pinned": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "result": "resolve-failed",
+      "pin": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    },
+    {
+      "name": "k11 naming k10 with no rotation_sig",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "rotation_sig": null,
+        "sig": "13707a112b8900d0a98eb105315e03a9e6db434117576334d26d579f3a72c004f3ecc60e130385c73299ab557243962fc666ecc51e202be74a7ba1c20f9fc40c"
+      },
+      "pinned": null,
+      "result": "resolve-failed",
+      "pin": null
+    },
+    {
+      "name": "k11 naming no rotated_from, k10 pinned",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "0160bde5d357ce940c71f27f2f545917236ed121569b41d9c9b67160ed99d3f0ac336cbf984207ad65c609eb919b94a34e82de36169a3d2de1d2707fcb110a0d"
+      },
+      "pinned": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "result": "resolve-failed",
+      "pin": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    },
+    {
+      "name": "k11 countersigned by k10's rotation key: only a reader that holds k10's record can check it",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "rotation_sig": "e5955c668a8d1575e91625b4b7de70bfe21cf550a2a6f746f22275497ae53a0c7cbe14903f7b0a37e85b994a7945ef01746d26b193b27f48fbe58b8295975208",
+        "sig": "13707a112b8900d0a98eb105315e03a9e6db434117576334d26d579f3a72c004f3ecc60e130385c73299ab557243962fc666ecc51e202be74a7ba1c20f9fc40c"
+      },
+      "pinned": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "result": "resolve-failed",
+      "pin": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    },
+    {
+      "name": "k12 countersigned by k11: two steps from the TXT key k10",
+      "txt_key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:43a72e714401762df66b68c26dfbdf2682aaec9f2474eca4613e424a0fbafd3c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "rotation_sig": "707191c43496ee4b57aef0ab50911fd53de62735b0c26bb03b631e353fe6c8739759c117ecbb15494be0b09167ae450b4053ca08fa139981e5e9cd3a5e7b7c0c",
+        "sig": "61386930cd7a222bdfe2fcf4278d79924126d1f741d61749202287eeb1bae9ff0d2bba59295cb2628470876ccc01f58e57d7587b60995d5e3d72a5004656bf0c"
+      },
+      "pinned": null,
+      "result": "resolve-failed",
+      "pin": null
+    },
+    {
+      "name": "the TXT moved to k11, k10 pinned, k11 countersigned by k10: the pin moves",
+      "txt_key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "rotation_sig": "5289ac50dddf1912a48b188fb94e07f0ad734ac72c478a351269af3a2c4f9cc2c8cf10748cbe5a5152728cf09c60a7d27f17810d4b817a73c88d210e94462f09",
+        "sig": "13707a112b8900d0a98eb105315e03a9e6db434117576334d26d579f3a72c004f3ecc60e130385c73299ab557243962fc666ecc51e202be74a7ba1c20f9fc40c"
+      },
+      "pinned": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "result": "ok",
+      "pin": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
+    },
+    {
+      "name": "the TXT moved to k11, k10 pinned, k11 countersigned by k10's rotation key: the pin moves by §7.3",
+      "txt_key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "rotation_sig": "e5955c668a8d1575e91625b4b7de70bfe21cf550a2a6f746f22275497ae53a0c7cbe14903f7b0a37e85b994a7945ef01746d26b193b27f48fbe58b8295975208",
+        "sig": "13707a112b8900d0a98eb105315e03a9e6db434117576334d26d579f3a72c004f3ecc60e130385c73299ab557243962fc666ecc51e202be74a7ba1c20f9fc40c"
+      },
+      "pinned": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "result": "ok",
+      "pin": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
+    },
+    {
+      "name": "the TXT names k11, k10 pinned, a k11 that no rotation links: DNS moves no pin",
+      "txt_key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+      "record": {
+        "kind": "address",
+        "key": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [],
+        "ttl": 86400,
+        "iat": 1800086400,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "0160bde5d357ce940c71f27f2f545917236ed121569b41d9c9b67160ed99d3f0ac336cbf984207ad65c609eb919b94a34e82de36169a3d2de1d2707fcb110a0d"
+      },
+      "pinned": {
+        "kind": "address",
+        "key": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "sealing_key": null,
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "rotation_key": "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        "revoked": [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        "ttl": 86400,
+        "iat": 1800000000,
+        "rotated_from": null,
+        "rotation_sig": null,
+        "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+      },
+      "result": "ok",
+      "pin": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    }
+  ],
+  "handles": [
+    {
+      "name": "a handle",
+      "handle": "jane@acme.example",
+      "result": "ok",
+      "local": "jane",
+      "domain": "acme.example",
+      "path": "/.well-known/bag/handles/jane.json"
+    },
+    {
+      "name": "every character a local part may hold",
+      "handle": "j.doe-2_x@acme.example",
+      "result": "ok",
+      "local": "j.doe-2_x",
+      "domain": "acme.example",
+      "path": "/.well-known/bag/handles/j.doe-2_x.json"
+    },
+    {
+      "name": "a local part of 64 characters, the cap",
+      "handle": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@acme.example",
+      "result": "ok",
+      "local": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "domain": "acme.example",
+      "path": "/.well-known/bag/handles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
+    },
+    {
+      "name": "a local part of 65 characters",
+      "handle": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "an upper-case letter in the local part",
+      "handle": "Jane@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "an upper-case letter in the domain",
+      "handle": "jane@ACME.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "a domain of one label",
+      "handle": "jane@acme",
+      "result": "bad-address"
+    },
+    {
+      "name": "an IP literal",
+      "handle": "jane@192.0.2.1",
+      "result": "bad-address"
+    },
+    {
+      "name": "no local part",
+      "handle": "@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "no domain",
+      "handle": "jane@",
+      "result": "bad-address"
+    },
+    {
+      "name": "two @",
+      "handle": "jane@@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "a space",
+      "handle": "ja ne@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "a trailing dot on the domain",
+      "handle": "jane@acme.example.",
+      "result": "bad-address"
+    },
+    {
+      "name": "a local part that starts with a dot",
+      "handle": ".jane@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "a local part that ends with a dot",
+      "handle": "jane.@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "a local part that starts with a hyphen",
+      "handle": "-jane@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "a plus sign",
+      "handle": "jane+tag@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "a character past ASCII",
+      "handle": "jané@acme.example",
+      "result": "bad-address"
+    },
+    {
+      "name": "no @",
+      "handle": "jane",
+      "result": "bad-address"
+    },
+    {
+      "name": "an address",
+      "handle": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "result": "bad-address"
+    },
+    {
+      "name": "a port",
+      "handle": "jane@acme.example:443",
+      "result": "bad-address"
+    },
+    {
+      "name": "an IPv6 literal",
+      "handle": "jane@[2001:db8::1]",
+      "result": "bad-address"
+    },
+    {
+      "name": "a last label in hex, an IP literal by the WHATWG rule",
+      "handle": "jane@acme.0x1f",
+      "result": "bad-address"
+    },
+    {
+      "name": "under .local",
+      "handle": "jane@acme.local",
+      "result": "bad-address"
+    },
+    {
+      "name": "under .localhost",
+      "handle": "jane@acme.localhost",
+      "result": "bad-address"
+    },
+    {
+      "name": "under .internal",
+      "handle": "jane@acme.internal",
+      "result": "bad-address"
+    },
+    {
+      "name": "under .onion",
+      "handle": "jane@acme.onion",
+      "result": "bad-address"
+    },
+    {
+      "name": "under .alt",
+      "handle": "jane@acme.alt",
+      "result": "bad-address"
+    },
+    {
+      "name": "under .arpa",
+      "handle": "jane@acme.arpa",
+      "result": "bad-address"
+    },
+    {
+      "name": "under .invalid",
+      "handle": "jane@acme.invalid",
+      "result": "bad-address"
+    },
+    {
+      "name": "a special-use name that is not the last label",
+      "handle": "jane@acme.local.example",
+      "result": "ok",
+      "local": "jane",
+      "domain": "acme.local.example",
+      "path": "/.well-known/bag/handles/jane.json"
+    },
+    {
+      "name": ".test is not refused",
+      "handle": "jane@acme.e2e.test",
+      "result": "ok",
+      "local": "jane",
+      "domain": "acme.e2e.test",
+      "path": "/.well-known/bag/handles/jane.json"
+    }
+  ],
+  "cases": [
+    {
+      "name": "a handle record signed by the org key",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "canonical": "[\"ac/handle/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"jane@acme.example\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",1800000000,86400]",
+      "digest": "e60c8f579d204ff5a2b115634f44b32df9daaf0952200dd1ca4e97cb5dc80c13",
+      "signer": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "checks": [
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "ok"
+        },
+        {
+          "now": 1800086400,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "ok"
+        },
+        {
+          "now": 1800086401,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "record-expired"
+        },
+        {
+          "now": 1799999700,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "ok"
+        },
+        {
+          "now": 1799999699,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "future-iat"
+        },
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "resolve-failed"
+        },
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "bob@acme.example",
+          "revoked": [],
+          "result": "resolve-failed"
+        },
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@globex.example",
+          "revoked": [],
+          "result": "resolve-failed"
+        },
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [
+            "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+            "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394"
+          ],
+          "result": "revoked"
+        }
+      ]
+    },
+    {
+      "name": "a handle of every local-part character",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "j.doe-2_x@acme.example",
+        "address": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "iat": 1800000000,
+        "ttl": 3600,
+        "sig": "0964c7ba327f81de1c276404f1e918e0ec3fc8d1b2825215bf93af93651cff385d7342bac3ad2eafc6db6321f159c706ac2a00aeed96b81b656322a1c59dd909"
+      },
+      "canonical": "[\"ac/handle/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"j.doe-2_x@acme.example\",\"ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c\",1800000000,3600]",
+      "digest": "25d62c38bc307d39f6b659616f8aa277aefda0bed45ed515ea6bb1c546e91212",
+      "signer": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "checks": [
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "j.doe-2_x@acme.example",
+          "revoked": [],
+          "result": "ok"
+        }
+      ]
+    },
+    {
+      "name": "a record that names the org key and is signed by another",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "020f3c170b0ee06785171105c5c17451278e70824a45978b5789c20f1f358353b6468f63bd0f2f697cb4109f26c3be3082fc3bfcfd453422bf7aa15d10bdd408"
+      },
+      "canonical": "[\"ac/handle/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"jane@acme.example\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",1800000000,86400]",
+      "digest": "e60c8f579d204ff5a2b115634f44b32df9daaf0952200dd1ca4e97cb5dc80c13",
+      "signer": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "checks": [
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "bad-record-sig"
+        }
+      ]
+    },
+    {
+      "name": "a record changed after signing",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "canonical": "[\"ac/handle/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"jane@acme.example\",\"ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\",1800000000,86400]",
+      "digest": "99ba98d925327f887c078ae15ffa374139899db707ae82bc2a00d2ed5ee181bf",
+      "signer": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "checks": [
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "bad-record-sig"
+        }
+      ]
+    },
+    {
+      "name": "a record of another key, valid alone",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "a005adb48214eaaac376e767fdfbed5c7990b5731875e54defc3e9d520fe0e398b41cbb11e0bd0d09bcfbfb9b18e081ec1cab100643ab6a2bd2439935ba2df0c"
+      },
+      "canonical": "[\"ac/handle/1\",\"ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\",\"jane@acme.example\",\"ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\",1800000000,86400]",
+      "digest": "4886cc3fb17f936f25f310bdd8420eeeffb9d6f7732d9207112fe5fd572a943d",
+      "signer": "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "checks": [
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "resolve-failed"
+        },
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "ok"
+        }
+      ]
+    },
+    {
+      "name": "a record of the org key for a handle of another domain",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@globex.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "a55d70a7d0b17af80140217c2b2cabdf5476de6e3a929b173c0f41646aac0c4264bfcc57a29078931801fae4080211d2f459adbc90fe495ba7fac2165365ff03"
+      },
+      "canonical": "[\"ac/handle/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"jane@globex.example\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",1800000000,86400]",
+      "digest": "caa1cc37f3b28b1c56401c7290ca4c4696f1d098cb420c3d659fc4ae896867fd",
+      "signer": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "checks": [
+        {
+          "now": 1800000000,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "resolve-failed"
+        }
+      ]
+    },
+    {
+      "name": "a record of one second",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 1,
+        "sig": "982db91e543eaf9a3976936e0d230514e604dcab58435da95781097b282a34651761705683d1a9dc4d17b2a96dd4f2f9c8a1ae3b642828bee7b99a8902278b0d"
+      },
+      "canonical": "[\"ac/handle/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"jane@acme.example\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",1800000000,1]",
+      "digest": "3938bcc71046c9a72130c7d0317f1937d8ce38e0505a94efc7e036b7a92d8d01",
+      "signer": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "checks": [
+        {
+          "now": 1800000001,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "ok"
+        },
+        {
+          "now": 1800000002,
+          "skew": 300,
+          "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "handle": "jane@acme.example",
+          "revoked": [],
+          "result": "record-expired"
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "name": "another kind",
+      "record": {
+        "kind": "address",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a missing member",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "an extra member",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607",
+        "relays": []
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "an org that is not an address",
+      "record": {
+        "kind": "handle",
+        "org": "acme.example",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a handle with an upper-case letter",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "Jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a handle with no @",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a handle whose local part is over 64",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a handle at an IP literal",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@192.0.2.1",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "an address where the handle goes",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a handle that is a number",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": 7,
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "an address that is not an address",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "jane@acme.example",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a negative iat",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": -1,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a fractional iat",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000.5,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a ttl of zero",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 0,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a ttl over a day",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86401,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a sig of 63 bytes",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.example",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    },
+    {
+      "name": "a handle under a special-use name",
+      "record": {
+        "kind": "handle",
+        "org": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "handle": "jane@acme.local",
+        "address": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "iat": 1800000000,
+        "ttl": 86400,
+        "sig": "45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607"
+      },
+      "result": "bad-record"
+    }
+  ],
+  "parse": [
+    {
+      "name": "the bytes of a handle record",
+      "bytes": "{\"kind\":\"handle\",\"org\":\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"handle\":\"jane@acme.example\",\"address\":\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"iat\":1800000000,\"ttl\":86400,\"sig\":\"45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607\"}",
+      "result": "ok"
+    },
+    {
+      "name": "a member named twice",
+      "bytes": "{\"kind\":\"handle\",\"kind\":\"handle\",\"org\":\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"handle\":\"jane@acme.example\",\"address\":\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"iat\":1800000000,\"ttl\":86400,\"sig\":\"45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607\"}",
+      "result": "bad-json"
+    },
+    {
+      "name": "a ttl written 86400.0",
+      "bytes": "{\"kind\":\"handle\",\"org\":\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"handle\":\"jane@acme.example\",\"address\":\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"iat\":1800000000,\"ttl\":86400.0,\"sig\":\"45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607\"}",
+      "result": "bad-record"
+    },
+    {
+      "name": "not JSON",
+      "bytes": "{\"kind\":\"handle\",\"org\":\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"handle\":\"jane@acme.example\",\"address\":\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"iat\":1800000000,\"ttl\":86400,\"sig\":\"45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607\"",
+      "result": "bad-json"
+    },
+    {
+      "name": "a list",
+      "bytes": "[{\"kind\":\"handle\",\"org\":\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"handle\":\"jane@acme.example\",\"address\":\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"iat\":1800000000,\"ttl\":86400,\"sig\":\"45eb9b75501ebf6471c2f7b6ab585295b23bb9214e55506797c3885718fa5c27d2c7f331387023a6cd115bec8d986f20b351e7ec1d31593536ded6b13aae7607\"}]",
+      "result": "bad-record"
+    },
+    {
+      "name": "an address record's bytes",
+      "bytes": "{\"kind\":\"address\",\"key\":\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"sealing_key\":null,\"relays\":[\"https://relay.acme.example\"],\"rotation_key\":\"ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca\",\"revoked\":[\"ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\"],\"ttl\":86400,\"iat\":1800000000,\"rotated_from\":null,\"rotation_sig\":null,\"sig\":\"9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b\"}",
+      "result": "bad-record"
+    }
+  ]
+}

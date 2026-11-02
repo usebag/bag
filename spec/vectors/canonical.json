@@ -1,0 +1,891 @@
+{
+  "description": "The canonical form (spec/SPEC.md §2): \"cases\" pairs values with their canonical strings and SHA-256; \"invalid\" holds values the form rejects (bad-canonical); \"preimages\" holds one worked example of every position table, with its canonical string, SHA-256 and, where the table is signed, the signer and signature over that SHA-256; \"fetch_proofs\" holds a relay's verdicts on fetch proofs (§8.3).",
+  "generated_by": "packages/core/scripts/gen-vectors.ts",
+  "suite": 1,
+  "suite_parameters": "Ed25519 signatures; sealing with RFC 9180 base mode, DHKEM(X25519, HKDF-SHA256) (kem 0x0020), HKDF-SHA256 (kdf 0x0001), AES-256-GCM (aead 0x0002)",
+  "test_data": "Every seed, private key, content key and nonce in this file is test data, fixed by construction: seeds are one byte repeated 32 times, and the rest comes from a seeded xorshift128+. They are public; never let them protect anything real.",
+  "notes": [
+    "A case with utf16_hex describes a string by its UTF-16 code units, four hex digits each, because a lone surrogate cannot be written portably in JSON (RFC 8259 §8.2).",
+    "Python's json.dumps(value, separators=(',', ':'), ensure_ascii=False) gives every canonical string here byte for byte.",
+    "A fetch_proofs case is a GET /v0/fetch/{id} at a relay whose advertised base URLs are \"accepted\", at \"now\", with the skew of 300 s: \"id\" is the path segment and \"headers\" the request's AC-Signer, AC-Ts, AC-Sig and, with a chain, AC-Auth (the hops as JSON in base64url without padding). The relay rebuilds [\"ac/fetch/1\", signer, id, ts, audience] from AC-Signer, the id, AC-Ts and each accepted base, never from a Host or forwarded header, and the proof holds when its signature verifies for one of them. \"signed\" is the array the caller signed, for reading only: no verdict uses it. The envelope is held, and \"parties\" are its from, each to and its principal.",
+    "The verdicts follow the relay's order: bad-hex for an id that is not 64 lowercase hex; bad-auth for a malformed header or a signature that verifies for no accepted base; stale-ts or future-ts outside the skew, so a proof for another relay outside the skew is bad-auth; not-authorized unless the root of the chain (the signer itself without one) is a party; else ok."
+  ],
+  "cases": [
+    {
+      "name": "null",
+      "value": null,
+      "canonical": "null",
+      "sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "name": "zero",
+      "value": 0,
+      "canonical": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "the largest integer, 2^53 - 1",
+      "value": 9007199254740991,
+      "canonical": "9007199254740991",
+      "sha256": "f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26"
+    },
+    {
+      "name": "the empty list",
+      "value": [],
+      "canonical": "[]",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "name": "the empty string",
+      "value": "",
+      "canonical": "\"\"",
+      "sha256": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
+    },
+    {
+      "name": "plain ASCII",
+      "value": "bag",
+      "canonical": "\"bag\"",
+      "sha256": "2088f328aea77b44bb2508a4ee16149c6770073bbdffbe67f4bfb1d8a8ef3e19"
+    },
+    {
+      "name": "a quotation mark and a backslash, escaped",
+      "value": "say \"hi\" \\ bye",
+      "canonical": "\"say \\\"hi\\\" \\\\ bye\"",
+      "sha256": "05dabad52a6671eb821b166e6cbdea0b6eb96809823b532504f47eb8b7292607"
+    },
+    {
+      "name": "the five short escapes",
+      "value": "\b\f\n\r\t",
+      "canonical": "\"\\b\\f\\n\\r\\t\"",
+      "sha256": "88821412381596c0dc2c66e310ae7e66100d7e4196456e2e9f3d261d0b562746"
+    },
+    {
+      "name": "every other control character, as lowercase \\u00xx",
+      "value": "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\u000b\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f",
+      "canonical": "\"\\u0000\\u0001\\u0002\\u0003\\u0004\\u0005\\u0006\\u0007\\u000b\\u000e\\u000f\\u0010\\u0011\\u0012\\u0013\\u0014\\u0015\\u0016\\u0017\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f\"",
+      "sha256": "05846681aa1ed8c81f6d14bf870f8f2e553158c777e6d5b2b6e8279c9151af9f"
+    },
+    {
+      "name": "DEL, U+2028 and U+2029, not escaped",
+      "value": "  ",
+      "canonical": "\"  \"",
+      "sha256": "95df0b63167be5cce73c768a4dd6b0005aa196870fdc24ca85e0a03c1dd7a6c0"
+    },
+    {
+      "name": "the solidus, not escaped",
+      "value": "a/b",
+      "canonical": "\"a/b\"",
+      "sha256": "f5effa31772a3689cb116700c569f4b72d765290968f099016a899ab6c1e4ee3"
+    },
+    {
+      "name": "non-ASCII, not escaped and not normalized (precomposed and decomposed é)",
+      "value": "café café 日本語",
+      "canonical": "\"café café 日本語\"",
+      "sha256": "23ad245ef97fd7c430db8207d0deea89185512d45d59ee9779211f0bcb4c24db"
+    },
+    {
+      "name": "a character outside the Basic Multilingual Plane",
+      "value": "😀",
+      "canonical": "\"😀\"",
+      "sha256": "7a0c50b92434b015545fe93ab723db2d4b2cdd14a441405624a9ce8be29f1d5a"
+    },
+    {
+      "name": "integers",
+      "value": [
+        0,
+        1,
+        9,
+        10,
+        255,
+        1800000000
+      ],
+      "canonical": "[0,1,9,10,255,1800000000]",
+      "sha256": "2b055be6826e42e831c441f265a7a56662b17b696b9fe13706818451ed846dc9"
+    },
+    {
+      "name": "nested lists",
+      "value": [
+        [],
+        [
+          []
+        ],
+        [
+          "a",
+          [
+            1,
+            null
+          ]
+        ]
+      ],
+      "canonical": "[[],[[]],[\"a\",[1,null]]]",
+      "sha256": "02a54a06a87c3ec8ae7db9164fc916c34a5c377e55c042ac5bcf8b15ba0ea909"
+    },
+    {
+      "name": "a hop-shaped list",
+      "value": [
+        "ac/hop/1",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        [
+          "type=coding.*"
+        ],
+        1800000000
+      ],
+      "canonical": "[\"ac/hop/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",[\"type=coding.*\"],1800000000]",
+      "sha256": "c605bbf629fa0eee4cd2c1afb7cf3ffd071988a64e41d6a8116457c547629687"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a fraction",
+      "value": 1.5,
+      "result": "bad-canonical"
+    },
+    {
+      "name": "a negative integer",
+      "value": -1,
+      "result": "bad-canonical"
+    },
+    {
+      "name": "2^53, one past the largest integer",
+      "value": 9007199254740992,
+      "result": "bad-canonical"
+    },
+    {
+      "name": "true",
+      "value": true,
+      "result": "bad-canonical"
+    },
+    {
+      "name": "false",
+      "value": false,
+      "result": "bad-canonical"
+    },
+    {
+      "name": "an object",
+      "value": {
+        "a": 1
+      },
+      "result": "bad-canonical"
+    },
+    {
+      "name": "an empty object",
+      "value": {},
+      "result": "bad-canonical"
+    },
+    {
+      "name": "an object inside a list",
+      "value": [
+        "a",
+        {}
+      ],
+      "result": "bad-canonical"
+    },
+    {
+      "name": "a boolean deep in a list",
+      "value": [
+        [
+          [
+            false
+          ]
+        ]
+      ],
+      "result": "bad-canonical"
+    },
+    {
+      "name": "a lone high surrogate",
+      "utf16_hex": "d800",
+      "result": "bad-canonical"
+    },
+    {
+      "name": "a lone low surrogate",
+      "utf16_hex": "dc00",
+      "result": "bad-canonical"
+    },
+    {
+      "name": "a low surrogate before a high one",
+      "utf16_hex": "dc00d800",
+      "result": "bad-canonical"
+    }
+  ],
+  "preimages": [
+    {
+      "table": "envelope id",
+      "preimage": [
+        1,
+        [
+          "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+        ],
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+        [
+          [
+            "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+            "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+            [
+              "type=coding.*"
+            ],
+            1802592000,
+            "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+          ],
+          [
+            "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+            "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+            [
+              "repo=acme/api"
+            ],
+            1800028800,
+            "597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07"
+          ]
+        ],
+        1,
+        1800000060,
+        "871ac677a873af2aca390653c0b292aff6f4ff0946105b1a0957cd744b9c8990"
+      ],
+      "canonical": "[1,[\"ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c\"],\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[[\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",[\"type=coding.*\"],1802592000,\"3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f\"],[\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",[\"repo=acme/api\"],1800028800,\"597a5e3070e651052cdffbba8d5709e3f36f8c84bd8093448aceeba9feed4da8c454440b156f7ca4b40521d125bb4ebcba4862f7045f6988325c350319ebde07\"]],1,1800000060,\"871ac677a873af2aca390653c0b292aff6f4ff0946105b1a0957cd744b9c8990\"]",
+      "sha256": "f0fc792da97fb664990dadb831a4cbf64c118a7f5cc5abdbd4c7362441505d27",
+      "signer": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "sig": "dea4b59d77ef88dcedbf6a5cac0e10d09e91344bc7f5bdf3b0163182e3b8db3a8807d0572870a78ca0ef2e7a9178b9f863fd738f80990869fc6390ffb592a104"
+    },
+    {
+      "table": "hop",
+      "preimage": [
+        "ac/hop/1",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        [
+          "type=coding.*"
+        ],
+        1802592000
+      ],
+      "canonical": "[\"ac/hop/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",[\"type=coding.*\"],1802592000]",
+      "sha256": "21d6bf4bdd3c65122b6dc4ebbb5848618aa2b990bb351f46e4c0e5679d2c1e99",
+      "signer": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "sig": "3392200c83ed340cb8bb4c736440177374b6ed3b2fba869100075d36d518c5a7d3895dcc198e181a3a9b41a14057d33ed9baa947da57257dca20c7d9db43be0f"
+    },
+    {
+      "table": "sealed hash",
+      "preimage": [
+        [
+          [
+            "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+            "07b42c1b256a7b965b0f65513dad976b844ab7d7681032e8180ec9c798aa7568",
+            "7932f062d48151128f2601de3404afb9a1d0299778c76ea0f331bf872f9fe92afe64d61f36dd83ea410840f33ddb7857"
+          ]
+        ],
+        "b6f9228a3956ae51575d0b59",
+        "5dd891ba6b88fae6b795b20aacd8b57174679b87830e8f1266264dd02d79fb4e7607274d1cecff7c2e1a5a34ed721879ce01e0e7e209347894900dd1e7de995e8bd5600b31e59123f866620707b525a171cd72cda8fecdd92e36cb2e63e3975781ef946362c8229cf5e8025bb7dde406cc47e416f061a1becfdeda7e60744f618f8971857309591cef6c4d8cdbc3f312e251b2f9744eb9b7528b214cc8bd23b63b71d498d46f294bcfd1499a6505caed5a6a95262b81e75f66c6dd7427"
+      ],
+      "canonical": "[[[\"ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c\",\"07b42c1b256a7b965b0f65513dad976b844ab7d7681032e8180ec9c798aa7568\",\"7932f062d48151128f2601de3404afb9a1d0299778c76ea0f331bf872f9fe92afe64d61f36dd83ea410840f33ddb7857\"]],\"b6f9228a3956ae51575d0b59\",\"5dd891ba6b88fae6b795b20aacd8b57174679b87830e8f1266264dd02d79fb4e7607274d1cecff7c2e1a5a34ed721879ce01e0e7e209347894900dd1e7de995e8bd5600b31e59123f866620707b525a171cd72cda8fecdd92e36cb2e63e3975781ef946362c8229cf5e8025bb7dde406cc47e416f061a1becfdeda7e60744f618f8971857309591cef6c4d8cdbc3f312e251b2f9744eb9b7528b214cc8bd23b63b71d498d46f294bcfd1499a6505caed5a6a95262b81e75f66c6dd7427\"]",
+      "sha256": "871ac677a873af2aca390653c0b292aff6f4ff0946105b1a0957cd744b9c8990"
+    },
+    {
+      "table": "address record",
+      "preimage": [
+        "ac/addr/1",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        null,
+        [
+          "https://relay.acme.example"
+        ],
+        "ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+        [
+          "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ],
+        86400,
+        1800000000,
+        null
+      ],
+      "canonical": "[\"ac/addr/1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",null,[\"https://relay.acme.example\"],\"ed25519:1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca\",[\"ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\"],86400,1800000000,null]",
+      "sha256": "2400f559463e778adbd2e37037fac5f3e2133bd31975843a1ae94a2dbcd661b9",
+      "signer": "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "sig": "9cc3cf9d50c6515c5df06b555046901d04782c2a2c907e3d19334149903fff549d0ead1036c83fba0005d2de56c6daa49a9ea36e0c4197414b2badf361e23f0b"
+    },
+    {
+      "table": "accept-from",
+      "preimage": [
+        "ac/accept/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        [
+          "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+          "ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+          "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394"
+        ],
+        65536,
+        604800,
+        1800000000
+      ],
+      "canonical": "[\"ac/accept/1\",\"ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c\",[\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\"],65536,604800,1800000000]",
+      "sha256": "0a04e8572cc42957cb0937a0f9ee7e629875fcf21c81374fe09cf10688ce4097",
+      "signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+      "sig": "4de92cdedb51860a2fb65f09a34fc5b0472d64f875081b35871917657d473a77eaac6ad3701157e7b10a6c33aba8a421d465691eeb6826f60be7c80c2e2e4e04"
+    },
+    {
+      "table": "key record",
+      "preimage": [
+        "ac/key/1",
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "052a50773ac8d91773f2dc9662e12f0defe915e415b8a1c8e20a5a3d6ab2b843",
+        1800000000,
+        1800086400
+      ],
+      "canonical": "[\"ac/key/1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"052a50773ac8d91773f2dc9662e12f0defe915e415b8a1c8e20a5a3d6ab2b843\",1800000000,1800086400]",
+      "sha256": "339e5ad240e5673712218c45225a4495487269eacd4710b530fbf2622fc25465",
+      "signer": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "sig": "9fc04a4428737377e0b0a34a6f5e2d20719dde7a50c0017ccb214417a4ff97d747b0554d6b23c0c147f23d5bf091e326c0539eb4e27855f654a1363f08e4c207"
+    },
+    {
+      "table": "subscribe response",
+      "preimage": [
+        "ac/sub/1",
+        "710bf42834da6ec559de3f592885013a40709da974e4c75ebb200625c7f7bcc6",
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        41
+      ],
+      "canonical": "[\"ac/sub/1\",\"710bf42834da6ec559de3f592885013a40709da974e4c75ebb200625c7f7bcc6\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",41]",
+      "sha256": "f111754a3f92f4ee957ee5a6e89b9e1e2ad09db61493cf1b90ae7b929d61d818",
+      "signer": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "sig": "08c62b999d63bb3fea9a1d82aeb15aec3d4693d884e3f6ec0925c7d62a35604a4bfdcf1178c3c9ddff03517a87be521e38c00a1c9172b028468fb40d1a60d602"
+    },
+    {
+      "table": "subscribe response, resuming from the stored ack",
+      "preimage": [
+        "ac/sub/1",
+        "710bf42834da6ec559de3f592885013a40709da974e4c75ebb200625c7f7bcc6",
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        null
+      ],
+      "canonical": "[\"ac/sub/1\",\"710bf42834da6ec559de3f592885013a40709da974e4c75ebb200625c7f7bcc6\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",null]",
+      "sha256": "5bdb2ada8714708229ac24531ad332da5e078b1590e726db009dc94fbc839159",
+      "signer": "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "sig": "af87658c56632cebdd31581faaec241cba62a293f224ac296086509d83a7310982db5a9d1fb9fce7378006d58c7e6e24aff3fa2380ef8e4c8fe3ebb9ab332505"
+    },
+    {
+      "table": "fetch auth",
+      "preimage": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example"
+      ],
+      "canonical": "[\"ac/fetch/1\",\"ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c\",\"fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53\",1800000090,\"https://relay.acme.example\"]",
+      "sha256": "e9f30bed6a7a82232bc5cf04e351636b9cae31f9d9e28608fdc2ab6fd75e904e",
+      "signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+      "sig": "a15915f5d9baf22e88aa0e2b230f2c301267dd7365168e86d3e2fa98272d2102272f92698aae83054d82cb428da5dc8737cf5c67567433eb7267d91137263906"
+    },
+    {
+      "table": "audit line",
+      "preimage": [
+        1,
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        1800000061,
+        "verify",
+        "accept",
+        "ok",
+        "f0fc792da97fb664990dadb831a4cbf64c118a7f5cc5abdbd4c7362441505d27",
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+        "ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+        "{\"bytes\":1808}"
+      ],
+      "canonical": "[1,\"0000000000000000000000000000000000000000000000000000000000000000\",1800000061,\"verify\",\"accept\",\"ok\",\"f0fc792da97fb664990dadb831a4cbf64c118a7f5cc5abdbd4c7362441505d27\",\"ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1\",\"ed25519:8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c\",\"{\\\"bytes\\\":1808}\"]",
+      "sha256": "981f7b889e726a676187f15e227a21b8c811d777946f976665b54613835f9b00"
+    },
+    {
+      "table": "audit line, chained to the first",
+      "preimage": [
+        2,
+        "981f7b889e726a676187f15e227a21b8c811d777946f976665b54613835f9b00",
+        1800000062,
+        "policy",
+        "reject",
+        "untrusted-root",
+        "c6bb1a89c27c79a60b6bb9872aa69536ecd30fa612d018df78cb2cac02597764",
+        "ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+        "ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+        null
+      ],
+      "canonical": "[2,\"981f7b889e726a676187f15e227a21b8c811d777946f976665b54613835f9b00\",1800000062,\"policy\",\"reject\",\"untrusted-root\",\"c6bb1a89c27c79a60b6bb9872aa69536ecd30fa612d018df78cb2cac02597764\",\"ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1\",\"ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1\",null]",
+      "sha256": "d857b19bd1d4ac965bb08e976657c7b78ed0ccf995c5457b99efbd9878ab6eab"
+    }
+  ],
+  "fetch_proofs": [
+    {
+      "name": "a proof for the relay's base verifies",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "a15915f5d9baf22e88aa0e2b230f2c301267dd7365168e86d3e2fa98272d2102272f92698aae83054d82cb428da5dc8737cf5c67567433eb7267d91137263906"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example"
+      ],
+      "result": "ok"
+    },
+    {
+      "name": "a proof for another relay's base is refused here: the cross-relay replay",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "c27510ee46f5c3c465dd09e45cf923f51f490f149575c449343ac09c466eb6b62942dc2a75d969f41e27ec74751df8305b777b13aaa5bf674b67e6c395f41702"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.globex.example"
+      ],
+      "result": "bad-auth"
+    },
+    {
+      "name": "the old four-field preimage is refused at a new relay",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "da193aee26d352b800a50b20276e03ac37a172fa3344a6c88cb41562807ebac872761466ce303253e8d3a89c0670cbcf7c549518762a2f4be24e8017061f9b0b"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090
+      ],
+      "result": "bad-auth"
+    },
+    {
+      "name": "an audience with a trailing slash is not the relays entry",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "0f75b17ba5b502525bb3b0c8f0444536b9f5fe2c332cf9841083ef06de1b2b2f2cfb0720c4ce192abae40eae691b7de5722bb76e43a1e7332898afe02da22907"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example/"
+      ],
+      "result": "bad-auth"
+    },
+    {
+      "name": "an audience with a path is not the relays entry",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "4a5e7cd3baa49223c38c5bab0ae1a69ecedeb5ead60e5f2bd5a937785664c827fea41bbe79e94622235776e3ab30f342dd70806ec8ee56d7f60fec504329380a"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example/v0"
+      ],
+      "result": "bad-auth"
+    },
+    {
+      "name": "an audience with an explicit :443 is not the relays entry",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "69da619c331b6eea6471becab4bc0d378fcdae25d255038e050ee82970b63ac238e752619fd05c12601a58997265017ef4558e0a363d715dbcbc1439b9a96302"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example:443"
+      ],
+      "result": "bad-auth"
+    },
+    {
+      "name": "an audience with an uppercase host is not the relays entry",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "88abb07f1cbe6e81c6b02628eba2a898f276e7a5692d8fe489d4e574db43ec0f0130cf288a4a3e12ed9382778325b33110c7996184865ac1b3d047ac99a92208"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://RELAY.ACME.EXAMPLE"
+      ],
+      "result": "bad-auth"
+    },
+    {
+      "name": "a relay under two names accepts a proof for either",
+      "accepted": [
+        "https://relay.acme.example",
+        "https://relay2.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "9da6e26e0e0c438f6ca2948df3eb8a19bbc5c123c36bad0e8a56b52b833940472c71f7aec4d4bd65681e33df094ad8c54d28d51226613bed5ced65993b6a600e"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay2.acme.example"
+      ],
+      "result": "ok"
+    },
+    {
+      "name": "ts 301 s before the relay clock, with the right audience",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1799999789",
+        "ac-sig": "052302cbbfe7e0567937b0eb88bab984f10bb513642166e73b0c673277c1cb9898a5899c1e595b3e0a03b375bfe02f672a241cd19020b531f4912c37e16c5c0c"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1799999789,
+        "https://relay.acme.example"
+      ],
+      "result": "stale-ts"
+    },
+    {
+      "name": "ts 301 s after the relay clock, with the right audience",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000391",
+        "ac-sig": "a9b9ffed196851ed1f8eba00a66f56ada76bae86b7faee99e5c5cb2d68b48a09ec31f4ff92ee5dd3554a64d5a3dff0ad7e80de2e0ebf111273508b5bd5ed2f0b"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000391,
+        "https://relay.acme.example"
+      ],
+      "result": "future-ts"
+    },
+    {
+      "name": "ts 300 s before the relay clock is within the skew",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1799999790",
+        "ac-sig": "57675ce8a0b555034cf5134f5e6c11becba3c8bcb2828950fe52b8a509d8665d2033eccd183bc7b0edca49a4f7cbf432d8d8b25125b59159fbae51d845e7e509"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1799999790,
+        "https://relay.acme.example"
+      ],
+      "result": "ok"
+    },
+    {
+      "name": "a proof for another relay outside the skew: the signature is checked first",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1799999789",
+        "ac-sig": "3d368c5a3d36249031fa0c1b255f1ea05f55ced53ae093a6a1f89c19cc82dbd8955bc78d4204df5109a51d242ddd9690c6b65282f85dcd9600c81589dc08e205"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1799999789,
+        "https://relay.globex.example"
+      ],
+      "result": "bad-auth"
+    },
+    {
+      "name": "a session with a chain from a party (AC-Auth), with the audience",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+        "ac-ts": "1800000090",
+        "ac-sig": "b083067a073a813b71bb4342809efd48643b7fc0f546555b33a474c2575bd58ba5468a7529d7080062bda19a2e7fe13cde5c3ad2cbbc10e966756fc9fbe68808",
+        "ac-auth": "W3siaXNzIjoiZWQyNTUxOTo4MTM5NzcwZWE4N2QxNzVmNTZhMzU0NjZjMzRjN2VjY2NiOGQ4YTkxYjRlZTM3YTI1ZGY2MGY1YjhmYzliMzk0Iiwic3ViIjoiZWQyNTUxOTplZDQ5MjhjNjI4ZDFjMmM2ZWFlOTAzMzg5MDU5OTU2MTI5NTkyNzNhNWM2M2Y5MzYzNmMxNDYxNGFjODczN2QxIiwiY2F2ZWF0cyI6WyJyZXBvPWFjbWUvYXBpIl0sImV4cCI6MTgwMDAyODgwMCwic2lnIjoiNTk3YTVlMzA3MGU2NTEwNTJjZGZmYmJhOGQ1NzA5ZTNmMzZmOGM4NGJkODA5MzQ0OGFjZWViYTlmZWVkNGRhOGM0NTQ0NDBiMTU2ZjdjYTRiNDA1MjFkMTI1YmI0ZWJjYmE0ODYyZjcwNDVmNjk4ODMyNWMzNTAzMTllYmRlMDcifV0"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example"
+      ],
+      "result": "ok"
+    },
+    {
+      "name": "a signer that is not a party and has no chain",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+        "ac-ts": "1800000090",
+        "ac-sig": "d3ab2551b63bf5993dbc1091c3f974aef429998887f7ca94be87b0799c8be766d682bcd9b50050f60012e567c75c73b09b6635d3f05247bdd3d34c8e00dc7b0e"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example"
+      ],
+      "result": "not-authorized"
+    },
+    {
+      "name": "a subscribe response presented as a fetch proof",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "dc974fbaa7c880a9fafd5445073090de62c4f6c9dbeba9997d4e2e03d3f2701004999fca33d20ee4f570bcac495cef7d93b8593255a6ac097c314602c92c240c"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/sub/1",
+        "44b98e1b7dbc57e9f7751d9344683ece82c0a8ad6e6dbda8e73ad6b04530afe3",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        null
+      ],
+      "result": "bad-auth"
+    },
+    {
+      "name": "a five-element array under another tag presented as a fetch proof",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "7d657996c46daa29f0d0b5937b6ce26f365018d35c91e74ee979b74b9d748db8fe683435f7c9d5e5d29c1e05ae73cb76ec039914c5850ea129525c26cc4f1d00"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/2",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example"
+      ],
+      "result": "bad-auth"
+    },
+    {
+      "name": "an uppercase id in the path is refused, not canonicalized",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "FB8DE01EC83F07FF651609A3366C75A33A950C456BE7DE1EC158BAF69CE58C53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "334d7672d3d6736206ef9bcd85d4f98af8c831ab377d3bec20af08f4976428d05cc9c6b7b8fdbd38bb746fd5bb16d8b76a1b86e292236672bf5a139fbedf1701"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "FB8DE01EC83F07FF651609A3366C75A33A950C456BE7DE1EC158BAF69CE58C53",
+        1800000090,
+        "https://relay.acme.example"
+      ],
+      "result": "bad-hex"
+    },
+    {
+      "name": "an id padded to 33 bytes is refused",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "00fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "ac-ts": "1800000090",
+        "ac-sig": "5b429febe1a8d7939a26a10cc5cf19779b3ab4f583ae5b727d7240351263a9311ed78803a06e3f9b839c90681e6983397633e9d37d2cc3a74f04aa8a7b074c01"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+        "00fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example"
+      ],
+      "result": "bad-hex"
+    },
+    {
+      "name": "a signer in uppercase hex is not the canonical address",
+      "accepted": [
+        "https://relay.acme.example"
+      ],
+      "now": 1800000090,
+      "id": "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+      "headers": {
+        "ac-signer": "ed25519:CA93AC1705187071D67B83C7FF0EFE8108E8EC4530575D7726879333DBDABE7C",
+        "ac-ts": "1800000090",
+        "ac-sig": "2ed60f3088112aeb49fbe8c7f30c949860baf9e21f769b9471d4c40bc26411b14dac233fe4c7311892354202d1378e755db1a00850a4ff15b98573fcfc7dee05"
+      },
+      "parties": [
+        "ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+        "ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c"
+      ],
+      "signed": [
+        "ac/fetch/1",
+        "ed25519:CA93AC1705187071D67B83C7FF0EFE8108E8EC4530575D7726879333DBDABE7C",
+        "fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53",
+        1800000090,
+        "https://relay.acme.example"
+      ],
+      "result": "bad-auth"
+    }
+  ]
+}
