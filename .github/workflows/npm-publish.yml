@@ -1,0 +1,122 @@
+# Publishes @usebag/bag (packages/bag) to npm from one commit of main, with npm provenance.
+# This file belongs in usebag/bag at .github/workflows/npm-publish.yml, beside relay-image.yml: the cut never carries
+# .github/ (cut/MANIFEST), so, like relay-image.yml, it is added to the public repository by hand. It is kept here so
+# that it is reviewed with the package it publishes.
+# Started by hand only (workflow_dispatch). Only `run` steps: no third-party action. The input reaches the shell only
+# through the environment (COMMIT), never inside a script as ${{ }}. Node is fetched from nodejs.org and checked
+# against the SHA-256 written here. The version is the one in packages/bag/package.json at the commit; a version already
+# on npm stops the run. npm records gitHead (the commit) and the provenance statement names this repository, this
+# workflow and the commit.
+# Two publish paths, and the run prints which one it took:
+# - trusted publishing (OIDC), the normal path once the package exists: id-token write, npm 11.5.1 or later, no token,
+#   provenance by default;
+# - the NPM_TOKEN secret, only when npm says @usebag/bag does not exist yet. npm attaches a trusted publisher only to a
+#   package that exists ("The package you're configuring must already exist on the npm registry.",
+#   https://docs.npmjs.com/cli/v11/commands/npm-trust), so the first publish needs the token.
+# The token is for the first publish only. Afterwards, configure the trusted publisher (organization usebag, repository
+# bag, workflow npm-publish.yml) on the package's Settings page on npmjs.com, then revoke the token on npmjs.com and
+# delete the repository secret.
+name: npm publish
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "the 40-digit commit of main to publish from"
+        required: true
+permissions:
+  contents: read
+  id-token: write
+env:
+  NODE_VERSION: "24.22.1"
+  NODE_SHA256: "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6"
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: install Node, and check npm is 11.5.1 or later (trusted publishing)
+        run: |
+          f="node-v${NODE_VERSION}-linux-x64.tar.xz"
+          curl -fsSLo "$RUNNER_TEMP/$f" "https://nodejs.org/dist/v${NODE_VERSION}/$f"
+          echo "${NODE_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/node"
+          tar -xJf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP/node" --strip-components=1
+          echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
+          PATH="$RUNNER_TEMP/node/bin:$PATH"
+          node --version
+          echo "npm $(npm --version)"
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number)
+            if (a * 1e6 + b * 1e3 + c < 11 * 1e6 + 5 * 1e3 + 1) { console.error("npm " + process.argv[1] + " is older than 11.5.1"); process.exit(1) }
+          ' "$(npm --version)"
+      - name: check out the commit
+        run: |
+          case "$COMMIT" in *[!0-9a-f]*|"") echo "not a commit"; exit 1;; esac
+          test "${#COMMIT}" = 40
+          git clone --no-checkout "https://github.com/${GITHUB_REPOSITORY}" src
+          git -C src fetch --quiet origin main
+          git -C src checkout --detach "$COMMIT"
+          git -C src merge-base --is-ancestor "$COMMIT" origin/main
+        env:
+          COMMIT: ${{ inputs.commit }}
+      - name: the version, not yet on npm, and the publish path
+        run: |
+          cd src
+          V="$(node -p 'require("./packages/bag/package.json").version')"
+          echo "version $V"
+          if out="$(npm view @usebag/bag version 2>&1)"; then
+            echo "@usebag/bag exists (latest $out): publishing by trusted publishing (OIDC)"
+            P=oidc
+          elif printf '%s' "$out" | grep -q E404; then
+            echo "@usebag/bag does not exist yet: the first publish, with the NPM_TOKEN secret"
+            P=token
+          else
+            printf '%s\n' "$out"; echo "npm view failed for another reason"; exit 1
+          fi
+          if npm view "@usebag/bag@$V" version 2>/dev/null | grep -q .; then echo "@usebag/bag@$V is on npm already"; exit 1; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "PUBLISH_PATH=$P" >> "$GITHUB_ENV"
+      - name: install, test and build
+        run: |
+          cd src
+          npm ci --no-audit --no-fund
+          npm test -w packages/bag
+          npm run build -w packages/bag
+          test "$(node packages/bag/dist/bag.js --version)" = "bag $VERSION $COMMIT"
+          test -s packages/bag/dist/LICENSE
+          test -z "$(git status --porcelain --untracked-files=no)"
+        env:
+          COMMIT: ${{ inputs.commit }}
+      - name: pack, and record the tarball's hashes
+        run: |
+          cd src
+          npm pack -w packages/bag --pack-destination "$RUNNER_TEMP" --json > "$RUNNER_TEMP/pack.json"
+          T="$RUNNER_TEMP/usebag-bag-$VERSION.tgz"
+          node -e 'const [p] = require(process.argv[1]); for (const f of p.files) console.log(f.size, f.path); console.log(p.filename, p.size, "bytes packed", p.unpackedSize, "unpacked", p.entryCount, "files"); console.log("integrity", p.integrity)' "$RUNNER_TEMP/pack.json"
+          echo "sha256 $(sha256sum "$T" | cut -d' ' -f1)"
+          echo "INTEGRITY=$(node -p 'require(process.argv[1])[0].integrity' "$RUNNER_TEMP/pack.json")" >> "$GITHUB_ENV"
+      - name: publish by trusted publishing (OIDC, no token; provenance by default)
+        if: env.PUBLISH_PATH == 'oidc'
+        run: |
+          cd src
+          echo "path: trusted publishing (OIDC)"
+          test -z "${NODE_AUTH_TOKEN:-}"
+          npm publish -w packages/bag --access public
+      - name: first publish with the NPM_TOKEN secret, with provenance
+        if: env.PUBLISH_PATH == 'token'
+        run: |
+          cd src
+          echo "path: NPM_TOKEN (the first publish only)"
+          test -n "$NODE_AUTH_TOKEN" || { echo "the NPM_TOKEN secret is not set"; exit 1; }
+          # shellcheck disable=SC2016 # the literal ${NODE_AUTH_TOKEN} is for npm to expand, so the token is never in a file
+          printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' > "$RUNNER_TEMP/.npmrc"
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc" npm publish -w packages/bag --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: the registry holds the tarball packed above, at the commit
+        run: |
+          sleep 10
+          test "$(npm view "@usebag/bag@$VERSION" dist.integrity)" = "$INTEGRITY"
+          test "$(npm view "@usebag/bag@$VERSION" gitHead)" = "$COMMIT"
+          echo "published @usebag/bag@$VERSION from $COMMIT by $PUBLISH_PATH, $INTEGRITY"
+        env:
+          COMMIT: ${{ inputs.commit }}
