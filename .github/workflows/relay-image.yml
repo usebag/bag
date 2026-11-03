@@ -1,0 +1,66 @@
+# Builds the relay image from one commit of main and pushes it to ghcr.io/usebag/relay:<commit>.
+# Started by hand only (workflow_dispatch). Each platform builds on its own native runner, so no QEMU and no
+# third-party action or image; the two digests are merged into one manifest list at the end. Only `run` steps.
+# The input reaches the shell only through the environment (COMMIT), never inside a script as ${{ }}.
+# The package is private when first pushed; making it public is a person's act on the package page.
+name: relay image
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "the 40-digit commit of main to build"
+        required: true
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            suffix: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: check out the commit
+        run: |
+          case "$COMMIT" in *[!0-9a-f]*|"") echo "not a commit"; exit 1;; esac
+          test "${#COMMIT}" = 40
+          git clone --no-checkout "https://github.com/${GITHUB_REPOSITORY}" src
+          git -C src fetch --quiet origin main
+          git -C src checkout --detach "$COMMIT"
+          git -C src merge-base --is-ancestor "$COMMIT" origin/main
+        env:
+          COMMIT: ${{ inputs.commit }}
+      - name: build and push one platform by digest
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use --name relay --driver docker-container
+          cd src
+          docker buildx build --platform "$PLATFORM" -f deploy/docker/Dockerfile \
+            --build-arg AC_REV="$COMMIT" --provenance=mode=max --sbom=true \
+            -t "ghcr.io/${GITHUB_REPOSITORY_OWNER}/relay:${COMMIT}-${SUFFIX}" --push .
+        env:
+          COMMIT: ${{ inputs.commit }}
+          PLATFORM: ${{ matrix.platform }}
+          SUFFIX: ${{ matrix.suffix }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: merge the two platforms into one tag
+        run: |
+          case "$COMMIT" in *[!0-9a-f]*|"") echo "not a commit"; exit 1;; esac
+          test "${#COMMIT}" = 40
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          I="ghcr.io/${GITHUB_REPOSITORY_OWNER}/relay"
+          docker buildx imagetools create -t "$I:$COMMIT" "$I:${COMMIT}-amd64" "$I:${COMMIT}-arm64"
+          docker buildx imagetools inspect "$I:$COMMIT"
+        env:
+          COMMIT: ${{ inputs.commit }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
