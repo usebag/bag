@@ -303,11 +303,15 @@ export class Pairings {
 
   /**
    * The inviter's question before a code exists (spec/SPEC.md §8.10): an address the person holds binds the invitation,
-   * so the edge refuses any other request before a dialog; empty leaves it open, for first contact.
+   * so the edge refuses any other request before a dialog; empty leaves it open, for first contact. Its first line says
+   * an invite is being made: a person who saw only the address question read it as the wrong dialog.
    */
   async #boundPeer(live: Live, extra: PairExtra): Promise<string | undefined> {
-    const head = this.#line("Your peer's address, if you know it.", (l) => `As ${l}: address, if known.`)
-    const message = `${head}\nOnly that address can then answer. Empty at first contact.\nThey will be named ${live.name} here.`
+    const head = this.#line(
+      'Invite a peer: next you get a pairing code to send them.',
+      (l) => `As ${l}: make a code for a peer.`,
+    )
+    const message = `${head}\nTheir address, if known: only it can answer. Else empty.\nThey will be named ${live.name} here.`
     return addressIn(await this.#form(live, extra, message, ADDRESS))
   }
 

@@ -102,6 +102,8 @@ interface Many {
   readonly client: Client
   readonly log: MemoryLog
   readonly dialogs: string[]
+  /** pair_invite's address questions, answered empty, kept apart from dialogs. */
+  readonly questions: string[]
   call(tool: string, args?: Json): Promise<{ isError: boolean; value: Json }>
   unit(label: string): Unit
   close(): Promise<void>
@@ -143,13 +145,16 @@ async function many(identities: Json[], o: Options = {}): Promise<Many> {
     { capabilities: { elicitation: { form: {} } } },
   )
   const dialogs: string[] = []
+  const questions: string[] = []
   client.setRequestHandler(ElicitRequestSchema, async (r) => {
     // pair_invite's address question, left empty: first contact.
     if (
       'requestedSchema' in r.params &&
       Object.keys(r.params.requestedSchema.properties).join() === 'address'
-    )
+    ) {
+      questions.push(r.params.message)
       return { action: 'accept', content: {} }
+    }
     dialogs.push(r.params.message)
     return o.person?.shift()?.(r.params.message) ?? { action: 'cancel' }
   })
@@ -159,6 +164,7 @@ async function many(identities: Json[], o: Options = {}): Promise<Many> {
     client,
     log,
     dialogs,
+    questions,
     async call(tool, args = {}) {
       const r = await client.callTool({ name: tool, arguments: args })
       const text = (r.content as { text: string }[])[0]?.text ?? '{}'
@@ -499,6 +505,13 @@ describe('pairing per identity', () => {
     const r = await m.call('pair_accept', { as: 'research', name: 'bob' })
     expect(r.value).toMatchObject({ error: 'cancelled' })
     expect(m.dialogs.map((d) => d.split('\n')[0])).toEqual(["As research: paste your peer's code."])
+  })
+
+  it("pair_invite's first question says it makes a code, naming the identity; 60 characters with a 32-character label", async () => {
+    const m = await many(two())
+    await m.call('pair_invite', { as: 'personal', name: 'bob' })
+    expect(m.questions.map((q) => q.split('\n')[0])).toEqual(['As personal: make a code for a peer.'])
+    expect(`As ${'a'.repeat(32)}: make a code for a peer.`.length).toBeLessThanOrEqual(60)
   })
 
   it('both digit dialogs name the identity too: the acceptor reading out, the inviter typing', async () => {

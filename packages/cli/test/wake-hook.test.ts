@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from 'node:child_process'
 import {
   chmodSync,
   existsSync,
@@ -11,7 +12,8 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   codexSessionName,
   resolveSessionName,
@@ -20,7 +22,7 @@ import {
   type SessionNameOptions,
   writeSessionFile,
 } from '@usebag/edge/agent'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { wakeHook } from '../src/commands/wake-hook.ts'
 import { type TestIo, tempDir, testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
@@ -225,7 +227,31 @@ describe('wake-hook: the first run baselines, a changed doorbell fires once, the
     expect(await printed).toBe(0)
     expect(w.io.stdout).toEqual([`doorbell ${first}`, `doorbell ${second}`])
     expect(w.io.stderr).toEqual([])
-    expect(readFileSync(w.seen, 'utf8')).toBe(`${second}\n`)
+    expect(existsSync(w.seen)).toBe(false) // the baseline was kept in memory
+  })
+
+  it('--print leaves wake-seen and wake-idle as they are, so a hook after it still reports the ring it printed', async () => {
+    const w = await world()
+    w.touch(1_700_000_001)
+    await hook(w, '--max', '0')
+    const idle = join(w.dir, 'state', 'bob', 'wake-idle')
+    writeFileSync(idle, '1\n', { mode: 0o600 })
+    const [seenBefore, seenAt] = [text(w.seen), statSync(w.seen).mtimeMs]
+    const printed = wakeHook(['--as', 'bob', '--dir', w.dir, '--print'], w.io, 5)
+    const first = w.touch(1_700_000_002)
+    await until('the first line', () => w.io.stdout.length === 1)
+    const second = w.touch(1_700_000_003)
+    await until('the second line', () => w.io.stdout.length === 2)
+    w.io.stop.abort()
+    expect(await printed).toBe(0)
+    expect(w.io.stdout).toEqual([`doorbell ${first}`, `doorbell ${second}`])
+    expect([text(w.seen), statSync(w.seen).mtimeMs, text(idle)]).toEqual([seenBefore, seenAt, '1\n'])
+    const fresh = testIo(new MemoryRelay()) // w.io's stop signal is spent
+    expect(await cli(fresh, 'wake-hook', '--as', 'bob', '--dir', w.dir, '--max', '0')).toEqual({
+      code: 2,
+      out: [],
+      err: [MESSAGE],
+    })
   })
 
   it('opens no edge and no store: the state directory holds the doorbell and wake-seen only', async () => {
@@ -368,12 +394,116 @@ describe('wake-hook: one at a time per identity (wake-hook.lock), and wake-seen 
     }
   })
 
-  it('treats a lock it may not signal (pid 1, EPERM) as live: exit 0, silent, no wake-seen, the lock left alone', async () => {
+  it('takes over a lock whose live pid is no wake-hook (pid 1, which refuses a signal EPERM) as stale', async () => {
     const w = await world()
     w.touch(1_700_000_001)
     writeFileSync(lockOf(w), '1\n')
     expect(await hook(w, '--max', '0')).toEqual({ code: 0, out: [], err: [] })
-    expect(existsSync(w.seen)).toBe(false)
+    expect(text(w.seen)).toBe(`${statSync(w.bell).mtimeMs}\n`)
+    expect(existsSync(lockOf(w))).toBe(false)
+  })
+
+  // Child processes, each killed after its test. A fake holder runs `node -e <script> <word> <lock>`: on SIGTERM it
+  // removes the lock while it holds its pid, as wake-hook's release does, and exits 0; otherwise it idles.
+  const kids: ChildProcess[] = []
+  afterEach(() => {
+    for (const k of kids.splice(0)) if (k.exitCode === null && k.signalCode === null) k.kill('SIGKILL')
+  })
+  const MAIN = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main.ts')
+  const HOLD =
+    "const fs = process.getBuiltinModule('node:fs'); const f = process.argv[2]; process.on('SIGTERM', () => { " +
+    "try { if (fs.readFileSync(f, 'utf8').trim() === String(process.pid)) fs.rmSync(f) } catch {} process.exit(0) }); " +
+    "setInterval(() => {}, 1000); process.stdout.write('ready\\n')"
+  type Kid = {
+    readonly proc: ChildProcess
+    readonly ended: Promise<{ code: number | null; at: number }>
+    out: string
+  }
+  function kid(args: readonly string[]): Kid {
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    delete env.AC_HOME
+    const proc = spawn(process.execPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    kids.push(proc)
+    const k: Kid = {
+      proc,
+      out: '',
+      ended: new Promise((done) => proc.on('exit', (code) => done({ code, at: Date.now() }))),
+    }
+    proc.stdout?.on('data', (d) => (k.out += d))
+    proc.stderr?.on('data', (d) => (k.out += d))
+    return k
+  }
+  /** A fake holder whose argv has `word`, holding the lock of w once it is ready. */
+  async function holder(w: World, word: string): Promise<Kid> {
+    const k = kid(['-e', HOLD, word, lockOf(w)])
+    await until('the holder ready', () => k.out === 'ready\n')
+    writeFileSync(lockOf(w), `${k.proc.pid}\n`, { mode: 0o600 })
+    return k
+  }
+  const running = (k: Kid): boolean => k.proc.exitCode === null && k.proc.signalCode === null
+
+  it('takes the lock over from a live wake-hook: SIGTERM ends it within 1 s, the lock holds this pid, a ring is 2', async () => {
+    const w = await world()
+    w.touch(1_700_000_001)
+    await hook(w, '--max', '0')
+    const old = await holder(w, 'wake-hook')
+    const start = Date.now()
+    const waiting = wakeHook(['--as', 'bob', '--dir', w.dir, '--max', '30'], w.io, 5)
+    const { code, at } = await old.ended
+    expect([code, at - start < 1000]).toEqual([0, true])
+    await until('the lock is this pid', () => existsSync(lockOf(w)) && text(lockOf(w)) === `${process.pid}\n`)
+    expect(Date.now() - start).toBeLessThan(1000)
+    w.touch(1_700_000_002)
+    expect(await waiting).toBe(2)
+    expect(w.io.stderr).toEqual([MESSAGE])
+    expect(existsSync(lockOf(w))).toBe(false)
+  })
+
+  it('does not signal a live holder that is no wake-hook (a word like wake-hook.test.ts is not): the lock is taken, a ring is 2', async () => {
+    const w = await world()
+    w.touch(1_700_000_001)
+    await hook(w, '--max', '0')
+    const other = await holder(w, 'wake-hook.test.ts')
+    const waiting = wakeHook(['--as', 'bob', '--dir', w.dir, '--max', '30'], w.io, 5)
+    await until('the lock is this pid', () => existsSync(lockOf(w)) && text(lockOf(w)) === `${process.pid}\n`)
+    w.touch(1_700_000_002)
+    expect(await waiting).toBe(2)
+    await sleep(50)
+    expect(running(other)).toBe(true)
+  })
+
+  it('of two hooks started together, with a holder or none, exactly one watches: the other ends 0, silent, and one ring is one wake', async () => {
+    for (const held of [true, false]) {
+      const w = await world()
+      w.touch(1_700_000_001)
+      await hook(w, '--max', '0')
+      const old = held ? await holder(w, 'wake-hook') : null
+      const two = [0, 1].map(() => kid([MAIN, 'wake-hook', '--as', 'bob', '--dir', w.dir, '--max', '30']))
+      const lost = await Promise.race(two.map((k, i) => k.ended.then(() => i)))
+      const [loser, winner] = [two[lost] as Kid, two[1 - lost] as Kid]
+      expect([(await loser.ended).code, loser.out]).toEqual([0, ''])
+      if (old !== null) expect((await old.ended).code).toBe(0)
+      await until(
+        'the winner holds the lock',
+        () => existsSync(lockOf(w)) && text(lockOf(w)) === `${winner.proc.pid}\n`,
+      )
+      await sleep(300)
+      expect(running(winner)).toBe(true)
+      w.touch(1_700_000_002)
+      expect((await winner.ended).code).toBe(2)
+      expect(winner.out).toBe(`${MESSAGE}\n`)
+      expect(existsSync(lockOf(w))).toBe(false)
+    }
+  }, 30_000)
+
+  it('a holder whose lock now holds another pid (a newer hook took over) ends 0, silent, at its next look', async () => {
+    const w = await world()
+    w.touch(1_700_000_001)
+    const first = wakeHook(['--as', 'bob', '--dir', w.dir, '--max', '30'], w.io, 5)
+    await until('the lock', () => existsSync(lockOf(w)))
+    writeFileSync(lockOf(w), '1\n')
+    expect(await first).toBe(0)
+    expect([w.io.stdout, w.io.stderr]).toEqual([[], []])
     expect(text(lockOf(w))).toBe('1\n')
   })
 
@@ -874,10 +1004,8 @@ describe('wake-hook --identities: every identity of the file, each by its own do
 
   it('--print writes doorbell <label> <mtime> per change and takes no lock', async () => {
     const m = await many()
+    expect((await all(m, '--max', '0')).code).toBe(0) // the baselines, which --print only reads
     const printed = wakeHook(['--identities', m.file, '--print'], m.io, 5)
-    await until('the baselines', () =>
-      Object.keys(m.state).every((l) => existsSync(join(m.state[l] as string, 'wake-seen'))),
-    )
     const at = m.touch('lab', 1_700_000_006)
     await until('the print line', () => m.io.stdout.length > 0)
     expect(m.io.stdout).toEqual([`doorbell lab ${at}`])
