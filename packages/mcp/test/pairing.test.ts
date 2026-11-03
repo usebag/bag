@@ -938,7 +938,7 @@ describe('pair_invite and pair_accept', () => {
     alice.addresses.push(` ${P.carol.address}\n`)
     await alice.call('pair_invite', { name: 'carol' })
     expect(alice.questions).toEqual([
-      "Your peer's address, if you know it.\nOnly that address can then answer. Empty at first contact.\nThey will be named carol here.",
+      'Invite a peer: next you get a pairing code to send them.\nTheir address, if known: only it can answer. Else empty.\nThey will be named carol here.',
     ])
     const invite = inviteOf(alice)
     bob.person.push(
@@ -1690,6 +1690,10 @@ describe('the compare, the codes and the listing', () => {
     alice.person.push(() => ({ action: 'decline' }))
     expect((await alice.call('pair_invite', { resume })).value.error).toBe('declined')
     expect([bob.dialogs[0], alice.dialogs[0]].every((d) => d?.includes(longest))).toBe(true)
+    // The address question (kept apart from dialogs by the harness) keeps the same bound with the longest petname.
+    const asked = alice.questions.map((q) => q.split('\n'))
+    expect(asked.map((l) => [l.length <= 3, l.every((x) => x.length <= 60)])).toEqual([[true, true]])
+    expect(asked[0]?.[2]).toBe(`They will be named ${longest} here.`)
     // clean checks every dialog's lines.
     await clean(invite, codeIn(bob.dialogs[1]))
   })
@@ -1730,6 +1734,27 @@ describe('the compare, the codes and the listing', () => {
     expect(invite).toContain("Without for, a first dialog asks your user for the peer's address")
     expect(instructions).toContain('Never send your user to a terminal for pairing.')
     expect(invite).toContain('Never suggest a terminal command for pairing.')
+    await clean(null, null)
+  })
+
+  // The fresh-container install test on machines D and E: "pair with my peer, call it e" made the agent call
+  // pair_accept, a paste-the-code dialog, for a person who had no code. Each text has the agent ask first, never for it.
+  it('has the agent ask whether its user has a code before choosing: a code is pair_accept, none is pair_invite', async () => {
+    const alice = await side(P.alice)
+    const { tools } = await alice.client.listTools()
+    const text = (name: string) => tools.find((t) => t.name === name)?.description ?? ''
+    expect(alice.client.getInstructions()).toContain(
+      'ask them first whether they have one (never for the code itself). With a code, call pair_accept',
+    )
+    expect(alice.client.getInstructions()).toContain(
+      'With no code, call pair_invite, which makes one for them to send.',
+    )
+    expect(text('pair_invite')).toContain(
+      'for a user with no pairing code from the peer (with one, pair_accept',
+    )
+    expect(text('pair_invite')).toContain('unsure, ask them as INSTRUCTIONS say')
+    expect(text('pair_accept')).toContain('only for a user who already has a pairing code')
+    expect(text('pair_accept')).toContain('(with none, pair_invite; unsure, ask them as INSTRUCTIONS say)')
     await clean(null, null)
   })
 

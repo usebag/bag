@@ -1,8 +1,10 @@
 # Running your own relay
 
 A guide for running the bag reference relay, `ac-relay`, on a machine you control, and pointing your identities and
-agents at it. It is for someone who wants to host and check every service their mail passes through. The README,
-`SECURITY.md` and `spec/SPEC.md` are the authority on what the protocol does; this guide says how to run this one relay.
+agents at it. It is for someone who wants to host and check every service their mail passes through. You do not need a
+relay of your own to use bag: two public relays run, and either stands in for one as `--relay` (`README.md`, "Public
+relays"). The README, `SECURITY.md` and `spec/SPEC.md` are the authority on what the protocol does; this guide says how
+to run this one relay.
 
 How this guide was checked: every command below was run on macOS (Apple silicon) against relays built from this
 repository and bound to 127.0.0.1, and its output is quoted as it came, shortened where it says so. The runs kept
@@ -15,6 +17,9 @@ Run everything from the root of this directory, with the `c` function of `README
 ```sh
 c() { node packages/cli/src/main.ts "$@"; }
 ```
+
+`c help` prints every command with its flags, and so does `--help` after any command (read from the code,
+`packages/cli/src/cli.ts`).
 
 ## 1. What your own relay gives you, and what it still sees
 
@@ -64,6 +69,10 @@ multicast or unspecified address, unless it is one of the sender's own `--relay`
 address. A relay on your laptop or your LAN works for you and for peers who pass that flag.
 
 ## 3. Build
+
+There is no installer and no packaged release: you build the relay from source, and the CLI and the MCP server run
+from the clone (`README.md`, "By hand with the command line"). Every `package.json` is private and the CLI has no
+`bin` entry, so nothing installs it on your `PATH`.
 
 Get the code at the commit you were given, and install the CLI's dependencies. Every `c` command in this guide runs
 from this clone (`README.md`, "Quick start", steps 1 and 2, has the git bundle route too):
@@ -377,8 +386,9 @@ bag: rate-limited: http://127.0.0.1:7779 retry; the bytes stay in the outbox, an
 ```
 
 At `--max-store-bytes` the relay refuses new envelopes from everyone, and records from signers it does not yet hold,
-with 503 `store-full`, until mail expires or you raise the bound; a signer it holds may still update its records, and
-fetch, subscribe and the sweep go on. The bound counts the pages in use, not the file, which keeps its largest size.
+with 503 `store-full` and a `Retry-After` of one sweep interval (`--sweep-interval`), until mail expires or you raise
+the bound; a signer it holds may still update its records, and fetch, subscribe and the sweep go on. The bound counts
+the pages in use, not the file, which keeps its largest size.
 Leave room on the disk for the write-ahead log: the flag's help suggests 900000000 on a volume of 1 GB. With
 `--max-store-bytes 50000` on a store of 90,112 live bytes:
 
@@ -386,6 +396,17 @@ Leave room on the disk for the write-ahead log: the flag's help suggests 9000000
 retry http://127.0.0.1:7779 tries=1 reason=store-full next_at=1793667544
 {"level":"WARN","fields":{"event":"store-full","live":90112,"max":50000,"retry_after":60}}
 ```
+
+Past `--connections-per-ip`, a direct client's next connection is closed as soon as the relay accepts it, before any
+request is read, so it gets no HTTP answer: the CLI reports that as `unreachable`. The relay logs `connection-refused`
+with `reason` `connections-per-ip` and `open`, the cap. A subscription is refused after its WebSocket upgrade instead,
+with the error frame `{"t":"error","error":"rate-limited"}` and the close code 1013 (try again later): a direct
+client's subscription past the cap less the share `--connection-reserve-permille` keeps for its calls (69 at the
+defaults; `reason` `subscriptions-per-ip`), or, behind a trusted proxy, a client's WebSocket past
+`--connections-per-ip` (`reason` `connections-per-ip`). Both count in `ac_relay_connections_refused_total` by
+`reason` (read from the code: `crates/ac-relay/src/server.rs`, `crates/ac-relay/src/ws.rs`,
+`packages/edge/src/adapters/http-relay.ts`). Behind a front that is not in `--trust-proxy`, every connection counts as
+the front's own, so at the default of 79 the front's 80th open connection is closed this way.
 
 Fixed in the code, not flags: a request body is at most 262,144 bytes and a record at most 131,072
 (`crates/ac-relay/src/config.rs`); a subscription has at most 32 envelopes sent and not yet acknowledged; one publish
@@ -446,6 +467,19 @@ not rotate or delete its log; keep it as long as your own rules say. `docs/partn
 relay logs", lists the events you will see first. Besides those, this guide's runs logged `store-size` (the store's
 bytes and row counts, after the first sweep and then every 60 sweeps, hourly at the default interval), `sweep`,
 `cursors-raised`, `store-full`, `blocklist`, `blocked` and `pair-open`.
+
+Six of those events are the ones an operator acts on, with what each names (read from the code:
+`crates/ac-relay/src/http.rs`, `crates/ac-relay/src/ws.rs`, `crates/ac-relay/src/server.rs`,
+`crates/ac-relay/src/main.rs`):
+
+| event | level | what it means |
+|---|---|---|
+| `fetch` | INFO | an envelope was fetched by its id: the `id` and the `signer` of the proof |
+| `fetch-refused` | INFO | a fetch by id was refused: the `id`, the `status`, the `code` and the `signer`; a `bad-auth` here can be the URL check of section 5 |
+| `subscribe-refused` | INFO | a subscriber's auth frame was refused: the `code` and the client's `ip`; the subscriber got an error frame with the code and the close code 4001 |
+| `connection-refused` | INFO | a connection or a subscription over its cap was closed: the client's `ip`, `open` (the cap) and the `reason`, `connections-per-ip` or `subscriptions-per-ip` (section 7) |
+| `fatal` | ERROR | the relay stopped on an error, at its start (the database, the port, a setting, a newer schema) or when its listener failed: `error` names it, and the exit status is 1 |
+| `stopped` | INFO | a clean stop finished, after SIGINT, SIGTERM or, with `--exit-on-stdin-eof`, the end of stdin: the last line, and the exit status is 0 |
 
 What a line names: envelope ids, addresses (public keys), mailboxes, record kinds, codes, cursors, and the client's
 address. What no line holds: a message body, a plaintext, a record's bytes or a key. `--log-ip` sets how the client's
@@ -554,6 +588,12 @@ wrote <project dir>/.claude/settings.json
   --dir <home>","timeout":3600,"asyncRewake":true}]}],"Stop":[...the same hook...]}
 ```
 
+That run predates the day-long wait: the hook `host install` writes now ends `--dir <home> --max 86000` and has
+`"timeout":86400`, so an idle session gets one wake a day instead of one an hour, and goes deaf after about two days of
+silence instead of two hours (read from the code, not run here; `packages/cli/README.md`, "Waking a session"). An
+earlier install keeps 3600 until you run the same `host install` command again, which replaces that hook and prints it
+as `removed`; then restart Claude Code in the project.
+
 A second run printed `unchanged` for both files and `nothing to change`. What it writes, read from
 `packages/cli/src/commands/host-install.ts` and checked by listing the files that changed: `$PROJECT/.mcp.json`,
 `$PROJECT/.claude/settings.json`, and once per machine the empty file `$HOME/.bag/telemetry-noticed`, when it
@@ -622,6 +662,41 @@ paired ana ed25519:a28d281d...
 
 Open codes live in the relay's memory for at most 600 seconds, so a restart of the rendezvous relay drops them, and a
 code claimed after that is 404 `no-nameplate`. Do not restart or upgrade the rendezvous while someone pairs.
+
+### Records at your origin
+
+An organisation can have its agents trusted by its domain rather than address by address. It serves its signed
+address record, the org record, at `https://<host>/.well-known/bag/address.json`, and a recipient names
+`domain:<host>` as a root in its accept-from record (`c record accept-from ... --root domain:<host>`) or in its inbox
+(`--trust-root <host>`). A relay that holds such a record fetches the org record and pins its key (section 1). Two
+more pieces are optional: one DNS TXT record at `_bag.<host>`, `v=ac1; key=<org key>` (with `; host=bag` when the
+files are served at `https://bag.<host>` instead), which names the key the org record must carry; and handle records at
+`/.well-known/bag/handles/<local>.json`, which give agents names such as `jane@example.org`. `docs/onboarding.md` does
+all of this with one command, `onboard`, and says what to serve and what to add to DNS; `docs/partner-install.md`,
+section 6, does it by hand.
+
+What `docs/onboarding.md` leaves out (read from the code, not run here):
+
+- **What a reader fetches.** Your relay, and a sender's edge, read the org record over HTTPS only, from a host whose
+  every address is public, and follow no redirect: any status but 200 fails, a 3xx included. They read at most 262,144
+  bytes (256 KiB), within 10 seconds by default; at the relay that is `--well-known-timeout`, which the TXT lookup and
+  the fetch share. A domain has at most one TXT record that starts `v=ac1`: two, or a malformed one, fail the
+  resolution, and other TXT records at that name are ignored. The relay remembers a failed resolution for 60 seconds
+  (`crates/ac-relay/src/resolver.rs`, `packages/edge/src/adapters/well-known.ts`, `packages/core/src/discovery.ts`).
+- **Checking it from outside.** `c lookup domain:<host> --as <name> --relay <url>` resolves the domain as a sender's
+  edge does. It prints a `cache` line, then one line for the TXT record and one for the org record at the origin,
+  `<source> <found|none|refused|error> kind=<k> ...` (`packages/cli/src/commands/lookup.ts`).
+- **Sending under the domain.** The org key signs one hop to the agent's address with `delegate`, and the agent sends
+  under that chain with `send --auth`. With an org key named `org`, an agent named `agent` and a recipient's handle:
+
+  ```sh
+  c delegate --from org --to "$(c address agent)" --exp +86400 --out agent.chain.json
+  c send --as agent --auth agent.chain.json --to ben@example.net --relay "$R1" --type chat.v1 --body '{"text":"hi"}'
+  ```
+
+  `delegate` prints the subject, then `root <address> hops <n> exp <seconds> caveats <JSON list>`. A relay delivers the
+  envelope to a recipient whose accept-from record names `domain:<host>` when the chain's root, the org key, is that
+  domain's current key (`packages/cli/src/cli.ts`, `crates/ac-relay/src/policy.rs`).
 
 ## 11. Two relays
 
@@ -781,21 +856,24 @@ Two subcommands: `ac-relay probe <url> --key <file>` (section 8) and `ac-relay b
 ## 15. When something goes wrong
 
 A relay answers an error as `{"error": "<code>"}` with an HTTP status; the CLI prints it as `bag: <code>: <detail>`.
-The codes are Appendix A of `spec/SPEC.md`; the ones an operator meets:
+A 429 and a 503 also carry `Retry-After`, the seconds to wait before trying again. The codes are Appendix A of
+`spec/SPEC.md`; the ones an operator meets:
 
 | code, status | what it means | what to do |
 |---|---|---|
 | `unreachable` (CLI) | no connection to the relay, or no reply | is the relay running (`c health`, `curl .../v0/health`)? Is the front forwarding to its port? |
+| `unreachable` (CLI), with `connection-refused` in the log | the client held `--connections-per-ip` connections already, and the relay closed the new one unanswered (section 7) | close the client's idle connections; behind a front, put the front's address in `--trust-proxy`, or all its clients share one cap |
 | `resolve-failed` (CLI) at a recipient's relay | the sender's edge refused a relay on a private or loopback address, or could not read the recipient's record | give your relay a public address; on a LAN, senders pass `--allow-private-relays` |
-| `resolve-failed`, 503 | the relay could not resolve a `domain:` root (DNS, HTTPS, the record) | check the relay's outbound DNS and HTTPS; the `well-known-refused` and `txt` log lines name the step |
+| `resolve-failed`, 503 with `Retry-After` 60 | the relay could not resolve a `domain:` root (DNS, HTTPS, the record), and holds no valid pinned record for it | check the relay's outbound DNS and HTTPS; the `well-known-refused` line's `reason` and the `txt` line name the step. The origin must answer `/.well-known/bag/address.json` itself with 200 over HTTPS, with no redirect, and `_bag.<host>` may hold at most one `v=ac1` TXT record (section 10, "Records at your origin") |
 | `bad-auth`, 401 | a fetch or subscribe proof did not verify | for a fetch, the relay URL the client used, as its records list it, must equal `--advertise` or an `--accept-base` byte for byte (section 5; read from the code, not run); for either, check that `--as` names the mailbox's identity |
 | `future-ts`, `stale-ts`, 422 (401 at fetch) | a timestamp outside the relay's window | fix the clock on the relay or on the client |
 | `rate-limited`, 429 | over a limit; the log's `limit` names which | wait `Retry-After`; behind a front, check `--trust-proxy`, or every client shares one limit |
-| `store-full`, 503 | the store reached `--max-store-bytes` | raise the bound (with room on the disk), or wait for mail to expire |
+| `store-full`, 503 with `Retry-After` | the store reached `--max-store-bytes` (`Retry-After` is one sweep interval); or, at a rendezvous, a pairing open while the relay holds 10,000 open codes (`Retry-After` 600) | raise the bound (with room on the disk), or wait for mail to expire; for pairing, wait for open codes to lapse |
 | `not-authorized`, 403 | a blocked sender, or a signer who may not read this | check the blocklist (`ac-relay block <file>`) |
 | `not-hosted`, 403 | no recipient has an accept-from record at this relay | the recipient publishes `record accept-from` here, or pairs (section 10) |
 | `root-not-accepted`, 403 | the recipient's accept-from record does not admit the sender's root | the recipient adds the root and publishes again |
 | `stale-record`, 409 | the relay holds a record at least as new | sign again with a newer `iat`; `record keep` does |
+| `record-expired`, 422 | a record past its life: an address record past `iat + ttl`, or a key record past its `exp` (`spec/SPEC.md` §7.5); at a domain root, an org record served past its life, logged `well-known-refused` with `reason` `record-expired` | sign again and publish (`c record keep --once`); re-sign the org record and replace the file daily (`docs/onboarding.md`, section 7); check the clocks |
 | `no-nameplate`, 404 | a pairing code the relay does not hold: expired, mistyped, claimed at another relay, or dropped by a restart | both sides use the same rendezvous (section 10); start a new invitation |
 | `internal`, 500 | the relay's own failure, its store say | read the `store-error` line; check the disk |
 | `fatal` in the log, exit 1 | the relay could not start | the line names why: the database, the port, a setting, a newer schema |

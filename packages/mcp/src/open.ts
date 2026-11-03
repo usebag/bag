@@ -163,7 +163,9 @@ function lockPid(path: string): number | null {
 
 /**
  * Takes <state>/mcp.lock for this pid, or refuses with `busy` while a live process holds it; a lock left by a process
- * that is gone is taken over (a server that takes it in between makes the second open fail with EEXIST). Returns the
+ * that is gone is taken over (a server that takes it in between makes the second open fail with EEXIST). The refusal
+ * names the holder, another session's server, and both ways out: the host shows only that the server closed, so this
+ * line in its MCP log is where the person finds why. Returns the
  * release, which removes the file only while it still names this pid. `keepAlive` is written beside the pid: a server
  * keeping its records alive, for which a background `ac record keep` stands aside (lockPid reads the pid alone).
  */
@@ -182,7 +184,9 @@ export function acquireLock(
     if (holder !== null && alive(holder)) {
       throw new ConfigError(
         'busy',
-        `the MCP server with pid ${holder} holds this identity (${path}); one server per fixed name`,
+        `the MCP server with pid ${holder} holds this identity (${path}): another session ` +
+          '(Claude Code, Codex) runs it, one server per fixed name; close that session, ' +
+          'or give this one its own identity: --session auto or a second --as',
       )
     }
     unlinkSync(path)

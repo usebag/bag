@@ -31,10 +31,22 @@ const TABLE =
 const MCP_MAIN = fileURLToPath(new URL('../../../mcp/src/main.ts', import.meta.url))
 const CLI_MAIN = fileURLToPath(new URL('../main.ts', import.meta.url))
 
-/** The Claude Code hook that runs `wake-hook` with `flags`: asyncRewake, a timeout above wake-hook's 3500 s. */
+/**
+ * The wait the Claude Code hooks pass to wake-hook, in s, and their timeout above it: one idle wake a day, and the
+ * silent second deadline after about two days, where wake-hook's default of 3500 s gave an hour and two. Claude Code
+ * 2.1.316 kept such a hook past 3600 s and woke the idle session at its exit 2 (measured 2026-11-03 at 3700 s).
+ */
+const WAKE_MAX = 86_000
+const WAKE_TIMEOUT = 86_400
+
+/** The wake-hook command with `flags`, shell-quoted; without --max, the form host install wrote before WAKE_MAX. */
+const wakeCommand = (flags: readonly string[]): string =>
+  [process.execPath, CLI_MAIN, 'wake-hook', ...flags].map(shq).join(' ')
+
+/** The Claude Code hook that runs `wake-hook` with `flags` and --max WAKE_MAX: asyncRewake, timeout WAKE_TIMEOUT. */
 const wakeHook = (flags: readonly string[]): Json => {
-  const command = [process.execPath, CLI_MAIN, 'wake-hook', ...flags].map(shq).join(' ')
-  return { type: 'command', command, timeout: 3600, asyncRewake: true }
+  const command = wakeCommand([...flags, '--max', String(WAKE_MAX)])
+  return { type: 'command', command, timeout: WAKE_TIMEOUT, asyncRewake: true }
 }
 
 const relayArgs = (e: Identity): string[] => [
@@ -135,14 +147,25 @@ function write(plans: readonly Plan[], out: string[]): boolean {
   return plans.some((x) => x.added !== null)
 }
 
-/** The hooks change: `hook` in SessionStart and Stop, after the groups that run `drop` are removed (5.3). */
-function hookPlan(doc: Json, hook: Json, drop?: string): Json | null {
-  const [events, added]: [Json, Json] = [child(doc, 'hooks'), {}]
+/**
+ * The hooks change: `hook` in SessionStart and Stop, after the groups that run a command of `drop` are removed (5.3,
+ * and an earlier install's hook); `removed` names the commands removed, one as a string.
+ */
+function hookPlan(doc: Json, hook: Json, drop: readonly string[]): Json | null {
+  const [events, added, removed]: [Json, Json, Set<string>] = [child(doc, 'hooks'), {}, new Set()]
+  const runs = (g: unknown) => drop.find((c) => JSON.stringify(g).includes(`"command":${JSON.stringify(c)}`))
   for (const event of ['SessionStart', 'Stop']) {
     const groups = events[event]
-    if (drop !== undefined && Array.isArray(groups)) {
-      const keep = groups.filter((g) => !JSON.stringify(g).includes(`"command":${JSON.stringify(drop)}`))
-      if (keep.length < groups.length) [events[event], added.removed] = [keep, drop]
+    if (Array.isArray(groups)) {
+      const keep = groups.filter((g) => {
+        const c = runs(g)
+        if (c !== undefined) removed.add(c)
+        return c === undefined
+      })
+      if (keep.length < groups.length) {
+        events[event] = keep
+        added.removed = removed.size === 1 ? [...removed][0] : [...removed]
+      }
     }
     if (addGroup(events, event, hook)) added[event] = [{ hooks: [hook] }]
   }
@@ -196,7 +219,10 @@ function install(io: Io, file: string, dir: string, me: Identity): number {
     doc = { version: 1, default: doc.default ?? from.old.label, identities }
   }
   doc = addIdentity(doc, me) ?? doc
-  const drop = from.old && (wakeHook(['--as', keyOf(from.old), '--dir', from.old.home]).command as string)
+  // The single-identity hook it migrates, as written now or before WAKE_MAX, and this file's hook as written before.
+  const old = from.old && ['--as', keyOf(from.old), '--dir', from.old.home]
+  const migrated = old ? [wakeHook(old).command as string, wakeCommand(old)] : []
+  const drop = [wakeCommand(['--identities', file]), ...migrated]
   const hook = wakeHook(['--identities', file])
   const hooks = plan(join(dir, '.claude', 'settings.json'), (d) => hookPlan(d, hook, drop))
   const added = doc.identities.filter((x) => !was.identities.some((y) => isDeepStrictEqual(x, y)))
@@ -239,8 +265,9 @@ function remove(p: Parsed, io: Io, file: string, dir: string): number {
  * Only the places packages/mcp/README.md documents are written; any other is a usage error
  * "not documented yet". claude-code --project <dir>: `.mcp.json` (mcpServers.bag = {command, args}) and
  * `.claude/settings.json` (a SessionStart and a Stop hook, `{"type": "command", "command": "<node> <cli>
- * wake-hook --as <name> --dir <home>"}` with asyncRewake and a timeout above wake-hook's 3500 s), merged into what
- * is there without touching another key; a second run changes nothing and says so. codex --user --mode worker (the
+ * wake-hook --as <name> --dir <home> --max 86000"}` with asyncRewake and timeout 86400: WAKE_MAX, WAKE_TIMEOUT), merged
+ * into what is there without touching another key, an earlier install's hook of that identity replaced; a second run
+ * changes nothing and says so. codex --user --mode worker (the
  * default: Codex has no idle wake) prints the line that runs `inbox --watch --exec 'codex exec ...'` (the README's runnable form) and writes
  * nothing; --mode mcp writes the `[mcp_servers.bag]` table in ~/.codex/config.toml instead (one receiver
  * per identity: never both; the server is `--session auto:codex --principal <name>` with the required
@@ -331,7 +358,8 @@ export function hostInstall(args: readonly string[], io: Io): number {
     if (!existsSync(dir)) throw new CliError('ENOENT', `no project directory ${dir}`)
     if (file !== undefined) return install(io, file, dir, me)
     const entry = single(me)
-    const hook = wakeHook(['--as', name, '--dir', home])
+    const flags = ['--as', name, '--dir', home]
+    const hook = wakeHook(flags)
     const mcp = plan(join(dir, '.mcp.json'), (doc) => {
       const servers = child(doc, 'mcpServers')
       const have = servers.bag
@@ -342,7 +370,9 @@ export function hostInstall(args: readonly string[], io: Io): number {
       servers.bag = entry
       return { bag: entry }
     })
-    const hooks = plan(join(dir, '.claude', 'settings.json'), (doc) => hookPlan(doc, hook))
+    // An earlier install's hook for the same identity (no --max, timeout 3600) is replaced.
+    const earlier = [wakeCommand(flags)]
+    const hooks = plan(join(dir, '.claude', 'settings.json'), (doc) => hookPlan(doc, hook, earlier))
     if (!write([mcp, hooks], out)) out.push('nothing to change')
   } else if (mode === 'mcp') {
     if (!io.env.HOME) throw new UsageError('no HOME: codex --user writes $HOME/.codex/config.toml')
