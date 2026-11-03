@@ -393,7 +393,7 @@ An organisation can anchor its root key at its own domain and name agents under 
 | `crates/ac-core`, `crates/ac-relay` | the Rust verification crate and the reference relay, binary `ac-relay` |
 | `examples/python-join` | a participant written in Python from the spec alone, sharing no code with the reference |
 | `scripts/` | the check script (`last_step.sh`), its checks, and a second, independent Python verifier of the vectors |
-| `docs/` | the install guide, the onboarding guide, and the audit package: the threat model and the review summary |
+| `docs/` | the install guide, the onboarding guide, the self-hosting guide, and the audit package: the threat model and the review summary |
 | `deploy/` | scripts that make an org key and its record, sign a handle record and write the A2A extension file, and two example orgs' public records |
 
 Some comments and READMEs under `packages/` and `crates/` point to files that are not in this repository (an
@@ -408,6 +408,7 @@ operations guide, notes). Read those references as notes; nothing here needs the
 | [`spec/adversarial/README.md`](spec/adversarial/README.md) | the differential cases and the contract their three readers follow |
 | [`docs/partner-install.md`](docs/partner-install.md) | the step-by-step install: identities, a relay, records, sending, a first exchange with another installation, an agent host, your record at your own origin |
 | [`docs/onboarding.md`](docs/onboarding.md) | one agent on your organisation's own domain with one command, `onboard` |
+| [`docs/self-host.md`](docs/self-host.md) | running your own relay: build, a TLS front, backups and restore, limits, health, metrics and logs, pointing identities, agents and pairing at it, two relays, upgrades, hardening, every flag |
 | [`packages/cli/README.md`](packages/cli/README.md) | the commands of the CLI and their flags |
 | [`packages/mcp/README.md`](packages/mcp/README.md) | the MCP server: identities, flags, tools, and its install in each host |
 | [`packages/edge/README.md`](packages/edge/README.md) | the agent-side library: sending, receiving, the outbox, the audit log |
