@@ -8,6 +8,8 @@ import {
   type BridgeEdge,
   DEFAULT_PORT,
   endpointUrl,
+  isLoopbackHost,
+  LOOPBACK_ONLY,
 } from '../src/bridge.ts'
 import type { CardRecord } from '../src/card.ts'
 import { success } from '../src/jsonrpc.ts'
@@ -180,6 +182,21 @@ describe('A2aBridge: an A2A JSON-RPC endpoint on localhost that seals each call 
     const got = await post(url, sec943)
     expect(got.json).toMatchObject({ jsonrpc: '2.0', id: 2, result: { id: 'task-uuid' } })
     expect((got.json.result as { history: unknown[] }).history).toHaveLength(2)
+  })
+
+  it('listens on the loopback only: start rejects a network host before it listens, since it has no caller authentication', async () => {
+    expect(isLoopbackHost('127.0.0.1')).toBe(true)
+    expect(isLoopbackHost(' Localhost ')).toBe(true)
+    expect(isLoopbackHost('::1')).toBe(true)
+    expect(isLoopbackHost('0.0.0.0')).toBe(false)
+    expect(isLoopbackHost('::')).toBe(false)
+    expect(isLoopbackHost('10.1.2.3')).toBe(false)
+    for (const host of ['0.0.0.0', '::', '10.1.2.3', 'example.com']) {
+      await expect(bridgeOn(() => {}, { host })).rejects.toThrow(LOOPBACK_ONLY)
+    }
+    // The loopback by name listens, and its URL names what it was given.
+    const { bridge } = await bridgeOn(() => {}, { host: 'localhost' })
+    expect(bridge.url).toMatch(/^http:\/\/localhost:\d+$/)
   })
 
   it('refuses DNS rebinding: a foreign Host header or any Origin gets 403', async () => {

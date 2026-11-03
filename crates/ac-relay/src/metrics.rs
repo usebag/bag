@@ -6,8 +6,9 @@
 //! Every label value is a `&'static str`: a route, a code, a limit, a reason or an outcome, each from a closed set in
 //! the source, and a status; the build's `rev` is the commit compiled in. No address, id, root, domain, nameplate or IP
 //! is `'static`, so none can be a label. One process serves one relay, so the counts are the process's ([`METRICS`]),
-//! and they start again at 0 with it. The day's counts of subscribed mailboxes and of client networks keep a hash of
-//! each, under a key made in memory for that day, until 00:00 UTC, when both go; only the counts leave.
+//! and they start again at 0 with it. The day's counts of subscribed mailboxes and of client networks, and the day's
+//! first subscribes, keep a hash of each mailbox or network, under a key made in memory for that day, until 00:00 UTC,
+//! when all three go; only the counts leave.
 //!
 //! With `--metrics-litestream`, each scrape also reads Litestream's own metrics on this host and passes on its
 //! `litestream_*` lines only, after `ac_relay_litestream_up` (1, or 0 when that read failed): Fly scrapes one endpoint
@@ -103,6 +104,13 @@ pub const PENDING_DROPPED: &str = "ac_relay_pending_dropped_total";
 pub const PAIR_CLAIMS: &str = "ac_relay_pair_claims_total";
 /// The gauge of nameplates open, read at each scrape.
 pub const NAMEPLATES_OPEN: &str = "ac_relay_nameplates_open";
+/// The counter of subscriptions answered `ok` to a mailbox that no envelope has reached at this relay (its last cursor
+/// is 0, and cursors are never deleted), each mailbox once in a UTC day ([`Metrics::first_subscribed`]): installs
+/// whose host is wired and started, with no per-mailbox mark stored. Over: a fresh install that receives nothing counts
+/// once on each day it subscribes; a relay that is a pairing rendezvous counts each invitation's mailbox too (relay 1;
+/// relay 2 is the clean read); a restart starts the day's set again. Under: a mailbox that a peer wrote to before its
+/// first subscribe never counts.
+pub const FIRST_SUBSCRIBES: &str = "ac_relay_first_subscribes_total";
 /// The counter of signatures that did not verify, by `kind`, what was signed ([`Metrics::refused`]).
 const SIGNATURE_FAILURES: &str = "ac_relay_signature_failures_total";
 /// The gauges of the limits the relay runs with, by `limit` ([`Metrics::limits`]).
@@ -110,7 +118,7 @@ const LIMITS: &str = "ac_relay_limit";
 
 /// The counters with no label that an alert or a daily total reads with `increase` (deploy/relay/observability/):
 /// [`Metrics::started`] seeds them at 0.
-pub const SEEDED: [&str; 9] = [
+pub const SEEDED: [&str; 10] = [
     STORE_FULL,
     STORE_ERRORS,
     STORE_CORRUPT,
@@ -120,6 +128,7 @@ pub const SEEDED: [&str; 9] = [
     "ac_relay_deliveries_total",
     RESOLUTIONS_CAPPED,
     CONNECTIONS_ACCEPTED,
+    FIRST_SUBSCRIBES,
 ];
 
 /// The labelled counters an alert or a daily total reads with `increase`, each with its label and the values of its
@@ -235,6 +244,7 @@ pub struct Metrics {
     durations: Mutex<BTreeMap<(&'static str, u16), Durations>>,
     mailboxes: Mutex<Option<Today>>,
     networks: Mutex<Option<Today>>,
+    fresh: Mutex<Option<Today>>,
 }
 
 /// One route and status's requests: a count under each bucket's bound, their sum in microseconds and their count.
@@ -254,8 +264,9 @@ struct Today {
 }
 
 impl Today {
-    /// `thing` seen at `now`; the first of a new day drops the last day's hashes and key.
-    fn see(set: &Mutex<Option<Today>>, now: u64, thing: impl Hash) {
+    /// `thing` seen at `now`, true the first time in its UTC day; the first of a new day drops the last day's hashes
+    /// and key.
+    fn see(set: &Mutex<Option<Today>>, now: u64, thing: impl Hash) -> bool {
         let day = now / 86_400;
         let mut today = lock(set);
         if today.as_ref().is_some_and(|t| t.day != day) {
@@ -263,7 +274,7 @@ impl Today {
         }
         let today = today.get_or_insert_with(|| Today { day, key: RandomState::new(), seen: HashSet::new() });
         let hash = today.key.hash_one(thing);
-        today.seen.insert(hash);
+        today.seen.insert(hash)
     }
 
     /// How many were seen on the day of `now`.
@@ -310,6 +321,7 @@ impl Metrics {
             durations: Mutex::new(BTreeMap::new()),
             mailboxes: Mutex::new(None),
             networks: Mutex::new(None),
+            fresh: Mutex::new(None),
         }
     }
 
@@ -427,6 +439,14 @@ impl Metrics {
     /// `mailbox` subscribed at `now`: counted once in its UTC day.
     pub fn subscribed(&self, now: u64, mailbox: &str) {
         Today::see(&self.mailboxes, now, mailbox);
+    }
+
+    /// `mailbox`, which no envelope has reached at this relay, subscribed at `now`: one more of [`FIRST_SUBSCRIBES`]
+    /// the first time in its UTC day, counted as [`Metrics::subscribed`] counts, by a hash under the day's key.
+    pub fn first_subscribed(&self, now: u64, mailbox: &str) {
+        if Today::see(&self.fresh, now, mailbox) {
+            self.tick(FIRST_SUBSCRIBES);
+        }
     }
 
     /// A call from client `ip` at `now`: its network (the rate limits' bucket, an IPv4 address or an IPv6 /56) counted

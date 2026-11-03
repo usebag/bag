@@ -251,6 +251,12 @@ export class SqliteStore implements EdgeStore {
     return r === undefined ? null : camel<OutboxEntry>(r)
   }
 
+  /** The bytes of the envelopes added in [from, to), in seconds: what telemetry's `pairs` reads (telemetry-pairs.ts). */
+  outboxBetween(from: number, to: number): Uint8Array[] {
+    const rows = this.#q('SELECT bytes FROM outbox WHERE created_at >= ? AND created_at < ?').all(from, to)
+    return rows.map((r) => r.bytes as Uint8Array)
+  }
+
   outboxPlan(id: string): string | null {
     const r = this.#q('SELECT plan FROM outbox WHERE id = ?').get(id)
     return (r?.plan ?? null) as string | null

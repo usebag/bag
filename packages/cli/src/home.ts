@@ -21,6 +21,7 @@ import {
   HomeCustody,
   type InboxRow,
   KeyEpochStore,
+  notePairs,
   type PolicyOptions,
   processStart,
   type RelayClient,
@@ -254,6 +255,8 @@ export function openEdge(io: Io, o: OpenOptions): OpenEdge {
   const dir = join(o.home, 'state', o.name)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   const store = new SqliteStore(join(dir, 'edge.sqlite'))
+  // The machine's telemetry, while it is on: this identity's pairs snapshot of each finished day (telemetry-pairs.ts).
+  notePairs(io.env, io.clock, o.home, o.name, store)
   try {
     const edge = new Edge({
       keys,

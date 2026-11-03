@@ -7,15 +7,18 @@ import {
   countTelemetry,
   createRelayClient,
   HomeCustody,
+  proxyStatus,
   type RecordSource,
   type RelayClient,
   RelayError,
   RelayTurns,
   type Rng,
   startTelemetry,
+  startTelemetrySender,
   stopTelemetry,
   systemClock,
   systemRng,
+  trackPairs,
 } from '@usebag/edge'
 import { FrontDesk, type SessionNameOptions } from '@usebag/edge/agent'
 import type { SessionAgent } from './agent.ts'
@@ -197,7 +200,7 @@ export class Unit {
     const { clock, rng, timers, log } = deps
     const { config } = this
     const delay = deps.resubscribeDelayMs ?? (this.#multi ? jitteredDelay(rng) : undefined)
-    const o = openIdentity(config, {
+    const opened = openIdentity(config, {
       clock,
       rng,
       relay: deps.relay,
@@ -243,6 +246,15 @@ export class Unit {
       pid: deps.pid,
       alive: deps.alive,
     })
+    // The machine's telemetry, while it is on: this identity's pairs snapshot, now and before each try of the sender.
+    const untrack = trackPairs(deps.env ?? {}, clock, config.home, config.as, opened.store)
+    const o: Opened = {
+      ...opened,
+      close: () => {
+        untrack()
+        opened.close()
+      },
+    }
     const { edge, client, signer, sealingKey, epochs } = o
     const { relays, home, as: name } = config
     const keeper = { edge, client, signer, sealingKey, epochs, relays, home, name, clock, timers, log }
@@ -773,6 +785,11 @@ export interface ProcessIo {
   readonly console: ConsoleLike
   /** How --chain-cmd runs (default /bin/sh -c). */
   readonly run?: RunCommand
+  /**
+   * The fetch the machine's telemetry report goes out with, hourly while it is on (the edge's telemetry-send.ts).
+   * Without it the process sends none: a test's io has none.
+   */
+  readonly fetch?: typeof fetch
 }
 
 /** The real process: its streams, environment and signals, the system clock and CSPRNG, the relay over the network. */
@@ -795,6 +812,7 @@ export function processIo(): ProcessIo {
     signals: process,
     console,
     run: runShell,
+    fetch,
   }
 }
 
@@ -836,6 +854,9 @@ export async function serve(io: ProcessIo): Promise<number> {
     write(`${USAGE}\n`)
     return 0
   }
+  // Behind a proxy, one line naming it without its user or password, a warning when Node does not send through it.
+  const net = proxyStatus(io.env)
+  if (net.https !== null || net.http !== null) log.log(net.active ? 'info' : 'warn', 'network', { ...net })
   const restore = guardConsole(io.console, log)
   try {
     let running: Pick<Running, 'mcp' | 'stop'>
@@ -865,6 +886,9 @@ export async function serve(io: ProcessIo): Promise<number> {
       log.log('error', 'start', coded(e))
       return e instanceof PolicyFileError ? 2 : 1
     }
+    // The machine's telemetry: each finished day's report, once, tried now and hourly while it is on; never awaited.
+    const stopSending =
+      io.fetch === undefined ? null : startTelemetrySender(io.env, io.clock, { fetch: io.fetch })
     const { promise: done, resolve: finish } = Promise.withResolvers<void>()
     const onSignal = (): void => finish()
     io.stdin.once('end', finish)
@@ -878,6 +902,7 @@ export async function serve(io: ProcessIo): Promise<number> {
     io.signals.removeListener('SIGTERM', onSignal)
     io.stdin.removeListener('end', finish)
     io.stdin.removeListener('close', finish)
+    stopSending?.()
     await running.stop()
     return 0
   } finally {

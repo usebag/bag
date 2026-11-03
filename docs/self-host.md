@@ -7,11 +7,12 @@ relays"). The README, `SECURITY.md` and `spec/SPEC.md` are the authority on what
 to run this one relay.
 
 How this guide was checked: every command below was run on macOS (Apple silicon) against relays built from this
-repository and bound to 127.0.0.1, and its output is quoted as it came, shortened where it says so. The runs kept
-their files under a scratch directory, and where a command names a public relay, `https://relay.example.org` or
-`https://relay1.example.org`, they used a local one: `http://127.0.0.1:7777`, `http://127.0.0.1:7778`, or a test TLS
-name, `https://localhost:9443` (section 5). A step that was not run says **Not verified**, and why, and a statement
-taken from the code without a run says *read from the code*.
+repository and bound to 127.0.0.1, and its output is quoted as it came, shortened where it says so. The build, the
+run and the systemd unit were run again on Linux (section 2 names the machine), and the container route under Docker.
+The runs kept their files under a scratch directory, and where a command names a public relay,
+`https://relay.example.org` or `https://relay1.example.org`, they used a local one: `http://127.0.0.1:7777`,
+`http://127.0.0.1:7778`, or a test TLS name, `https://localhost:9443` (section 5). A step that was not run says
+**Not verified**, and why, and a statement taken from the code without a run says *read from the code*.
 Run everything from the root of this directory, with the `c` function of `README.md`:
 
 ```sh
@@ -20,6 +21,69 @@ c() { node packages/cli/src/main.ts "$@"; }
 
 `c help` prints every command with its flags, and so does `--help` after any command (read from the code,
 `packages/cli/src/cli.ts`).
+
+## Run it with Docker
+
+The shortest way to a relay of your own, for example inside a network whose machines cannot reach the public relays:
+build the image from this repository and start it with Docker Compose. The host needs Docker with Compose and a clone
+of this repository (section 3, its first block); no Rust and no Node. From the root of the clone:
+
+```sh
+AC_REV="$(git rev-parse HEAD)" docker compose -f deploy/docker/compose.yml up -d --build
+docker compose -f deploy/docker/compose.yml ps
+curl -s http://127.0.0.1:7777/v0/health
+```
+
+```
+ Image bag-relay:local Built
+ Volume bag-relay_relay-data Created
+ Container bag-relay-relay-1 Started
+NAME                STATUS                   PORTS
+bag-relay-relay-1   Up 8 seconds (healthy)   127.0.0.1:7777->7701/tcp
+{"now":1793709387,"ok":true,"url":"http://127.0.0.1:7777","version":"0.0.0"}
+```
+
+(Shortened.) It builds `deploy/docker/Dockerfile`: the relay built with `--release --locked` by the pinned Rust image,
+in a distroless image with no shell that runs as a non-root user (65532), about 48 MB, for the platform the build runs
+on. `AC_REV` stamps the build with its commit (section 3); left out, it reads `unknown`. The store is the volume
+`bag-relay_relay-data`, kept across `down` and `up`: a record published before `docker compose ... down` was served
+again after `up -d`. The relay's port is published on this host's loopback only, `127.0.0.1:7777`. The health check is
+the relay's own `ac-relay probe` against its port: health, then an envelope from the probe's key to itself, published
+and fetched back, once a minute (the key in the volume as `probe.key`). `docker compose ... logs -f relay` follows the
+log, and `down` stops and removes the container and keeps the volume.
+
+Point identities and agents at it as section 10 says, with `http://127.0.0.1:7777` as the relay. Section 4's block,
+with `R=http://127.0.0.1:7777`, ran from this host against the container: `c health` printed `ok`, the records were
+published, and bob read alice's message (`ok 6 lines` from `audit verify`).
+
+For other machines, put a TLS front in front of it. `deploy/docker/compose.tls.yml` adds one, Caddy, with a certificate
+from Caddy's own local authority (`tls internal` in `deploy/docker/Caddyfile`), for a network that cannot reach a public
+one. With it the relay's port is published nowhere, and the relay trusts Caddy alone as its proxy (section 5):
+
+```sh
+export BAG_RELAY_HOST=relay.internal.example BAG_RELAY_URL=https://relay.internal.example
+docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.tls.yml up -d --build
+docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.tls.yml cp \
+  caddy:/data/caddy/pki/authorities/local/root.crt ./bag-relay-root.crt
+```
+
+`BAG_RELAY_URL` is the URL your identities' records list, byte for byte (section 5, `--advertise`). Every client must
+trust the local authority's root: for the CLI and the MCP server, `NODE_EXTRA_CA_CERTS=<path of bag-relay-root.crt>`
+in their environment. Run here with `BAG_RELAY_HOST=localhost`, `BAG_RELAY_URL=https://localhost:18443` and
+`BAG_RELAY_TLS_PORT=18443` (port 443 by default): health answered with that URL, section 4's block ran through
+`https://localhost:18443`, the subscription included, and a request carrying `X-Forwarded-For: 203.0.113.9` was logged
+with the address Caddy saw, never `203.0.113.0/24`.
+
+Inside a network of your own the relay usually has a private address. A sender's edge accepts such a relay when it is
+one of its own `--relay` URLs (section 2), so every identity there lists this relay as its own relay, and as its
+`--rendezvous` for pairing (section 10).
+
+Checked with Docker Engine 29.8.2 and Compose 5.5.0 (OrbStack 2.2.5 on macOS, Apple silicon), which built a
+`linux/arm64` image in 2 minutes. **Not verified:** a `linux/amd64` build (the two base images are multi-platform), a
+Linux Docker host, clients on other machines, a certificate of your own or from a public authority in the front, and a
+request that reaches the relay's container address without passing Caddy (the run could not reach it). For an upgrade,
+check out the new commit and run the same `up -d --build`; the store migrates forward (section 6). **Not verified:** an
+upgrade across commits with this image.
 
 ## 1. What your own relay gives you, and what it still sees
 
@@ -59,9 +123,12 @@ That table is the README's ("How it works"), and `spec/SPEC.md` §10, "Metadata"
 | `sqlite3` | backups (section 6) | the checks here used `sqlite3` 3.43.2, the one macOS ships |
 | Node 24 or later | the CLI and the MCP server | on the machines your identities run on, not on the relay host |
 | a public address, a DNS name and a TLS front | a relay that other people reach | section 5; a relay only you reach needs none of these |
+| Docker with Compose | the container route, instead of rustup and a C compiler on the relay host | "Run it with Docker", above |
 
-Checked on macOS only. **Not verified:** building or running on Linux; this guide had no Linux host. Windows is untested
-(`README.md`, "Limits").
+Checked on macOS (Apple silicon), and on Linux: Ubuntu 26.04.1 LTS on arm64, a fresh virtual machine (OrbStack) with
+`build-essential`, `git` and `curl` from apt (gcc 15.2.0, git 2.53.0) and Node 24.4.1 from nodejs.org, where sections 3
+and 4 were run again from a clone of the public repository. **Not verified:** Linux on x86-64, and other
+distributions. Windows is untested (`README.md`, "Limits").
 
 A sender's edge refuses a recipient's relay whose host is a loopback, link-local, private (RFC 1918), unique-local,
 multicast or unspecified address, unless it is one of the sender's own `--relay` URLs or the sender passes
@@ -86,8 +153,9 @@ git checkout --detach "$CUT"
 npm ci                                     # Node 24 or later first in PATH
 ```
 
-`npm ci` printed `added 170 packages` here. **Not verified:** the clone and the checkout; this guide was checked in a
-checkout of the repository already at its commit.
+On Linux the block ran as it stands, from a clone of the public repository at its published commit: it printed
+`at <the commit>`, and `npm ci` printed `added 201 packages`. On macOS, in a checkout already at its commit, `npm ci`
+printed `added 170 packages`.
 
 Then build the relay:
 
@@ -98,8 +166,11 @@ target/release/ac-relay --help             # every flag, with its default
 ```
 
 `--locked` builds with the exact crate versions of `Cargo.lock`. The binary is `target/release/ac-relay`; on macOS it
-links only the system's own libraries (`otool -L` lists `libiconv` and `libSystem`), so you can copy it to where it
-runs. Build on the machine that runs it, or on one with the same operating system and CPU.
+links only the system's own libraries (`otool -L` lists `libiconv` and `libSystem`), and on Linux only glibc's (`ldd`
+lists `libc`, `libm` and `libgcc_s`), so you can copy it to where it runs. Build on the machine that runs it, or on one
+with the same operating system, CPU and a glibc no older. On the Linux machine, where rustup had no toolchain yet, the
+first `cargo` call installed 1.95.0 itself (`the missing active toolchain ... has been auto-installed`), and the build
+took 1 minute.
 
 To stamp the build with its commit, set `AC_REV` at build time. The relay then reports it in its metrics as
 `ac_relay_build_info{rev="<commit>"}` (section 8), which tells you which cut a running relay was built from; without it
@@ -184,9 +255,10 @@ bob's read.
 
 The repository ships no service file. A supervisor you already use can run the command above.
 
-**Not verified** (no Linux host here): a systemd unit for a relay behind a TLS front on the same host (section 5), run
-as its own user with its state in `/var/lib/bag-relay`. Make the user first (`useradd --system bag-relay`) and put the
-binary at `/usr/local/bin/ac-relay`:
+A systemd unit for a relay behind a TLS front on the same host (section 5), run as its own user with its state in
+`/var/lib/bag-relay`. Make the user first (`useradd --system bag-relay`), put the binary at `/usr/local/bin/ac-relay`
+(`install -m 0755 target/release/ac-relay /usr/local/bin/ac-relay`), write the unit to
+`/etc/systemd/system/bag-relay.service`, then `systemctl daemon-reload` and `systemctl enable --now bag-relay`:
 
 ```ini
 [Unit]
@@ -210,6 +282,13 @@ WantedBy=multi-user.target
 ```
 
 systemd sends SIGTERM to stop a service, which the relay handles as above, and the journal keeps its stdout and stderr.
+The unit ran as written on the Linux machine of section 2 (systemd 259). systemd made `/var/lib/bag-relay` with mode
+0700, owned by `bag-relay`; `curl -s http://127.0.0.1:7777/v0/health` answered with `"url":"https://relay.example.org"`;
+and `journalctl -u bag-relay` held the `AC_RELAY_URL=` line and the JSON log. Section 4's block, with
+`R=http://127.0.0.1:7777`, ran against it, and again through the Caddy front of section 5. `systemctl stop bag-relay`
+logged `stopped`, systemd recorded exit status 0, and only `relay.sqlite` and its marker were left. The first start
+came about two minutes after `enable --now`, the wait for `network-online.target` on that machine; a restart took a
+second.
 
 ## 5. A name, TLS, and the proxy in front
 
@@ -217,6 +296,11 @@ The relay speaks plain HTTP and WebSocket on one port and has no TLS of its own.
 front in front of it (a reverse proxy, a load balancer, a tunnel) that forwards to the relay's port and passes WebSocket
 upgrades on `/v0/subscribe`. Keep the relay bound to `127.0.0.1` (or the private interface the front reaches it on),
 so no client can reach it around the front.
+
+Clients on a company network may reach the relay through their own outbound proxy (`HTTPS_PROXY`, by CONNECT; the
+clients' side is in `packages/cli/README.md`, "Behind a proxy"). The relay needs nothing for them. A proxy that
+inspects TLS and does not pass WebSocket upgrades stops their subscription: they can still publish and fetch, but they
+receive nothing until their proxy passes `/v0/subscribe`.
 
 Three flags tell the relay about its front:
 
@@ -260,9 +344,8 @@ target/release/ac-relay --port 7780 --db "$HOME/bag-relay/relay.sqlite" --advert
 `x-forwarded-for: 198.51.100.7` was logged with `"ip":"198.51.100.0/24"`, and one without the header as
 `"ip":"127.0.0.0/24"`.
 
-**Not verified:** any production proxy. For example, Caddy, which obtains a certificate for the name, sets
-`X-Forwarded-For` and passes WebSocket upgrades in its `reverse_proxy`; check in your front's own documentation that it
-replaces or appends to a client's `X-Forwarded-For` as above:
+A production proxy, for example Caddy, which obtains a certificate for the name, sets `X-Forwarded-For` and passes
+WebSocket upgrades in its `reverse_proxy`:
 
 ```
 relay.example.org {
@@ -270,7 +353,16 @@ relay.example.org {
 }
 ```
 
-with the relay started as in the systemd unit above. Whatever the front, the relay pings each subscriber every 30
+with the relay started as in the systemd unit above. On the Linux machine of section 2 this ran with Ubuntu's `caddy`
+package (2.6.2) and one line added inside the block, `tls internal`, since `relay.example.org` cannot get a public
+certificate: an `/etc/hosts` line sent the name to 127.0.0.1, and the CLI trusted Caddy's local root through
+`NODE_EXTRA_CA_CERTS`. `c health https://relay.example.org` printed `ok`, section 4's block ran through it, the
+subscription included, and a request carrying `X-Forwarded-For: 203.0.113.9` was logged as `"ip":"127.0.0.0/24"`, the
+address Caddy saw: Caddy did not pass the client's value on. The container route ("Run it with Docker") ran Caddy 2.11.6
+the same way. **Not verified:** a certificate from a public authority, and any other proxy; check in your front's own
+documentation that it replaces or appends to a client's `X-Forwarded-For` as above.
+
+Whatever the front, the relay pings each subscriber every 30
 seconds (`--ping-interval`), so the front must keep an idle WebSocket open longer than that. It must answer at the
 relay's URL itself, never with a redirect: no edge follows a redirect from a relay.
 
@@ -445,7 +537,8 @@ One scrape, taken just after a restart, served these families: `ac_relay_publish
 `ac_relay_subscribes_total`, `ac_relay_deliveries_total`, `ac_relay_rate_limited_total`,
 `ac_relay_connections_refused_total`, `ac_relay_connections_accepted_total`, `ac_relay_connections_open`,
 `ac_relay_subscriptions_open`, `ac_relay_signature_failures_total`, `ac_relay_new_signers_total`,
-`ac_relay_blocked_total`, `ac_relay_blocklist_invalid_total`, `ac_relay_domain_resolutions_total`,
+`ac_relay_first_subscribes_total`, `ac_relay_blocked_total`, `ac_relay_blocklist_invalid_total`,
+`ac_relay_domain_resolutions_total`,
 `ac_relay_resolutions_capped_total`, `ac_relay_pending_dropped_total`, `ac_relay_proxy_header_ignored_total`,
 `ac_relay_pair_opens_total`, `ac_relay_pair_claims_total`, `ac_relay_nameplates_open`, `ac_relay_store_errors_total`,
 `ac_relay_store_full_total`, `ac_relay_store_corrupt_total`, `ac_relay_store_bytes`, `ac_relay_store_live_bytes`,
@@ -456,6 +549,16 @@ force), `ac_relay_build_info`, `process_start_time_seconds`, and after the first
 `http_server_request_duration_seconds` by route and status. A label is always a route, a code, a limit, a reason or a
 status from a closed set, never an address, an id or an IP address; the two `_today` gauges count distinct mailboxes and
 client networks through a hash under a key that lives in memory for one UTC day (`crates/ac-relay/src/metrics.rs`).
+`ac_relay_first_subscribes_total` counts subscriptions answered `ok` to a mailbox that no envelope has reached at this
+relay, each mailbox once a UTC day through the same kind of hash, with no mark of any mailbox stored: setups whose
+agent host is wired and started. Four things make it differ from installs: a fresh install that receives nothing
+counts once on each day it subscribes, and again after a relay restart that day; a relay that is a pairing rendezvous
+also counts each invitation's mailbox, so a relay that is not one gives the clean count; a relay restored from a copy
+that lacks a mailbox's cursor row counts that mailbox again, since its last cursor reads 0 there; and a mailbox that a
+peer wrote to before its first subscribe never counts. The count is per relay: a mailbox subscribes at each relay it
+lists, so never add two relays' counts. Whoever reads `/metrics` as a known mailbox subscribes can tell whether
+anything had reached that mailbox at this relay; only the metrics listener's network reaches it, and the store already
+holds that fact.
 The counts start at 0 with the process. That list is a snapshot of one run: some families appear only after their
 first event, among them `ac_relay_connection_timeouts_total` and `ac_relay_subscriptions_closed_total`, each by
 `reason`, and with `--metrics-litestream` the relay adds `ac_relay_litestream_up` (1, or 0 when the read failed) and
@@ -596,7 +699,7 @@ as `removed`; then restart Claude Code in the project.
 
 A second run printed `unchanged` for both files and `nothing to change`. What it writes, read from
 `packages/cli/src/commands/host-install.ts` and checked by listing the files that changed: `$PROJECT/.mcp.json`,
-`$PROJECT/.claude/settings.json`, and once per machine the empty file `$HOME/.bag/telemetry-noticed`, when it
+`$PROJECT/.claude/settings.json`, and once per machine the empty file `$HOME/.bag/telemetry-noticed-2`, when it
 prints the telemetry notice. Nothing it writes holds a key. The run used an empty home directory and a scratch
 project, so no real Claude Code configuration was touched.
 

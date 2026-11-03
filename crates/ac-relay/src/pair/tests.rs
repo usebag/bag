@@ -354,3 +354,41 @@ fn at_most_max_open_client_addresses_hold_a_claim_bucket_until_the_sweep() {
     pairs.sweep(NOW + 2);
     assert_eq!(pairs.claim(NOW + 2, fresh, None), Ok(None));
 }
+
+/// spec/vectors/pair-code.json's `pair_open` cases, written by the edge (packages/edge/scripts/gen-pair-code-vectors.ts):
+/// this relay rebuilds each canonical preimage and its digest, takes each body, and refuses it once its `ttl` moves.
+#[test]
+fn the_pair_open_vectors_the_edge_wrote_are_accepted_and_bound_to_their_preimage() {
+    let vectors: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../spec/vectors/pair-code.json")).unwrap();
+    let cases = vectors["pair_open"]["cases"].as_array().unwrap();
+    assert!(!cases.is_empty());
+    for c in cases {
+        let name = c["name"].as_str().unwrap();
+        let text = |v: &serde_json::Value| Signed::from(v.as_str().unwrap());
+        let relays: Vec<String> =
+            c["relays"].as_array().unwrap().iter().map(|r| r.as_str().unwrap().to_owned()).collect();
+        let ttl = c["ttl"].as_u64().unwrap();
+        let listed = Signed::Array(relays.iter().map(|r| Signed::from(r.as_str())).collect());
+        let pre = Signed::Array(vec![
+            Signed::from("ac/pair-open/1"),
+            text(&c["inviter"]),
+            text(&c["invitation"]),
+            listed,
+            Signed::Int(ttl),
+        ]);
+        assert_eq!(ac_core::canonical::to_string(&pre).unwrap(), c["canonical"].as_str().unwrap(), "{name}");
+        assert_eq!(
+            hex::encode(&ac_core::hash::digest(&pre).unwrap()),
+            c["sha256"].as_str().unwrap(),
+            "{name}"
+        );
+        let body = c["body"].as_str().unwrap();
+        let got = parse_open(body.as_bytes()).unwrap();
+        let want = (c["inviter"].as_str().unwrap(), c["invitation"].as_str().unwrap(), &relays, ttl);
+        assert_eq!((got.inviter.as_str(), got.invitation.as_str(), &got.relays, got.ttl), want, "{name}");
+        let mut moved: serde_json::Value = serde_json::from_str(body).unwrap();
+        moved["ttl"] = json!(ttl - 1);
+        assert_eq!(code(parse_open(moved.to_string().as_bytes())), (422, "bad-sig"), "{name}");
+    }
+}

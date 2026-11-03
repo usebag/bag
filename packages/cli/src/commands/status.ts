@@ -1,6 +1,13 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { type AuditLine, parseAuditLine, readAuditAnchor, readAuditLines, verifyAuditLog } from '@usebag/edge'
+import {
+  type AuditLine,
+  parseAuditLine,
+  proxyStatus,
+  readAuditAnchor,
+  readAuditLines,
+  verifyAuditLog,
+} from '@usebag/edge'
 import { CliError, parse, req, str } from '../args.ts'
 import { checkIdentity, doorbellPath, homeDir } from '../home.ts'
 import type { Io } from '../io.ts'
@@ -19,7 +26,9 @@ function ended(line: AuditLine | undefined): Ended | null {
 
 /**
  * status --as <name> [--dir <home>]: first, always, `doorbell <path>`, the identity's doorbell (home.ts),
- * an absolute path whether or not the file exists yet (inbox makes it at the first accepted message). Then what the
+ * an absolute path whether or not the file exists yet (inbox makes it at the first accepted message). Behind a proxy,
+ * then `network proxy https=<scheme://host:port|none> http=<...> no_proxy=<list|none> active=<yes|no: ...>`, the
+ * proxy without its user or password (the edge's proxy.ts); active says whether Node sends through it. Then what the
  * identity's audit log, <home>/state/<name>/audit.jsonl, says of its subscriptions. When the log's last
  * `subscribe` line is the edge's end of a subscription, `subscribe reject <code>` with `subscription-ended` (three
  * permanent refusals in a row), it prints a second line: `mailbox refused: <code> at <relay> after <n> refusals; edge
@@ -38,6 +47,12 @@ export function status(args: readonly string[], io: Io): number {
   const [home, name] = [homeDir(io, str(p, 'dir')), req(p, 'as')]
   checkIdentity(io, home, name)
   io.out(`doorbell ${doorbellPath(home, name)}`)
+  // Behind a proxy, the proxy this process sends through: scheme, host and port only, never a user or password.
+  const net = proxyStatus(io.env)
+  if (net.https !== null || net.http !== null) {
+    const shown = `https=${net.https ?? 'none'} http=${net.http ?? 'none'} no_proxy=${net.no_proxy ?? 'none'}`
+    io.out(`network proxy ${shown} active=${net.active ? 'yes' : 'no: set NODE_USE_ENV_PROXY=1'}`)
+  }
   const dir = join(home, 'state', name)
   const [file, db] = [join(dir, 'audit.jsonl'), join(dir, 'edge.sqlite')]
   // The anchor before the lines: the edge appends a line, then moves its anchor, so a log read beside a running

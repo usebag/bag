@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import type { Readable } from 'node:stream'
 import {
@@ -17,8 +17,9 @@ import {
 } from '@usebag/edge'
 
 // The CLI's one port to the world outside its arguments: the terminal (a person at it confirms), the environment, the
-// clock, the random source, the relay network, the record source, the stop signal and /usr/bin/security. Files go
-// through the edge's fs adapters at paths the arguments name, which tests point at temporary directories.
+// clock, the random source, the relay network, the record source, the stop signal, /usr/bin/security, and telemetry's
+// fetch and its detached sender. Files go through the edge's fs adapters at paths the arguments name, which tests point
+// at temporary directories.
 
 /** The relay client of the CLI: the edge's RelayClient and the health probe. */
 export type CliRelay = RelayClient & { health(url: string): Promise<boolean> }
@@ -44,6 +45,16 @@ export interface Io {
    * ENOENT: the unit tests' io has none, so no test reaches a real keychain unless it passes a runner.
    */
   readonly security?: SecurityRunner
+  /**
+   * The fetch telemetry's report and erasure go out with (the edge's telemetry-send.ts). Without it nothing is sent:
+   * `telemetry send` does nothing and `telemetry forget` fails unreachable, so no unit test reaches the endpoint.
+   */
+  readonly fetch?: typeof fetch
+  /**
+   * Starts `telemetry send` detached, never waited for, when a day's report is due after a command line. Without it
+   * none is started: the unit tests' io has none.
+   */
+  readonly spawnSender?: () => void
   /** Whether stdin is a terminal: release and drop ask a person there, and refuse no-tty otherwise. */
   readonly isTty: boolean
   /** Whether stdout is a terminal: the recovery sheet prints only there, never to a pipe or a file. */
@@ -67,6 +78,24 @@ export interface ProcessLike {
   once(event: 'SIGINT' | 'SIGTERM', listener: () => void): unknown
   /** Turns the terminal's echo on or off; by default `stty echo` or `stty -echo` on stdin, a failure ignored. */
   readonly echo?: (on: boolean) => void
+}
+
+/**
+ * `node <this CLI's main.ts> telemetry send`, detached in its own process group with no stdio and unreferenced, so
+ * the command line that started it exits at once; a failure to start it is ignored.
+ */
+function spawnSender(): void {
+  try {
+    const child = spawn(process.execPath, [process.argv[1] ?? '', 'telemetry', 'send'], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    child.on('error', () => {})
+    child.unref()
+  } catch {
+    // not started: the next command line tries again while the day is due
+  }
 }
 
 const stty = (on: boolean): void => {
@@ -136,6 +165,8 @@ export function processIo(proc: ProcessLike = process): Io {
     },
     idleMs: 1000,
     security: runSecurity,
+    fetch,
+    spawnSender,
     isTty: proc.stdin.isTTY === true,
     outIsTty: proc.stdout.isTTY === true,
     confirm: async (prompt) => {

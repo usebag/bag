@@ -84,12 +84,20 @@ two of order 4 and the four of order 8, whatever its sign bit; S, read little-en
 subgroup; and the cofactorless equation [S]B = R + [k]A holds, with k = SHA-512(R || A || M) mod L, checked by comparing
 the 32 bytes of R with the encoding of [S]B - [k]A. A signature that fails any of these fails with its place's code:
 `bad-sig`, `bad-hop-sig`, `bad-record-sig`, or a rotation's `bad-rotation`. A cofactored check, [8][S]B = [8]R + [8][k]A, is
-not this rule: it accepts an R or A of mixed order (a point of the prime subgroup plus one of small order) that the
-cofactorless equation refuses. A key of mixed order is not refused for itself: the equation decides, so a signature
-under one verifies exactly when [k] takes its small-order part to the identity, one time in eight for a point of order
-8 (implementation default, what every reader of this repository does). §11's vectors pin each case. An implementation
-MUST verify with this cofactorless, strict rule: it MUST reject a non-canonical, small-order or mixed-order `R` or `A`
-that a cofactored or batch check would accept. A verifier that accepts what this rule rejects is non-conforming,
+not this rule: it accepts signatures with an R or A of mixed order (a point of the prime subgroup plus one of small
+order) that the cofactorless equation refuses. Mixed order is not itself a reason to refuse: no check before the
+equation looks at it, as one does at a non-canonical or small-order point, and the cofactorless equation alone decides.
+So a signature under a mixed-order key A verifies exactly when [k] takes A's small-order part to the identity, one time
+in eight for a point of order 8 (implementation default, what every reader of this repository does), and a signature
+whose R has mixed order under a key of the prime subgroup never verifies, since [S]B - [k]A is then in the prime
+subgroup. §11's vectors pin each case: a mixed-order `iss` with k = 0 mod 8 verifies (`chain-valid.json`); a
+mixed-order `iss` or `from` with k not 0 mod 8, and a mixed-order R, fail (`chain-invalid.json`, `envelope.json`). An
+implementation MUST verify with this cofactorless, strict rule: it MUST reject every non-canonical or small-order `R`
+or `A`, and every signature whose cofactorless equation fails, a signature with a mixed-order `R` or `A` that a
+cofactored or batch check would accept among them; and it MUST NOT reject a signature only because its `R` or `A` has
+mixed order when the cofactorless equation holds (clarified 2026-11-03: this sentence read "MUST reject a ...
+mixed-order `R` or `A` that a cofactored or batch check would accept", which could be taken to refuse every
+mixed-order point; the code and the vectors have always let the equation decide). A verifier that accepts what this rule rejects is non-conforming,
 because identity, deduplication and rotation all rest on one signature verifying under exactly one key; a cofactored
 third-party verifier would split validity, accepting an envelope or record the reference refuses (added 2026-11-01; the reference is already strict).
 
@@ -107,12 +115,12 @@ one kind of object cannot be replayed as another; position 0 of the envelope's i
 | handle record | `["ac/handle/1", org, handle, address, iat, ttl]` (added 2026-10-26; §12.4, L2) | `org` |
 | subscribe response | `["ac/sub/1", nonce, signer, mailbox, cursor or null]` | `signer` |
 | fetch auth | `["ac/fetch/1", signer, id, ts, audience]` (`audience` added 2026-11-02; §8.3) | `signer` |
-| pair/open | `["ac/pair-open/1", inviter, invitation, [relay], ttl]` (§8.10; added 2026-11-01) | `invitation` (the one-time invitation key) |
+| pair/open | `["ac/pair-open/1", inviter, invitation, relays, ttl]` (§8.10; added 2026-11-01; clarified 2026-11-03: position 3 is the open's list `relays`, 1 to 64 relay URLs each listed once, as signed and checked, where this row read `[relay]`) | `invitation` (the one-time invitation key) |
 | audit line | `[seq, prev, ts, event, decision, reason, id or null, from or null, root or null, detail or null]` | hashed only (§9) |
 
 §13.1 defines one local preimage, tag `ac/agent/1`, never on the wire; its tag differs from every tag above.
 
-The pairing ceremony (§8.10) also takes position 0 as a domain tag in three constructions that are not signatures, listed here for completeness (added 2026-11-01): `ac/peer-code/1` is the HKDF `info` that derives the invitation MAC key `S` and the position-0 tag of the check-digit hash `sha256(canonical(["ac/peer-code/1", inviter, invitation, requester, sealing, S]))` (§8.10); `ac/peer-request/1` is the position-0 tag of the request MAC `HMAC-SHA256` under `S` over `canonical(["ac/peer-request/1", inviter, invitation, requester, sealing, exp])`; `ac/peer-invite/1` is the position-0 tag of the invite string `base64url(canonical(["ac/peer-invite/1", inviter, invitation, relay, S]))`, which carries `S` in the clear and is not signed. All four pairing tags differ from every tag above and from each other.
+The pairing ceremony (§8.10) also takes position 0 as a domain tag in three constructions that are not signatures, listed here for completeness (added 2026-11-01): `ac/peer-code/1` is the HKDF `info` that derives the invitation MAC key `S` and the position-0 tag of the check-digit hash `sha256(canonical(["ac/peer-code/1", inviter, invitation, requester, sealing, S]))` (§8.10); `ac/peer-request/1` is the position-0 tag of the request MAC `HMAC-SHA256` under `S` over `canonical(["ac/peer-request/1", inviter, invitation, requester, sealing, exp])`; `ac/peer-invite/1` is the position-0 tag of the invite string `base64url(canonical(["ac/peer-invite/1", inviter, invitation, relay, S]))`, which carries `S` in the clear and is not signed. In these three preimages (clarified 2026-11-03) `inviter`, `invitation` and `requester` are addresses (§3.2); `sealing` is the requester's X25519 public key as 64 lowercase hex characters; `S` is written as a string of its 32 lowercase hex characters, and is keyed into the HMAC as its 16 bytes; `exp`, the invitation's end, is a canonical integer; and `relay` is one relay URL, a string, unlike the list `relays` of pair/open. §8.10, "The invite string and the pairing request", gives each field's source, and `pair-code.json` (§11) pins each construction. All four pairing tags differ from every tag above and from each other.
 
 **2.5 Reading JSON.** Envelopes, records and sealed contents travel as UTF-8 JSON text. A reader MUST reject
 (`bad-json`) bytes that are not UTF-8, text that is not one JSON value, a leading byte-order mark, and a string or
@@ -191,9 +199,17 @@ alike everywhere keeps it within I-JSON. (Added 2026-10-25.)
    aad = utf8(the recipient's address), pt = the content key), with a fresh ephemeral key. The wrap is
    `{"to": address, "enc": hex(enc), "ct": hex(ct)}`; its `ct` is 48 bytes, the key and the tag (checked exactly:
    implementation default). The AAD binds the wrap to its recipient, so a wrap moved to another does not open.
-   For an individual recipient (a principal or a session), that sealing key is its current key record's (§7.4, §9),
-   never the individual's (null) address record's; a group recipient, which publishes no key record, is sealed instead
-   to its address-record generation key (§9 item 4) (forward secrecy; added 2026-10-28, clarified 2026-10-29).
+   That sealing key is the `sealing_key` of the recipient's current key record (§7.4) when it publishes one, else the
+   non-`null` `sealing_key` of its address record (§7.2); with neither, the send fails `resolve-failed` (§9 item 4,
+   which also keeps a recipient once seen with a key record from falling back). An individual recipient (a principal
+   or a session) publishes key records and a `null` address-record `sealing_key`, so it is sealed to its current key
+   record. A group recipient is an identity whose members share one sealing key at a time; each such key is a
+   *generation*, and the group publishes no key record: its address record's `sealing_key` is the X25519 public key of
+   its current generation, its *generation key*, and the group is sealed to that. How a generation reaches the group's
+   members is outside this core (§1 puts group semantics out of scope; the agent seat's `group-key`, §13.1, is one
+   holder) (forward secrecy; added 2026-10-28, clarified 2026-10-29; clarified 2026-11-03: "generation key" defined
+   here, from `packages/core/src/groups.ts` and the resolver of `packages/edge/src/resolver.ts`, where it was used
+   undefined).
 4. `sealed` = `{"wraps": [...], "nonce": hex(nonce), "ct": hex(ct)}`, with one wrap per recipient in the
    order of `to` (implementation default).
 
@@ -211,7 +227,7 @@ timeout, which the recipient dedups by id (§9).
 
 A target is live from the moment the sender picks it — one of the first K distinct relays in the record's listed
 order — not from when it first answers; distinctness is by exact URL string, so two listed entries that differ as
-strings (for example `https://a/` and `https://a`) are two targets. A target is given up when it returns a permanent
+strings (for example `https://a/` and `https://a`) are two targets (the relay URL form is §7.2's `relays` row). A target is given up when it returns a permanent
 refusal — a 4xx status other than 408 and 429 (a 404 among them), which the same bytes would meet again — at once, or when it is
 unreachable (no answer, a refused connection, or a timeout) after three attempts; a 408, 429 or 5xx keeps it live and
 retrying to the horizon (§9 item 1). When a target is given up and a later listed relay is still free, the sender
@@ -409,7 +425,7 @@ is 404. An org serves its handle records itself, at its origin, §12.1.)
 | `kind` | `"address"` |
 | `key` | the address the record describes, which signs it |
 | `sealing_key` | its X25519 public key in hex, or `null` (no sealing key: the derivation fallback is deferred). An individual (principal or session) address record carries `null` and publishes a key record; the resolver seals an individual to its current key record (§4.3, §7.4, §9). The individual still generates a sealing key (§3.3), but no record names it and no sender seals to it (§4.3, §9, §10): it serves only to open mail sealed to it before the identity's forward-secrecy cutover, tried after the epoch keys, and a born-FS individual, sealed to only through key records, need keep none (forward secrecy; added 2026-10-28, clarified 2026-10-29) |
-| `relays` | 0 to 64 relay URLs (raised from 8 on 2026-10-30, 'relays N'), each a scheme and authority only: `http://` or `https://` in lower case, then a non-empty lower-case host and an optional port that is not the scheme's default (no `:80` on `http`, no `:443` on `https`), and nothing further — no userinfo, no path (not even a trailing `/`), no query and no fragment; anywhere in the URL, no space and no `Cc` control character. Entries are distinct by exact string. (Tightened 2026-11-02 so that a `relays` entry is exactly the string a §8.3 fetch proof binds as its `audience`, and client and relay agree on it byte for byte; before this a path, a trailing slash, userinfo, a written default port or an upper-case host were allowed, `https://a/` and `https://a` were two separate relays, and U+2028/U+2029 were allowed in the URL — now excluded by the host rule.) (implementation default) |
+| `relays` | 0 to 64 relay URLs (raised from 8 on 2026-10-30, 'relays N'), distinct by exact string. This row is the one statement of a relay URL's form, wherever a relay URL is listed (an address record, pair/open, §8.10): `http://` or `https://`, in lower case; then a first character that is not `/`, `?`, `#`, a space or a `Cc` control character, so the host is not empty; then any characters but a space or a `Cc` control character. Nothing further is parsed or normalized: userinfo, a port, a path, a trailing `/`, a query, a fragment, an upper-case host and a character such as U+2028 are kept as written, so `https://a/` and `https://a` are two entries (implementation default). (Clarified 2026-11-03: every reader of a record, `packages/core`, `crates/ac-core` and `scripts/verify_vectors.py`, checks exactly this form, and `records.json` holds a valid record whose relay URL contains U+2028; a tightening to scheme and authority only, written in this row on 2026-11-02, was never carried into a reader or a vector. That stricter form is now the relay base form below, which binds a relay's configuration and, through it, a fetch proof's `audience`, §8.3.) |
 | `rotation_key` | an address that may countersign this key's rotation, or `null` |
 | `revoked` | 0 to 1,024 distinct addresses of principal keys the root revokes |
 | `ttl` | 1 to 86,400 seconds |
@@ -438,6 +454,16 @@ appends the path of §8 (`/v0/publish`, `/v0/fetch/...`, `/v0/subscribe` with th
 so `https://relay.example/` and `https://relay.example` name one relay, and a relay behind a path prefix, such as
 `https://example.com/bag`, serves the API under that prefix (the edge and examples/python-join both drop
 every trailing slash).
+
+**The relay base form** (clarified 2026-11-03, from `crates/ac-relay/src/net.rs`) is the subset of relay URLs that a
+relay's `--accept-base` values take (§8.3; `--advertise` keeps its own rule, which also allows an upper-case host):
+`http://` or `https://`, then a host, either a name or IPv4 address of lower-case
+letters, digits, dots and hyphens or an IPv6 address in brackets, then an optional port from 1 to 65535 that is not the
+scheme's default (no `:80` on `http`, no `:443` on `https`), and nothing further: no userinfo, path, query, fragment or
+trailing `/`. A fetch proof binds the `relays` entry its caller used byte for byte (§8.3), so only an entry in the relay
+base form can match a relay's accepted base. An entry outside it (a path prefix, a trailing `/`, an upper-case host or a
+written default port) still serves publish and subscribe, but a fetch proof naming it as `audience` matches no accepted
+base and is `bad-auth`; a writer that wants fetch by id at a relay lists it in the relay base form.
 
 **7.3 Rotation.** A record whose `key` differs from a pinned key is accepted only as a rotation:
 `next.rotated_from` is `prev.key`, and `next.rotation_sig` verifies over the preimage of `next` under `prev.key` or
@@ -660,15 +686,15 @@ edge and examples/python-join among them, is unaffected; implementation defaults
 
 **8.3 fetch by id: `GET /v0/fetch/{id}`.** The caller proves a key with three headers: `AC-Signer`, an address; `AC-Ts`,
 Unix seconds; and `AC-Sig`, the signer's signature over `["ac/fetch/1", signer, id, ts, audience]`, where `audience` is
-byte-identical to the §7.1 `relays` entry the caller used — the exact string that prefixes `/v0/fetch/{id}` — and
+byte-identical to the §7.2 `relays` entry the caller used — the exact string that prefixes `/v0/fetch/{id}` — and
 `signer` is the canonical address and `id` the 64-character lowercase-hex envelope id (§3, §5.5), each byte-for-byte as
 signed. The relay rebuilds the preimage from `AC-Signer`, the `{id}` path segment, `AC-Ts` and its own configuration,
 and accepts the proof only when `audience` is one of its configured accepted base URLs — the advertised URL
-(`--advertise` / `config.url`, the value `GET /v0/health` answers) and each `--accept-base`, each in the §7.1
-`relays`-entry form — **never** a `Host` or forwarded header, which a caller controls and could use to re-open the
+(`--advertise` / `config.url`, the value `GET /v0/health` answers) and each `--accept-base`, each in §7.2's relay
+base form (clarified 2026-11-03: this paragraph cited §7.1 for §7.2 three times) — **never** a `Host` or forwarded header, which a caller controls and could use to re-open the
 bypass. The `audience` is compared byte for byte with no normalization of it: an `audience` with a trailing slash, a
 written `:443` or an upper-case host matches no configured base and is `bad-auth`. On the configuration side a single
-trailing slash in an `--accept-base` value is dropped when the flag is read, and a value otherwise outside the §7.1 form
+trailing slash in an `--accept-base` value is dropped when the flag is read, and a value otherwise outside the relay base form (§7.2)
 is refused at start (so an operator's typo fails fast rather than silently never matching); `--advertise` keeps its own
 rule. The configuration holds a
 **set** of accepted base URLs, so a hostname move (a relay reachable under two public names at once) is not an outage: a
@@ -951,13 +977,18 @@ to use (`--rendezvous`, default the identity's first relay; a `code@host` form o
 **The address-bound path is the default when the peer's address is known (2026-11-01).** Pairing's whole secrecy is the out-of-band digit comparison above: a man-in-the-middle on the human transfer channel, who edits the string or code in flight and substitutes their own invitation identity and inviter address, is caught only by that comparison, and only if a person truly reads the digits from the other channel rather than glancing at a screen (an attacker who can edit the string in transit controls both ends, and only the code comparison catches it). So when the inviting or accepting side already knows the other's address, the invitation is bound to it, and the open, unbound invitation is the fallback used only at genuine first contact, not the default. The admitting side names the peer (`--for <address>`) so only that address's request is admitted; the accepting side names the expected inviter (`--for <address>`) so a string naming any other inviter is refused `not-for` before the check digits are shown and without consuming the invitation. The bound address is one the side already holds out of band, never one read from the string or code being paired, so an attacker who substitutes an address in transit is refused before any prompt. Binding narrows who can answer; it does **not** replace the digit comparison, which is still performed on the bound path, since an attacker who controls both the address channel and the string channel would be bound to an address they chose. Inside an agent host, the bound path is offered in the host's own pairing dialog — a field for the peer's address, or the peer's pasted address — and the terminal invite is never offered as the default or as a workaround (the MCP `pair_invite`/`pair_accept` tools). The ceremony renders the check digits on one side only and never on the side that types them (the paragraph above), so no dialog invites a glance-and-confirm.
 
 - `POST /v0/pair/open`. Body `{inviter, invitation, relays, ttl}` and `sig`, an Ed25519 signature by the key in
-  `invitation` over `canonical(["ac/pair-open/1", inviter, invitation, relays, ttl])`. The relay verifies `sig`
+  `invitation` over `canonical(["ac/pair-open/1", inviter, invitation, relays, ttl])`: `inviter` and `invitation` are
+  addresses, `relays` is a list of 1 to 64 relay URLs (§7.2's form and cap), each listed once and signed in the order
+  listed, and `ttl` an integer; a body with any other member, or with one of these missing or malformed, is 400
+  `bad-shape`, and a `sig` string that is not 128 hex characters 400 `bad-hex` (clarified 2026-11-03, from `crates/ac-relay/src/pair.rs`; the reference edge opens with one relay, the
+  rendezvous itself). The relay verifies `sig`
   against `invitation` before allocating, else 422 `bad-sig`; so only the holder of the one-time invitation identity's
   key may open a nameplate for it, and an open naming a victim's mailbox is refused. `ttl` is required, 1 to 600 — a
   missing, `0` or over-600 `ttl` is 400 `bad-shape`, there is no default (corrected 2026-11-01, where this read "`ttl` ≤ 600 (default 600)"); the
-  stored reach blob `{inviter, invitation, relays, exp}` is ≤ 512 bytes (else 413 `body-too-large`), with `exp = now +
-  ttl`. The relay allocates the shortest free numeric nameplate (more digits only when the space fills) and returns
-  200 `{nameplate}`, the `nameplate` a decimal string of 1 to 9 digits (not a number). A second open of an invitation that already holds an open nameplate is 409 `stale-record`. Caps:
+  open's body is at most 768 bytes, 512 for the reach and 256 more for its signature (else 413 `body-too-large`;
+  clarified 2026-11-03: the relay bounds the body it reads, where this read "the stored reach blob ... ≤ 512 bytes"),
+  and the relay stores the reach `{inviter, invitation, relays, exp}`, with `exp = now + ttl`. The relay allocates the shortest free numeric nameplate (more digits only when the space fills) and returns
+  200 `{nameplate}`, the `nameplate` a decimal string of 3 to 9 digits with no leading zero (not a number): the relay allocates from 100, and a claim of any other string is 404 `no-nameplate` (clarified 2026-11-03, from `crates/ac-relay/src/pair.rs`, where this read "1 to 9 digits"). A second open of an invitation that already holds an open nameplate is 409 `stale-record`. Caps:
   at most 16 open nameplates per client address (429 `rate-limited`) and at most 10,000 open in all (503
   `store-full`); an open also draws the client's publish allowance (§8.9).
 - `GET /v0/pair/claim/{nameplate}`. Returns 200 `{inviter, invitation, relays, exp}`, or 404 `no-nameplate` when the
@@ -993,6 +1024,42 @@ to use (`--rendezvous`, default the identity's first relay; a `code@host` form o
   resolving only to such) that is not a configured relay is `resolve-failed` before any request, unless the operator
   allows private relays (`--allow-private-relays`). This closes an SSRF from a hostile peer's code or invite, and the
   same guard now covers the long invite string's relay field.
+
+**The invite string and the pairing request** (clarified 2026-11-03, from `packages/edge/src/pairing.ts` and
+`pair-code.ts`; `pair-code.json` pins each construction, §11). The preimages' encodings are §2.4's.
+1. **The invitation.** The inviter makes a fresh invitation identity I, a signing key and a sealing key (§3.3), and
+   chooses the invitation's `ttl`, 1 to 600 s. At the rendezvous it publishes I's address record (`key` I,
+   `sealing_key` I's X25519 public key, `relays` the rendezvous alone, no rotation key, nothing revoked, `ttl` the
+   invitation's, `iat` now) and I's accept-from record (`roots` `["*"]`, `max_bytes` 8,192, the same `ttl` and
+   `iat`), and subscribes to I's mailbox there. The invitation's end, `exp`, is that address record's `iat + ttl`.
+2. **S.** With a word code, `S` is derived from the words as above, the salt naming the nameplate the rendezvous
+   returned and I's address as `invitation`; when the rendezvous offers no pair call, `S` is 16 bytes from a CSPRNG and
+   the inviter gives out the invite string instead.
+3. **The invite string** is `ac-peer1:` followed by base64url without padding (RFC 4648 §5) of
+   `utf8(canonical(["ac/peer-invite/1", inviter, invitation, relay, S]))`, `inviter` the inviter's address,
+   `invitation` I's and `relay` the rendezvous where I is reached. A reader drops white space from a pasted string and
+   refuses it unless the prefix and the tag are these, `inviter` and `invitation` are addresses, `relay` is `http://` or
+   `https://` and one or more characters that are not white space, and `S` is 32 lowercase hex characters. Under a word
+   code the acceptor instead claims the nameplate and takes `inviter`, `invitation`, the first of `relays` as `relay`,
+   and `S` from the words.
+4. **The acceptor's digits.** The acceptor reads I's address record at `relay` and stops, sending nothing, unless the
+   record carries a sealing key and its clock is at most `iat + ttl` plus the skew; `exp` is that record's
+   `iat + ttl`. `requester` is the acceptor's own address, and `sealing` its current key record's `sealing_key` (§7.4)
+   when it has a key record, else its own X25519 public key, the one its address record names. It shows the check
+   digits of `(inviter, invitation, requester, sealing, S)`, three digits, a space and three digits.
+5. **The request.** On the person's yes the acceptor publishes to `relay` an envelope (§5) whose `from` is its own
+   signing key, `auth` `[]` and `to` `[invitation]`, sealed (§4.3) to the `sealing_key` of I's address record, with a
+   fresh `thread`, the sealed `type` `peer.request.v1` and the `body` `{"record": R, "key": K, "mac": M}`: R is the
+   acceptor's current address record as its JSON text (§7), a string; K, present only when the acceptor has a key
+   record, is that record's JSON text, a string; and M is the request MAC of `(inviter, invitation, requester,
+   sealing, exp)` under `S`, 64 lowercase hex characters.
+6. **The inviter's check.** The inviter parses and verifies the envelope (§5.4, §5.5) at its own clock, opens it with
+   I's sealing key (§4.4), and takes it as a request only when `auth` is `[]`, the `type` is `peer.request.v1`, R is an
+   address record that verifies (§7.5) and whose `key` is `from`, K, when present, is a key record that verifies and
+   whose `key` is `from`, and `sealing`, K's `sealing_key` when K is present and else R's, is not `null`; anything else
+   is the silent drop above. It then computes M with `requester` = `from` and compares it with the request's in constant
+   time; a mismatch is the bad MAC above. A request that passes is checked against `--for` (`not-for`), and the check
+   digits the inviter's person types are compared against the digits of these same fields.
 
 Person-facing text (dialogs, the CLI, this spec, the Internet-Draft) calls the words the **pairing code** and the six
 digits the **check digits**.
@@ -1407,7 +1474,7 @@ language needs no other source.
 | `records.json` | `cases`: signed records with their canonical strings, digests and results at several times; `invalid`: form and cap failures; `rotations`: pairs (prev, next) and their §7.3 result; `parse`: bytes (or `bytes_hex`) read as a record (§2.5, §7.1); `rotation_claims`: a record and the result of checking its claim without the previous record (§7.3) |
 | `hpke-rfc9180-subset.json` | the cases of the CFRG HPKE test-vector file for mode 0, kem 0x0020, kdf 0x0001 and aead 0x0002, every field kept, with the upstream URL, its sha256 and the download date |
 | `discovery.json` | (added 2026-10-26; §12, L2) `presentation`: TXT records written as text (§12.2 item 7) and their character-strings as `strings_hex`, or `resolve-failed`; `txt`: a domain, its `txt_name` (`null` when none is asked), the TXT records its lookup gave (each a list of strings) and where they lead (§12.2 items 1 to 4): the `key` the record must agree with (`null` without an bag record), the address record's `url` and the org's `origin`, or `resolve-failed`; `agreement`: the key a TXT names (`txt_key`, `null` for none), an org record, the record a reader had `pinned` (`null` at first contact), the verdict of the record's agreement with the TXT (§12.2 item 5) and the key `pin`ned after the reading (§7.3); `handles`: strings read as handles (§12.3 item 1) with their local part, domain and record path, or `bad-address`; `cases`: signed handle records with their canonical strings, digests and signers, and their verdict for a reader that expects an org key and a handle and holds the org's revoked list, at several times (§12.4 item 3); `invalid`: handle records that break their form; `parse`: bytes read as a handle record |
-| `pair-code.json` | (added 2026-10-30 with the pairing code, §8.10; **maintained by hand, not produced by `gen-vectors.ts`**, so the byte-identical check below does not cover it) pins the pairing-code codec and the key derivation: the wordlist encoding of the nameplate and three words, the MAC key `S = HKDF-SHA256(...)` (§8.10), and the check-digit construction, with worked inputs and expected outputs so a second implementation reproduces a code's `S` and digits byte for byte |
+| `pair-code.json` | (added 2026-10-30 with the pairing code, §8.10; **maintained by hand, not produced by `gen-vectors.ts`**, so the byte-identical check below does not cover it) pins the pairing-code codec and the key derivation: the wordlist encoding of the nameplate and three words, the MAC key `S = HKDF-SHA256(...)` (§8.10), and the check-digit construction, with worked inputs and expected outputs so a second implementation reproduces a code's `S` and digits byte for byte. (Clarified 2026-11-03: until then the file held only the codec and `S`. Its members `codec` and `s_derivation` stay maintained by hand; `check_digits` (a case with a leading zero among them), `request_mac`, `invite_string` and `pair_open` are written from the edge's own code by `packages/edge/scripts/gen-pair-code-vectors.ts`, whose `--check` fails when the code no longer reproduces them. The edge's tests and `scripts/verify_vectors.py` reproduce all six, and the Rust relay's tests reproduce `pair_open`.) |
 
 - **Regenerate**: `node packages/core/scripts/gen-vectors.ts`. The RFC subset is rebuilt from its own inputs;
   `--upstream <test-vectors.json>` filters a fresh download, whose sha256 must equal the recorded one.
@@ -2183,7 +2250,7 @@ is marked where it appears.
 11. The coding grammar's edges: `*` only as a trailing `.*`; malformed `type=` and `repo=` caveats are unknown (§6.4).
 12. Record kinds `address`, `accept-from` and `key`; unknown record members rejected (§7.1).
 13. Relay URLs: distinct, `http` or `https`, a non-empty host, no space or control character; `relays` may be empty
-    (§7.2). Added 2026-10-25: a relay URL is a base,
+    (§7.2; the `relays` row there is the one statement of the form, clarified 2026-11-03). Added 2026-10-25: a relay URL is a base,
     and a client drops all its trailing slashes before it appends the API path (§7.2).
 14. An address record is valid from `iat - skew` to `iat + ttl`; a key record to `exp`; `rotation_sig` only with
     `rotated_from` (§7.2, §7.5). Changed 2026-10-25: a key record's `exp` is at most `iat` + 86,400
@@ -2196,7 +2263,7 @@ is marked where it appears.
     relay holds the previous record (§8.2). Changed 2026-10-25: when it holds none, its claim is
     checked alone, under `rotated_from` (§7.3), so a bare or wrongly countersigned rotation is 422 `bad-rotation`
     rather than stored; a rotation by the previous record's rotation key needs a relay that holds that record.
-17. Fetch: `AC-Ts` within the skew; `AC-Auth` as base64url JSON; the proof's `audience` (§8.3) one of the relay's configured accepted base URLs — the advertised URL (`--advertise` / `config.url`) and each `--accept-base` — compared byte for byte, never against a `Host` or forwarded header, with no normalization of the audience (a trailing slash, a written `:443` or an upper-case host is `bad-auth`); an `--accept-base` value has a single trailing slash dropped at read and is otherwise refused at start unless in the §7.1 `relays`-entry form; 401 for a failed proof (§8.3).
+17. Fetch: `AC-Ts` within the skew; `AC-Auth` as base64url JSON; the proof's `audience` (§8.3) one of the relay's configured accepted base URLs — the advertised URL (`--advertise` / `config.url`) and each `--accept-base` — compared byte for byte, never against a `Host` or forwarded header, with no normalization of the audience (a trailing slash, a written `:443` or an upper-case host is `bad-auth`); an `--accept-base` value has a single trailing slash dropped at read and is otherwise refused at start unless in §7.2's relay base form (clarified 2026-11-03; was "the §7.1 `relays`-entry form"); 401 for a failed proof (§8.3).
 18. Subscribe: a 32-byte nonce; resume after the cursor or the stored ack (else 0); envelopes embedded as their stored
     JSON text; cumulative acks; an error frame and a close on a failed handshake (§8.5). Changed 2026-10-25: the envelope is a JSON string of its stored bytes, beside `received_at`, the second the relay stored it
     (§8.5 step 4), and delivery is at least once, an unacked frame coming again to the next subscription (§8.5).
@@ -2563,8 +2630,10 @@ main first.
 **Added 2026-10-30: the pairing rendezvous (§8.10) and the sender fan-out (§4.3, §9 item
 1).** Each is an implementation default.
 
-89. The pairing rendezvous (§8.10): a nameplate `ttl` of at most 600 s, default 600; the stored reach blob at most 512
-    bytes (else `body-too-large`); the shortest free numeric nameplate allocated, more digits only as the space fills;
+89. The pairing rendezvous (§8.10): a nameplate `ttl` required, 1 to 600 s, with no default (a missing, `0` or
+    over-600 `ttl` is `bad-shape`); the open's body at most 768 bytes, 512 for the reach and 256 for its signature (else
+    `body-too-large`) (clarified 2026-11-03, from `crates/ac-relay/src/pair.rs`, where this item read "a nameplate
+    `ttl` of at most 600 s, default 600; the stored reach blob at most 512 bytes"); the shortest free numeric nameplate allocated, more digits only as the space fills;
     at most 16 open nameplates per client address (`rate-limited`) and 10,000 open in all (`store-full`); `pair/claim`
     limited to 5 a second, burst 10, per client address; a pairing request delivered to an open invitation limited to
     1 a second, burst 5, across all client addresses, and 10 per (invitation, client address), charged only after the

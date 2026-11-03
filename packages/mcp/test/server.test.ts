@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { RELAY_TURNS, SqliteStore } from '@usebag/edge'
+import { addTelemetryCounts, RELAY_TURNS, SqliteStore, setTelemetry, systemRng } from '@usebag/edge'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runShell } from '../src/chain.ts'
 import { type Config, ConfigError, parseConfig, USAGE } from '../src/config.ts'
@@ -105,6 +105,32 @@ describe('serve: the server on stdio', () => {
         detail: '--as <key name> or --session auto|auto:codex|<name> is required',
       },
     ])
+  })
+
+  it("sends the machine's due telemetry day once at start through its io's fetch, and none without one", async () => {
+    const home = join(tmp.dir, 'machine')
+    setTelemetry(join(home, '.bag'), 'on', systemRng)
+    // T0 is 2027-01-15 08:00 UTC, so 2027-01-14 is due.
+    addTelemetryCounts({ HOME: home }, '2027-01-14', { pairing: { ok: 1 } })
+    const bodies: string[] = []
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(String(init?.body))
+      return new Response(null, { status: 204 })
+    }) as typeof globalThis.fetch
+    const without = io(args(), { env: { HOME: home } })
+    const first = serve(without)
+    await until('the server started', () =>
+      errLines(without).some((l) => l.event === 'start' && l.level === 'info'),
+    )
+    without.stdin.end()
+    expect(await first).toBe(0)
+    expect(bodies).toEqual([])
+    const t = io(args(), { env: { HOME: home }, fetch })
+    const done = serve(t)
+    await until('the report was sent', () => bodies.length === 1)
+    t.stdin.end()
+    expect(await done).toBe(0)
+    expect(JSON.parse(bodies[0] as string)).toMatchObject({ date: '2027-01-14', pairing: { ok: 1 } })
   })
 
   it('prints the usage on stderr for --help and exits 0', async () => {

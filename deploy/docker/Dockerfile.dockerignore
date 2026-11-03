@@ -1,0 +1,9 @@
+# The build context of deploy/docker/Dockerfile is the repository root; BuildKit reads this file because it sits next
+# to the Dockerfile and has its name. Only the Rust workspace goes in: no target/, node_modules/, keys, logs or
+# identity homes, and nothing that changes the image when it changes.
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!crates/
+crates/*/target

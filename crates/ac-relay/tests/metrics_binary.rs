@@ -111,6 +111,7 @@ async fn the_metrics_port_counts_what_the_relay_did_and_names_no_one() {
         // Seeded at 0 at start, for the alerts' increase() (src/metrics.rs SEEDED and SEEDED_BY_LABEL).
         ("ac_relay_blocked_total", 0),
         ("ac_relay_blocklist_invalid_total", 0),
+        ("ac_relay_first_subscribes_total", 0),
         ("ac_relay_domain_resolutions_total{outcome=\"pin-mismatch\"}", 0),
         ("ac_relay_publishes_total{result=\"bad-sig\"}", 0),
         ("ac_relay_rate_limited_total{limit=\"fetch-global\"}", 0),

@@ -1,0 +1,19 @@
+# The TLS front of deploy/docker/compose.tls.yml: Caddy answers https://$BAG_RELAY_HOST and passes every request to the
+# relay, the WebSocket of /v0/subscribe included. `tls internal` makes the certificate with Caddy's own local
+# certificate authority, for a network that cannot reach a public one: every client must then trust that authority's
+# root (docs/self-host.md, "Run it with Docker"). With a certificate of your own, replace the line with
+# `tls /etc/caddy/relay.crt /etc/caddy/relay.key` and mount the two files; for a public name that reaches Let's Encrypt,
+# delete it.
+#
+# Caddy's reverse_proxy sets X-Forwarded-For to the address it saw, and drops a client's own value, as long as no
+# trusted_proxies option is set here; the relay counts and logs each client by that header (--trust-proxy and
+# --client-ip-header in compose.tls.yml).
+{
+	# Caddy cannot add its root to a container's trust store; the clients trust it instead.
+	skip_install_trust
+}
+
+{$BAG_RELAY_HOST} {
+	tls internal
+	reverse_proxy relay:7701
+}

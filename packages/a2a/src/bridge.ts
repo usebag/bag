@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { type AddressInfo, isIPv6 } from 'node:net'
 import type { SessionHandler } from '@usebag/edge'
 import { A2A_TYPE, MAX_RPC_BYTES, readResponseBody, requestBody } from './binding.ts'
 import { agentCard, BRIDGE_CARD_PATH, type CardOptions, type CardRecord } from './card.ts'
@@ -15,15 +15,43 @@ import { A2A_VERSION, ERRORS } from './protocol.ts'
 // bridge also serves each agent's full AgentCard at /a2a/<address>/.well-known/agent-card.json, made from the address
 // record its edge fetched and verified.
 //
-// The bridge signs as its edge's identity, for every local caller: it listens on 127.0.0.1 by default, `agents`
-// limits the addresses it will call, and it answers only requests whose Host names the loopback at its port and that
-// carry no Origin, so that a web page cannot reach it through DNS rebinding or a cross-site request.
+// The bridge signs as its edge's identity, for every local caller, and it has no caller authentication: so it
+// listens on the loopback only (127.0.0.0/8, ::1 or localhost; any other `host` is refused before it listens, since
+// on a network address every reachable machine could send as the identity), `agents` limits the addresses it will
+// call, and it answers only requests whose Host names the loopback at its port and that carry no Origin, so that a
+// web page cannot reach it through DNS rebinding or a cross-site request. Any process on this machine can call it,
+// the same trust as the command line on the same home; a caller token is a later option.
 
 /** The path under which the bridge serves one agent per address. */
 export const BRIDGE_PATH = '/a2a/'
 /** The bridge's port by default, the one the cards name. */
 export const DEFAULT_PORT = 7741
 const ADDRESS = /^ed25519:[0-9a-f]{64}$/
+
+/** The refusal of a `host` that is not the loopback; the bridge and the process print it. */
+export const LOOPBACK_ONLY =
+  '--host must be a loopback address (127.0.0.0/8, ::1 or localhost): the bridge listens on loopback only; it has no caller authentication'
+
+/**
+ * Whether `host` names the loopback: an address in 127.0.0.0/8, ::1 in any written form, an IPv4-mapped
+ * ::ffff:127.x.x.x, or the name `localhost` (in any case). Everything else, 0.0.0.0 and :: among it, is not.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase()
+  if (h === 'localhost') return true
+  const v4 = /^(?:::ffff:)?127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h)
+  if (v4 !== null) return v4.slice(1).every((octet) => Number(octet) <= 255)
+  // ::1 in any written form: eight groups, the first seven zero and the last 1, with one :: standing for the gap.
+  if (!isIPv6(h) || h.includes('.')) return false
+  const [head, tail] = h.split('::')
+  const groups = (s: string): string[] => (s === '' ? [] : s.split(':'))
+  const a = groups(head ?? '')
+  const b = groups(tail ?? '')
+  const all = tail === undefined ? a : [...a, ...new Array<string>(8 - a.length - b.length).fill('0'), ...b]
+  return (
+    all.length === 8 && all.slice(0, 7).every((g) => /^0{1,4}$/.test(g)) && /^0{0,3}1$/.test(all[7] ?? '')
+  )
+}
 
 /** An agent's A2A endpoint at a bridge: <base>/a2a/<address>. */
 export function endpointUrl(base: string, address: string): string {
@@ -48,7 +76,7 @@ export interface BridgeEdge {
 
 export interface A2aBridgeOptions {
   readonly edge: BridgeEdge
-  /** The IPv4 address or name to listen on (default 127.0.0.1). */
+  /** The loopback address or name to listen on (default 127.0.0.1; 127.0.0.0/8, ::1 or localhost only). */
   readonly host?: string
   /** The port (default 7741; 0 takes a free port, read from `url`). */
   readonly port?: number
@@ -126,8 +154,13 @@ export class A2aBridge {
     this.#pending = pending
   }
 
-  /** Starts a bridge on its edge: attaches the reply session and listens; rejects when the port is taken. */
+  /**
+   * Starts a bridge on its edge: attaches the reply session and listens; rejects when the port is taken, and before
+   * anything else when `host` is not the loopback (LOOPBACK_ONLY).
+   */
   static async start(options: A2aBridgeOptions): Promise<A2aBridge> {
+    const host = options.host ?? '127.0.0.1'
+    if (!isLoopbackHost(host)) throw new Error(LOOPBACK_ONLY)
     const ctx: Context = {
       o: options,
       session: options.session ?? 'a2a-bridge',
@@ -148,7 +181,6 @@ export class A2aBridge {
     })
     // A request whose client went away mid-body is dropped with its connection.
     const server = createServer((req, res) => serve(ctx, req, res).catch(() => res.destroy()))
-    const host = options.host ?? '127.0.0.1'
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
       server.listen(options.port ?? DEFAULT_PORT, host, resolve)

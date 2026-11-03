@@ -1,0 +1,61 @@
+# One bag relay in a container: built from this repository, its store in a named volume, its port published on this
+# host's loopback only. From the repository root:
+#
+#   docker compose -f deploy/docker/compose.yml up -d --build    # builds deploy/docker/Dockerfile, then starts it
+#   docker compose -f deploy/docker/compose.yml ps               # `healthy` once its first probe has passed
+#   curl -s http://127.0.0.1:7777/v0/health
+#   docker compose -f deploy/docker/compose.yml logs -f relay    # its log, one JSON object a line
+#   docker compose -f deploy/docker/compose.yml down             # stops and removes it; the volume and the store stay
+#
+# BAG_RELAY_URL is the URL the relay announces (--advertise) and the one your identities' records must list for it,
+# byte for byte; the default fits the published port below. For other machines to reach it, put a TLS front in front of
+# it and set BAG_RELAY_URL to the front's https URL: compose.tls.yml beside this file adds one (docs/self-host.md,
+# "Run it with Docker" and section 5).
+#
+# The relay is healthy when `ac-relay probe` against its own port passes: health, then an envelope from the probe's own
+# key to itself, published and fetched back (the key in /data/probe.key, made on the first run; one small envelope a
+# minute, swept a minute later). The image has no shell, so the check is the relay's own binary.
+
+name: bag-relay
+
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        AC_REV: ${AC_REV:-unknown} # AC_REV="$(git rev-parse HEAD)" before `up --build` stamps the build with its commit
+    image: bag-relay:local
+    pull_policy: build
+    command:
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "7701"
+      - --db
+      - /data/relay.sqlite
+      - --advertise
+      - ${BAG_RELAY_URL:-http://127.0.0.1:7777}
+    ports:
+      - "127.0.0.1:7777:7701" # this host only; remove 127.0.0.1: to listen on every interface, plain HTTP
+    volumes:
+      - relay-data:/data
+    read_only: true # the relay writes only its SQLite files and the probe's key, in /data
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/ac-relay", "probe", "http://127.0.0.1:7701", "--key", "/data/probe.key"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  relay-data: {} # docker volume ls: bag-relay_relay-data

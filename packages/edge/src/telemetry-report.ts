@@ -95,14 +95,15 @@ export function durationCell(member: string, key: unknown, ms: number): string |
 
 /**
  * Adds a tree in the store's shape to `cells`: each member's map keyed as the schema keys it, raw counts at its
- * leaves, a duration family's leaves one count per bucket. Members of the schema only; a key outside its set counts as
- * `other`; a leaf that is not a positive safe integer, or not at its depth, is left out.
+ * leaves, a duration family's leaves one count per bucket. Members of the schema only, but `pairs`, which only a
+ * snapshot gives (telemetry-pairs.ts); a key outside its set counts as `other`; a leaf that is not a positive safe
+ * integer, or not at its depth, is left out.
  */
 export function addTree(cells: Cells, tree: unknown): void {
   if (!isMap(tree)) return
   for (const [name, value] of Object.entries(tree)) {
     const m = memberOf(name)
-    if (m?.kind === 'counts') addBranch(cells, [name], value, m.keys)
+    if (m?.kind === 'counts' && name !== 'pairs') addBranch(cells, [name], value, m.keys)
     if (m?.kind !== 'hist' || !isMap(value)) continue
     for (const [k, row] of Object.entries(value)) {
       if (!Array.isArray(row) || row.length !== SETS.duration.length) continue

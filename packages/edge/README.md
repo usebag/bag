@@ -384,32 +384,44 @@ its own base URLs, which are scheme and authority alone, and refuses any other, 
 window that accepts both. A fetch beside a chain (`AC-Auth`) signs the same five fields. No header carries the
 audience, so a `RelayClient` sends a proof only to the relay its `url` names.
 
-## The machine's telemetry: consent, the spool and the report (2026-11-02)
+## The machine's telemetry: consent, the spool, the report and the sender (2026-11-02, the sender 2026-11-03)
 
-`src/telemetry.ts`, `src/telemetry-report.ts` and `src/telemetry-schema.ts`, after `spec/SPEC.md` Appendix B 111 and
-the telemetry design note (§2, §3 and §5). Opt-in, with one consent and one install id per machine, whatever the
-identity's home. This version builds the report and sends nothing: it has no network code.
+`src/telemetry.ts`, `src/telemetry-report.ts`, `src/telemetry-schema.ts` and `src/telemetry-send.ts`, after
+`spec/SPEC.md` Appendix B 111 and the telemetry design note (§2 to §5). Opt-in, with one consent and one install id
+per machine, whatever the identity's home. While it is on, each finished UTC day's report goes once to
+telemetry.bag.dev; `telemetry-send.ts` is the only file with network code.
 
 - **The machine's directory**: `telemetryDir(env)` is `HOME/.bag`, read from the `env` the caller passes, never from an
   identity's home (`--dir`, `AC_HOME`). A test or an e2e process points it elsewhere with `HOME`. Without `HOME` there
   is no directory, and telemetry is off.
-- **Consent and the id**: `telemetry.json` there, `{"version":1,"telemetry":"on","id":"<32 hex>"}` or
-  `{"version":1,"telemetry":"off"}`, 0600, written only by `setTelemetry(dir, choice, rng)`. `on` keeps the id or draws
-  16 bytes from `rng`, never from the machine, a user or a path; `off` drops the id and deletes the spool, with no
-  network call. `telemetryOn(env)` is the per-machine check (the variables first: `AC_TELEMETRY=off`, `DO_NOT_TRACK`
-  and `CI` turn it off, never on); `telemetryState(env, dir)` adds the reason and the choice. C0's use of
-  `telemetryState`, `telemetryNotice` and `setTelemetry` with an identity's home as the directory is deprecated.
-- **The notice**: `machineTelemetryNotice(env, preview)`, once per machine (it makes `telemetry-noticed` exclusively,
-  and the directory 0700 when missing), names the command that prints the report. No notice names `ac telemetry on`.
+- **Consent and the id**: `telemetry.json` there, `{"version":2,"telemetry":"on","id":"<32 hex>","since":"<date>"}` or
+  `{"version":2,"telemetry":"off"}`, 0600, written only by `setTelemetry(dir, choice, rng, now)`. `on` keeps the id and
+  its date or draws 16 bytes from `rng`, never from the machine, a user or a path, and dates the choice; `off` drops
+  both and deletes the spool, the sender's mark and the pairs snapshots, with no network call. A version-1 choice,
+  made before the `pairs` family, reads as off with the reason `old-file`, and the notice asks again (the red team's
+  Q2, 2026-11-03). `telemetryOn(env)` is the per-machine check (the variables first: `AC_TELEMETRY=off`,
+  `DO_NOT_TRACK` and `CI` turn it off, never on); `telemetryState(env, dir)` adds the reason and the choice. C0's use
+  of `telemetryState`, `telemetryNotice` and `setTelemetry` with an identity's home as the directory is deprecated.
+- **The notice**: `machineTelemetryNotice(env, preview)`, once per machine (it makes `telemetry-noticed-2`
+  exclusively, and the directory 0700 when missing), names the command that prints the report. No notice names `ac
+  telemetry on`.
+- **The `pairs` family** (`src/telemetry-pairs.ts`): a snapshot, never a spool count. For each finished day from the
+  consent's date, a process that opens an identity (the CLI's `openEdge`, the MCP server, the bridge) writes the
+  identity's four counts to `telemetry-pairs.json`: the address roots of the home's `trust.json` under 7 days old at
+  the day's end or older, and of each, those its outbox sent to in the 7 days before, never before the consent's date
+  (`SqliteStore.outboxBetween`, read only). Rows are keyed by 16-hex SHA-256 prefixes of the home's realpath and the
+  identity's name, which never leave the machine. `withPairs` gives a report the largest of a home's identities,
+  cell by cell, summed over homes and floored as every count; a long-running server's identities are written again
+  before each try of its sender (`trackPairs`).
 - **The spool**: `telemetry-counts.jsonl` beside the consent, 0600 and append-only, one line per flush:
   `{"v":1,"day":"<YYYY-MM-DD>","counts":{...}}`. `counts` is in the report's shape, the schema's member names keyed as
   the schema keys them, with raw counts at the leaves (a duration family: its key, then five counts in
   `SETS.duration`'s order). `addTelemetryCounts(env, day, counts)` is the one writer, for every package. It is a no-op
   unless telemetry is on and never throws; it stores every key outside its set as `other` and leaves out anything
   that is not a member, a key or a positive integer, so the file holds the schema's values only. Each line is one
-  append under 4 KiB (`O_APPEND`, no lock). Past 256 KiB a writer folds the file: it takes it by renaming it, sums its
-  lines by day, and writes back the days from seven before today to the day after. `readTelemetrySpool(dir)` sums
-  every line by day: every home's counts, from every process.
+  append under 4 KiB (`O_APPEND`, no lock). Past 256 KiB a writer folds the file: it takes it by renaming it
+  (`takeSpool`), sums its lines by day, and writes back the days from seven before today to the day after.
+  `readTelemetrySpool(dir)` sums every line by day: every home's counts, from every process.
 - **The tally**: `startTelemetry(env, clock)` and `stopTelemetry()` bracket a process's counting (the CLI's `run` for
   each command line; a server once). `countTelemetry(member, keys)` and `countDuration(member, key, ms)` add to it;
   it is written at the first count a minute after the last write, and at stop. While it is off a hook costs one
@@ -425,10 +437,39 @@ identity's home. This version builds the report and sends nothing: it has no net
   `telemetryReport(env, day)` is the
   preview: the machine's spool for the day under its id, or `PREVIEW_ID` (32 zeros) before `on`.
 - **The schema's copy**: `src/telemetry-schema.ts` copies `deploy/telemetry/src/schema.ts` and `builds.ts`, and
-  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (305b8210). The public cut carries `packages/` and never
+  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (09ae4a5d). The public cut carries `packages/` and never
   `deploy/telemetry/`, so the edge cannot import the Worker's file. `test/telemetry-report.test.ts` imports the
   Worker's files wherever the checkout holds them, fails on any difference, and runs the Worker's `checkReport` on the
   reports it builds.
+- **The sender** (`src/telemetry-send.ts`; the W6 design note in the operations records, reviewed by the red team on
+  2026-11-03). `sendDueTelemetry(env, clock, {fetch})` makes one try when one is due (`telemetryDue`: telemetry on,
+  01:05 UTC passed, a spool, and yesterday not yet taken). It takes the spool's finished days by `takeSpool`, at most
+  seven back, writes the mark `telemetry-sent` (yesterday's date), then POSTs each day's report, oldest first, to
+  `https://telemetry.bag.dev/v1/report`: the bytes `telemetryReport` previews, with the content type the only header
+  it sets, `redirect: 'error'`, and one 2 s budget for the whole try. Before each request it reads the switch and the
+  id again (the privacy review's E7). A day goes after one try, whatever the answer; nothing of an answer is shown,
+  logged or counted, and it never throws. `startTelemetrySender` is a long-running process's: a try now and hourly,
+  its stop aborting a try in flight. `eraseTelemetry(env, id, {fetch})` posts `{"id"}` to `/v1/erase`. The caller
+  passes the fetch, so code without one sends nothing. `AC_TELEMETRY_URL` replaces the endpoint only with an http URL
+  whose host is exactly `127.0.0.1` or `::1` (a test's); any other value sends nothing.
+
+## A corporate proxy (2026-11-03)
+
+`src/proxy.ts`. HTTPS_PROXY, HTTP_PROXY and NO_PROXY are read in either case, the lowercase name first.
+- **Re-run.** Node 24's fetch and WebSocket use them only when `NODE_USE_ENV_PROXY` is set as the process starts
+  (measured on 24.4.1; set later, it changes nothing). So `useEnvProxy()`, the first call of the CLI's, the MCP
+  server's and the bridge's main.ts, runs the process again once through `process.execve` with
+  `NODE_USE_ENV_PROXY=1` and the guard `AC_PROXY_REEXEC=1`. That keeps the same pid, arguments and stdio, and it
+  never loops.
+- **What it covers.** The relay client, the subscription and telemetry then go through Node's own EnvHttpProxyAgent
+  by CONNECT. Without `process.execve` it returns the line asking for `NODE_USE_ENV_PROXY=1`.
+- **NO_PROXY.** `bypassed(list, host, port)` reads it as Node does, from a table measured against Node's agent.
+- **Display.** `proxyShown` and `proxyStatus` show a proxy as `scheme://host:port`, never its user or password.
+- **The well-known GET.** `src/adapters/well-known.ts`, `originGet(env)`: node:https, which the variable does not
+  reach. Behind a proxy it opens a CONNECT tunnel to the address the private-address guard checked, never the name,
+  with the TLS name the host's. A proxy's refusal is `resolve-failed` naming the proxy and its answer, and there is no
+  retry by name, which would let the proxy resolve a hostile record to an internal host. A proxy's user and password
+  go only in `Proxy-Authorization: Basic`.
 
 ## Ports and adapters
 
