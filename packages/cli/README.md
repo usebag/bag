@@ -510,7 +510,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   request file that does not parse is read as absent and the poll (every 250 ms) goes on. The wait is 10 s for the
   session file and the request together, so it delays session start by at most 10 s, and only while a grant is pending
   (in `src/commands/wake-hook.ts`, `test/session-code.test.ts`). `host install claude-code` writes only the async wake-hook entries, not `session-code`: a stated debt; the plugin's `hooks/hooks.json` carries it.
-- **`host install <claude-code|codex> --as <name> --relay <url>... [--trust-root <address>]... [--grant-caveat <caveat>]... (--project <dir> | --user) [--mode worker|mcp] [--dir <home>]`**:
+- **`host install <claude-code|codex> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... [--grant-caveat <caveat>]... (--project <dir> | --user) [--mode worker|mcp] [--dir <home>]`**:
   writes the MCP server's registration and, for Claude Code, the wake hooks, into the places the repo documents, and
   prints each file and the entries it added (no key is read; the entries hold paths, the name, relay URLs and trust
   roots). `claude-code --project <dir>` writes `<dir>/.mcp.json` (`mcpServers.bag = {command, args}`, as

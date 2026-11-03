@@ -209,7 +209,7 @@ usage: node packages/cli/src/main.ts <command> [options]
   wake-hook --identities <file> [--max <seconds>] [--exit-code <n>] [--no-idle-wake] [--print]
       the same for every identity of an identities file, each by its own doorbell; a ring names the identity's label
   session-code --as <principal> --session auto [--dir <home>]: for a synchronous SessionStart hook, prints the grant request's code as JSON
-  host install <claude-code|codex> --as <name> --relay <url>... [--trust-root <address>]... [--grant-caveat <caveat>]... (--project <dir> | --user) [--mode worker|mcp] [--dir <home>]
+  host install <claude-code|codex> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... [--grant-caveat <caveat>]... (--project <dir> | --user) [--mode worker|mcp] [--dir <home>]
       claude-code --project <dir>: the MCP server in <dir>/.mcp.json and a SessionStart and a Stop wake-hook in
       <dir>/.claude/settings.json; codex --user [--mode worker|mcp]: worker (the default; Codex has no idle wake) prints
       the inbox --watch --exec 'codex exec ...' line and writes nothing, mcp writes ~/.codex/config.toml and a Stop
