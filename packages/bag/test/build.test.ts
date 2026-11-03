@@ -216,7 +216,17 @@ describe('the parts', () => {
     git('init', '--quiet')
     writeFileSync(join(repo, 'packages', 'a.txt'), 'a\n')
     git('add', '.')
-    git('commit', '--quiet', '--no-gpg-sign', '-m', 'scratch')
+    // The commit's author: the machine's own identity when the scratch repository sees one (a hook here refuses any
+    // other), else a name for this scratch repository only, as on a bare CI runner, which has none.
+    const ident = (() => {
+      try {
+        git('config', 'user.email')
+        return []
+      } catch {
+        return ['-c', 'user.name=scratch', '-c', 'user.email=scratch@localhost']
+      }
+    })()
+    git(...ident, 'commit', '--quiet', '--no-gpg-sign', '-m', 'scratch')
     const head = git('rev-parse', 'HEAD')
     expect(sourceCommit(repo)).toBe(head)
     writeFileSync(join(repo, 'packages', 'b.txt'), 'b\n')
