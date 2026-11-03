@@ -1,5 +1,5 @@
-// The bag CLI as a process: node packages/cli/src/main.ts <command> [options]. There is no bin entry, since
-// one would change the npm lock. Behind a proxy it first runs itself again with NODE_USE_ENV_PROXY=1 (the edge's
+// The bag CLI as a process: node packages/cli/src/main.ts <command> [options], or the bin `bag` of the published
+// package (packages/bag), built from this file. Behind a proxy it first runs itself again with NODE_USE_ENV_PROXY=1 (the edge's
 // proxy.ts), so that Node's fetch and WebSocket use the proxy.
 import { useEnvProxy } from '@usebag/edge'
 import { run } from './cli.ts'

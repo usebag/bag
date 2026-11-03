@@ -25,8 +25,9 @@ c() { node packages/cli/src/main.ts "$@"; }
 ## Run it with Docker
 
 The shortest way to a relay of your own, for example inside a network whose machines cannot reach the public relays:
-build the image from this repository and start it with Docker Compose. The host needs Docker with Compose and a clone
-of this repository (section 3, its first block); no Rust and no Node. From the root of the clone:
+build the image from this repository, or pull the published one ("Or pull the published image", below), and start it
+with Docker Compose. The host needs Docker with Compose and a clone of this repository (section 3, its first block); no
+Rust and no Node. From the root of the clone:
 
 ```sh
 AC_REV="$(git rev-parse HEAD)" docker compose -f deploy/docker/compose.yml up -d --build
@@ -78,12 +79,110 @@ Inside a network of your own the relay usually has a private address. A sender's
 one of its own `--relay` URLs (section 2), so every identity there lists this relay as its own relay, and as its
 `--rendezvous` for pairing (section 10).
 
+### Or pull the published image
+
+Instead of building, you can pull the image built from your commit: `ghcr.io/usebag/relay:<commit>`, tagged with the
+full 40-hex commit of this repository's main that it was built from. The repository's workflow
+`.github/workflows/relay-image.yml` builds it. It is started by hand with one commit of main, builds `linux/amd64` and
+`linux/arm64` on GitHub's runners, and attaches build provenance and an SBOM. There is no `latest` tag. Pull by the
+exact commit, and use the commit you were given and checked out (section 3), so that the image and the compose files
+beside it come from one commit. If `imagetools inspect` answers `not found` for your commit, no image was published for
+it: build it as above. The package is public, so none of this needs a login.
+
+```sh
+CUT="$(git rev-parse HEAD)"                # the commit you were given, checked out (section 3)
+I="ghcr.io/usebag/relay:$CUT"
+docker buildx imagetools inspect "$I"
+docker buildx imagetools inspect "$I" --format \
+  '{{range $p, $v := .Provenance}}{{$p}} {{$v.SLSA.runDetails.metadata.buildkit_metadata.vcs.source}} {{$v.SLSA.runDetails.metadata.buildkit_metadata.vcs.revision}} {{$v.SLSA.buildDefinition.internalParameters.github_workflow_ref}}{{"\n"}}{{end}}'
+docker buildx imagetools inspect "$I" --format \
+  '{{range $p, $v := .SBOM}}{{$p}} {{$v.SPDX.spdxVersion}} {{len $v.SPDX.packages}} packages{{"\n"}}{{end}}'
+docker pull "$I"
+```
+
+```
+Name:      ghcr.io/usebag/relay:cc4f25dd22448ae066cc99c2195eb9491d6ca24a
+MediaType: application/vnd.oci.image.index.v1+json
+Digest:    sha256:55bf4f09efd9f7b5b531668d21540c403a99ea16c56cd0df6dc59d2bdd79efe2
+  Platform:    linux/amd64
+    vnd.docker.reference.type:   attestation-manifest
+  Platform:    linux/arm64
+    vnd.docker.reference.type:   attestation-manifest
+linux/amd64 https://github.com/usebag/bag cc4f25dd22448ae066cc99c2195eb9491d6ca24a usebag/bag/.github/workflows/relay-image.yml@refs/heads/main
+linux/arm64 https://github.com/usebag/bag cc4f25dd22448ae066cc99c2195eb9491d6ca24a usebag/bag/.github/workflows/relay-image.yml@refs/heads/main
+linux/amd64 SPDX-2.3 15 packages
+linux/arm64 SPDX-2.3 15 packages
+Digest: sha256:55bf4f09efd9f7b5b531668d21540c403a99ea16c56cd0df6dc59d2bdd79efe2
+Status: Downloaded newer image for ghcr.io/usebag/relay:cc4f25dd22448ae066cc99c2195eb9491d6ca24a
+```
+
+(Shortened.) What to check:
+
+- **The platforms.** The first command lists each platform's image and its attestation manifest.
+- **The provenance.** The provenance line for each platform names the repository, the commit and the workflow that
+  built it. The commit must be your `$CUT`. The provenance also records the build argument `AC_REV` as that commit,
+  which the relay reports in its metrics (section 8).
+- **The SBOM.** It lists the base image's Debian packages: 14 of them, and an entry for the SBOM itself. The relay's
+  Rust crates are not in it, and neither is the SQLite compiled into the binary. Those are in `Cargo.lock` at the same
+  commit.
+- **The digest.** The `Digest:` of the index is what to pin. Whoever can push to the package can move a tag, but not a
+  digest.
+
+Compose takes the pulled image through a file you write beside `compose.yml`. It names the image by commit and digest
+and removes the build:
+
+```sh
+D="$(docker buildx imagetools inspect "$I" --format '{{.Manifest.Digest}}')"
+printf 'services:\n  relay:\n    image: %s\n    pull_policy: missing\n    build: !reset null\n' "$I@$D" \
+  > deploy/docker/compose.pull.yml
+cat deploy/docker/compose.pull.yml
+docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.pull.yml up -d
+docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.pull.yml ps
+curl -s http://127.0.0.1:7777/v0/health
+```
+
+```
+services:
+  relay:
+    image: ghcr.io/usebag/relay:cc4f25dd22448ae066cc99c2195eb9491d6ca24a@sha256:55bf4f09efd9f7b5b531668d21540c403a99ea16c56cd0df6dc59d2bdd79efe2
+    pull_policy: missing
+    build: !reset null
+ Container bag-relay-relay-1 Started
+NAME                IMAGE                                                                                                                                   ...   STATUS                                     PORTS
+bag-relay-relay-1   ghcr.io/usebag/relay:cc4f25dd22448ae066cc99c2195eb9491d6ca24a@sha256:55bf4f09efd9f7b5b531668d21540c403a99ea16c56cd0df6dc59d2bdd79efe2   ...   Up Less than a second (health: starting)   127.0.0.1:7777->7701/tcp
+{"now":1793725284,"ok":true,"url":"http://127.0.0.1:7777","version":"0.0.0"}
+```
+
+(Shortened.) `ps` showed `healthy` a few seconds later, after the first probe passed.
+
+Every other command in this section works the same way: add `-f deploy/docker/compose.pull.yml` after the other files
+and leave out `--build`. With the TLS front, that is
+`docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.tls.yml -f deploy/docker/compose.pull.yml up -d`.
+`!reset` needs Compose 2.24 or later, as `compose.tls.yml` does. The file is yours: git lists it as untracked. To
+upgrade, check out the new commit, set `CUT` and `I` again, pull, write the file again and run `up -d`.
+
 Checked with Docker Engine 29.8.2 and Compose 5.5.0 (OrbStack 2.2.5 on macOS, Apple silicon), which built a
-`linux/arm64` image in 2 minutes. **Not verified:** a `linux/amd64` build (the two base images are multi-platform), a
-Linux Docker host, clients on other machines, a certificate of your own or from a public authority in the front, and a
-request that reaches the relay's container address without passing Caddy (the run could not reach it). For an upgrade,
-check out the new commit and run the same `up -d --build`; the store migrates forward (section 6). **Not verified:** an
-upgrade across commits with this image.
+`linux/arm64` image in 2 minutes. The pull route ran with the image of cc4f25dd22448ae066cc99c2195eb9491d6ca24a, the
+first one published, from a Docker configuration with no login:
+
+- both platforms and both attestations were listed, and `latest` answered `not found`;
+- the `linux/arm64` image pulled (48.1 MB) and printed `ac-relay 0.0.0` for `--version`;
+- the relay with the file above came up healthy;
+- with `compose.tls.yml` added, `docker compose ... config` showed the pulled image, no build, no published relay port
+  and the trusted Caddy address.
+
+**Not verified:**
+
+- a `linux/amd64` build or run here: the base images are multi-platform, and the published amd64 image was listed but
+  not run;
+- the TLS front started with the pulled image;
+- a Linux Docker host;
+- clients on other machines;
+- a certificate of your own or from a public authority in the front;
+- a request that reaches the relay's container address without passing Caddy (the run could not reach it).
+
+For an upgrade, check out the new commit and run the same `up -d --build`; the store migrates forward (section 6).
+**Not verified:** an upgrade across commits with this image.
 
 ## 1. What your own relay gives you, and what it still sees
 
@@ -137,9 +236,9 @@ address. A relay on your laptop or your LAN works for you and for peers who pass
 
 ## 3. Build
 
-There is no installer and no packaged release: you build the relay from source, and the CLI and the MCP server run
-from the clone (`README.md`, "By hand with the command line"). Every `package.json` is private and the CLI has no
-`bin` entry, so nothing installs it on your `PATH`.
+There is no installer. The relay's packaged form is its container image ("Run it with Docker"); otherwise you build
+the relay from source. The CLI and the MCP server run from the npm package `@usebag/bag` through `npx`, or from the
+clone (`README.md`, "Quick start" and "From source"); nothing installs them on your `PATH`.
 
 Get the code at the commit you were given, and install the CLI's dependencies. Every `c` command in this guide runs
 from this clone (`README.md`, "Quick start", steps 1 and 2, has the git bundle route too):

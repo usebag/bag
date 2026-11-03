@@ -72,3 +72,10 @@ ceiling = 7697 # earlier 6679, 6063 and 5400; raised 2026-10-26 from 4400; measu
 path = 'packages/a2a/src'
 # First ceiling 2026-10-28, 1698, under the same rule for that night's later raises (the measured figure plus 10 percent): a window measured packages/a2a/src at 1543, and 1543 times 1.1 is 1697.3, rounded up.
 ceiling = 1698
+
+[bag]
+path = 'packages/bag/src'
+# First ceiling 2026-11-03, 176, by the rule of the latest raises (the measured figure plus 10 percent, rounded up): the
+# package build (packages/bag/src/build.ts, moved from lib/ so that coverage measures src/ as check-ratchet.sh requires)
+# measured 160, and 160 times 1.1 is 176. Proposed by the package agent; it stands on the maintainer's decision entry.
+ceiling = 176

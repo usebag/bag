@@ -3,6 +3,7 @@ import { format } from 'node:util'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
+  BUILD_INFO,
   type Clock,
   countTelemetry,
   createRelayClient,
@@ -60,6 +61,9 @@ import {
 // stray byte into the stream. A server of one (startServer) runs one Unit, with a session's chain (chain.ts), whose
 // renewal also restarts a subscription the relay ended, layered on it; an --identities server (startIdentities, the
 // multi-identity design) runs one per identity, with jittered timing, and keeps the others serving when one fails.
+
+/** The version the server reports at initialize: the package build's (the edge's build-info.ts), 0.0.0 from source. */
+export const SERVER_VERSION = BUILD_INFO?.version ?? '0.0.0'
 
 /** How often a session asks the agent whether its grant is still in the window, in ms (a default, no basis). */
 export const LOST_PROBE_MS = 300_000
@@ -543,7 +547,7 @@ export async function startServer(given: Config, deps: ServerDeps): Promise<Runn
           onError: (e) => log.log('warn', 'desk', coded(e)),
         })
   const instructions = config.push.includes('channel') ? `${INSTRUCTIONS} ${CHANNEL_NOTE}` : INSTRUCTIONS
-  const mcp = new McpServer({ name: 'bag', version: '0.0.0' }, { instructions })
+  const mcp = new McpServer({ name: 'bag', version: SERVER_VERSION }, { instructions })
   const shared = sharedOf(mcp, deps, { bind: (meta) => session?.bind(meta), front })
   // Only a session server answers before it is open (a plain server awaits its opening here).
   const unit = new Unit(config, shared, deps, false, session === null ? undefined : () => session.waiting())
@@ -723,7 +727,7 @@ export async function startServer(given: Config, deps: ServerDeps): Promise<Runn
 export async function startIdentities(server: ServerConfig, deps: ManyDeps) {
   const { log } = deps
   const notes = [INSTRUCTIONS, IDENTITIES_NOTE, ...(server.push.includes('channel') ? [CHANNEL_NOTE] : [])]
-  const mcp = new McpServer({ name: 'bag', version: '0.0.0' }, { instructions: notes.join(' ') })
+  const mcp = new McpServer({ name: 'bag', version: SERVER_VERSION }, { instructions: notes.join(' ') })
   const units = new Map<string, Unit>()
   const identities = { defaultLabel: server.defaultLabel, all: units }
   const shared = sharedOf(mcp, deps, { bind: () => {}, front: null, identities })

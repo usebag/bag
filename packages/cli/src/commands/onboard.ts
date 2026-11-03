@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import {
   type AcceptFromRecord,
   type AddressRecord,
@@ -32,6 +31,7 @@ import { CliError, flag, int, list, parse, relayUrl, req, str, UsageError } from
 import { currentKey, epochDue, laggingLines, rotateEpoch } from '../epochs.ts'
 import { checkNoWindow, homeCustody, homeDir, loadKeys } from '../home.ts'
 import type { Io } from '../io.ts'
+import { stableMains } from '../packaged.ts'
 import { addTrust, readTrust } from '../trust.ts'
 import { delegate } from './delegate.ts'
 import { keygen } from './keygen.ts'
@@ -61,8 +61,11 @@ const PENDING = 3
  * leaving the next one to the run after, when the key record is seconds from its exp or past it.
  */
 const EARLY = 3600
-/** The command line of this CLI, for the commands onboard prints: absolute paths (cron's PATH has no node in it). */
-const AC = `${sh(process.execPath)} ${sh(fileURLToPath(new URL('../main.ts', import.meta.url)))}`
+/**
+ * The command line of this CLI for the home `home`, for the commands onboard prints: absolute paths (cron's PATH has no
+ * node in it), the package's stable copy when run from the package (packaged.ts).
+ */
+const acOf = (home: string): string => `${sh(process.execPath)} ${sh(stableMains(home).cli)}`
 
 /**
  * onboard <name> --domain <host> --relay <url>... --accept <root>... (cli.ts's USAGE names every option): each
@@ -215,6 +218,7 @@ export async function onboard(args: readonly string[], io: Io): Promise<number> 
   // cron runs in $HOME, where a relative --out or --dir names other paths: both go in again as absolute paths.
   const named = (a = ''): boolean => /^--(out|dir)$/.test(a)
   const given = args.filter((a, i) => !named(a) && !named(args[i - 1]) && !/^--(out|dir)=/.test(a))
+  const AC = acOf(home)
   const again = `${AC} onboard ${[...given, '--out', out, '--dir', home].map(sh).join(' ')}`
   const missed = new Map<RecordKind, unknown[]>()
   const put = async (kind: RecordKind, url: string, send: () => Promise<unknown>): Promise<void> => {

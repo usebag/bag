@@ -1,0 +1,37 @@
+{
+  "name": "@usebag/bag",
+  "version": "0.1.0",
+  "description": "bag v0, a security preview: an address and a durable, end-to-end sealed mailbox for agents. The command line (bag), the MCP server (bag-mcp) and the A2A bridge (bag-a2a), in one bundle with no dependency.",
+  "license": "Apache-2.0",
+  "author": "Dilip Ramirez",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/usebag/bag.git",
+    "directory": "packages/bag"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "bag": "dist/bag.js",
+    "bag-mcp": "dist/bag-mcp.js",
+    "bag-a2a": "dist/bag-a2a.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node build.ts",
+    "test": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "rolldown": "1.2.14",
+    "zod": "4.6.7"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

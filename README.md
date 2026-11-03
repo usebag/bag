@@ -145,8 +145,9 @@ Fetch and follow the instructions to set me up on bag.dev from https://bag.dev/i
 ```
 
 Your agent fetches the guide at [bag.dev/install](https://bag.dev/install), which is written for a coding agent, and
-follows it step by step: it clones this repository, installs it with `npm ci`, makes your identity, publishes its
-records at the two public relays, and registers the bag MCP server in a working folder. After you restart Claude Code
+follows it step by step: it runs bag, the npm package `@usebag/bag` at the version the guide names, with `npx`,
+checks that the package is the published commit, makes your identity, publishes its records at the two public relays,
+and registers the bag MCP server in a working folder. After you restart Claude Code
 in that folder, you ask it to pair with your peer: the pairing dialogs and the six check digits are yours to answer,
 never the agent's. Once you are paired, you ask it to send a hello, and it sends and reads through the server's tools.
 The guide is written for Claude Code, the one host that has run the MCP server so far (see [Limits](#limits)); the
@@ -157,18 +158,20 @@ prompt itself is also served at [bag.dev/prompt](https://bag.dev/prompt).
 This is the manual path, and the reference for what the agent does. From a clean machine to `audit verify`: one relay,
 two identities and one sealed message, all on your own machine.
 
-**1. Get the code.** Clone the repository: `git clone https://github.com/usebag/bag bag`, then `cd bag`.
-If you received this copy as one file, a git bundle, clone the file instead: `git clone <file>.bundle bag`,
-`cd bag`, then check it with `git bundle verify ../<file>.bundle`, which must print `../<file>.bundle is okay`.
-
-**2. Build once.** You need Node 24 or later, `rustup` (the toolchain version is pinned in `rust-toolchain.toml`, and
-rustup installs it on the first `cargo` call), and bash. There is no packaged release: you build from source. Run
-everything from the root of this directory.
+**1. Get bag.** You need Node 24 or later. bag is the npm package `@usebag/bag`, one bundle with no dependency and no
+install script; `npx` runs it without installing anything globally. Name the version and the program every time:
 
 ```sh
-npm ci
-cargo build --release --locked -p ac-relay
+c() { npx --yes --package=@usebag/bag@0.1.0 bag "$@"; }
+c --version                       # prints: bag 0.1.0 <the commit it was built from>
 ```
+
+The package is published from a commit of this repository by a workflow with npm provenance, and
+`npm view @usebag/bag@0.1.0 gitHead` names that commit. To run from source instead, see [From source](#from-source).
+
+**2. Get a relay.** The relay is Rust and is not in the package: build it from source (`cargo build --release --locked
+-p ac-relay`, as [From source](#from-source) says) or run its container image (`docs/self-host.md`, "Run it with
+Docker"). The next step runs the binary from a build.
 
 **3. Start a relay.** In terminal 1, a relay on port 8787 with its own database file (it prints
 `AC_RELAY_URL=http://127.0.0.1:8787`):
@@ -182,7 +185,6 @@ target/release/ac-relay --port 8787 --db "${TMPDIR:-/tmp}/ac-cut-relay.sqlite"
 ```sh
 R=http://127.0.0.1:8787
 export AC_HOME="${TMPDIR:-/tmp}/ac-cut-home"
-c() { node packages/cli/src/main.ts "$@"; }
 c health "$R"                     # prints: ok
 c keygen alice && c keygen bob    # each prints the address only, never a key
 ```
@@ -211,6 +213,28 @@ Stop the relay with Ctrl-C. The throwaway files are `${TMPDIR:-/tmp}/ac-cut-home
 For the longer walk, from the same clean machine to a first exchange with another installation, a relay of your own
 and your records at your own origin, read [`docs/partner-install.md`](docs/partner-install.md).
 
+### From source
+
+Every byte the package runs can be built and checked here. Clone the repository and check out the commit the
+package names (`c --version` prints it): `git clone https://github.com/usebag/bag bag`, `cd bag`, `git checkout --detach <commit>`.
+If you received this copy as one file, a git bundle, clone the file instead: `git clone <file>.bundle bag`, `cd bag`,
+then check it with `git bundle verify ../<file>.bundle`, which must print `../<file>.bundle is okay`.
+
+You need Node 24 or later, `rustup` (the toolchain version is pinned in `rust-toolchain.toml`, and rustup installs it
+on the first `cargo` call), and bash. Run everything from the root of this directory:
+
+```sh
+npm ci
+cargo build --release --locked -p ac-relay
+c() { node packages/cli/src/main.ts "$@"; }
+c help                            # prints every command
+```
+
+From source, the command line is `node packages/cli/src/main.ts`, the MCP server `node packages/mcp/src/main.ts` and
+the A2A bridge `node packages/a2a/src/main.ts`. `npm run build -w packages/bag` builds the package's bundle from the
+checkout into `packages/bag/dist/`; `node packages/bag/dist/bag.js --version` then prints the version and this
+checkout's commit, and `npm pack -w packages/bag` makes the package file.
+
 ## Usage
 
 The command line and the MCP server are two ways to be one identity. Run one receiver per identity: of an MCP server
@@ -225,7 +249,8 @@ and registers it for you.
 `packages/mcp` is one MCP server over stdio. It gives an agent in an MCP host an address and a mailbox, as ten tools:
 `send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `status`, `lookup`, `pair_invite` and `pair_accept`, and an
 eleventh, `delegate`, only when started with `--allow-delegate`. One server holds up to 64 identities. `host install`
-writes the registration, and nothing it writes holds a key:
+writes the registration, and nothing it writes holds a key. Run from the package, it first copies bag to the
+`package` folder of the bag home and writes that path, so the registration does not depend on npm's cache:
 
 ```sh
 c host install claude-code --as alice --relay "$R" --project /path/to/your/project
@@ -247,20 +272,21 @@ It writes the server into the project's `.mcp.json`, and a `SessionStart` and a 
 #### Claude Code plugin
 
 The plugin is not in this release. The MCP server it wraps is: `packages/mcp` gives an agent in Claude Code, or in any
-MCP host that runs a server over stdio, an address and a mailbox. `node packages/cli/src/main.ts host install
-claude-code --as <name> --relay <relay URL> --project <project dir>` writes the registration for a project;
+MCP host that runs a server over stdio, an address and a mailbox. `c host install claude-code --as <name> --relay
+<relay URL> --project <project dir>` writes the registration for a project;
 `docs/partner-install.md`, section 5c, walks through it, and `packages/mcp/README.md`, "Install", gives the same by hand
 (`claude mcp add`) and for other hosts.
 
 ### From the command line
 
-The CLI has no `bin` entry. Run it as `node packages/cli/src/main.ts <command>`, or define the shell function the
-guides use:
+The package's command line is the bin `bag`; the guides wrap it in a shell function, `c`:
 
 ```sh
-c() { node packages/cli/src/main.ts "$@"; }
+c() { npx --yes --package=@usebag/bag@0.1.0 bag "$@"; }
 c help          # prints every command
 ```
+
+From source it is `node packages/cli/src/main.ts` ([From source](#from-source)).
 
 | to | commands |
 |---|---|
@@ -395,6 +421,7 @@ An organisation can anchor its root key at its own domain and name agents under 
 | `packages/core` | the pure core in TypeScript, with no I/O: canonical form, keys, HPKE sealing, envelopes, chains, records |
 | `packages/edge` | the agent-side library: outbox, inbox, address resolution, pins, policy, the audit log, its stores and transports |
 | `packages/cli` | the command line on the edge, run as `node packages/cli/src/main.ts` (`help` lists every command) |
+| `packages/bag` | the npm package `@usebag/bag`: the build that bundles the command line (`bag`), the MCP server (`bag-mcp`) and the A2A bridge (`bag-a2a`) into one package with no dependency |
 | `packages/mcp` | an MCP server on the edge: an address and a mailbox inside an MCP host |
 | `packages/a2a` | the A2A binding: an unmodified A2A 1.0 client completes a task with a bag agent through the caller's own local bridge, every relay between them carrying ciphertext only |
 | `packages/e2e` | end-to-end scenarios against the real relay process |
@@ -416,7 +443,7 @@ operations guide, notes). Read those references as notes; nothing here needs the
 | [`spec/adversarial/README.md`](spec/adversarial/README.md) | the differential cases and the contract their three readers follow |
 | [`docs/partner-install.md`](docs/partner-install.md) | the step-by-step install: identities, a relay, records, sending, a first exchange with another installation, an agent host, your record at your own origin |
 | [`docs/onboarding.md`](docs/onboarding.md) | one agent on your organisation's own domain with one command, `onboard` |
-| [`docs/self-host.md`](docs/self-host.md) | running your own relay: with Docker, build, a TLS front, backups and restore, limits, health, metrics and logs, pointing identities, agents and pairing at it, two relays, upgrades, hardening, every flag |
+| [`docs/self-host.md`](docs/self-host.md) | running your own relay: with Docker (built or pulled), build, a TLS front, backups and restore, limits, health, metrics and logs, pointing identities, agents and pairing at it, two relays, upgrades, hardening, every flag |
 | [`docs/inside-a-company.md`](docs/inside-a-company.md) | using bag inside a company: the security team first, your own relays inside the network, company identities and an allow-list of who may write, telemetry off, the public relays only with approval, and running behind a company proxy |
 | [`packages/cli/README.md`](packages/cli/README.md) | the commands of the CLI and their flags |
 | [`packages/mcp/README.md`](packages/mcp/README.md) | the MCP server: identities, flags, tools, and its install in each host |

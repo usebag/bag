@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util'
 import { isAddress } from '@usebag/core'
-import { type TrustedRoot, wellKnownUrl } from '@usebag/edge'
+import { programName, type TrustedRoot, wellKnownUrl } from '@usebag/edge'
 import { EXP_TEXT } from '@usebag/edge/agent'
 import { readIdentities } from './identities.ts'
 
@@ -22,10 +22,13 @@ export const MAX_TOOL_SECONDS = 300
 /** Seconds between two progress notifications of a wait or ask call, by default (progress.ts). */
 export const DEFAULT_PROGRESS_SECONDS = 15
 
+/** The server as its usage names it: bag-mcp from the package, node <its main.ts> from source. */
+const MAIN = programName('bag-mcp', 'packages/mcp/src/main.ts')
+
 export const USAGE = `bag MCP server (pre-release): an address and a durable mailbox inside an MCP host
 
-usage: node packages/mcp/src/main.ts --as <key name> --relay <url>... [options]
-       node packages/mcp/src/main.ts --identities <file> [options]
+usage: ${MAIN} --as <key name> --relay <url>... [options]
+       ${MAIN} --identities <file> [options]
 
   --as <name>                   the signing key: a key file, <home>/keys/<name>.json, or a keychain identity,
                                 <home>/keychain/<name>.json (a self-rooted principal, or a session)
