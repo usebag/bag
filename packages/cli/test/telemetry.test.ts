@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  addTelemetryCounts,
   buildTelemetryReport,
   machineFacts,
   noticeText,
@@ -11,14 +12,15 @@ import {
 } from '@usebag/edge'
 import { afterAll, describe, expect, it } from 'vitest'
 import { shq } from '../src/args.ts'
-import { type TestIo, tempDir, testIo } from './support/io.ts'
+import { T0, type TestIo, tempDir, testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
 import { cli } from './support/run.ts'
 
-// telemetry on | off | status | preview, one consent and one install id per machine in HOME/.bag whatever the home:
-// the counts of each command line once it is on, every home summed in one store; the preview that prints the exact
-// report the edge's builder makes; the notice once per machine, naming the preview. Temp directories only; nothing is
-// sent.
+// telemetry on | off | status | preview | send | forget, one consent and one install id per machine in HOME/.bag
+// whatever the home: the counts of each command line once it is on, every home summed in one store; the preview that
+// prints the exact report the edge's builder makes; send and forget through a fake fetch, and the detached sender
+// through a fake spawn; the notice once per machine, naming the preview. Temp directories only; nothing leaves the
+// process.
 
 const tmp = tempDir('telemetry')
 afterAll(() => tmp.cleanup())
@@ -40,25 +42,36 @@ describe('telemetry on | off | status: one consent and one install id per machin
     const m = machine()
     expect(await cli(m.io, 'telemetry', 'status')).toEqual({
       code: 0,
-      out: ['telemetry off reason=no-file choice=none id=none spool=0'],
+      out: ['telemetry off reason=no-file choice=none id=none spool=0 sent=none'],
       err: [],
     })
     const on = await cli(m.io, 'telemetry', 'on')
     const id = telemetryId(m.dir) as string
     expect(id).toMatch(/^[0-9a-f]{32}$/)
-    expect(on).toEqual({ code: 0, out: [`telemetry on reason=file choice=on id=${id} spool=0`], err: [] })
+    expect(on).toEqual({
+      code: 0,
+      out: [`telemetry on reason=file choice=on id=${id} spool=0 sent=none`],
+      err: [],
+    })
     expect(statSync(join(m.dir, 'telemetry.json')).mode & 0o777).toBe(0o600)
     const again = await cli(m.io, 'telemetry', 'on')
     expect(again.out).toEqual(on.out)
     expect(telemetryId(m.dir)).toBe(id)
     const status = await cli(m.io, 'telemetry', 'status')
     expect(status.out[0]).toMatch(new RegExp(`^telemetry on reason=file choice=on id=${id} spool=[1-9]`))
+    // off names the id it removed, which can still be erased by mail; a second off has no id to name.
     expect(await cli(m.io, 'telemetry', 'off')).toEqual({
       code: 0,
-      out: ['telemetry off reason=file choice=off id=none spool=0'],
+      out: [
+        'telemetry off reason=file choice=off id=none spool=0 sent=none',
+        `telemetry off: reports already sent stay up to 90 days; to erase them, send ${id} to privacy@bag.dev`,
+      ],
       err: [],
     })
-    expect(readFileSync(join(m.dir, 'telemetry.json'), 'utf8')).toBe('{"version":1,"telemetry":"off"}\n')
+    expect((await cli(m.io, 'telemetry', 'off')).out).toEqual([
+      'telemetry off reason=file choice=off id=none spool=0 sent=none',
+    ])
+    expect(readFileSync(join(m.dir, 'telemetry.json'), 'utf8')).toBe('{"version":2,"telemetry":"off"}\n')
     expect(existsSync(join(m.dir, TELEMETRY_COUNTS_FILE))).toBe(false)
   })
 
@@ -68,7 +81,7 @@ describe('telemetry on | off | status: one consent and one install id per machin
     const id = telemetryId(m.dir) as string
     const io = testIo(new MemoryRelay(), { DO_NOT_TRACK: '1', HOME: m.home })
     expect((await cli(io, 'telemetry', 'status')).out).toEqual([
-      `telemetry off reason=DO_NOT_TRACK choice=on id=${id} spool=0`,
+      `telemetry off reason=DO_NOT_TRACK choice=on id=${id} spool=0 sent=none`,
     ])
     await cli(io, 'help')
     expect(existsSync(join(m.dir, TELEMETRY_COUNTS_FILE))).toBe(false)
@@ -83,6 +96,8 @@ describe('telemetry on | off | status: one consent and one install id per machin
       ['status', '--bad'],
       ['on', '--dir', fresh()],
       ['status', '--date', DAY],
+      ['send', 'extra'],
+      ['forget', '--date', DAY],
     ]
     for (const args of refused) {
       const got = await cli(m.io, 'telemetry', ...args)
@@ -143,7 +158,7 @@ describe('telemetry preview: the exact report the machine would send, and its si
     expect(await cli(m.io, 'telemetry', 'preview')).toEqual({
       code: 0,
       out: [empty],
-      err: [`telemetry preview: ${empty.length} bytes for ${DAY}; this version sends nothing`],
+      err: [`telemetry preview: ${empty.length} bytes for ${DAY}; sent once, from 01:05 UTC the day after`],
     })
     await cli(m.io, 'telemetry', 'on')
     await cli(m.io, 'help')
@@ -154,7 +169,7 @@ describe('telemetry preview: the exact report the machine would send, and its si
     const shown = await cli(m.io, 'telemetry', 'preview')
     expect(shown.out).toEqual([expected])
     expect(shown.err).toEqual([
-      `telemetry preview: ${expected.length} bytes for ${DAY}; this version sends nothing`,
+      `telemetry preview: ${expected.length} bytes for ${DAY}; sent once, from 01:05 UTC the day after`,
     ])
     const report = JSON.parse(expected) as Record<string, unknown>
     expect([report.id, report.date]).toEqual([id, DAY])
@@ -167,6 +182,99 @@ describe('telemetry preview: the exact report the machine would send, and its si
       expect(got.code, date).toBe(1)
       expect(got.err[0], date).toMatch(/^bag: usage: --date: /)
     }
+  })
+})
+
+/** A fetch that records each request and answers `status` with no body. */
+function fakeFetch(status = 204): { fetch: typeof fetch; calls: { url: string; init: RequestInit }[] } {
+  const calls: { url: string; init: RequestInit }[] = []
+  const f = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    calls.push({ url: String(url), init: init ?? {} })
+    return new Response(null, { status })
+  }
+  return { fetch: f as typeof fetch, calls }
+}
+
+describe('telemetry send and forget, and the detached sender a command line starts', () => {
+  const YESTERDAY = '2027-01-14'
+
+  it('send posts each due day once, exactly as preview prints it, and marks it; without a fetch, nothing', async () => {
+    const m = machine()
+    await cli(m.io, 'telemetry', 'on')
+    addTelemetryCounts(m.io.env, YESTERDAY, { pairing: { ok: 3 } })
+    const preview = (await cli(m.io, 'telemetry', 'preview', '--date', YESTERDAY)).out
+    expect(await cli(m.io, 'telemetry', 'send')).toEqual({ code: 0, out: [], err: [] })
+    expect(readTelemetrySpool(m.dir).has(YESTERDAY)).toBe(true)
+    const f = fakeFetch()
+    expect(await cli({ ...m.io, fetch: f.fetch }, 'telemetry', 'send')).toEqual({ code: 0, out: [], err: [] })
+    expect(f.calls.map((c) => [c.url, c.init.body])).toEqual([
+      ['https://telemetry.bag.dev/v1/report', preview[0]],
+    ])
+    expect(readTelemetrySpool(m.dir).has(YESTERDAY)).toBe(false)
+    expect((await cli(m.io, 'telemetry', 'status')).out[0]).toMatch(/ sent=2027-01-14$/)
+    await cli({ ...m.io, fetch: f.fetch }, 'telemetry', 'send')
+    expect(f.calls).toHaveLength(1)
+  })
+
+  it('a command line starts the sender only when a day is due, never after telemetry itself or while off', async () => {
+    const m = machine()
+    let started = 0
+    const io = {
+      ...m.io,
+      spawnSender: () => {
+        started++
+      },
+    }
+    await cli(io, 'help')
+    await cli(io, 'telemetry', 'on')
+    expect(started).toBe(0)
+    // A spool, and no day taken yet: due.
+    await cli(io, 'help')
+    expect(started).toBe(1)
+    await cli({ ...io, fetch: fakeFetch().fetch }, 'telemetry', 'send')
+    await cli(io, 'help')
+    expect(started).toBe(1)
+    // The next day: not before 01:05 UTC, then due again.
+    io.time.now = T0 + 61_200
+    await cli(io, 'help')
+    expect(started).toBe(1)
+    io.time.now = T0 + 61_500
+    await cli(io, 'help')
+    expect(started).toBe(2)
+    const off = {
+      ...testIo(new MemoryRelay(), { DO_NOT_TRACK: '1', HOME: m.home }),
+      spawnSender: io.spawnSender,
+    }
+    off.time.now = T0 + 86_400 * 2
+    await cli(off, 'help')
+    expect(started).toBe(2)
+  })
+
+  it('forget erases by the id in the body, then turns telemetry off; any failure changes nothing', async () => {
+    const m = machine()
+    expect((await cli(m.io, 'telemetry', 'forget')).err[0]).toMatch(/^bag: not-found: no install id/)
+    await cli(m.io, 'telemetry', 'on')
+    const id = telemetryId(m.dir) as string
+    const failed = await cli({ ...m.io, fetch: fakeFetch(503).fetch }, 'telemetry', 'forget')
+    expect(failed.code).toBe(1)
+    expect(failed.err[0]).toBe(
+      `bag: http-503: the erasure of ${id} was not confirmed; telemetry stays on: try again, or send the id to privacy@bag.dev`,
+    )
+    expect(telemetryId(m.dir)).toBe(id)
+    expect((await cli(m.io, 'telemetry', 'forget')).err[0]).toMatch(/^bag: unreachable: the erasure of /)
+    const f = fakeFetch()
+    expect(await cli({ ...m.io, fetch: f.fetch }, 'telemetry', 'forget')).toEqual({
+      code: 0,
+      out: [
+        'telemetry off reason=file choice=off id=none spool=0 sent=none',
+        `telemetry forget: the erasure of ${id} was accepted; telemetry off`,
+      ],
+      err: [],
+    })
+    expect(f.calls.map((c) => [c.url, c.init.method, c.init.body, c.init.redirect])).toEqual([
+      ['https://telemetry.bag.dev/v1/erase', 'POST', JSON.stringify({ id }), 'error'],
+    ])
+    expect(telemetryId(m.dir)).toBeNull()
   })
 })
 

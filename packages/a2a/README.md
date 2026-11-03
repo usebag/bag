@@ -25,7 +25,8 @@ A2A client --HTTP JSON-RPC--> A2aBridge (127.0.0.1:7741) --sealed envelope--> re
   the nine outer members of §5.1. §5.2 already allows any `type` and any JSON `body`: packages/core, the edge and the
   MCP server are unchanged.
 - **The bridge** (`A2aBridge`, `src/bridge.ts`), on the caller's machine, over the caller's edge: an HTTP server on
-  127.0.0.1, port 7741 by default, that answers `POST /a2a/<address>` with `content-type: application/json` and
+  the loopback only (127.0.0.1 by default; `host` may name another 127.0.0.0/8 address, `::1` or `localhost`, and any
+  network address such as `0.0.0.0` or a LAN IP is refused before the bridge listens), port 7741 by default, that answers `POST /a2a/<address>` with `content-type: application/json` and
   `A2A-Version: 1.0`. It seals each request to `<address>` on a new thread bound to its session, waits for the reply in
   that thread from that address (30 s by default), and returns the response as it came. It answers itself: 403 for a
   Host header that is not `127.0.0.1`, `localhost` or `[::1]` at its port and for any request with an Origin (DNS
@@ -119,8 +120,12 @@ agentEdge.setDefault(a2aSessionHandler(agentEdge, server))
 
 Both edges need `a2a.jsonrpc.v1` among their policy's types (or `*`), the other side's root among their trusted roots,
 and the other side in their accept-from record, as for any type. The bridge signs as its edge's identity for every
-local caller: it listens on 127.0.0.1 unless `host` says otherwise, refuses foreign Host headers and any Origin, and
-`agents` limits whom it calls.
+local caller, and it has no caller authentication: any process on this machine that can open a loopback connection
+can send as the identity, the same trust as the command line on the same home. That is why it listens on the
+loopback only (`host` is refused unless it is a 127.0.0.0/8 address, `::1` or `localhost`; the process exits 2 with
+"the bridge listens on loopback only; it has no caller authentication"), refuses foreign Host headers and any Origin
+(which stop browsers, not local programs), and `agents` limits whom it calls. A caller token, for a bridge that other
+machines may reach, is a later option and is not built.
 
 `deploy/make-a2a-extension.sh acme` writes `deploy/well-known/public/acme/.well-known/bag/a2a.json` from
 acme's record; `--domain`, `--record` and `--out` change the rest (the script's header). The committed samples, acme's

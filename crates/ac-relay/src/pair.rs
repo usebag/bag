@@ -229,9 +229,10 @@ impl Inner {
     }
 }
 
-/// Checks an open's body: `inviter` and `invitation` (addresses), `relays` (1 to 8 relay URLs, each once), `ttl` and
-/// `sig`, I's signature over `["ac/pair-open/1", inviter, invitation, relays, ttl]` (no one
-/// opens a nameplate for a mailbox whose key they do not hold); at most [`MAX_BLOB`] bytes and 256 for the signature.
+/// Checks an open's body: `inviter` and `invitation` (addresses), `relays` (1 to [`MAX_RELAYS`], 64, relay
+/// URLs, each once), `ttl` and `sig`, I's signature over
+/// `["ac/pair-open/1", inviter, invitation, relays, ttl]` (no one opens a nameplate for a mailbox whose key
+/// they do not hold); at most [`MAX_BLOB`] bytes and 256 for the signature.
 /// Else 413 `body-too-large`, 400 `bad-json`, `bad-shape` or `bad-hex`, 422 `bad-sig`.
 pub(crate) fn parse_open(body: &[u8]) -> Result<Opening, Rejection> {
     if body.len() > MAX_BLOB + 256 {

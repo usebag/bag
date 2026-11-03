@@ -36,7 +36,8 @@ path = 'packages/edge/src'
 # Raised 2026-10-28 from 8900 to 10419 by a decision entry (the measured figure plus 10 percent, rounded up): a scratch merge of main with every change waiting on this raise, read by scripts/check-size.sh, measured edge 9471; 9471 times 1.1 is 10418.1, rounded up.
 # Raised 2026-10-30 from 10419 to 11549 by a decision entry (the measured figure plus 10 percent): the change for N relays (a sender publishes to at most K = 3 of each recipient's relays, with failover) measured packages/edge/src at 10499, and 10499 times 1.1 is 11548.9, rounded up.
 # Raised 2026-11-01 from 11549 to 12828 by a decision entry (the measured figure plus 10 percent, rounded up): the client telemetry switch measured packages/edge/src at 11661 with this file's command, and 11661 times 1.1 is 12827.1.
-ceiling = 12828 # earlier 11549, 10419, 8900, 8475 and 8165; raised 2026-10-27 from 7000 by 15 percent (the recommended 7,100 plus 15%); earlier 7000 (2026-10-26, from 5600); earlier 4300; measured 3625, 4235 and 5578 as main grew
+# Raised 2026-11-03 from 12828 to 14193 by a decision entry (the measured figure plus 10 percent, rounded up): the client telemetry sender with its pairs family (W6, branch obs/client-sender) measured packages/edge/src at 12902 with this file's command, and 12902 times 1.1 is 14192.2.
+ceiling = 14193 # earlier 12828, 11549, 10419, 8900, 8475 and 8165; raised 2026-10-27 from 7000 by 15 percent (the recommended 7,100 plus 15%); earlier 7000 (2026-10-26, from 5600); earlier 4300; measured 3625, 4235 and 5578 as main grew
 
 [cli]
 path = 'packages/cli/src'

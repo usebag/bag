@@ -319,18 +319,26 @@ Its check script sends and receives through the reference relay, to and from the
 
 ### Telemetry
 
-Telemetry is off until a person turns it on, and this version sends nothing: it has no network code. There is one
-choice and one install id per machine, whatever home a command uses.
+Telemetry is off until a person turns it on. There is one choice and one install id per machine, whatever home a
+command uses. While it is on, each finished UTC day's report goes once to `telemetry.bag.dev`, from 01:05 UTC the next
+day: from a command line, which starts the sender in the background and does not wait for it, or from a running MCP
+server or bridge.
 
-- `c telemetry status` prints on or off, what decided it, the choice, the install id and the local counts' size in bytes.
-- `c telemetry preview` prints the exact report that would be sent for today, and its size in bytes.
-- `c telemetry on` makes the install id, or keeps it; `c telemetry off` deletes the id and the local counts.
+- `c telemetry status` prints on or off, what decided it, the choice, the install id, the local counts' size in bytes
+  and the last day sent.
+- `c telemetry preview` prints the exact report that would be sent for today, or `--date` up to 7 days back, and its
+  size in bytes.
+- `c telemetry on` makes the install id, or keeps it; `c telemetry off` deletes the id and the local counts, and
+  opens no connection.
+- `c telemetry forget` asks `telemetry.bag.dev` to erase every report sent under the id, then turns telemetry off.
 
 A report covers one UTC day of one machine in at most 4,096 bytes: the install id, the build, the OS, the CPU
 architecture, the Node major and the host kind, each from a closed list, and counts of commands and tool calls (with
-their outcome codes and durations), audit lines, relay calls, MCP sessions, A2A bridge requests and pairings, each
-rounded down to a power of two. It never holds an address, a key, a message, a path, a hostname or an IP address.
-While no choice is made, a notice prints once per machine on stderr. `AC_TELEMETRY=off`, or `DO_NOT_TRACK` or `CI` set
+their outcome codes and durations), audit lines, relay calls, MCP sessions, A2A bridge requests and pairings, and the
+machine's peers: how many were paired under 7 days before the day's end or longer, and how many of each it wrote to
+in the 7 days before. Each count is rounded down to a power of two. It never holds an address, a key, a message, a
+path, a hostname or an IP address. While no choice is made, or one made before peers were counted, a notice prints
+once per machine on stderr. `AC_TELEMETRY=off`, or `DO_NOT_TRACK` or `CI` set
 to any value but empty, `0`, `false`, `no` or `off`, keeps it off whatever the choice. The privacy page is
 [bag.dev/privacy](https://bag.dev/privacy).
 
@@ -394,7 +402,7 @@ An organisation can anchor its root key at its own domain and name agents under 
 | `examples/python-join` | a participant written in Python from the spec alone, sharing no code with the reference |
 | `scripts/` | the check script (`last_step.sh`), its checks, and a second, independent Python verifier of the vectors |
 | `docs/` | the install guide, the onboarding guide, the self-hosting guide, and the audit package: the threat model and the review summary |
-| `deploy/` | scripts that make an org key and its record, sign a handle record and write the A2A extension file, and two example orgs' public records |
+| `deploy/` | scripts that make an org key and its record, sign a handle record and write the A2A extension file, and two example orgs' public records; `deploy/docker/` builds and runs the relay as a container |
 
 Some comments and READMEs under `packages/` and `crates/` point to files that are not in this repository (an
 operations guide, notes). Read those references as notes; nothing here needs them to build or run.
@@ -408,7 +416,8 @@ operations guide, notes). Read those references as notes; nothing here needs the
 | [`spec/adversarial/README.md`](spec/adversarial/README.md) | the differential cases and the contract their three readers follow |
 | [`docs/partner-install.md`](docs/partner-install.md) | the step-by-step install: identities, a relay, records, sending, a first exchange with another installation, an agent host, your record at your own origin |
 | [`docs/onboarding.md`](docs/onboarding.md) | one agent on your organisation's own domain with one command, `onboard` |
-| [`docs/self-host.md`](docs/self-host.md) | running your own relay: build, a TLS front, backups and restore, limits, health, metrics and logs, pointing identities, agents and pairing at it, two relays, upgrades, hardening, every flag |
+| [`docs/self-host.md`](docs/self-host.md) | running your own relay: with Docker, build, a TLS front, backups and restore, limits, health, metrics and logs, pointing identities, agents and pairing at it, two relays, upgrades, hardening, every flag |
+| [`docs/inside-a-company.md`](docs/inside-a-company.md) | using bag inside a company: the security team first, your own relays inside the network, company identities and an allow-list of who may write, telemetry off, the public relays only with approval, and running behind a company proxy |
 | [`packages/cli/README.md`](packages/cli/README.md) | the commands of the CLI and their flags |
 | [`packages/mcp/README.md`](packages/mcp/README.md) | the MCP server: identities, flags, tools, and its install in each host |
 | [`packages/edge/README.md`](packages/edge/README.md) | the agent-side library: sending, receiving, the outbox, the audit log |

@@ -5,8 +5,8 @@
 // difference. This is the clients' one copy: the edge maps every value outside these sets to `other` before it
 // stores or builds anything.
 
-/** The commit of main whose deploy/telemetry/src/schema.ts, builds.ts and index.ts these values copy. */
-export const TELEMETRY_SCHEMA_COMMIT = '305b8210f529a16cfa6ba3cafe1db1e330a23288'
+/** The commit whose deploy/telemetry/src/schema.ts, builds.ts and index.ts these values copy (W6's `pairs`). */
+export const TELEMETRY_SCHEMA_COMMIT = '09ae4a5df4cf79d632e6e81b13dd3aaaddf55657'
 
 /** The published cut commits a report's `build` may name (builds.ts): none until the first public cut. */
 export const BUILDS: readonly string[] = []
@@ -82,6 +82,9 @@ export const SETS = {
   `),
   // The buckets of a duration, in the order a histogram lists them.
   duration: words('under-100ms under-1s under-10s under-60s 60s-or-more'),
+  // The machine's peers at the day's end by age, and of each, those sent to in the 7 days before (W6). No `other`: the
+  // family's cap is the set, so the client never merges a cell.
+  pairs: words('under-7d under-7d-sending 7d-or-more 7d-or-more-sending'),
 }
 
 export type SetName = keyof typeof SETS
@@ -123,6 +126,8 @@ export const MEMBERS: Readonly<Record<string, Member>> = {
   // The audit lines (event, decision, reason), the reason `ok` or a code.
   audit: { kind: 'counts', keys: ['event', 'decision', 'code'] },
   pairing: { kind: 'counts', keys: ['code'] },
+  // The peers of the machine's homes, summed over homes (opt-in at consent version 2; the red team's ruling, W6).
+  pairs: { kind: 'counts', keys: ['pairs'] },
   relay_errors: { kind: 'counts', keys: ['relay', 'code'] },
   // How long each CLI command and each MCP tool call took.
   cli_durations: { kind: 'hist', key: 'command' },
@@ -146,6 +151,7 @@ export const MAX_CELLS: Readonly<Record<string, number>> = {
   bridge_requests: 4,
   audit: 12,
   pairing: 3,
+  pairs: 4,
   relay_errors: 3,
 }
 

@@ -65,6 +65,25 @@ fn gauges_are_set_and_moved_and_the_day_s_mailboxes_are_counted_once_each() {
 }
 
 #[test]
+fn a_fresh_mailbox_s_first_subscribe_counts_once_a_day_and_no_mailbox_leaves() {
+    let m = Metrics::new();
+    let now = 20_000 * DAY + 5;
+    m.first_subscribed(now, "ed25519:aaaa");
+    m.first_subscribed(now + 60, "ed25519:aaaa");
+    m.first_subscribed(now + 120, "ed25519:bbbb");
+    let text = m.render(now + 180);
+    let two = "# TYPE ac_relay_first_subscribes_total counter\nac_relay_first_subscribes_total 2\n";
+    assert!(text.contains(two), "{text}");
+    assert!(!text.contains("ed25519:"), "only the count leaves: {text}");
+    // Its set is its own: the day's subscribed mailboxes saw none of these.
+    assert!(text.contains("ac_relay_mailboxes_subscribed_today 0\n"), "{text}");
+    // At 00:00 UTC the set and its key go: the same mailbox counts once more that day, and the counter keeps its total.
+    m.first_subscribed(now + DAY, "ed25519:aaaa");
+    m.first_subscribed(now + DAY + 60, "ed25519:aaaa");
+    assert!(m.render(now + DAY).contains("ac_relay_first_subscribes_total 3\n"));
+}
+
+#[test]
 fn a_started_relay_shows_its_open_subscriptions_and_the_day_s_mailboxes_at_0_before_the_first() {
     let m = Metrics::new();
     let now = 20_000 * DAY + 5;

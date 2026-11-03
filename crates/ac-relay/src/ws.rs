@@ -233,7 +233,7 @@ pub async fn serve(
             return refuse(&mut socket, code, CLOSE_AUTH).await;
         }
     };
-    let Ok(start) = start_cursor(&relay, &sub) else {
+    let Ok((start, fresh)) = start_cursor(&relay, &sub) else {
         return close(&mut socket, CLOSE_INTERNAL, "internal").await;
     };
     let ip = relay.config.front.log_ip.show(ip);
@@ -241,9 +241,14 @@ pub async fn serve(
     if !send(&mut socket, serde_json::json!({"t": "ok", "cursor": start}).to_string()).await {
         return;
     }
+    let now = relay.now();
+    // Before the `ok` count, so that a reader who sees that count sees this one.
+    if fresh {
+        METRICS.first_subscribed(now, sub.mailbox.as_str());
+    }
     METRICS.count(SUBSCRIBES, "result", "ok");
     METRICS.shift(SUBSCRIPTIONS_OPEN, 1);
-    METRICS.subscribed(relay.now(), sub.mailbox.as_str());
+    METRICS.subscribed(now, sub.mailbox.as_str());
     let mut session = Session {
         relay: &relay,
         sub,
@@ -264,14 +269,16 @@ pub async fn serve(
     METRICS.shift(SUBSCRIPTIONS_OPEN, -1);
 }
 
-fn start_cursor(relay: &Relay, sub: &Subscriber) -> Result<u64, Failure> {
+/// The cursor `sub` resumes after, and whether its mailbox is fresh: no envelope has reached it at this relay, its last
+/// cursor 0 (cursors are never deleted).
+fn start_cursor(relay: &Relay, sub: &Subscriber) -> Result<(u64, bool), Failure> {
     let mailbox = sub.mailbox.as_str();
     let last = relay.store.last_cursor(mailbox).map_err(store_error)?;
     let wanted = match sub.cursor {
         Some(c) => c,
         None => relay.store.acked(mailbox, sub.signer.as_str()).map_err(store_error)?.unwrap_or(0),
     };
-    Ok(wanted.min(last))
+    Ok((wanted.min(last), last == 0))
 }
 
 struct Session<'a> {

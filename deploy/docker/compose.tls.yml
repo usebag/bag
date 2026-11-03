@@ -1,0 +1,73 @@
+# A TLS front for compose.yml: Caddy in a second container answers https://$BAG_RELAY_HOST on this host's port
+# $BAG_RELAY_TLS_PORT (443 by default) and passes everything to the relay over the compose network; the relay's own port
+# is then published nowhere. Use it on top of compose.yml, from the repository root:
+#
+#   export BAG_RELAY_HOST=relay.internal.example BAG_RELAY_URL=https://relay.internal.example
+#   docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.tls.yml up -d --build
+#   docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.tls.yml cp \
+#     caddy:/data/caddy/pki/authorities/local/root.crt ./bag-relay-root.crt     # the root every client must trust
+#
+# BAG_RELAY_URL must be https://$BAG_RELAY_HOST, with :$BAG_RELAY_TLS_PORT when that is not 443, exactly as the clients
+# and your identities' records write it. Caddyfile beside this file holds the front's configuration. `!reset` below
+# (no published port for the relay) needs Docker Compose 2.24 or later.
+#
+# The relay trusts the front, and only the front, as a proxy: it counts and logs each client as the X-Forwarded-For
+# header that Caddy sets says. So Caddy's address on the compose network is pinned, 10.231.47.14, outside the range
+# Docker hands out by itself (10.231.47.0/29), and --trust-proxy names it alone; the network's gateway, through which
+# the host and a published port reach the containers, stays untrusted. If 10.231.47.0/28 is in use on this host, pick
+# another small private range and change the lines that name it.
+
+services:
+  relay:
+    command:
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "7701"
+      - --db
+      - /data/relay.sqlite
+      - --advertise
+      - ${BAG_RELAY_URL:?set BAG_RELAY_URL to https://<BAG_RELAY_HOST> as clients write it}
+      - --trust-proxy
+      - 10.231.47.14
+      - --client-ip-header
+      - x-forwarded-for
+    ports: !reset []
+
+  caddy:
+    # 2.11.6, pushed 2026-10-04 (Docker Hub), at least 7 days old when pinned; the digest of its multi-platform index.
+    image: caddy:2.11.6@sha256:3422ce6de165df66534f9b9ba50efaf457114ec961763cc52f5dbdaac2972d73
+    environment:
+      BAG_RELAY_HOST: ${BAG_RELAY_HOST:?set BAG_RELAY_HOST to the name clients reach the relay by}
+    ports:
+      - "${BAG_RELAY_TLS_PORT:-443}:443"
+    networks:
+      default:
+        ipv4_address: 10.231.47.14 # the one address the relay trusts as a proxy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # the local authority's root and the certificates it made
+      - caddy-config:/config
+    depends_on:
+      relay:
+        condition: service_healthy
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.231.47.0/28
+          ip_range: 10.231.47.0/29 # the addresses Docker gives by itself; Caddy's is outside it
+
+volumes:
+  caddy-data: {}
+  caddy-config: {}

@@ -770,15 +770,24 @@ copy, which a rotation can race and revert; run `group keep` for a group, never 
 
 ### Telemetry
 
-- **`telemetry on | off | status | preview [--date <YYYY-MM-DD>]`**: the machine's telemetry (opt-in;
-  `src/commands/telemetry.ts` over the edge's `telemetry.ts`), with one choice and one install id per machine in
-  `~/.bag/telemetry.json`, `HOME`'s, whatever `--dir` or `AC_HOME` names; it takes no `--dir`. `on` makes the id, or
-  keeps it; `off` removes it and the spool of counts. Each, and `status`, prints `telemetry <on|off> reason=<reason>
-  choice=<on|off|none> id=<32 hex|none> spool=<bytes>`: the install id, which a request to erase the machine's reports
-  names (the telemetry design note's §3). `preview` prints the exact report
-  the machine would send for a UTC date (today, or `--date`, at most 7 days back) as one JSON line on stdout, and
-  `telemetry preview: <n> bytes for <date>; this version sends nothing` on stderr. Before `on` its id is 32 zeros and
-  it holds no counts. Without `HOME`: `usage`. This version sends nothing.
+- **`telemetry on | off | status | preview [--date <YYYY-MM-DD>] | send | forget`**: the machine's telemetry
+  (opt-in; `src/commands/telemetry.ts` over the edge's `telemetry.ts` and `telemetry-send.ts`), with one choice and one
+  install id per machine in `~/.bag/telemetry.json`, `HOME`'s, whatever `--dir` or `AC_HOME` names; it takes no
+  `--dir`. `on` makes the id, or keeps it; `off` removes it, the spool of counts and the sender's mark, with no network
+  call. Each, and `status`, prints `telemetry <on|off> reason=<reason> choice=<on|off|none> id=<32 hex|none>
+  spool=<bytes> sent=<YYYY-MM-DD|none>`: the install id, which a request to erase the machine's reports names (the
+  telemetry design note's §3), and the last day the sender took. `off` then prints `telemetry off: reports already
+  sent stay up to 90 days; to erase them, send <id> to privacy@bag.dev` when it removed an id. `preview` prints the
+  exact report the machine would send for a UTC date (today, or `--date`, at most 7 days back) as one JSON line on
+  stdout, and `telemetry preview: <n> bytes for <date>; sent once, from 01:05 UTC the day after` on stderr. Before
+  `on` its id is 32 zeros and it holds no counts. `send` sends the reports that are due and prints nothing; `forget`
+  posts the id to `https://telemetry.bag.dev/v1/erase` and, on its 204 only, turns telemetry off and prints the state
+  and `telemetry forget: the erasure of <id> was accepted; telemetry off`; any other answer, or none, is
+  `unreachable` or `http-<status>`, and nothing changes. Without `HOME`: `usage`.
+- **The sender**: while telemetry is on, from 01:05 UTC, the first command line after a day ends starts `node <this
+  main.ts> telemetry send` detached, with no stdio, and never waits for it (`io.spawnSender`, `telemetryDue`). It
+  sends each finished day's report once, exactly as `preview --date` prints it. `telemetry` itself never starts it.
+  The unit tests' io has neither a fetch nor a spawner, so no test sends.
 - While telemetry is on, `run` counts each command line into the machine's spool by its verb, its exit and its code,
   and how long it took. The verb is the command, or one of `record-keep`, `peer-invite`, `peer-accept`,
   `keys-rotate`, `host-install-claude-code` and `host-install-codex`, or `help` for any `--help`. The command's edge
@@ -787,6 +796,46 @@ copy, which a rotation can race and revert; run `group keep` for a group, never 
 - The notice: while no choice is made, after a command a person runs at a terminal and after `host install`, once per
   machine, on stderr. It names `node <this main.ts> telemetry preview` and never `ac telemetry on`, which a guide
   install does not have (the spec owner's ruling 13).
+
+## Behind a proxy
+
+In a network where every outbound connection must go through an HTTP proxy, set the proxy in the environment that
+runs the CLI, the MCP server (the environment the host, such as Claude Code, starts with) and the bridge:
+
+```sh
+export HTTPS_PROXY=http://proxy.example.corp:3128
+export HTTP_PROXY=http://proxy.example.corp:3128
+export NO_PROXY=localhost,127.0.0.1,.example.corp
+```
+
+- **What reads them.** Node's built-in fetch and WebSocket send through the proxy only when `NODE_USE_ENV_PROXY=1`
+  is set as the process starts. Each entry point therefore runs itself again once, in the same process (the same pid,
+  arguments and stdio), with `NODE_USE_ENV_PROXY=1` when a proxy is set and it is not (the edge's `src/proxy.ts`). The
+  relay calls, the subscription WebSocket, record lookups at relays and telemetry then go through the proxy by CONNECT.
+  On a platform without `process.execve` (Windows) the CLI prints one line asking you to set `NODE_USE_ENV_PROXY=1`
+  yourself.
+- **The names.** Each name is read in either case, the lowercase one first. `HTTPS_PROXY` is for `https:` and `wss:`
+  relays, `HTTP_PROXY` for `http:` and `ws:` ones. A proxy that needs a user and password takes them in its URL
+  (`http://user:password@proxy:3128`, Basic). A proxy that needs NTLM or Kerberos needs a local forwarding proxy that
+  speaks it.
+- **NO_PROXY** is read as Node reads it: `*` for every host; a name or an address for itself only; `.example.corp` or
+  `*.example.corp` for its subdomains, not the name itself; `name:port` for that port only. Entries are split by
+  commas or spaces.
+- **An org's well-known record** (an address on its own domain) is fetched with node:https, which the variable does not
+  reach, so the edge tunnels that one request itself. It asks the proxy for a CONNECT to the address the private-address
+  guard checked, never to the name, and keeps the TLS name the host's, so the guard's pinning holds. Many proxies
+  refuse a CONNECT to a bare address; then that lookup fails, `resolve-failed: the proxy http://proxy:3128 refused
+  CONNECT to <address>:443: 403`, and never falls back to the name.
+- **A proxy that inspects TLS** presents its own certificates. Give Node the company's root certificate, as a PEM file,
+  with `export NODE_EXTRA_CA_CERTS=/path/to/company-root.pem`. Never turn certificate checks off
+  (`NODE_TLS_REJECT_UNAUTHORIZED=0`): it would let anyone on the path read and change what the client sends and gets.
+- **What shows it.** `status` prints `network proxy https=<scheme://host:port|none> http=<...> no_proxy=<list|none>
+  active=<yes|no: set NODE_USE_ENV_PROXY=1>` when a proxy is set. The MCP server's `status` tool has `network`, and
+  its log a `network` line at start. Each names the proxy's scheme, host and port, never its user or password.
+  NO_PROXY's list appears as written, and it may name internal domains. It stays on the machine, unless the host's MCP
+  log is sent elsewhere.
+- **A proxy that cuts long WebSockets.** The subscription reconnects with the edge's backoff and resumes from the ack
+  the relay stores. There is no polling fallback yet: the relay has no route that lists a mailbox.
 
 ## Errors
 

@@ -1533,7 +1533,8 @@ READ_LISTS: dict[str, frozenset[str]] = {
 
 
 def check_pair_code(f: dict[str, Any], t: Tally) -> None:
-    """Pairing code (SPEC §8.10): recompute S = HKDF-SHA256 over the words, and the lenient codec."""
+    """Pairing (SPEC §8.10): S = HKDF-SHA256 over the words, the lenient codec, the check digits, the request mac, the
+    invite string and the pair/open signature."""
     for c in f.get("s_derivation", {}).get("cases", []):
         where = f"pair-code S {c.get('nameplate')}-{'-'.join(c.get('words', []))}"
 
@@ -1558,6 +1559,44 @@ def check_pair_code(f: dict[str, Any], t: Tally) -> None:
             return True
 
         t.run("pair code codec", f"pair-code codec {raw!r}", parse_check)
+    # Added 2026-11-03: the cases the edge writes (packages/edge/scripts/gen-pair-code-vectors.ts), recomputed here.
+    for c in f.get("check_digits", {}).get("cases", []):
+
+        def digits(c: dict[str, Any] = c) -> bool:
+            pre = ["ac/peer-code/1", c["inviter"], c["invitation"], c["requester"], c["sealing"], c["s_hex"]]
+            d = digest(pre)
+            n = f"{int.from_bytes(d[:4], 'big') % 1_000_000:06d}"
+            shown = f"{n[:3]} {n[3:]}"
+            return (canonical(pre), d.hex(), n, shown) == (c["canonical"], c["sha256"], c["digits"], c["shown"])
+
+        t.run("pair check digits", f"pair-code check digits {c.get('name')!r}", digits)
+    for c in f.get("request_mac", {}).get("cases", []):
+
+        def mac(c: dict[str, Any] = c) -> bool:
+            pre = ["ac/peer-request/1", c["inviter"], c["invitation"], c["requester"], c["sealing"], c["exp"]]
+            text = canonical(pre)
+            m = hmac.new(bytes.fromhex(c["s_hex"]), text.encode("utf-8"), hashlib.sha256).hexdigest()
+            return (text, m) == (c["canonical"], c["mac"])
+
+        t.run("pair request mac", f"pair-code request mac {c.get('name')!r}", mac)
+    for c in f.get("invite_string", {}).get("cases", []):
+
+        def invite(c: dict[str, Any] = c) -> bool:
+            text = canonical(["ac/peer-invite/1", c["inviter"], c["invitation"], c["relay"], c["s_hex"]])
+            b64 = base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+            return (text, "ac-peer1:" + b64) == (c["canonical"], c["invite"])
+
+        t.run("pair invite string", f"pair-code invite string {c.get('name')!r}", invite)
+    for c in f.get("pair_open", {}).get("cases", []):
+
+        def pair_open(c: dict[str, Any] = c) -> bool:
+            pre = ["ac/pair-open/1", c["inviter"], c["invitation"], c["relays"], c["ttl"]]
+            body = json.loads(c["body"])
+            fields = {k: c[k] for k in ("inviter", "invitation", "relays", "ttl", "sig")}
+            ok = verify_preimage(c["invitation"], pre, c["sig"])
+            return ok and (canonical(pre), digest(pre).hex(), body) == (c["canonical"], c["sha256"], fields)
+
+        t.run("pair open", f"pair-code pair/open {c.get('name')!r}", pair_open)
 
 
 def check_file(name: str, f: dict[str, Any], t: Tally) -> None:

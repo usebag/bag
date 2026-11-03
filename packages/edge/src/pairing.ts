@@ -154,8 +154,8 @@ export function pairingCode(v: Invite, requester: string, sealing: string): stri
   return `${n.slice(0, 3)} ${n.slice(3)}`
 }
 
-/** The request's mac: HMAC-SHA256 under S of [tag, inviter, I, requester, its sealing key, exp]. */
-function macOf(v: Invite, requester: string, sealing: string, exp: number): string {
+/** The request's mac: HMAC-SHA256 under S of [tag, inviter, I, requester, its sealing key, exp], in hex. */
+export function macOf(v: Invite, requester: string, sealing: string, exp: number): string {
   const text = core.canonical(['ac/peer-request/1', v.inviter, v.i, requester, sealing, exp])
   return createHmac('sha256', core.fromHex(v.secret)).update(text).digest('hex')
 }

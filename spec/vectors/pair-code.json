@@ -1,5 +1,5 @@
 {
-  "note": "Pairing word-code vectors. The code carries no integrity on its own; the six-digit SAS does. These vectors pin the codec and the S (invitation MAC key) derivation so the edge, the CLI and the Python verifier agree. The wordlist that generation draws from is a separate concern (licence pending); these vectors use fixed example words and do not require any word to be in the list.",
+  "note": "Pairing word-code vectors. The code carries no integrity on its own; the six-digit SAS does. These vectors pin the codec and the S (invitation MAC key) derivation so the edge, the CLI and the Python verifier agree. The wordlist that generation draws from is a separate concern (licence pending); these vectors use fixed example words and do not require any word to be in the list. The members codec and s_derivation are maintained by hand; check_digits, request_mac, invite_string and pair_open (added 2026-11-03) are written from the shipped edge code by packages/edge/scripts/gen-pair-code-vectors.ts, whose --check fails when the code no longer reproduces them.",
   "codec": {
     "format": "canonical code = nameplate + '-' + words joined by '-'; nameplate is the leading all-digit token; words are lowercase a-z.",
     "parse": "split the input on runs of '-' and/or ASCII whitespace; trim; lowercase (NFKC); the first token (all digits) is the nameplate, the rest are the words. A leading/trailing separator is ignored. The parse is lenient on separators and case; generation always emits the canonical hyphen form.",
@@ -34,6 +34,127 @@
         "words": ["maple", "signal", "harbor"],
         "invitation": "ed25519:3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
         "s_hex": "d62599658cc66e4e85d06aef0e466b79"
+      }
+    ]
+  },
+  "check_digits": {
+    "alg": "digits = decimal( uint32_be( sha256( utf8( canonical(['ac/peer-code/1', inviter, invitation, requester, sealing, S]) ) )[0..4] ) mod 10^6 ), left-padded with 0 to six digits; shown as three digits, one space, three digits",
+    "fields": "inviter, invitation and requester are addresses; sealing is the requester X25519 public key in lowercase hex (its key record sealing_key, else its address record sealing_key); S is the 16-byte invitation MAC key as 32 lowercase hex characters",
+    "cases": [
+      {
+        "name": "word code: S from the words of 472-tulip-orbit-cedar",
+        "inviter": "ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "invitation": "ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+        "requester": "ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+        "sealing": "ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b",
+        "s_hex": "f173a76c10446ad9288f5512651a41d2",
+        "canonical": "[\"ac/peer-code/1\",\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",\"ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce\",\"ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b\",\"f173a76c10446ad9288f5512651a41d2\"]",
+        "sha256": "b8a70c14e188c29f7608bed7902c65ff51d6e2c6e7485aeec39aa8f2b1870255",
+        "first4_be": 3097955348,
+        "digits": "955348",
+        "shown": "955 348"
+      },
+      {
+        "name": "invite string: S drawn at random",
+        "inviter": "ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "invitation": "ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+        "requester": "ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+        "sealing": "ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b",
+        "s_hex": "00112233445566778899aabbccddeeff",
+        "canonical": "[\"ac/peer-code/1\",\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",\"ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce\",\"ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b\",\"00112233445566778899aabbccddeeff\"]",
+        "sha256": "4bedae44ee7b54b13384f80a434d80d56e080c8bf563e0a547b29b0f1d232fbd",
+        "first4_be": 1273867844,
+        "digits": "867844",
+        "shown": "867 844"
+      },
+      {
+        "name": "digits with a leading zero, kept as six digits",
+        "inviter": "ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "invitation": "ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+        "requester": "ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+        "sealing": "125a83acb4e407f9360c9c2080a9c4de1a57b0969c6b8a0079e3159d72705c21",
+        "s_hex": "00112233445566778899aabbccddeeff",
+        "canonical": "[\"ac/peer-code/1\",\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",\"ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce\",\"125a83acb4e407f9360c9c2080a9c4de1a57b0969c6b8a0079e3159d72705c21\",\"00112233445566778899aabbccddeeff\"]",
+        "sha256": "6a0a5ce71815d38a850355c8b324fe2b39342fd672ff099dd37dd5576b236eec",
+        "first4_be": 1779064039,
+        "digits": "064039",
+        "shown": "064 039"
+      }
+    ]
+  },
+  "request_mac": {
+    "alg": "mac = lowercase_hex( HMAC-SHA256( key = the 16 bytes of S, utf8( canonical(['ac/peer-request/1', inviter, invitation, requester, sealing, exp]) ) ) )",
+    "fields": "exp is the invitation's end, its address record's iat + ttl, a canonical integer; the other fields as in check_digits",
+    "cases": [
+      {
+        "name": "word code",
+        "inviter": "ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "invitation": "ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+        "requester": "ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+        "sealing": "ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b",
+        "exp": 1798000600,
+        "s_hex": "f173a76c10446ad9288f5512651a41d2",
+        "canonical": "[\"ac/peer-request/1\",\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",\"ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce\",\"ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b\",1798000600]",
+        "mac": "e11c92ea59f546000df2f9c8727ca40149972ff1191cd03a3bd9271fc2e744ef"
+      },
+      {
+        "name": "invite string",
+        "inviter": "ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "invitation": "ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+        "requester": "ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+        "sealing": "ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b",
+        "exp": 1798000600,
+        "s_hex": "00112233445566778899aabbccddeeff",
+        "canonical": "[\"ac/peer-request/1\",\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",\"ed25519:17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce\",\"ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b\",1798000600]",
+        "mac": "3a9e22fefe0b9802b9c8b4b8fb1c1d14a4db06b681f8e42e63c4dbdd6275f509"
+      }
+    ]
+  },
+  "invite_string": {
+    "alg": "invite = 'ac-peer1:' + base64url_no_padding( utf8( canonical(['ac/peer-invite/1', inviter, invitation, relay, S]) ) )",
+    "cases": [
+      {
+        "name": "an invite string",
+        "inviter": "ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "invitation": "ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+        "relay": "https://relay.acme.example",
+        "s_hex": "00112233445566778899aabbccddeeff",
+        "canonical": "[\"ac/peer-invite/1\",\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",\"https://relay.acme.example\",\"00112233445566778899aabbccddeeff\"]",
+        "invite": "ac-peer1:WyJhYy9wZWVyLWludml0ZS8xIiwiZWQyNTUxOTpkMDRhYjIzMjc0MmJiNGFiM2ExMzY4YmQ0NjE1ZTRlNmQwMjI0YWI3MWEwMTZiYWY4NTIwYTMzMmM5Nzc4NzM3IiwiZWQyNTUxOTphMDlhYTVmNDdhNjc1OTgwMmZmOTU1ZjhkYzJkMmExNGE1Yzk5ZDIzYmU5N2Y4NjQxMjdmZjkzODM0NTVhNGYwIiwiaHR0cHM6Ly9yZWxheS5hY21lLmV4YW1wbGUiLCIwMDExMjIzMzQ0NTU2Njc3ODg5OWFhYmJjY2RkZWVmZiJd"
+      }
+    ]
+  },
+  "pair_open": {
+    "alg": "sig = Ed25519( the invitation key, sha256( utf8( canonical(['ac/pair-open/1', inviter, invitation, relays, ttl]) ) ) ); relays is a list of 1 to 64 distinct relay URLs, ttl 1 to 600",
+    "cases": [
+      {
+        "name": "one relay, the rendezvous itself, as the edge opens it",
+        "invitation_seed": "2222222222222222222222222222222222222222222222222222222222222222",
+        "inviter": "ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "invitation": "ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+        "relays": [
+          "https://relay.acme.example"
+        ],
+        "ttl": 600,
+        "canonical": "[\"ac/pair-open/1\",\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",[\"https://relay.acme.example\"],600]",
+        "sha256": "19c48a2e9ede38e467544bd4dfe853656c116839330b9d4a3003f71bd9678f48",
+        "sig": "d926db6fb666df72d291a81fd0f9ebb434e95b42dd6169f42d460d4a0bb3e528d3ca1e63e35e23fa77a93d81a86e5a9194892c0f944a5bb361c33cdcbf54ee06",
+        "body": "{\"inviter\":\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"invitation\":\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",\"relays\":[\"https://relay.acme.example\"],\"ttl\":600,\"sig\":\"d926db6fb666df72d291a81fd0f9ebb434e95b42dd6169f42d460d4a0bb3e528d3ca1e63e35e23fa77a93d81a86e5a9194892c0f944a5bb361c33cdcbf54ee06\"}"
+      },
+      {
+        "name": "two relays in their listed order, ttl 120",
+        "invitation_seed": "2222222222222222222222222222222222222222222222222222222222222222",
+        "inviter": "ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "invitation": "ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+        "relays": [
+          "https://relay.acme.example",
+          "https://relay2.acme.example"
+        ],
+        "ttl": 120,
+        "canonical": "[\"ac/pair-open/1\",\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",[\"https://relay.acme.example\",\"https://relay2.acme.example\"],120]",
+        "sha256": "f643ded2cc4a0ed324e4d1f6db96a59a85ec23c971c37cd97663e0932e9bfab1",
+        "sig": "3dac4254340b63ca1093d856a41087104560813afb44e28a97334748d8f124e134f57fc079b844ecd217604b12826030dcc06cef05a831731aad94fd6f1c6d08",
+        "body": "{\"inviter\":\"ed25519:d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737\",\"invitation\":\"ed25519:a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0\",\"relays\":[\"https://relay.acme.example\",\"https://relay2.acme.example\"],\"ttl\":120,\"sig\":\"3dac4254340b63ca1093d856a41087104560813afb44e28a97334748d8f124e134f57fc079b844ecd217604b12826030dcc06cef05a831731aad94fd6f1c6d08\"}"
       }
     ]
   }

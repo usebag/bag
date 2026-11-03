@@ -143,6 +143,33 @@ describe('status: the doorbell line first, then one line for a subscription the 
     expect([outside.out, outside.err[0]]).toEqual([[], expect.stringContaining('a key name is 1 to 64')])
   })
 
+  it('prints the proxy behind a proxy, without its user or password, and whether Node sends through it', async () => {
+    const { dir } = await home()
+    const proxied = (env: Record<string, string>) => testIo(new MemoryRelay(), env)
+    const off = await cli(
+      proxied({ HTTPS_PROXY: 'http://jane:s3cret@proxy.corp:3128', no_proxy: 'localhost' }),
+      'status',
+      '--as',
+      'bob',
+      '--dir',
+      dir,
+    )
+    expect(off.out).toEqual([
+      bell(dir),
+      'network proxy https=http://proxy.corp:3128 http=none no_proxy=localhost active=no: set NODE_USE_ENV_PROXY=1',
+    ])
+    expect(JSON.stringify(off)).not.toMatch(/jane|s3cret/)
+    const on = await cli(
+      proxied({ http_proxy: 'http://proxy.corp:8080', NODE_USE_ENV_PROXY: '1' }),
+      'status',
+      '--as',
+      'bob',
+      '--dir',
+      dir,
+    )
+    expect(on.out[1]).toBe('network proxy https=none http=http://proxy.corp:8080 no_proxy=none active=yes')
+  })
+
   it('prints the doorbell as an absolute path for a relative --dir, before the file exists', async () => {
     const { dir, io } = await home()
     const got = await cli(io, 'status', '--as', 'bob', '--dir', relative(process.cwd(), dir))

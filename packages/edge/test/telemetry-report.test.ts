@@ -144,6 +144,7 @@ describe('the builder: one schema-1 report for a UTC day', () => {
       bridge_requests: {},
       audit: {},
       pairing: {},
+      pairs: {},
       relay_errors: {},
       cli_durations: {},
       mcp_durations: {},
@@ -343,7 +344,7 @@ describe('the property: no report carries a string outside the schema sets, what
     expect(report.id).toBe(PREVIEW_ID)
     expect(telemetryReport({}, DAY)).toEqual(report)
     const families = Object.values(report).filter((v) => typeof v === 'object')
-    expect(families).toEqual(Array.from({ length: 11 }, () => ({})))
+    expect(families).toEqual(Array.from({ length: 12 }, () => ({})))
   })
 })
 

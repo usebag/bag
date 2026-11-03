@@ -1,5 +1,6 @@
 import { hkdfSync } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { canonical, sha256, toHex, verifyPreimage } from '@usebag/core'
 import { describe, expect, it } from 'vitest'
 import { RelayGuard } from '../src/net.ts'
 import {
@@ -13,6 +14,7 @@ import {
   WORDS,
   wordlist,
 } from '../src/pair-code.ts'
+import { inviteText, macOf, pairingCode, readInvite } from '../src/pairing.ts'
 import type { RelayClient } from '../src/ports.ts'
 import { P } from './support/fixtures.ts'
 
@@ -20,9 +22,35 @@ import { P } from './support/fixtures.ts'
 // vectors in spec/vectors/pair-code.json; the pairing over it is pairing.test.ts, the HTTP calls
 // http-relay.test.ts.
 
+/** The fields every generated pairing case shares (spec/SPEC.md §8.10). */
+interface Pairing {
+  name: string
+  inviter: string
+  invitation: string
+  requester: string
+  sealing: string
+  s_hex: string
+  canonical: string
+}
 interface Vectors {
   codec: { cases: { code?: string; input?: string; nameplate: string; words: string[] }[] }
   s_derivation: { cases: { nameplate: string; words: string[]; invitation: string; s_hex: string }[] }
+  check_digits: { cases: (Pairing & { sha256: string; first4_be: number; digits: string; shown: string })[] }
+  request_mac: { cases: (Pairing & { exp: number; mac: string })[] }
+  invite_string: { cases: (Omit<Pairing, 'requester' | 'sealing'> & { relay: string; invite: string })[] }
+  pair_open: {
+    cases: {
+      name: string
+      inviter: string
+      invitation: string
+      relays: string[]
+      ttl: number
+      canonical: string
+      sha256: string
+      sig: string
+      body: string
+    }[]
+  }
 }
 const V = JSON.parse(
   readFileSync(new URL('../../../spec/vectors/pair-code.json', import.meta.url), 'utf8'),
@@ -110,6 +138,63 @@ describe('the word code: the codec and S (spec/vectors/pair-code.json)', () => {
       codeSecret({ nameplate: '47', words: ['2tulip', 'orbit', 'cedar'] }, P.bob.address),
     ]) {
       expect(other).not.toBe(want)
+    }
+  })
+})
+
+describe('the check digits, the request mac, the invite string and pair/open (spec/vectors/pair-code.json)', () => {
+  const RELAY = 'https://relay.acme.example'
+  const text = (v: Parameters<typeof canonical>[0]) => Buffer.from(canonical(v)).toString()
+
+  it('shows the check digits of every case: sha256 of the canonical preimage, 4 bytes big-endian mod 10^6', () => {
+    expect(V.check_digits.cases.length).toBeGreaterThan(2)
+    for (const c of V.check_digits.cases) {
+      const pre = ['ac/peer-code/1', c.inviter, c.invitation, c.requester, c.sealing, c.s_hex]
+      expect(text(pre), c.name).toBe(c.canonical)
+      expect(toHex(sha256(canonical(pre))), c.name).toBe(c.sha256)
+      const v = { inviter: c.inviter, i: c.invitation, relay: RELAY, secret: c.s_hex }
+      expect(pairingCode(v, c.requester, c.sealing), c.name).toBe(c.shown)
+      expect(c.shown.replace(' ', ''), c.name).toBe(c.digits)
+      expect(String(c.first4_be % 1_000_000).padStart(6, '0'), c.name).toBe(c.digits)
+    }
+    expect(V.check_digits.cases.some((c) => c.digits.startsWith('0'))).toBe(true)
+    const word = V.check_digits.cases[0] as Pairing
+    expect(codeSecret({ nameplate: '472', words: ['tulip', 'orbit', 'cedar'] }, word.invitation)).toBe(
+      word.s_hex,
+    )
+  })
+
+  it('macs every request case as HMAC-SHA256 under the 16 bytes of S, in lowercase hex', () => {
+    expect(V.request_mac.cases.length).toBeGreaterThan(0)
+    for (const c of V.request_mac.cases) {
+      const pre = ['ac/peer-request/1', c.inviter, c.invitation, c.requester, c.sealing, c.exp]
+      expect(text(pre), c.name).toBe(c.canonical)
+      const v = { inviter: c.inviter, i: c.invitation, relay: RELAY, secret: c.s_hex }
+      expect(macOf(v, c.requester, c.sealing, c.exp), c.name).toBe(c.mac)
+    }
+  })
+
+  it('writes and reads every invite string: ac-peer1: and base64url, no padding, of the canonical preimage', () => {
+    expect(V.invite_string.cases.length).toBeGreaterThan(0)
+    for (const c of V.invite_string.cases) {
+      const v = { inviter: c.inviter, i: c.invitation, relay: c.relay, secret: c.s_hex }
+      expect(text(['ac/peer-invite/1', c.inviter, c.invitation, c.relay, c.s_hex]), c.name).toBe(c.canonical)
+      expect(inviteText(v), c.name).toBe(c.invite)
+      expect(readInvite(c.invite), c.name).toEqual(v)
+      expect(c.invite).not.toContain('=')
+    }
+  })
+
+  it('signs every pair/open case with the invitation key over its canonical preimage', () => {
+    expect(V.pair_open.cases.length).toBeGreaterThan(0)
+    for (const c of V.pair_open.cases) {
+      const pre = ['ac/pair-open/1', c.inviter, c.invitation, c.relays, c.ttl]
+      expect(text(pre), c.name).toBe(c.canonical)
+      expect(toHex(sha256(canonical(pre))), c.name).toBe(c.sha256)
+      expect(verifyPreimage(c.invitation, pre, c.sig), c.name).toBe(true)
+      expect(verifyPreimage(c.invitation, [...pre.slice(0, 4), c.ttl - 1], c.sig), c.name).toBe(false)
+      const { inviter, invitation, relays, ttl, sig } = c
+      expect(JSON.parse(c.body), c.name).toEqual({ inviter, invitation, relays, ttl, sig })
     }
   })
 })

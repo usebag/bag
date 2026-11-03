@@ -276,8 +276,19 @@ export {
   readInvite,
   refuseOtherInviter,
 } from './pairing.ts'
+// A corporate proxy: HTTPS_PROXY, HTTP_PROXY and NO_PROXY for fetch and the WebSocket through Node's own agent (one
+// re-run with NODE_USE_ENV_PROXY=1), and the well-known GET's own CONNECT tunnel; shown without credentials.
+export {
+  bypassed,
+  proxyFor,
+  proxyShown,
+  proxyStatus,
+  REEXEC_GUARD,
+  type ReexecProcess,
+  useEnvProxy,
+} from './proxy.ts'
 // The telemetry switch, one per machine, its spool of counts and the report it builds: opt-in, read by the CLI, the
-// MCP server and the A2A bridge; nothing is sent.
+// MCP server and the A2A bridge; the sender sends each finished day's report once while it is on.
 export {
   addTelemetryCounts,
   countDuration,
@@ -296,6 +307,8 @@ export {
   TELEMETRY_COUNTS_FILE,
   TELEMETRY_FILE,
   TELEMETRY_NOTICE,
+  TELEMETRY_PAIRS_FILE,
+  TELEMETRY_SENT_FILE,
   type TelemetryReason,
   type TelemetryState,
   telemetryCode,
@@ -304,12 +317,23 @@ export {
   telemetryNotice,
   telemetryOn,
   telemetryReport,
+  telemetrySince,
   telemetrySpoolBytes,
   telemetryState,
 } from './telemetry.ts'
+export { notePairs, type SentStore, trackPairs } from './telemetry-pairs.ts'
 export {
   buildTelemetryReport,
   machineFacts,
   type TelemetryFacts,
   type TelemetryReport,
 } from './telemetry-report.ts'
+export {
+  eraseTelemetry,
+  type SendOptions,
+  sendDueTelemetry,
+  startTelemetrySender,
+  telemetryDue,
+  telemetryEndpoint,
+  telemetrySent,
+} from './telemetry-send.ts'

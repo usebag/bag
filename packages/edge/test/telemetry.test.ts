@@ -14,6 +14,7 @@ import {
   telemetryId,
   telemetryNotice,
   telemetryOn,
+  telemetrySince,
   telemetryState,
 } from '../src/telemetry.ts'
 import { tempDir } from './support/fixtures.ts'
@@ -97,15 +98,17 @@ describe('telemetryState: off until a person turns it on, and an environment var
   })
 
   it('reads a file it cannot read as off, bad-file, with no choice and no id, and never throws', () => {
+    const id = '0'.repeat(32)
     for (const text of [
       'not json',
       'null',
       '5',
-      '{"version":2,"telemetry":"on","id":"00000000000000000000000000000000"}',
-      '{"version":1,"telemetry":"on"}',
-      '{"version":1,"telemetry":"on","id":"ABCDEF00000000000000000000000000"}',
-      '{"version":1,"telemetry":"on","id":"abc"}',
-      '{"version":1,"telemetry":"yes"}',
+      `{"version":2,"telemetry":"on","id":"${id}"}`,
+      '{"version":2,"telemetry":"on","since":"2027-01-15"}',
+      `{"version":2,"telemetry":"on","id":"ABCDEF00000000000000000000000000","since":"2027-01-15"}`,
+      `{"version":2,"telemetry":"on","id":"${id}","since":"2027-02-30"}`,
+      '{"version":2,"telemetry":"yes"}',
+      '{"version":3,"telemetry":"off"}',
     ]) {
       const home = fresh()
       writeFileSync(file(home), text)
@@ -120,6 +123,22 @@ describe('telemetryState: off until a person turns it on, and an environment var
     expect(telemetryState({}, notDir)).toEqual({ on: false, reason: 'bad-file', choice: null })
   })
 
+  it('reads a version-1 choice, made before pairs, as off, old-file, with no id, and asks again (Q2)', () => {
+    for (const text of [
+      `{"version":1,"telemetry":"on","id":"${'ab'.repeat(16)}"}`,
+      '{"version":1,"telemetry":"off"}',
+      '{"version":1}',
+    ]) {
+      const home = fresh()
+      writeFileSync(file(home), text)
+      writeFileSync(join(home, 'telemetry-noticed'), '')
+      expect(telemetryState({}, home), text).toEqual({ on: false, reason: 'old-file', choice: null })
+      expect([telemetryId(home), telemetryNotice({}, home)], text).toEqual([null, TELEMETRY_NOTICE])
+      setTelemetry(home, 'on', systemRng)
+      expect(telemetryId(home), text).not.toBe('ab'.repeat(16))
+    }
+  })
+
   it('reads the file afresh on every call', () => {
     const home = fresh()
     expect(telemetryState({}, home).on).toBe(false)
@@ -131,18 +150,21 @@ describe('telemetryState: off until a person turns it on, and an environment var
 })
 
 describe('setTelemetry and telemetryId: the choice in a 0600 file, an install id made at on and removed at off', () => {
-  it('writes version 1 with a 32-hex id at on, keeps it at a second on, drops it at off, and draws anew after', () => {
+  it('writes version 2 with a 32-hex id and its date at on, keeps both at a second on, drops them at off, and draws anew after', () => {
     const home = fresh()
-    setTelemetry(home, 'on', systemRng)
+    const T = 1_800_000_000 // 2027-01-15 08:00 UTC
+    setTelemetry(home, 'on', systemRng, T)
     const id = telemetryId(home) as string
     expect(id).toMatch(/^[0-9a-f]{32}$/)
-    expect(JSON.parse(readFileSync(file(home), 'utf8'))).toEqual({ version: 1, telemetry: 'on', id })
+    const doc = { version: 2, telemetry: 'on', id, since: '2027-01-15' }
+    expect(JSON.parse(readFileSync(file(home), 'utf8'))).toEqual(doc)
+    expect(telemetrySince(home)).toBe('2027-01-15')
     expect(mode(file(home))).toBe(0o600)
-    setTelemetry(home, 'on', systemRng)
-    expect(telemetryId(home)).toBe(id)
+    setTelemetry(home, 'on', systemRng, T + 86_400)
+    expect(JSON.parse(readFileSync(file(home), 'utf8'))).toEqual(doc)
     setTelemetry(home, 'off', systemRng)
-    expect(readFileSync(file(home), 'utf8')).toBe('{"version":1,"telemetry":"off"}\n')
-    expect(telemetryId(home)).toBeNull()
+    expect(readFileSync(file(home), 'utf8')).toBe('{"version":2,"telemetry":"off"}\n')
+    expect([telemetryId(home), telemetrySince(home)]).toEqual([null, null])
     setTelemetry(home, 'on', systemRng)
     expect(telemetryId(home)).toMatch(/^[0-9a-f]{32}$/)
     expect(telemetryId(home)).not.toBe(id)
@@ -173,7 +195,7 @@ describe('setTelemetry and telemetryId: the choice in a 0600 file, an install id
 describe('telemetryNotice: the notice, once per home, while no choice is made', () => {
   it('is the fixed notice text, word for word, naming the preview and never ac telemetry on (ruling 13)', () => {
     const words =
-      'bag: telemetry is off. It is used to find failures, see which versions, commands and tools are used, and decide what to build. If you turn it on, bag sends one report a day to telemetry.bag.dev: the version, OS, and counts of commands, messages and error codes, under a random id. Never addresses, keys, messages, file paths or your IP address. See the exact report: PREVIEW. Details: bag.dev/privacy'
+      'bag: telemetry is off. It is used to find failures, see which versions, commands and tools are used, and decide what to build. If you turn it on, bag sends one report a day to telemetry.bag.dev: the version, OS, and counts of commands, messages, peers and error codes, under a random id. Never addresses, keys, messages, file paths or your IP address. See the exact report: PREVIEW. Details: bag.dev/privacy'
     const cmd = 'node /x/main.ts telemetry preview'
     expect(TELEMETRY_NOTICE).toBe(words.replace('PREVIEW', 'telemetry preview, in the bag command line'))
     expect(noticeText(cmd)).toBe(words.replace('PREVIEW', cmd))
@@ -190,7 +212,7 @@ describe('telemetryNotice: the notice, once per home, while no choice is made', 
   it('gives the notice to the first caller for a home, by a 0600 mark, and null after', () => {
     const home = fresh()
     expect(telemetryNotice({}, home)).toBe(TELEMETRY_NOTICE)
-    expect(mode(join(home, 'telemetry-noticed'))).toBe(0o600)
+    expect(mode(join(home, 'telemetry-noticed-2'))).toBe(0o600)
     expect(telemetryNotice({}, home)).toBeNull()
     expect(telemetryNotice({}, fresh())).toBe(TELEMETRY_NOTICE)
   })
@@ -201,7 +223,7 @@ describe('telemetryNotice: the notice, once per home, while no choice is made', 
     for (const env of [{ AC_TELEMETRY: 'off' }, { DO_NOT_TRACK: '1' }, { CI: 'true' }]) {
       const home = fresh()
       expect(telemetryNotice(env, home)).toBeNull()
-      expect(existsSync(join(home, 'telemetry-noticed'))).toBe(false)
+      expect(existsSync(join(home, 'telemetry-noticed-2'))).toBe(false)
     }
     const bad = fresh()
     writeFileSync(file(bad), '{}')

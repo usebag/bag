@@ -641,6 +641,7 @@ describe('status', () => {
       doorbell_path: join(tmp.dir, 'alice', 'state', 'alice', 'doorbell'),
       telemetry: { on: false, reason: 'no-file', choice: null },
       telemetry_counts: null,
+      network: { https: null, http: null, no_proxy: null, active: false },
     })
     await bob.call('send', { to: [P.alice.address], type: 'chat.v1', body: 1 })
     await until('alice has it', () => accepted(alice) === 1)
@@ -688,7 +689,7 @@ describe('status', () => {
     expect(await state(jane)).toEqual({ on: false, reason: 'DO_NOT_TRACK', choice: 'on' })
     setTelemetry(dir, 'off', systemRng)
     expect(await state(carol)).toEqual({ on: false, reason: 'file', choice: 'off' })
-    expect(existsSync(join(dir, 'telemetry-noticed'))).toBe(false)
+    expect(existsSync(join(dir, 'telemetry-noticed-2'))).toBe(false)
   })
 
   it("counts tool calls by tool and code with a duration bucket each, and its session by host kind, into the machine's store while telemetry is on; status shows today's raw, never the id; close writes what it holds", async () => {

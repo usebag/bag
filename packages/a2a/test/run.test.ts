@@ -14,8 +14,8 @@ import {
   TELEMETRY_NOTICE,
 } from '@usebag/edge'
 import { afterAll, describe, expect, it } from 'vitest'
-import { DEFAULT_PORT } from '../src/bridge.ts'
-import { parseBridgeArgs, type RunIo, runBridge, USAGE } from '../src/run.ts'
+import { DEFAULT_PORT, LOOPBACK_ONLY } from '../src/bridge.ts'
+import { type BridgeConfig, parseBridgeArgs, type RunIo, runBridge, USAGE } from '../src/run.ts'
 import { AGENT, deferred } from './support.ts'
 
 // The bridge as a process, composed on a real home: a key file, the SQLite store and the audit log under
@@ -78,6 +78,48 @@ describe('parseBridgeArgs: the flags and the environment', () => {
     expect(bad([...flags, '--port=-1'])).toBe('--port is 0 to 65535')
     expect(bad([...flags, '--nope'])).toMatch(/nope/)
   })
+
+  it('takes --host on the loopback only: 127.0.0.0/8, ::1 in any form, localhost; never a network address', () => {
+    const host = (h: string): string => {
+      try {
+        return (parseBridgeArgs([...flags, '--host', h], {}) as BridgeConfig).host
+      } catch (e) {
+        return (e as Error).message
+      }
+    }
+    for (const ok of [
+      '127.0.0.1',
+      '127.0.0.2',
+      '127.255.255.255',
+      '::1',
+      '0:0:0:0:0:0:0:1',
+      '0::1',
+      'localhost',
+      'LOCALHOST',
+      '::ffff:127.0.0.1',
+    ]) {
+      expect(host(ok)).toBe(ok)
+    }
+    for (const no of [
+      '0.0.0.0',
+      '::',
+      '10.0.0.5',
+      '192.168.1.20',
+      '172.16.0.1',
+      '127.0.0.256',
+      '128.0.0.1',
+      '::2',
+      '1::1',
+      'example.com',
+      'localhost.evil',
+      '::ffff:10.0.0.1',
+      'fe80::1',
+      '[::1]',
+      '',
+    ]) {
+      expect(host(no)).toBe(LOOPBACK_ONLY)
+    }
+  })
 })
 
 describe('runBridge: the bridge as a process', () => {
@@ -94,6 +136,18 @@ describe('runBridge: the bridge as a process', () => {
     expect(await runBridge(argv, nobody, { env: {}, stopped: stopped.promise })).toBe(1)
     expect(nobody.errs).toEqual([expect.stringMatching(/^a2a-bridge: /)])
     expect(nobody.outs).toEqual([])
+  })
+
+  it('a --host off the loopback exits 2 with the one refusal line and the usage, before any key or state is opened', async () => {
+    const stopped = deferred()
+    for (const h of ['0.0.0.0', '::', '192.168.1.20']) {
+      const io = lines()
+      // A key that does not exist: a bridge that got past the guard would exit 1 on it, not 2.
+      const argv = ['--as', 'nobody', '--relay', RELAY, '--agent', AGENT, '--dir', home, '--host', h]
+      expect(await runBridge(argv, io, { env: {}, stopped: stopped.promise })).toBe(2)
+      expect(io.errs).toEqual([`a2a-bridge: ${LOOPBACK_ONLY}`, USAGE])
+      expect(io.outs).toEqual([])
+    }
   })
 
   it('listens, prints one line, serves its loopback card path, reports edge errors, and stops with exit 0', async () => {
@@ -159,18 +213,20 @@ describe('runBridge: the bridge as a process', () => {
       }
       // Every day's cells of the machine's store, as one map.
       const cells = () => new Map([...readTelemetrySpool(join(HOME, '.bag')).values()].flatMap((m) => [...m]))
-      const off = 'a2a-bridge: telemetry off (no-file); the bridge sends no report'
+      const off = 'a2a-bridge: telemetry off (no-file); while on, each day is reported once'
       expect(await once({ HOME })).toEqual([off, TELEMETRY_NOTICE])
       expect(await once({ HOME })).toEqual([off])
       // Without HOME there is no machine directory: off, and no notice.
       expect(await once({})).toEqual([off])
       setTelemetry(join(HOME, '.bag'), 'on', systemRng)
-      expect(await once({ HOME })).toEqual(['a2a-bridge: telemetry on (file); the bridge sends no report'])
+      expect(await once({ HOME })).toEqual([
+        'a2a-bridge: telemetry on (file); while on, each day is reported once',
+      ])
       // While on, its start is counted, and written at its stop; no request reached it.
       expect(cells().get('bridge_starts ok')).toBe(1)
       expect([...cells().keys()].filter((k) => k.startsWith('bridge_requests '))).toEqual([])
       expect(await once({ HOME, CI: 'true' })).toEqual([
-        'a2a-bridge: telemetry off (CI); the bridge sends no report',
+        'a2a-bridge: telemetry off (CI); while on, each day is reported once',
       ])
       expect(cells().get('bridge_starts ok')).toBe(1)
     } finally {

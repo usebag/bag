@@ -1,6 +1,13 @@
 import { performance } from 'node:perf_hooks'
 import { isAcError } from '@usebag/core'
-import { countDuration, countTelemetry, RelayError, startTelemetry, stopTelemetry } from '@usebag/edge'
+import {
+  countDuration,
+  countTelemetry,
+  RelayError,
+  startTelemetry,
+  stopTelemetry,
+  telemetryDue,
+} from '@usebag/edge'
 import { CliError, UsageError } from './args.ts'
 import { address } from './commands/address.ts'
 import { audit } from './commands/audit.ts'
@@ -222,15 +229,18 @@ usage: node packages/cli/src/main.ts <command> [options]
       takes the identity out of the file; no key, home or state is touched
   health <relay-url>
       prints "ok" when the relay answers its health probe
-  telemetry on | off | status | preview [--date <YYYY-MM-DD>]
-      off until a person turns it on, one choice and one install id per machine, whatever the home, and this version
-      sends nothing: on and off write ~/.bag/telemetry.json (0600), on with a random install id, off removing it and
-      the spool of counts (~/.bag/telemetry-counts.jsonl); each prints "telemetry <on|off> reason=<reason>
-      choice=<on|off|none> id=<id|none> spool=<bytes>", the id an erasure request names. preview prints the exact
-      report for a UTC date (today, or --date, up to 7 days back) and, on stderr, its size. AC_TELEMETRY=off, DO_NOT_TRACK and CI turn it
-      off whatever the file says. While it is on, each command line, how long it took and the audit lines, relay
-      calls and pairings it made are counted. While no choice is made, a command a person runs at a terminal, or host
-      install, prints a notice once per machine that names this preview
+  telemetry on | off | status | preview [--date <YYYY-MM-DD>] | send | forget
+      off until a person turns it on, one choice and one install id per machine, whatever the home: on and off write
+      ~/.bag/telemetry.json (0600), on with a random install id, off removing it, the spool of counts
+      (~/.bag/telemetry-counts.jsonl) and the sender's mark; each prints "telemetry <on|off> reason=<reason>
+      choice=<on|off|none> id=<id|none> spool=<bytes> sent=<date|none>", the id an erasure request names, and off
+      then names the id it removed. preview prints the exact report for a UTC date (today, or --date, up to 7 days
+      back) and, on stderr, its size. While it is on, each finished UTC day's report goes once to telemetry.bag.dev
+      from 01:05 UTC: a command line then starts send detached, which sends what is due and prints nothing. forget
+      asks telemetry.bag.dev to erase every report under the id, then turns it off. AC_TELEMETRY=off, DO_NOT_TRACK
+      and CI turn it off whatever the file says. While it is on, each command line, how long it took and the audit
+      lines, relay calls and pairings it made are counted. While no choice is made, a command a person runs at a
+      terminal, or host install, prints a notice once per machine that names this preview
 
 The home is --dir, else $AC_HOME, else ~/.bag: keys in <home>/keys (0600 files in a 0700 directory), or in a
 keychain item that <home>/keychain/<name>.json names, or in the agent (<home>/agent/<name>.json holds the public
@@ -288,7 +298,8 @@ export function detailOf(e: unknown, code: string): string {
 
 /**
  * Runs one command line and returns its exit status. While the machine's telemetry is on (the edge's telemetry.ts), it
- * counts the line by its verb, exit and code, and how long it took, beside what the command's edge counts.
+ * counts the line by its verb, exit and code, and how long it took, beside what the command's edge counts; then, when
+ * a day's report is due (telemetryDue), it starts `telemetry send` detached (io.spawnSender) and never waits for it.
  */
 export async function run(argv: readonly string[], io: Io): Promise<number> {
   const counting = startTelemetry(io.env, io.clock)
@@ -309,6 +320,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
       countTelemetry('cli', [verbOf(argv), String(exit), code])
       countDuration('cli_durations', verbOf(argv), performance.now() - start)
       stopTelemetry()
+      if (argv[0] !== 'telemetry' && telemetryDue(io.env, io.clock)) io.spawnSender?.()
     }
   }
 }

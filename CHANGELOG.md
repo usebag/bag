@@ -4,6 +4,17 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## Unreleased: changes since the 2026-11-01 cut
+
+### Security
+
+- **The A2A bridge listens on the loopback only.** `--host` (and `A2aBridgeOptions.host`) now accept a 127.0.0.0/8
+  address, `::1` or `localhost` and refuse anything else before the bridge listens, with exit 2 and the line "the
+  bridge listens on loopback only; it has no caller authentication". Before this change `--host 0.0.0.0` or a LAN
+  address let every machine that could reach the port send as the bridge's identity, since the Host and Origin
+  checks stop browsers, not programs. The default, 127.0.0.1, was already safe. Any local process can still call the
+  bridge, the same trust as the command line on the same home; a caller token is a later option (`packages/a2a/README.md`).
+
 ## 2026-11-01: the first public cut
 
 The first public release: version 0 of the wire format, a security preview (`README.md`, "Status"), under

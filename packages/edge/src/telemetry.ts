@@ -12,6 +12,7 @@ import {
 import { join } from 'node:path'
 import { toHex } from '@usebag/core'
 import { type Clock, RelayError, type Rng } from './ports.ts'
+import { withPairs } from './telemetry-pairs.ts'
 import {
   addCell,
   addTree,
@@ -31,10 +32,14 @@ import {
 // directory HOME/.bag (telemetryDir: a test or an e2e process points it elsewhere with HOME). telemetry.json holds the
 // person's choice, written only by setTelemetry (`ac telemetry on|off`); an environment variable can only turn
 // telemetry off. While it is on, every process of the machine counts into one spool beside it,
-// telemetry-counts.jsonl, so the one report a day sums every home. This version builds the report (telemetryReport,
-// `ac telemetry preview`) and sends nothing: it has no network code.
+// telemetry-counts.jsonl, so the one report a day sums every home. This file builds the report (telemetryReport,
+// `ac telemetry preview`) and has no network code; telemetry-send.ts sends each finished day's report once.
 
-/** The machine's choice, `{"version":1,"telemetry":"on","id":"<32 hex>"}` or `{"version":1,"telemetry":"off"}`. */
+/**
+ * The machine's choice, `{"version":2,"telemetry":"on","id":"<32 hex>","since":"<YYYY-MM-DD>"}` or
+ * `{"version":2,"telemetry":"off"}`. A version-1 choice was made before the `pairs` family, which it does not cover:
+ * it reads as off, `old-file`, and the notice asks again (the red team's Q2, 2026-11-03).
+ */
 export const TELEMETRY_FILE = 'telemetry.json'
 
 /**
@@ -44,8 +49,14 @@ export const TELEMETRY_FILE = 'telemetry.json'
  */
 export const TELEMETRY_COUNTS_FILE = 'telemetry-counts.jsonl'
 
-/** The mark of a directory whose notice was shown, made exclusively by the first process that shows it. */
-const NOTICED_FILE = 'telemetry-noticed'
+/** The last UTC date the sender took from the spool, `YYYY-MM-DD` and a newline (telemetry-send.ts). */
+export const TELEMETRY_SENT_FILE = 'telemetry-sent'
+
+/** The `pairs` snapshots of the machine's identities (telemetry-pairs.ts). */
+export const TELEMETRY_PAIRS_FILE = 'telemetry-pairs.json'
+
+/** The mark of a directory whose version-2 notice was shown, made exclusively by the first process that shows it. */
+const NOTICED_FILE = 'telemetry-noticed-2'
 
 /** The longest spool line a writer appends, its newline included, so that each append is one write under 4 KiB. */
 const LINE_MAX = 4095
@@ -54,7 +65,7 @@ const LINE_MAX = 4095
 const FOLD_AT = 256 * 1024
 
 /** The days before today a spool keeps: the Worker takes a date up to 8 days back, one of them for skew. */
-const SPOOL_DAYS = 7
+export const SPOOL_DAYS = 7
 
 /** How long, in seconds, a process holds counts before its next count writes them: a crash loses at most this. */
 const HOLD = 60
@@ -69,7 +80,7 @@ export function noticeText(preview: string): string {
     'It is used to find failures, see which versions, commands and tools are used,',
     'and decide what to build.',
     'If you turn it on, bag sends one report a day to telemetry.bag.dev:',
-    'the version, OS, and counts of commands, messages and error codes, under a random id.',
+    'the version, OS, and counts of commands, messages, peers and error codes, under a random id.',
     'Never addresses, keys, messages, file paths or your IP address.',
     `See the exact report: ${preview}. Details: bag.dev/privacy`,
   ].join(' ')
@@ -84,9 +95,17 @@ export const TELEMETRY_NOTICE = noticeText('telemetry preview, in the bag comman
 /**
  * What decided the state: the first environment variable that turns telemetry off (AC_TELEMETRY=off, 0, false or no;
  * DO_NOT_TRACK or CI set to anything but empty, 0, false, no or off), else the file: `file` for a choice, `no-file`
- * while none is made, `bad-file` for a file this version cannot read (off until `ac telemetry on|off` writes it again).
+ * while none is made, `old-file` for a version-1 choice, `bad-file` for a file this version cannot read (each off until
+ * `ac telemetry on|off` writes it again).
  */
-export type TelemetryReason = 'AC_TELEMETRY' | 'DO_NOT_TRACK' | 'CI' | 'file' | 'no-file' | 'bad-file'
+export type TelemetryReason =
+  | 'AC_TELEMETRY'
+  | 'DO_NOT_TRACK'
+  | 'CI'
+  | 'file'
+  | 'no-file'
+  | 'old-file'
+  | 'bad-file'
 
 /** The state of a telemetry directory under an environment. It carries no install id: telemetryId reads that. */
 export interface TelemetryState {
@@ -98,13 +117,16 @@ export interface TelemetryState {
 }
 
 type Env = Readonly<Record<string, string | undefined>>
-type Choice = { readonly choice: 'on' | 'off'; readonly id: string | null }
+type Choice = { readonly choice: 'on' | 'off'; readonly id: string | null; readonly since: string | null }
 
 const ID = /^[0-9a-f]{32}$/
 const said = (v: string | undefined): boolean => v !== undefined && !/^(|0|false|no|off)$/i.test(v.trim())
 
-/** The file's choice; null when the file (or its directory) is absent; 'bad' for one this version cannot read. */
-function readChoice(dir: string): Choice | 'bad' | null {
+/**
+ * The file's choice; null when the file (or its directory) is absent; 'old' for a version-1 choice; 'bad' for one
+ * this version cannot read.
+ */
+function readChoice(dir: string): Choice | 'old' | 'bad' | null {
   let text: string
   try {
     text = readFileSync(join(dir, TELEMETRY_FILE), 'utf8')
@@ -112,16 +134,33 @@ function readChoice(dir: string): Choice | 'bad' | null {
     return (e as { code?: unknown }).code === 'ENOENT' ? null : 'bad'
   }
   try {
-    const d = JSON.parse(text) as { version?: unknown; telemetry?: unknown; id?: unknown } | null
-    if (d?.version === 1 && d.telemetry === 'off') return { choice: 'off', id: null }
-    if (d?.version === 1 && d.telemetry === 'on' && typeof d.id === 'string' && ID.test(d.id)) {
-      return { choice: 'on', id: d.id }
+    const d = JSON.parse(text) as {
+      version?: unknown
+      telemetry?: unknown
+      id?: unknown
+      since?: unknown
+    } | null
+    if (d?.version === 1) return 'old'
+    if (d?.version === 2 && d.telemetry === 'off') return { choice: 'off', id: null, since: null }
+    const since = typeof d?.since === 'string' && dayOf(d.since) !== null ? d.since : null
+    if (
+      d?.version === 2 &&
+      d.telemetry === 'on' &&
+      typeof d.id === 'string' &&
+      ID.test(d.id) &&
+      since !== null
+    ) {
+      return { choice: 'on', id: d.id, since }
     }
   } catch {
     // not JSON: bad, as below
   }
   return 'bad'
 }
+
+/** A choice read, or null for none, an old one or a bad one. */
+const chosen = (read: ReturnType<typeof readChoice>): Choice | null =>
+  typeof read === 'object' ? read : null
 
 /** The first environment variable that turns telemetry off, or null. */
 function envOff(env: Env): TelemetryReason | null {
@@ -137,28 +176,41 @@ function envOff(env: Env): TelemetryReason | null {
  */
 export function telemetryState(env: Env, dir: string): TelemetryState {
   const read = readChoice(dir)
-  const choice = read === null || read === 'bad' ? null : read.choice
-  const reason = envOff(env) ?? (read === null ? 'no-file' : read === 'bad' ? 'bad-file' : 'file')
+  const choice = chosen(read)?.choice ?? null
+  const fileReason =
+    read === null ? 'no-file' : read === 'old' ? 'old-file' : read === 'bad' ? 'bad-file' : 'file'
+  const reason = envOff(env) ?? fileReason
   return { on: reason === 'file' && choice === 'on', reason, choice }
 }
 
 /** The install id in `dir`, 32 lowercase hex (128 random bits), while its choice is on; else null. */
 export function telemetryId(dir: string): string | null {
-  const read = readChoice(dir)
-  return read === null || read === 'bad' ? null : read.id
+  return chosen(readChoice(dir))?.id ?? null
+}
+
+/** The UTC date the choice in `dir` turned on, while it is on; else null. Nothing before it is counted (Q8). */
+export function telemetrySince(dir: string): string | null {
+  return chosen(readChoice(dir))?.since ?? null
 }
 
 /**
  * Writes the choice to <dir>/telemetry.json, 0600, by a temporary file renamed over it, `dir` made 0700 when missing.
- * on keeps the id a readable on-file holds, else draws one from `rng`, never from the machine, a user or a path; off
- * drops it, so the next on draws anew, and then deletes the spool of counts. It makes no network call.
+ * on keeps the id and the date a readable on-file holds, else draws an id from `rng`, never from the machine, a user or
+ * a path, and dates it at `now` (seconds); off drops both, so the next on draws anew, and then deletes the spool of
+ * counts, the sender's mark and the pairs snapshots. It makes no network call.
  */
-export function setTelemetry(dir: string, choice: 'on' | 'off', rng: Rng): void {
-  const id = choice === 'on' ? (telemetryId(dir) ?? toHex(rng.bytes(16))) : undefined
+export function setTelemetry(dir: string, choice: 'on' | 'off', rng: Rng, now = Date.now() / 1000): void {
+  const held = chosen(readChoice(dir))
+  const on =
+    held?.choice === 'on' ? held : { id: toHex(rng.bytes(16)), since: dateOf(Math.floor(now / 86_400)) }
+  const doc =
+    choice === 'on'
+      ? { version: 2, telemetry: choice, id: on.id, since: on.since }
+      : { version: 2, telemetry: choice }
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   const path = join(dir, TELEMETRY_FILE)
   const tmp = `${path}.${toHex(rng.bytes(8))}.tmp`
-  writeFileSync(tmp, `${JSON.stringify({ version: 1, telemetry: choice, id })}\n`, {
+  writeFileSync(tmp, `${JSON.stringify(doc)}\n`, {
     flag: 'wx',
     mode: 0o600,
   })
@@ -171,10 +223,15 @@ export function setTelemetry(dir: string, choice: 'on' | 'off', rng: Rng): void 
   if (choice === 'off') dropSpool(dir)
 }
 
-/** Deletes the spool in `dir`, and any a fold left taken. */
+/** Deletes the spool in `dir`, any a fold left taken, the sender's mark and the pairs snapshots. */
 function dropSpool(dir: string): void {
   for (const name of readdirSync(dir)) {
-    if (name === TELEMETRY_COUNTS_FILE || /^telemetry-counts\.jsonl\.[0-9a-f]+\.taken$/.test(name)) {
+    if (
+      name === TELEMETRY_COUNTS_FILE ||
+      name === TELEMETRY_SENT_FILE ||
+      name === TELEMETRY_PAIRS_FILE ||
+      /^telemetry-counts\.jsonl\.[0-9a-f]+\.taken$/.test(name)
+    ) {
       rmSync(join(dir, name), { force: true })
     }
   }
@@ -192,17 +249,20 @@ export function telemetryDir(env: Env): string | null {
 export function telemetryOn(env: Env): boolean {
   const dir = telemetryDir(env)
   if (dir === null || envOff(env) !== null) return false
-  const read = readChoice(dir)
-  return read !== null && read !== 'bad' && read.choice === 'on'
+  return chosen(readChoice(dir))?.choice === 'on'
 }
 
+/** Whether the notice asks: no choice is made, or only a version-1 one. */
+const asks = (env: Env, dir: string): boolean =>
+  ['no-file', 'old-file'].includes(telemetryState(env, dir).reason)
+
 /**
- * The notice, once per `dir`: its text while the reason is `no-file`, to the first caller (any process, CLI or
- * bridge: it makes <dir>/telemetry-noticed, 0600, exclusively), naming `preview` when given; else null. A `dir` that
- * does not exist gets none, and it never throws: a notice must not fail the caller's command.
+ * The notice, once per `dir`: its text while no choice is made, or a version-1 one, to the first caller (any process,
+ * CLI or bridge: it makes <dir>/telemetry-noticed-2, 0600, exclusively), naming `preview` when given; else null. A `dir`
+ * that does not exist gets none, and it never throws: a notice must not fail the caller's command.
  */
 export function telemetryNotice(env: Env, dir: string, preview?: string): string | null {
-  if (telemetryState(env, dir).reason !== 'no-file') return null
+  if (!asks(env, dir)) return null
   try {
     writeFileSync(join(dir, NOTICED_FILE), '', { flag: 'wx', mode: 0o600 })
     return preview === undefined ? TELEMETRY_NOTICE : noticeText(preview)
@@ -217,7 +277,7 @@ export function telemetryNotice(env: Env, dir: string, preview?: string): string
  */
 export function machineTelemetryNotice(env: Env, preview?: string): string | null {
   const dir = telemetryDir(env)
-  if (dir === null || telemetryState(env, dir).reason !== 'no-file') return null
+  if (dir === null || !asks(env, dir)) return null
   try {
     mkdirSync(dir, { recursive: true, mode: 0o700 })
   } catch {
@@ -303,21 +363,32 @@ export function telemetrySpoolBytes(dir: string): number {
 }
 
 /**
- * Folds the spool: takes the file by renaming it (writers then start a new one), sums its lines by day, and appends
- * the days of the window, SPOOL_DAYS before the day number `today` to the day after, back as lines. A later version's
- * sender builds each finished day here and writes back only the days it does not send. A count appended to the taken
- * file after it was read is lost: the price of no lock.
+ * Takes the spool in `dir`: renames the file (writers then start a new one), sums its lines by day, appends the days
+ * `keep` holds back as lines, and returns the others; none when there is no spool. The rename is the exclusion: of two
+ * takers, one gets the file and the other none, or a new one. A count appended to the taken file after it was read is
+ * lost: the price of no lock.
  */
-function foldSpool(dir: string, today: number): void {
+export function takeSpool(dir: string, keep: (day: string) => boolean): Map<string, Cells> {
   const file = join(dir, TELEMETRY_COUNTS_FILE)
   const taken = `${file}.${randomBytes(8).toString('hex')}.taken`
-  renameSync(file, taken)
-  const [from, to] = [dateOf(today - SPOOL_DAYS), dateOf(today + 1)]
+  const rest = new Map<string, Cells>()
+  try {
+    renameSync(file, taken)
+  } catch {
+    return rest
+  }
   for (const [day, cells] of spoolOf(taken)) {
-    if (day < from || day > to) continue
-    for (const line of linesOf(day, [...cells])) appendFileSync(file, `${line}\n`, { mode: 0o600 })
+    if (!keep(day)) rest.set(day, cells)
+    else for (const line of linesOf(day, [...cells])) appendFileSync(file, `${line}\n`, { mode: 0o600 })
   }
   rmSync(taken, { force: true })
+  return rest
+}
+
+/** Folds the spool: keeps the days of the window, SPOOL_DAYS before the day number `today` to the day after. */
+function foldSpool(dir: string, today: number): void {
+  const [from, to] = [dateOf(today - SPOOL_DAYS), dateOf(today + 1)]
+  takeSpool(dir, (day) => day >= from && day <= to)
 }
 
 /**
@@ -327,8 +398,8 @@ function foldSpool(dir: string, today: number): void {
 export function telemetryReport(env: Env, day: string): TelemetryReport {
   const dir = telemetryDir(env)
   const id = dir === null ? null : telemetryId(dir)
-  const cells = dir === null ? undefined : readTelemetrySpool(dir).get(day)
-  return buildTelemetryReport(day, cells ?? new Map(), machineFacts(id ?? PREVIEW_ID))
+  const cells = dir === null ? new Map() : withPairs(dir, day, readTelemetrySpool(dir).get(day) ?? new Map())
+  return buildTelemetryReport(day, cells, machineFacts(id ?? PREVIEW_ID))
 }
 
 /** The counts a process holds until it writes them to the spool, while it counts. */
