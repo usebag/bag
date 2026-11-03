@@ -10,7 +10,13 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { codexSessionName, readSessionFile, type SessionNameOptions, sessionAnchor } from '@usebag/edge/agent'
+import {
+  codexSessionName,
+  psInfo,
+  readSessionFile,
+  type SessionNameOptions,
+  sessionAnchor,
+} from '@usebag/edge/agent'
 import { CliError, flag, type Parsed, parse, req, str, UsageError } from '../args.ts'
 import { checkIdentity, doorbellPath, homeCustody, homeDir } from '../home.ts'
 import { keyOf, readIdentities } from '../identities.ts'
@@ -57,10 +63,8 @@ function numberIn(file: string): number {
   }
 }
 
-/** Whether the lock file is held: its pid is alive (kill 0 answers, or refuses EPERM) and it is not older than `max` + 60 s. */
-function live(file: string, max: number): boolean {
-  const pid = numberIn(file)
-  if (!Number.isInteger(pid) || pid < 1 || Date.now() - mtime(file) > (max + 60) * 1000) return false
+/** Whether pid is alive: kill 0 answers, or refuses EPERM (a process of another user). */
+function alive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
@@ -70,12 +74,36 @@ function live(file: string, max: number): boolean {
 }
 
 /**
- * Takes the lock file: the pid is written to a temp file beside it and linked into place, so the lock is never seen
- * empty and an existing one fails the link EEXIST. A lock that is live is the other hook's, and null comes back; a
- * stale one (dead pid, junk, too old) is removed and the taking tried once more, so a race lost is null too.
- * The release removes the file only while it still holds this pid.
+ * Whether pid is a wake-hook: one word of its command line is `wake-hook` (Linux /proc/<pid>/cmdline, elsewhere ps
+ * through psInfo), so a `vitest run wake-hook.test.ts` is not one; false when neither can say.
  */
-function lock(file: string, max: number): (() => void) | null {
+function isWakeHook(pid: number): boolean {
+  let words: string[]
+  try {
+    words = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')
+  } catch {
+    words = (psInfo(pid)?.command ?? '').split(/\s+/)
+  }
+  return words.includes('wake-hook')
+}
+
+/** How long a new hook waits for a signalled holder to let go of the lock, and its step, in milliseconds. */
+const TAKEOVER_MS = 3000
+const TAKEOVER_STEP_MS = 100
+
+/**
+ * Takes the lock file: the pid is written to a temp file beside it and linked into place, so the lock is never seen
+ * empty and an existing one fails the link EEXIST. The newest hook takes over. A holder that is alive, not older than
+ * `max` + 60 s and a wake-hook (isWakeHook) gets SIGTERM, which ends it 0, silent, and its release removes the
+ * file; the wait is up to TAKEOVER_MS while the file still holds that pid and the pid lives. A lock still holding the
+ * pid judged, or a stale one (dead pid, junk, too old, a live process that is no wake-hook), is then removed, and the
+ * link tried once more: losing that race is null, so of two new hooks one links and the other ends. A holder that is
+ * this process (a second watch in one process) is held: null, no signal. A hook signalled before it links gives up
+ * (null). The release removes the file only while it still holds this pid. Residual, same user only: a pid reused
+ * between the check and the SIGTERM, or the check-then-remove gap removing a newer lock, corrects itself at the next
+ * look (watch) within about 1 s, at worst one duplicate wake, never a dropped one.
+ */
+async function lock(file: string, max: number, signal: AbortSignal): Promise<(() => void) | null> {
   const tmp = `${file}.${process.pid}`
   for (let tries = 0; ; tries++) {
     try {
@@ -86,21 +114,64 @@ function lock(file: string, max: number): (() => void) | null {
       }
     } catch (e) {
       if ((e as { code?: unknown }).code !== 'EEXIST') throw e
-      if (live(file, max) || tries > 0) return null
-      rmSync(file, { force: true })
     } finally {
       rmSync(tmp, { force: true })
     }
+    const pid = numberIn(file)
+    const live =
+      Number.isInteger(pid) && pid > 0 && Date.now() - mtime(file) <= (max + 60) * 1000 && alive(pid)
+    if (tries > 0 || signal.aborted || (live && pid === process.pid)) return null
+    if (live && isWakeHook(pid)) {
+      try {
+        process.kill(pid, 'SIGTERM')
+      } catch {
+        // gone already, or EPERM: the wait below decides
+      }
+      for (const end = Date.now() + TAKEOVER_MS; numberIn(file) === pid && alive(pid) && Date.now() < end; ) {
+        await delay(TAKEOVER_STEP_MS)
+      }
+      if (signal.aborted) return null
+    }
+    if (Object.is(numberIn(file), pid)) rmSync(file, { force: true })
   }
 }
 
-/** A watched identity: its label, its doorbell, and its wake-seen, wake-idle and lock files. */
+/** A watched identity: its label, its doorbell, its wake-seen, wake-idle and lock files, and its MCP server's lock. */
 interface Bell {
   readonly label: string
   readonly bell: string
   readonly seen: string
   readonly idle: string
   readonly held: string
+  readonly server: string
+}
+
+/**
+ * The pid of the MCP server holding `lockFile` (an identity's mcp.lock) when it runs in another session than this
+ * hook: a live pid whose claude process (sessionAnchor) is not this hook's, or that has none above it. Null when the
+ * lock is absent or holds no live pid, when it is this session's own server, or when no claude is above this hook.
+ * A second session on one fixed identity has its server refused `busy`, which the host shows only as a closed server,
+ * while the identity's doorbell still rings its hook: the ring then says where the message can be read.
+ */
+function serverElsewhere(lockFile: string, session?: SessionNameOptions): number | null {
+  let pid: unknown
+  try {
+    pid = (JSON.parse(readFileSync(lockFile, 'utf8')) as { pid?: unknown }).pid
+  } catch {
+    return null
+  }
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 1 || !alive(pid)) return null
+  let own: number
+  try {
+    own = sessionAnchor(session).pid
+  } catch {
+    return null
+  }
+  try {
+    return sessionAnchor({ ...session, pid }).pid === own ? null : pid
+  } catch {
+    return pid
+  }
 }
 
 /** wake-seen written whole to a temp file beside it (O_EXCL, 0600), then renamed over it: a reader never sees it empty. */
@@ -183,14 +254,16 @@ async function stopSessionId(io: Io): Promise<string> {
  * Polls the identity's doorbell once a second and compares its mtime with
  * the one in <home>/state/<name>/wake-seen (one line, 0600), the mtime this command last reported; the first run,
  * with no such file, takes the current mtime as the baseline and reports nothing. On a difference it stores the
- * new mtime, writes one stderr line telling the model to read the inbox, and returns the exit code (default 2, the
+ * new mtime, writes one stderr line telling the model to read the inbox (or, when the identity's MCP server runs in
+ * another session: serverElsewhere, to read it there), and returns the exit code (default 2, the
  * code that wakes the host); at --max seconds (default 3500) it wakes once per mail-free stretch (wake-idle),
  * then 0, silent, till a ring; with --no-idle-wake it is 0, silent, at --max and writes or removes no wake-idle (for a
  * host that spends a model turn on any wake, a Codex Stop hook: CODEX_STOP_WAIT).
  * With --print it instead writes `doorbell <mtime>` on stdout per change and
- * runs until SIGINT or SIGTERM. A missing doorbell
- * reads as 0. Only one wake-hook of an identity runs at a time (wake-hook.lock beside wake-seen; --print takes none):
- * a second ends 0, silent. It opens no edge and no store: the doorbell's mtime, wake-seen and the lock, nothing else.
+ * runs until SIGINT or SIGTERM, its baseline and last-seen in memory: it reads wake-seen, never writes it or wake-idle.
+ * A missing doorbell reads as 0. Only one wake-hook of an identity runs at a time (wake-hook.lock beside wake-seen;
+ * --print takes none), the newest: it ends the holder with SIGTERM (lock says when), and a holder that finds its lock
+ * holding another pid ends 0, silent. It opens no edge and no store: the doorbell's mtime, wake-seen and the lock.
  * --session auto: --as is the principal's name; the name is read from the session file the MCP server wrote
  * for this Claude Code session (found by the process tree, polled for till --max). No Claude ancestor, no file
  * by --max and a file of another principal are exit 1; the stop signal ends 0, silent. Then that identity is awaited.
@@ -203,7 +276,7 @@ async function stopSessionId(io: Io): Promise<string> {
  * nothing can ring. Otherwise that identity is watched as under auto.
  * wake-hook --identities <file> watches every identity of the
  * file, each by its own doorbell, wake-seen, wake-idle and lock in its own state directory; it takes no --as, --session
- * or --dir. It takes the locks all or none, so a second hook ends 0, silent. A ring names the identity's label (several
+ * or --dir. It takes the locks all or none: one it loses ends it 0, silent, the ones taken released. A ring names the identity's label (several
  * rung in one poll: one line naming each); the line at --max is one for all, skipped while every identity holds its
  * wake-idle; --print writes `doorbell <label> <mtime>`. An identity its home lacks, or whose key is refused, is skipped
  * with one stderr line naming its label, and the rest are watched; none left is exit 1, no-identity.
@@ -282,18 +355,20 @@ export async function wakeHook(
       seen: f('wake-seen'),
       idle: f('wake-idle'),
       held: f('wake-hook.lock'),
+      server: f('mcp.lock'),
     }
   }
 
   /**
-   * Two hooks of one session (SessionStart and every Stop) run at once: the second, finding a lock of the first, ends
-   * silently before it touches wake-seen. Every lock is taken or none: the ones taken are released. --print takes none.
+   * Two hooks of one session (SessionStart and every Stop) run at once: the second takes the lock over from the first,
+   * which ends silently, and a race lost ends silently before it touches wake-seen. Every lock is taken or none: the
+   * ones taken are released. --print takes none.
    */
   async function watchAll(bells: readonly Bell[]): Promise<number> {
     const releases: (() => void)[] = []
     try {
       for (const b of print ? [] : bells) {
-        const release = lock(b.held, max)
+        const release = await lock(b.held, max, signal)
         if (release === null) return 0
         releases.push(release)
       }
@@ -304,22 +379,40 @@ export async function wakeHook(
   }
 
   async function watch(bells: readonly Bell[]): Promise<number> {
+    // --print keeps its baseline and what it saw in memory: wake-seen and wake-idle are the hooks' alone.
     const last = bells.map((b) => {
       const m = numberIn(b.seen)
-      return Number.isNaN(m) ? remember(b.seen, mtime(b.bell)) : m
+      return !Number.isNaN(m) ? m : print ? mtime(b.bell) : remember(b.seen, mtime(b.bell))
     })
     for (;;) {
+      // Signalled, or a lock that holds another pid (a newer hook took over): it ends 0, silent. A lock that is gone
+      // for a moment (a newer hook removed it and links next) is not lost: better a second wake than none.
+      if (
+        !print &&
+        (signal.aborted || bells.some((b) => ![process.pid, Number.NaN].includes(numberIn(b.held))))
+      )
+        return 0
       const rung = bells.filter((b, i) => {
         const m = mtime(b.bell)
         if (m === last[i]) return false
         last[i] = m
-        rmSync(b.idle, { force: true })
-        remember(b.seen, m)
         if (print) io.out(file === undefined ? `doorbell ${m}` : `doorbell ${b.label} ${m}`)
+        else {
+          rmSync(b.idle, { force: true })
+          remember(b.seen, m)
+        }
         return true
       })
       if (!print && rung.length > 0) {
         const to = rung.map((b) => b.label).join(', ')
+        const away = file === undefined ? serverElsewhere((rung[0] as Bell).server, session) : null
+        if (away !== null) {
+          io.err(
+            `bag: a message was delivered to ${to}, but its server runs in another session (pid ${away}): ` +
+              'read it there, or close that session and reconnect bag here in /mcp',
+          )
+          return code
+        }
         io.err(
           file === undefined
             ? `bag: a message was delivered to ${to}; read it with the inbox tool and report it`

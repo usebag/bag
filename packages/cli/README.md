@@ -413,8 +413,9 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   with no `wake-seen`, takes the current mtime as the baseline and reports nothing. It then looks once a second. When
   the mtime differs it stores the new one, writes one stderr line, `bag: a message was delivered to <name>;
   read it with the inbox tool and report it`, and exits
-  `--exit-code` (default 2, the code that wakes a Claude Code `asyncRewake` hook). At `--max` seconds (default 3500)
-  it wakes once per mail-free stretch, counted from the lock holder's start (a session busy for 3,500 s with no mail
+  `--exit-code` (default 2, the code that wakes a Claude Code `asyncRewake` hook). At `--max` seconds (default 3500;
+  the hooks `host install` writes pass 86000, about a day)
+  it wakes once per mail-free stretch, counted from the lock holder's start, which is the newest hook's (a session busy for 3,500 s with no mail
   gets the wake mid-turn): it writes `bag: no message for <name> in <max> s`, makes the one-line marker
   `wake-idle` (`1`, 0600, created exclusively after any link or file there is removed, so a link is replaced, never
   followed) beside `wake-seen`, and exits `--exit-code`; the next deadline with no ring between finds the
@@ -425,7 +426,9 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   it, so a Stop after a continuation with no new ring waits again and ends silent (the ring is the loop guard, not
   `stop_hook_active`), and the exported `CODEX_STOP_WAIT` (30) and `CODEX_STOP_TIMEOUT` (60) are that hook's wait and
   its `timeout` (`host install codex --mode mcp`, below). With `--print` it writes `doorbell <mtime>` on stdout per change instead
-  and runs until SIGINT or SIGTERM (a loop for Claude Code's Monitor tool). Mtimes are milliseconds as the OS gives them,
+  and runs until SIGINT or SIGTERM (a loop for Claude Code's Monitor tool); it reads `wake-seen` for its baseline and
+  keeps that and each mtime it printed in memory, never writing `wake-seen` or `wake-idle`, so a Monitor loop cannot
+  move `wake-seen` past a ring before a hook reports it. Mtimes are milliseconds as the OS gives them,
   fractional where it does, printed as JavaScript prints the number; a doorbell that is not there reads as 0. A missing
   home or `--as`, an identity the home lacks, or a `--max` or `--exit-code` that is not a whole number in range is
   refused (`usage`, `ENOENT`). It does not tell which message or who sent it: the session reads the inbox
@@ -442,16 +445,22 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   - **One at a time per identity.** A session runs several of these at once (one from `SessionStart`, one from every
     `Stop`), and all of them would fire on one ring. So a run takes `<home>/state/<name>/wake-hook.lock` (its pid
     written to a temp file and linked into place, so it is never seen empty and an existing lock fails the link; 0600;
-    `--print` takes none) right after the identity check; a run that finds the lock
-    held by a live process (the pid answers a signal 0, or refuses it with EPERM, and the file is not older than
-    `--max` plus 60 s) exits 0, silent, before it reads or writes `wake-seen`. A lock whose pid is dead, that holds
-    anything but a pid, or that is too old is taken over (removed, then taken once more; losing that race is the same
-    silent exit 0). The lock is removed on every way out, a fire, the deadline, a signal, and only while it still holds
+    `--print` takes none) right after the identity check. The newest run takes over: a lock held by a live wake-hook
+    (the pid answers a signal 0, or refuses it with EPERM, the file is not older than `--max` plus 60 s, and one word of
+    its command line, `/proc/<pid>/cmdline` on Linux and `ps` elsewhere, is `wake-hook`) gets SIGTERM, which ends that
+    hook 0, silent, and removes its lock; the new run waits up to 3 s, in 100 ms steps, while the lock still holds that
+    pid and the pid lives, then removes a lock still holding it. A lock whose pid is dead or no wake-hook, that holds
+    anything but a pid, or that is too old is removed at once. Either way the lock is then taken once more, and losing
+    that race is a silent exit 0 before `wake-seen` is read or written, so of two runs started together one watches.
+    A run that finds its lock holding another pid at a look (a newer run took it over) exits 0, silent. So an orphan
+    watcher of an exited session, or a pid reused after a SIGKILL, no longer keeps the next hooks silent for up to an
+    hour. Known residual, same user only: the holder's pid can be reused between the check and the SIGTERM, and the
+    check-then-remove gap can remove a newer lock; each corrects itself within about 1 s and costs at most one
+    duplicate wake, never a dropped one. The lock is removed on every way out, a fire, the deadline, a signal, and only while it still holds
     this pid. `wake-seen` is written whole to a temp file beside it (exclusive create, 0600) and renamed over it, so a
     reader never sees it empty, and a link at `wake-seen` is replaced, never followed. The lock is per name, not per
-    session: when two sessions run the hook with one fixed name (the same `--as`, without `--session auto` or `auto:codex`), the second
-    session's hook finds `wake-hook.lock` held and exits 0 at once, printing nothing, so while the first session's
-    hook holds the lock a ring wakes only the first session; `--session auto` (Claude Code) and `--session auto:codex` (Codex) give each session its own name, and so
+    session: when two sessions run the hook with one fixed name (the same `--as`, without `--session auto` or `auto:codex`), each
+    hook takes the lock over from the other's, so a ring wakes only the session whose hook started last; `--session auto` (Claude Code) and `--session auto:codex` (Codex) give each session its own name, and so
     its own lock (`src/commands/wake-hook.ts`, the `lock` function and the `release === null` exit; added at
     22:51 UTC on 2026-10-28).
   - **`--session auto`: one session of many on one principal.** `--as` is then the principal's name, and the hook
@@ -475,11 +484,15 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
     "Stop hook blocking error" while the session shows it as "Stop hook feedback": the wake, not a failure.
   - **The hook is a request to read, not to send.** The line says only to read the inbox and report it: the hook is
     not a standing instruction to answer, and a send needs the user's word.
-  - **Gaps, stated.** At `--max` (3500 s) the watcher wakes the session once on silence (adopted decision 9, "a deadline
+  - **Gaps, stated.** At `--max` (3500 s by default, 86000 s in the hooks `host install` writes) the watcher wakes the
+    session once on silence (adopted decision 9, "a deadline
     that wakes it on silence", read as one wake per mail-free stretch because the waiting rule bars periodic turns); it
     exits 0 at the next deadline, and nothing re-arms it until the next `SessionStart` or `Stop`, so after that silent
-    deadline an idle session is deaf until a turn runs; `host install` fixes the hook's `timeout` at 3600 with no flag
-    to change it. There is no re-arm after a user interrupt or a Claude Code `StopFailure`: the hook ends with the
+    deadline an idle session is deaf until a turn runs: after about two hours of silence at the default, about two days
+    (47.8 hours) with `host install`'s hooks. `host install` fixes the hook's `timeout` at 86400, above its `--max`,
+    with no flag to change it. Claude Code 2.1.316 kept such an `asyncRewake` hook alive past 3600 s and woke the idle
+    session at its exit 2 (measured 2026-11-03 with a hook of `timeout` 86400 that exited at 3700 s; a wait of a day
+    was not run). There is no re-arm after a user interrupt or a Claude Code `StopFailure`: the hook ends with the
     turn, and the next `SessionStart` or `Stop` starts it again; the process is not detached, since a detached process
     cannot deliver the exit-code wake. Claude Code documents exit code 2 under `asyncRewake` as the wake of an idle
     session; whether it is non-blocking on the `Stop` event itself is not confirmed here, which is why the stderr
@@ -490,7 +503,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   - **`--identities <file>`** in place of `--as`, `--session` and `--dir` (refused beside them): one hook watches every
     identity of an identities file (`packages/mcp/README.md`, "Many identities in one server"), each by its own
     doorbell, `wake-seen`, `wake-idle` and `wake-hook.lock` in its own `<home>/state/<key>/`. It takes every lock or
-    none: a lock held by a live hook releases the ones taken and ends 0, silent. A ring writes `bag: a message
+    none: each is taken over as above, and a race lost on any releases the ones taken and ends 0, silent. A ring writes `bag: a message
     was delivered to <label>; read it with the inbox tool as <label> and report it`; several rings seen in one poll give
     one line naming each. At `--max` one line, `bag: no message for any identity in <max> s`, once per
     mail-free stretch: `wake-idle` is made in every state directory, a ring removes its own, and the line is skipped
@@ -516,11 +529,18 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   roots). `claude-code --project <dir>` writes `<dir>/.mcp.json` (`mcpServers.bag = {command, args}`, as
   `packages/mcp/README.md` shows it, with `--dir <home>` added) and `<dir>/.claude/settings.json`, a `SessionStart`
   and a `Stop` hook, each `{"hooks": [{"type": "command", "command": "<node> <this checkout>/packages/cli/src/main.ts
-  wake-hook --as <name> --dir <home>", "timeout": 3600, "asyncRewake": true}]}` in the event's list. That is the
+  wake-hook --as <name> --dir <home> --max 86000", "timeout": 86400, "asyncRewake": true}]}` in the event's list.
+  That is the
   interim form, until an `ac` bin exists: the MCP entry names the checkout's `packages/mcp/src/main.ts` the same way,
-  and both run on Node 24's type stripping with no flag. The `timeout` of 3600 is this command's own choice above
-  `--max`'s 3500; the nested group shape is not documented in the repo, which documents `type`, `asyncRewake` and
-  `timeout` as fields only. `--trust-root` values are checked as `inbox` checks
+  and both run on Node 24's type stripping with no flag. The `--max` of 86000 and the `timeout` of 86400 above it are
+  this command's own choice (`WAKE_MAX`, `WAKE_TIMEOUT`): one idle wake a day instead of one an hour ("Gaps, stated",
+  above); the nested group shape is not documented in the repo, which documents `type`, `asyncRewake` and
+  `timeout` as fields only. **Upgrading an earlier install:** an install made by an earlier checkout keeps `timeout`
+  3600 and no `--max`, so its idle session goes deaf after about two hours of silence until `host install` runs again.
+  Re-run the same command (the same `--as`, `--dir` and `--project`, or the same `--identities` file): it removes
+  that earlier hook group from `SessionStart` and `Stop`, adds the new one, prints the earlier command as `removed`,
+  and leaves every other hook as it was. Then restart Claude Code in the project: a session that is already running
+  keeps the hooks it read at its start (Claude Code's hooks documentation; not measured here). `--trust-root` values are checked as `inbox` checks
   them (an address or a domain). `codex --user` takes `--mode worker|mcp` (`claude-code` refuses `--mode`), and an
   identity has one receiver: the MCP server and the `inbox --watch` worker are refused `busy` beside each other, so the
   install writes one of them. `--mode worker`, the default, because Codex has no idle wake, writes

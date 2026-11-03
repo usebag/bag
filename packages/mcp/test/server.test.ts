@@ -175,11 +175,15 @@ describe('serve: the server on stdio', () => {
         event: 'start',
         code: 'busy',
         detail: expect.stringMatching(
-          /the MCP server with pid 4242 holds this identity .*; one server per fixed name$/,
+          /^the MCP server with pid 4242 holds this identity .*: another session \(Claude Code, Codex\) /,
         ),
         ts: expect.any(String),
       },
     ])
+    // Both ways out, for the person who reads the host's MCP log: the host shows only that the server closed.
+    const detail = String(errLines(second)[0]?.detail)
+    expect(detail).toMatch(/ runs it, one server per fixed name; close that session, /)
+    expect(detail).toMatch(/or give this one its own identity: --session auto or a second --as$/)
     expect(Buffer.concat(second.out).length).toBe(0)
     first.stdin.end()
     expect(await done).toBe(0) // the refusal left the first server's lock alone

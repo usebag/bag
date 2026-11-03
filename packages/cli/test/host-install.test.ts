@@ -67,8 +67,13 @@ const codexServer = (dir: string, roots: string[] = [], caveats: string[] = [CAV
   '--dir',
   dir,
 ]
-const hookOf = (command: string) => ({ type: 'command', command, timeout: 3600, asyncRewake: true })
-const wakeCommand = (dir: string): string => `${process.execPath} ${CLI_MAIN} wake-hook --as bob --dir ${dir}`
+const hookOf = (command: string) => ({ type: 'command', command, timeout: 86_400, asyncRewake: true })
+const wakeCommand = (dir: string): string =>
+  `${process.execPath} ${CLI_MAIN} wake-hook --as bob --dir ${dir} --max 86000`
+/** The hook an install wrote before the day-long wait: no --max (wake-hook's 3500 s), timeout 3600. */
+const earlierHook = (command: string) => ({ type: 'command', command, timeout: 3600, asyncRewake: true })
+const earlierCommand = (dir: string): string =>
+  `${process.execPath} ${CLI_MAIN} wake-hook --as bob --dir ${dir}`
 
 describe('host install claude-code: the MCP entry in .mcp.json and the wake hooks in .claude/settings.json', () => {
   it('writes both files, prints each path and entry, and a second run changes nothing and says so', async () => {
@@ -140,8 +145,26 @@ describe('host install claude-code: the MCP entry in .mcp.json and the wake hook
     }
     const quoted = `'${w.dir.replaceAll("'", "'\\''")}'`
     expect(settings.hooks.Stop[0].hooks[0].command).toBe(
-      `${process.execPath} ${CLI_MAIN} wake-hook --as bob --dir ${quoted}`,
+      `${process.execPath} ${CLI_MAIN} wake-hook --as bob --dir ${quoted} --max 86000`,
     )
+  })
+
+  it("replaces an earlier install's hook (no --max, timeout 3600), prints it removed, and keeps the person's hooks", async () => {
+    const w = await world()
+    const settings = join(w.project, '.claude', 'settings.json')
+    const before = earlierHook(earlierCommand(w.dir))
+    const theirs = { hooks: [{ type: 'command', command: 'echo hi' }] }
+    mkdirSync(join(w.project, '.claude'))
+    const hooks = { SessionStart: [{ hooks: [before] }, theirs], Stop: [{ hooks: [before] }] }
+    writeFileSync(settings, JSON.stringify({ hooks }))
+    const got = await install(w, 'claude-code', '--project', w.project)
+    const group = { hooks: [hookOf(wakeCommand(w.dir))] }
+    expect(json(settings)).toEqual({ hooks: { SessionStart: [theirs, group], Stop: [group] } })
+    expect(got.out.slice(2)).toEqual([
+      `wrote ${settings}`,
+      `  ${JSON.stringify({ removed: before.command, SessionStart: [group], Stop: [group] })}`,
+    ])
+    expect((await install(w, 'claude-code', '--project', w.project)).out.at(-1)).toBe('nothing to change')
   })
 
   it('refuses a bag entry with other settings, and files that are not the shape it merges into', async () => {
@@ -583,7 +606,8 @@ describe('host install claude-code --identities: many identities in one server',
     keep_alive_records: true,
   })
   const entryOf = (w: Two) => ({ command: process.execPath, args: [MCP_MAIN, '--identities', w.file] })
-  const multiHook = (w: Two) => hookOf(`${process.execPath} ${CLI_MAIN} wake-hook --identities ${w.file}`)
+  const multiHook = (w: Two) =>
+    hookOf(`${process.execPath} ${CLI_MAIN} wake-hook --identities ${w.file} --max 86000`)
   const three = (w: Two): string[] => [w.file, w.mcp, w.settings].map((f) => (existsSync(f) ? text(f) : ''))
 
   it('writes the file 0600 in a 0700 directory, the --identities server entry and hook; a re-run changes nothing', async () => {
@@ -726,6 +750,21 @@ describe('host install claude-code --identities: many identities in one server',
       `  ${JSON.stringify({ removed: old.command, SessionStart: [group], Stop: [group] })}`,
       RESTART,
     ])
+  })
+
+  it("replaces an earlier install's --identities hook, and the migrated single hook in both its forms", async () => {
+    const w = await two()
+    expect((await install(w, 'claude-code', '--project', w.project)).code).toBe(0)
+    const single = earlierHook(earlierCommand(w.dir))
+    const many = earlierHook(`${process.execPath} ${CLI_MAIN} wake-hook --identities ${w.file}`)
+    const now = hookOf(wakeCommand(w.dir))
+    const hooks = { SessionStart: [{ hooks: [single] }], Stop: [{ hooks: [many] }, { hooks: [now] }] }
+    writeFileSync(w.settings, JSON.stringify({ hooks }))
+    const got = await asCarol(w)
+    const group = { hooks: [multiHook(w)] }
+    expect(json(w.settings)).toEqual({ hooks: { SessionStart: [group], Stop: [group] } })
+    const removed = [single.command, many.command, now.command]
+    expect(got.out.at(-2)).toBe(`  ${JSON.stringify({ removed, SessionStart: [group], Stop: [group] })}`)
   })
 
   it('migrates with trust roots into a file that already holds the old identity and a default, and with no settings file', async () => {
