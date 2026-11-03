@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 import { CliError, flag, list, type Parsed, parse, relayUrl, shq, str, UsageError } from '../args.ts'
 import { checkIdentity, homeDir } from '../home.ts'
@@ -15,6 +14,7 @@ import {
   saveIdentities,
 } from '../identities.ts'
 import type { Io } from '../io.ts'
+import { type Mains, stableMains, versionLine } from '../packaged.ts'
 import { trustedRoot } from './inbox.ts'
 import { CODEX_STOP_TIMEOUT, CODEX_STOP_WAIT } from './wake-hook.ts'
 
@@ -28,9 +28,6 @@ type Json = Record<string, unknown>
 const TABLE =
   /\[\s*['"]?mcp_servers['"]?\s*\.\s*['"]?bag['"]?\s*[.\]]|^\s*(['"]?mcp_servers['"]?\s*\.\s*)?['"]?bag['"]?\s*[.=]|mcp_servers['"]?\s*=\s*\{(.*[,\s])?['"]?bag['"]?\s*=/m
 
-const MCP_MAIN = fileURLToPath(new URL('../../../mcp/src/main.ts', import.meta.url))
-const CLI_MAIN = fileURLToPath(new URL('../main.ts', import.meta.url))
-
 /**
  * The wait the Claude Code hooks pass to wake-hook, in s, and their timeout above it: one idle wake a day, and the
  * silent second deadline after about two days, where wake-hook's default of 3500 s gave an hour and two. Claude Code
@@ -40,12 +37,12 @@ const WAKE_MAX = 86_000
 const WAKE_TIMEOUT = 86_400
 
 /** The wake-hook command with `flags`, shell-quoted; without --max, the form host install wrote before WAKE_MAX. */
-const wakeCommand = (flags: readonly string[]): string =>
-  [process.execPath, CLI_MAIN, 'wake-hook', ...flags].map(shq).join(' ')
+const wakeCommand = (m: Mains, flags: readonly string[]): string =>
+  [process.execPath, m.cli, 'wake-hook', ...flags].map(shq).join(' ')
 
 /** The Claude Code hook that runs `wake-hook` with `flags` and --max WAKE_MAX: asyncRewake, timeout WAKE_TIMEOUT. */
-const wakeHook = (flags: readonly string[]): Json => {
-  const command = wakeCommand([...flags, '--max', String(WAKE_MAX)])
+const wakeHook = (m: Mains, flags: readonly string[]): Json => {
+  const command = wakeCommand(m, [...flags, '--max', String(WAKE_MAX)])
   return { type: 'command', command, timeout: WAKE_TIMEOUT, asyncRewake: true }
 }
 
@@ -56,22 +53,13 @@ const relayArgs = (e: Identity): string[] => [
 const rootArgs = (e: Identity): string[] => (e.trust_roots ?? []).flatMap((r) => ['--trust-root', r])
 
 /** The single-identity `.mcp.json` entry, the form `--identities` migrates (5.3). */
-const single = (e: Identity): Json => ({
+const single = (m: Mains, e: Identity): Json => ({
   command: process.execPath,
-  args: [
-    MCP_MAIN,
-    '--as',
-    keyOf(e),
-    ...relayArgs(e),
-    ...rootArgs(e),
-    '--dir',
-    e.home,
-    '--keep-alive-records',
-  ],
+  args: [m.mcp, '--as', keyOf(e), ...relayArgs(e), ...rootArgs(e), '--dir', e.home, '--keep-alive-records'],
 })
 
 /** The identity in `have` when it is exactly the entry a single-identity install writes, else null. */
-function singleOf(have: unknown): Identity | null {
+function singleOf(m: Mains, have: unknown): Identity | null {
   const a = (have as { args?: unknown } | null)?.args
   if (!Array.isArray(a) || !a.every((x) => typeof x === 'string')) return null
   const value = (f: string) => a.filter((_, i) => i > 3 && i % 2 === 0 && a[i - 1] === f)
@@ -85,7 +73,7 @@ function singleOf(have: unknown): Identity | null {
     ...(roots.length === 0 ? {} : { trust_roots: roots }),
     keep_alive_records: true,
   }
-  return isDeepStrictEqual(have, single(e)) ? e : null
+  return isDeepStrictEqual(have, single(m, e)) ? e : null
 }
 
 /** The object under `key`, made when absent; CliError when it is there and is not an object. */
@@ -172,6 +160,10 @@ function hookPlan(doc: Json, hook: Json, drop: readonly string[]): Json | null {
   return Object.keys(added).length === 0 ? null : added
 }
 
+/** The line for a package copied to a stable place (packaged.ts), first in the output; none from source. */
+const copiedLines = (m: Mains): string[] =>
+  m.copied === null ? [] : [`wrote ${m.copied} (${versionLine()})`]
+
 const RESTART = 'the change takes effect when Claude Code starts the server again'
 
 /** Refuses an identities file that is not absolute, or that is in the project: a project is often committed. */
@@ -194,18 +186,18 @@ function outside(file: string, dir: string): void {
  * goes first in the file, as the default, and the hook groups that ran its command are replaced. The three files are
  * worked out before any is written, so a refusal leaves all three as they were.
  */
-function install(io: Io, file: string, dir: string, me: Identity): number {
+function install(io: Io, m: Mains, file: string, dir: string, me: Identity): number {
   outside(file, dir)
   if (!LABEL.test(me.label))
     throw new UsageError(`--label is ${LABEL.source}, not ${JSON.stringify(me.label)}`)
   const was: Identities = existsSync(file) ? readIdentities(file) : { version: 1, identities: [] }
-  const entry = { command: process.execPath, args: [MCP_MAIN, '--identities', file] }
+  const entry = { command: process.execPath, args: [m.mcp, '--identities', file] }
   const from: { old?: Identity } = {}
   const mcp = plan(join(dir, '.mcp.json'), (doc) => {
     const servers = child(doc, 'mcpServers')
     const have = servers.bag
     if (isDeepStrictEqual(have, entry)) return null
-    const old = have === undefined ? null : singleOf(have)
+    const old = have === undefined ? null : singleOf(m, have)
     if (have !== undefined && old === null) {
       throw new CliError('exists', 'mcpServers.bag is there with other settings: edit or remove it first')
     }
@@ -221,12 +213,12 @@ function install(io: Io, file: string, dir: string, me: Identity): number {
   doc = addIdentity(doc, me) ?? doc
   // The single-identity hook it migrates, as written now or before WAKE_MAX, and this file's hook as written before.
   const old = from.old && ['--as', keyOf(from.old), '--dir', from.old.home]
-  const migrated = old ? [wakeHook(old).command as string, wakeCommand(old)] : []
-  const drop = [wakeCommand(['--identities', file]), ...migrated]
-  const hook = wakeHook(['--identities', file])
+  const migrated = old ? [wakeHook(m, old).command as string, wakeCommand(m, old)] : []
+  const drop = [wakeCommand(m, ['--identities', file]), ...migrated]
+  const hook = wakeHook(m, ['--identities', file])
   const hooks = plan(join(dir, '.claude', 'settings.json'), (d) => hookPlan(d, hook, drop))
   const added = doc.identities.filter((x) => !was.identities.some((y) => isDeepStrictEqual(x, y)))
-  const out: string[] = []
+  const out: string[] = copiedLines(m)
   const changed = !isDeepStrictEqual(doc, was)
   if (changed) {
     saveIdentities(file, doc)
@@ -352,14 +344,15 @@ export function hostInstall(args: readonly string[], io: Io): number {
     ...(roots.length === 0 ? {} : { trust_roots: roots }),
     keep_alive_records: true,
   }
-  const out: string[] = []
+  const dir = host === 'claude-code' ? resolve(project as string) : ''
+  if (host === 'claude-code' && !existsSync(dir)) throw new CliError('ENOENT', `no project directory ${dir}`)
+  const m = stableMains(file === undefined ? home : dirname(file))
+  const out: string[] = copiedLines(m)
   if (host === 'claude-code') {
-    const dir = resolve(project as string)
-    if (!existsSync(dir)) throw new CliError('ENOENT', `no project directory ${dir}`)
-    if (file !== undefined) return install(io, file, dir, me)
-    const entry = single(me)
+    if (file !== undefined) return install(io, m, file, dir, me)
+    const entry = single(m, me)
     const flags = ['--as', name, '--dir', home]
-    const hook = wakeHook(flags)
+    const hook = wakeHook(m, flags)
     const mcp = plan(join(dir, '.mcp.json'), (doc) => {
       const servers = child(doc, 'mcpServers')
       const have = servers.bag
@@ -371,7 +364,7 @@ export function hostInstall(args: readonly string[], io: Io): number {
       return { bag: entry }
     })
     // An earlier install's hook for the same identity (no --max, timeout 3600) is replaced.
-    const earlier = [wakeCommand(flags)]
+    const earlier = [wakeCommand(m, flags)]
     const hooks = plan(join(dir, '.claude', 'settings.json'), (doc) => hookPlan(doc, hook, earlier))
     if (!write([mcp, hooks], out)) out.push('nothing to change')
   } else if (mode === 'mcp') {
@@ -379,7 +372,7 @@ export function hostInstall(args: readonly string[], io: Io): number {
     const file = join(io.env.HOME, '.codex', 'config.toml')
     // One server per Codex session: --session auto:codex names each session from Codex's session id at its first
     // tool call, and the server refuses --as and --keep-alive-records beside --session (packages/mcp/src/config.ts).
-    const session = [MCP_MAIN, '--session', 'auto:codex', '--principal', name]
+    const session = [m.mcp, '--session', 'auto:codex', '--principal', name]
     const grants = caveats.flatMap((c) => ['--grant-caveat', c])
     const argv = [...session, ...grants, ...relayArgs(me), ...rootArgs(me), '--dir', home]
     const toml = `[mcp_servers.bag]\ncommand = ${JSON.stringify(process.execPath)}\nargs = ${JSON.stringify(argv)}\n`
@@ -398,7 +391,7 @@ export function hostInstall(args: readonly string[], io: Io): number {
     // line, which Codex takes as the continuation prompt of the turn. It reads no mail, so it may run beside the MCP
     // server, the one receiver.
     const flags = ['--as', name, '--session', 'auto:codex', '--dir', home, '--max', wait, '--no-idle-wake']
-    const command = [process.execPath, CLI_MAIN, 'wake-hook', ...flags].map(shq).join(' ')
+    const command = [process.execPath, m.cli, 'wake-hook', ...flags].map(shq).join(' ')
     const hook = {
       type: 'command',
       command,
@@ -427,7 +420,7 @@ export function hostInstall(args: readonly string[], io: Io): number {
   } else {
     const watch = ['inbox', '--watch', '--as', name, ...relays.flatMap((r) => ['--relay', r]), '--dir', home]
     const rooted = roots.flatMap((r) => ['--trust-root', r])
-    const line = [process.execPath, CLI_MAIN, ...watch, ...rooted].map(shq).join(' ')
+    const line = [process.execPath, m.cli, ...watch, ...rooted].map(shq).join(' ')
     out.push(
       `the worker path (no MCP table written: one receiver per identity): ${line} --exec 'codex exec --skip-git-repo-check --sandbox read-only "bag: $(cat)"'`,
     )

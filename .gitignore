@@ -9,6 +9,9 @@ node_modules/
 node_modules
 .venv
 coverage/
+# The published package's build output (packages/bag/src/build.ts) and npm pack's tarballs
+/packages/bag/dist/
+*.tgz
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

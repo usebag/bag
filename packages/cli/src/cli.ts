@@ -3,6 +3,7 @@ import { isAcError } from '@usebag/core'
 import {
   countDuration,
   countTelemetry,
+  programName,
   RelayError,
   startTelemetry,
   stopTelemetry,
@@ -36,6 +37,7 @@ import { unpair } from './commands/unpair.ts'
 import { sessionCode, wakeHook } from './commands/wake-hook.ts'
 import { watch } from './commands/watch.ts'
 import type { Io } from './io.ts'
+import { versionLine } from './packaged.ts'
 import { PolicyFileError } from './policy.ts'
 
 // The command line: one command per run, its exit status 0, or 1 with "bag: <code>: <detail>" on stderr (2 for
@@ -44,7 +46,7 @@ import { PolicyFileError } from './policy.ts'
 
 export const USAGE = `bag: the bag v0 command line (pre-release)
 
-usage: node packages/cli/src/main.ts <command> [options]
+usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
 
   keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--dir <home>]
       a signing key and a separate sealing key; prints the address only. --custody keychain keeps both in one item
@@ -241,6 +243,9 @@ usage: node packages/cli/src/main.ts <command> [options]
       and CI turn it off whatever the file says. While it is on, each command line, how long it took and the audit
       lines, relay calls and pairings it made are counted. While no choice is made, a command a person runs at a
       terminal, or host install, prints a notice once per machine that names this preview
+  version (or --version)
+      prints "bag <version> <commit>": the package's version and the commit it was built from, or, run from
+      source, "bag source" and the checkout's commit ("unknown" when no .git directory is readable)
 
 The home is --dir, else $AC_HOME, else ~/.bag: keys in <home>/keys (0600 files in a 0700 directory), or in a
 keychain item that <home>/keychain/<name>.json names, or in the agent (<home>/agent/<name>.json holds the public
@@ -312,7 +317,8 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
   } catch (e) {
     code = codeOf(e)
     io.err(`bag: ${code}: ${detailOf(e, code)}`)
-    if (e instanceof UsageError) io.err(`run "node ${process.argv[1]} help" for the commands`)
+    if (e instanceof UsageError)
+      io.err(`run "${programName('bag', String(process.argv[1]))} help" for the commands`)
     exit = e instanceof PolicyFileError ? 2 : 1
     return exit
   } finally {
@@ -329,6 +335,10 @@ async function dispatch(argv: readonly string[], io: Io): Promise<number> {
   const [name, ...rest] = argv
   if (name === 'help' || argv.includes('--help') || argv.includes('-h')) {
     io.out(USAGE)
+    return 0
+  }
+  if (name === 'version' || name === '--version') {
+    io.out(versionLine())
     return 0
   }
   const command = COMMANDS.get(name ?? '')

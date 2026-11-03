@@ -200,6 +200,8 @@ export function makeCardMain(argv: readonly string[], io: CardIo): number {
 }
 
 // The process's entry (node packages/a2a/src/card.ts ...); imported, it does nothing (test/card-entry.test.ts runs both).
-if (resolve(String(process.argv[1])) === fileURLToPath(import.meta.url)) {
+// Bundled into the package's bag-a2a.js (packages/bag), this module's URL is the bridge's, so the name is checked too.
+const self = fileURLToPath(import.meta.url)
+if (self.endsWith('card.ts') && resolve(String(process.argv[1])) === self) {
   process.exitCode = makeCardMain(process.argv.slice(2), { out: console.log, err: console.error })
 }

@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // tsc -b refuses a referenced project that emits nothing (TS6310), so each package emits declarations only,
+    // into node_modules/.cache/tsc (gitignored, never shipped). The package's JavaScript is rolldown's (src/build.ts).
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "../../node_modules/.cache/tsc/bag",
+    "tsBuildInfoFile": "../../node_modules/.cache/tsc/bag.tsbuildinfo",
+    "rootDir": "."
+  },
+  "include": ["src", "test", "build.ts", "vitest.config.ts"]
+}

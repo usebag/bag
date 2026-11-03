@@ -33,6 +33,7 @@ import { EPOCH_EARLY, epochDue, healed, offerKey, rotateEpoch } from '../epochs.
 import { checkNoWindow, homeDir, loadKeys, renewing, windowOf } from '../home.ts'
 import { keyOf, readIdentities } from '../identities.ts'
 import type { Io } from '../io.ts'
+import { stableMains } from '../packaged.ts'
 import { crontabLine, launchdJob } from './keep-schedule.ts'
 import { undate } from './login.ts'
 
@@ -255,7 +256,8 @@ async function keep(args: readonly string[], io: Io): Promise<number> {
     const own = ['--as', name, ...relays.flatMap((r) => ['--relay', r]), '--dir', home]
     const run = ['record', 'keep', ...(file === undefined ? own : ['--identities', file]), '--once']
     const log = join(home, 'keep.log')
-    io.out(flag(p, 'plist') ? launchdJob(`bag.keep.${name}`, run, log) : crontabLine(run, log))
+    const { cli } = stableMains(home)
+    io.out(flag(p, 'plist') ? launchdJob(`bag.keep.${name}`, run, log, cli) : crontabLine(run, log, cli))
     return 0
   }
   if (file !== undefined) {

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { BUILD_INFO } from './build-info.ts'
 import {
   MAX_CELLS,
   MAX_COUNT,
@@ -275,8 +276,12 @@ export function checkoutCommit(root = fileURLToPath(new URL('../../../', import.
   }
 }
 
-/** This machine's facts under the install id `id`: the checkout's commit, the platform, the arch and Node's major. */
+/**
+ * This machine's facts under the install id `id`: the package build's commit (build-info.ts) or else the checkout's,
+ * the platform, the arch and Node's major.
+ */
 export function machineFacts(id: string): TelemetryFacts {
   const node = process.versions.node.split('.')[0] ?? ''
-  return { id, build: checkoutCommit(), os: process.platform, arch: process.arch, node }
+  const build = BUILD_INFO?.commit ?? checkoutCommit()
+  return { id, build, os: process.platform, arch: process.arch, node }
 }

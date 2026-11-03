@@ -10,6 +10,7 @@ import {
   FsAuditSink,
   HomeCustody,
   machineTelemetryNotice,
+  programName,
   type RelayClient,
   SqliteStore,
   startTelemetry,
@@ -29,12 +30,12 @@ import { A2aBridge, DEFAULT_PORT, isLoopbackHost, LOOPBACK_ONLY } from './bridge
 // It composes the edge as the CLI and the MCP server do (packages/mcp/src/open.ts): the home's custody for the key,
 // the SQLite store and the audit log at <home>/state/<name>/ (the store's writer lock refuses a second process on
 // the same identity), the relay client and the record source; then it starts the edge and the bridge, prints one
-// line, and runs until it is stopped. No bin entry in package.json, as for the CLI and the MCP server: the entry is the
-// file (packages/cli/src/main.ts says why).
+// line, and runs until it is stopped. From source the entry is the file; the published package's bin is bag-a2a
+// (packages/bag).
 
 export const USAGE = `bag A2A bridge (pre-release): A2A JSON-RPC on 127.0.0.1, sealed to our agents
 
-usage: node packages/a2a/src/main.ts --as <key name> --relay <url>... --agent <address>... [options]
+usage: ${programName('bag-a2a', 'packages/a2a/src/main.ts')} --as <key name> --relay <url>... --agent <address>... [options]
 
   --as <name>             the key the bridge signs with (<home>/keys/<name>.json or a keychain identity)
   --relay <url>           a relay to subscribe to and look records up at; repeatable, at least one

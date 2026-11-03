@@ -445,7 +445,9 @@ by address or by a name in your name book, and use a `domain:` root as above.
   names them. Section 3 still applies if you want your own.
 - The internal notes that code comments cite (design notes, studies, plans, an operations guide, review rounds, drafts)
   are not included. A comment that points to a file you do not have is a note; nothing here needs it to build or run.
-- No installer or service files for the relay or `record keep`, and no packaged release: you build from source.
+- No installer or service files for the relay or `record keep`. The packaged forms are the relay's container image
+  (`docs/self-host.md`, "Run it with Docker") and the npm package `@usebag/bag` (the command line, the MCP server and
+  the A2A bridge, `README.md`, "Quick start"); this guide runs from source.
 - No `ac` on your PATH: use the `c` function above.
 - The macOS keychain custody works on macOS only; the file custody works everywhere.
 - The Claude Code plugin: see the README.

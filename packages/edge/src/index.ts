@@ -74,6 +74,7 @@ export {
   parseAuditLine,
   verifyAuditLog,
 } from './audit.ts'
+export { BUILD_INFO, type BuildInfo } from './build-info.ts'
 export { checkName } from './custody/files.ts'
 export { type CustodyTarget, HomeCustody, type HomeCustodyOptions } from './custody/home.ts'
 export {
@@ -196,6 +197,7 @@ export type {
   SubscriptionLink,
 } from './ports.ts'
 export { EdgeError, RelayError } from './ports.ts'
+export { programName } from './program.ts'
 export { RECEIPT_ACK, RECEIPT_HINT, RECEIPT_TYPE } from './receipts.ts'
 export {
   MAX_REFUSALS,
@@ -324,6 +326,7 @@ export {
 export { notePairs, type SentStore, trackPairs } from './telemetry-pairs.ts'
 export {
   buildTelemetryReport,
+  checkoutCommit,
   machineFacts,
   type TelemetryFacts,
   type TelemetryReport,
