@@ -1,0 +1,117 @@
+# Tags one public cut commit of main vX.Y.Z and makes its GitHub Release (docs/release.md, step 8).
+# This file belongs in usebag/bag at .github/workflows/release.yml, beside npm-publish.yml and relay-image.yml: the cut
+# never carries .github/ (cut/MANIFEST), so it reaches the public repository by its own PR. It is kept here so that it
+# is reviewed with the release process it runs.
+# Started by hand only (workflow_dispatch), after the version is public on npm and the relay image of the commit is
+# built (relay-image.yml, started with the same commit). Only `run` steps: no third-party action; the runner's own git,
+# curl, jq, openssl, docker and gh. The inputs reach the shell only through the environment (VERSION, COMMIT), never
+# inside a script as ${{ }}.
+# It checks before it writes anything: the commit is a public cut on main ("bag public cut of "), packages/bag is at the
+# version there, the tag and the Release do not exist, npm holds the version from that commit (gitHead) with a SLSA
+# provenance statement whose source commit is that commit too and an integrity that matches its tarball, and the relay
+# image of the commit exists. Then it writes three
+# things: the image tag vX.Y.Z on the commit's image (no rebuild, the same digest), the tag vX.Y.Z on the commit, and
+# the Release. The notes are the CHANGELOG.md section headed "## vX.Y.Z" (at the commit, else on main, so a release
+# made after the fact, as v0.1.1, reads the section a later cut added), followed by the npm tarball's sha256 and
+# integrity and the relay image's digest. A tag is never moved: a bad release is followed by the next patch.
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "the version, X.Y.Z, as packages/bag/package.json holds it at the commit"
+        required: true
+      commit:
+        description: "the 40-digit public cut commit of main to tag"
+        required: true
+permissions:
+  contents: write
+  packages: write
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: the inputs, and the commit is a public cut on main at the version
+        run: |
+          case "$COMMIT" in *[!0-9a-f]*|"") echo "not a commit"; exit 1;; esac
+          test "${#COMMIT}" = 40
+          printf '%s\n' "$VERSION" | grep -q -x -E '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' || { echo "not a version X.Y.Z"; exit 1; }
+          git clone --no-checkout --quiet "https://github.com/${GITHUB_REPOSITORY}" src
+          git -C src fetch --quiet origin main
+          git -C src merge-base --is-ancestor "$COMMIT" origin/main
+          git -C src log -1 --format=%s "$COMMIT" | grep -q '^bag public cut of ' || { echo "$COMMIT is not a public cut commit"; exit 1; }
+          test "$(git -C src show "$COMMIT:packages/bag/package.json" | jq -r .version)" = "$VERSION" || { echo "packages/bag at $COMMIT is not $VERSION"; exit 1; }
+          if git -C src ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then echo "the tag v$VERSION exists already"; exit 1; fi
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "a Release v$VERSION exists already"; exit 1; fi
+          echo "v$VERSION: $COMMIT ($(git -C src log -1 --format=%s "$COMMIT"))"
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: npm holds the version from the commit; the tarball's hashes
+        run: |
+          curl -fsS --max-time 30 -o "$RUNNER_TEMP/v.json" "https://registry.npmjs.org/@usebag%2fbag/$VERSION" || { echo "@usebag/bag@$VERSION is not on npm"; exit 1; }
+          test "$(jq -r .gitHead "$RUNNER_TEMP/v.json")" = "$COMMIT" || { echo "npm records $VERSION from $(jq -r .gitHead "$RUNNER_TEMP/v.json"), not $COMMIT"; exit 1; }
+          # The provenance's own source commit: the SLSA statement's resolvedDependencies entry for this repository. It is
+          # the head the publish run was started on, which can differ from gitHead (0.1.1: 4c3dd680 against 3c343d65).
+          A="$(jq -r '.dist.attestations.url // ""' "$RUNNER_TEMP/v.json")"
+          curl -fsS --max-time 30 -o "$RUNNER_TEMP/a.json" "$A" || { echo "$VERSION has no attestations on npm"; exit 1; }
+          P="$(jq -r '.attestations[] | select(.predicateType == "https://slsa.dev/provenance/v1") | .bundle.dsseEnvelope.payload' "$RUNNER_TEMP/a.json" | base64 -d | jq -r --arg r "git+https://github.com/$GITHUB_REPOSITORY@" '[.predicate.buildDefinition.resolvedDependencies[] | select(.uri | startswith($r)) | .digest.gitCommit] | join(" ")')"
+          test "$P" = "$COMMIT" || { echo "the provenance of $VERSION names ${P:-no commit of this repository}, not $COMMIT"; exit 1; }
+          curl -fsS --max-time 60 -o "$RUNNER_TEMP/p.tgz" "$(jq -r .dist.tarball "$RUNNER_TEMP/v.json")"
+          I="$(jq -r .dist.integrity "$RUNNER_TEMP/v.json")"
+          test "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/p.tgz" | openssl base64 -A)" = "$I" || { echo "the tarball does not match the registry integrity"; exit 1; }
+          S="$(sha256sum "$RUNNER_TEMP/p.tgz" | cut -d' ' -f1)"
+          echo "npm: @usebag/bag@$VERSION from $COMMIT, sha256 $S, $I"
+          { echo "NPM_SHA256=$S"; echo "NPM_INTEGRITY=$I"; } >> "$GITHUB_ENV"
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+      - name: the relay image of the commit, also tagged with the version
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          R="ghcr.io/${GITHUB_REPOSITORY_OWNER}/relay"
+          D="$(docker buildx imagetools inspect "$R:$COMMIT" --format '{{json .Manifest}}' | jq -r .digest)" || D=""
+          case "$D" in sha256:*) ;; *) echo "no relay image $R:$COMMIT: start relay-image.yml with this commit first"; exit 1;; esac
+          docker buildx imagetools create -t "$R:v$VERSION" "$R@$D"
+          test "$(docker buildx imagetools inspect "$R:v$VERSION" --format '{{json .Manifest}}' | jq -r .digest)" = "$D"
+          echo "relay image: $R@$D, tags $COMMIT and v$VERSION"
+          echo "RELAY_DIGEST=$D" >> "$GITHUB_ENV"
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: the notes, from CHANGELOG.md
+        run: |
+          section() { awk -v h="## v$VERSION" 'index($0, h) == 1 && (length($0) == length(h) || substr($0, length(h) + 1, 1) ~ /[: ]/) { on = 1; next } on && /^## / { exit } on { print }'; }
+          N="$(git -C src show "$COMMIT:CHANGELOG.md" | section)"
+          F="the commit"
+          if [ -z "$(printf '%s' "$N" | tr -d '[:space:]')" ]; then N="$(git -C src show origin/main:CHANGELOG.md | section)"; F="main"; fi
+          [ -n "$(printf '%s' "$N" | tr -d '[:space:]')" ] || { echo "CHANGELOG.md has no section headed ## v$VERSION, at the commit or on main"; exit 1; }
+          R="ghcr.io/${GITHUB_REPOSITORY_OWNER}/relay"
+          # shellcheck disable=SC2016 # the backticks are Markdown code spans in the notes, not command substitution
+          {
+            printf '%s\n\n' "$N"
+            printf '## Verify\n\n'
+            printf -- '- The npm package `@usebag/bag@%s`: published from this commit, `%s`; tarball sha256 `%s`; integrity `%s`.\n' "$VERSION" "$COMMIT" "$NPM_SHA256" "$NPM_INTEGRITY"
+            printf -- '  `npm view @usebag/bag@%s gitHead dist.integrity` prints the commit and the integrity.\n' "$VERSION"
+            printf -- '- The relay image `%s:v%s` (also `%s:%s`): digest `%s`.\n' "$R" "$VERSION" "$R" "$COMMIT" "$RELAY_DIGEST"
+            printf -- '  `docker buildx imagetools inspect %s:v%s` prints the digest.\n' "$R" "$VERSION"
+          } > "$RUNNER_TEMP/notes.md"
+          echo "notes: the CHANGELOG section from $F, $(grep -c . "$RUNNER_TEMP/notes.md") lines"
+          cat "$RUNNER_TEMP/notes.md"
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+      - name: the tag and the GitHub Release
+        run: |
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          test "$(git -C src ls-remote origin "refs/tags/v$VERSION" | cut -f1)" = "$COMMIT" || { echo "the tag v$VERSION does not point at $COMMIT"; exit 1; }
+          echo "released v$VERSION at $COMMIT: $(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
