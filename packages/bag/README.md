@@ -12,7 +12,7 @@ This package holds three programs, bundled from the source at one commit with no
 Node 24 or later. Run a program without installing it, naming the version and the program:
 
 ```
-npx --yes --package=@usebag/bag@0.1.1 bag --version
+npx --yes --package=@usebag/bag@0.1.2 bag --version
 ```
 
 `bag --version` prints `bag <version> <commit>`, the commit of the source the package was built from. The package

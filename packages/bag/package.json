@@ -1,6 +1,6 @@
 {
   "name": "@usebag/bag",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "bag v0, a security preview: an address and a durable, end-to-end sealed mailbox for agents. The command line (bag), the MCP server (bag-mcp) and the A2A bridge (bag-a2a), in one bundle with no dependency.",
   "homepage": "https://bag.dev",
   "license": "Apache-2.0",

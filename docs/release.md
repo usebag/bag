@@ -23,9 +23,8 @@ subject reads `bag public cut of <source commit>`. `main` can move on after it, 
 - **the relay image** `ghcr.io/usebag/relay:vX.Y.Z`, the same image as `ghcr.io/usebag/relay:<commit>`, for
   linux/amd64 and linux/arm64.
 
-No release is tagged yet. The first will be v0.1.1, on its cut `3c343d65a39481aee1b0c53010736cd49ef1f90c`: its relay
-image, its tag and its Release are its next steps ("v0.1.1", below). 0.1.0 has no tag and gets none. The registry also
-lists `0.0.0-stage`, a placeholder npm made itself ("The first publish", below).
+No release is tagged yet. The first will be v0.1.2. 0.1.0 and 0.1.1 have no tag and get none ("v0.1.1", below). The
+registry also lists `0.0.0-stage`, a placeholder npm made itself ("The first publish", below).
 
 ## Version numbers
 
@@ -225,14 +224,14 @@ publishes anything a gate has not passed: a staged version is not public until s
   back.
 - **The website.** The change is reverted and deployed again.
 
-## v0.1.1: the first tag, the next step
+## v0.1.1: not tagged
 
 0.1.1 was published on npm, served by the install guide and named by the website on 2026-11-03 and 2026-11-04, before
 this process was written down: steps 4 to 6, 9 and 10 above are done for it. It has no relay image, no tag and no
-Release yet. Its package bytes are its cut's, 3c343d65, but its provenance statement names 4c3dd680, the head of `main`
+Release. Its package bytes are its cut's, 3c343d65, but its provenance statement names 4c3dd680, the head of `main`
 when its run was started ("The first publish", above). Step 8 checks the provenance's commit, so `release.yml` stops for
-0.1.1 as it stands, and whether and how v0.1.1 is tagged is not decided. These were its next steps, on its cut,
-`3c343d65a39481aee1b0c53010736cd49ef1f90c`:
+0.1.1 as it stands. On 2026-11-04 it was decided that v0.1.1 gets no tag and no Release, and that v0.1.2 is the first
+tagged release. These were its next steps before that, on its cut, `3c343d65a39481aee1b0c53010736cd49ef1f90c`:
 
 0. **The relay image (a maintainer; it publishes an image).**
 

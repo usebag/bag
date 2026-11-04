@@ -30,14 +30,14 @@ Name the version and the program every time. Define a shell function once per te
 below:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.1.1 bag "$@"; }
-c --version                            # prints: bag 0.1.1 <the commit it was built from>
-npm view @usebag/bag@0.1.1 gitHead     # prints the commit npm records for 0.1.1
+c() { npx --yes --package=@usebag/bag@0.1.2 bag "$@"; }
+c --version                            # prints: bag 0.1.2 <the commit it was built from>
+npm view @usebag/bag@0.1.2 gitHead     # prints the commit npm records for 0.1.2
 c help                                 # prints every command
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance, and
-`npm view @usebag/bag@0.1.1 gitHead` names that commit. The two commits above must be the same, and must be the
+`npm view @usebag/bag@0.1.2 gitHead` names that commit. The two commits above must be the same, and must be the
 published commit of this release, which the agent route's page names; if they differ, or `npm view` fails (`E404`
 among the errors), stop and do not use the package. The first run fetches the package into npm's cache, `$HOME/.npm`,
 so it needs the network once.
@@ -356,7 +356,7 @@ talks to the server over stdio works; three are described here, and this guide d
 `--trust-root` for anyone who is not already paired with you (a paired peer is already trusted). Nothing it writes holds
 a key; it holds the path of `node`, the paths of bag's programs, your identity name, your home and the relay URLs.
 From source those paths are in this repository. From the package, it first copies the package to `<home>/package/`
-(printing `wrote <home>/package (bag 0.1.1 <commit>)`) and writes the paths of that copy, so the registration does not
+(printing `wrote <home>/package (bag 0.1.2 <commit>)`) and writes the paths of that copy, so the registration does not
 depend on npm's cache. Run it again and it changes nothing and says so. The files hold paths of your machine: do not
 commit or send them.
 
