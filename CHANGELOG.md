@@ -23,7 +23,9 @@ the source repository) made since the cut before it.
   to `<home>/package/` and registers `node <home>/package/bag-mcp.js`.
 - **The pinned install lines name 0.1.1**, in `README.md`, `docs/partner-install.md` and `packages/mcp/README.md`.
 
-## 2026-11-03: the cut 3c343d65, @usebag/bag 0.1.1
+## v0.1.1: 2026-11-03
+
+The cut 3c343d65, `@usebag/bag` 0.1.1.
 
 - **`@usebag/bag` 0.1.1**, published from this cut (`npm view @usebag/bag@0.1.1 gitHead` names it). No code changed
   from 0.1.0: the version, the package's home page (`https://bag.dev`) and the version its README names.
@@ -31,10 +33,10 @@ the source repository) made since the cut before it.
   (OIDC, no token) and checks npm's answer against the packed file; a maintainer approves the staged version on npm,
   with two-factor authentication, before anyone can install it. The token path is gone.
 
-## 2026-11-03: the cut 58400aaf, @usebag/bag 0.1.0
+## v0.1.0: 2026-11-03
 
-The cut bc212d8c of the same evening carried the same, but for one fix to the package's build test; no package was
-published from it.
+The cut 58400aaf, `@usebag/bag` 0.1.0. The cut bc212d8c of the same evening carried the same, but for one fix to the
+package's build test; no package was published from it.
 
 - **bag is an npm package, `@usebag/bag`.** One bundle with no dependency and no install script holds the command
   line (`bag`), the MCP server (`bag-mcp`) and the A2A bridge (`bag-a2a`); it needs Node 24 or later, and

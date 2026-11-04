@@ -67,6 +67,24 @@ export async function untilSecond(second: number): Promise<void> {
   while (now() < second) await sleep(25)
 }
 
+/** The second of a UTC day from which a machine's sender takes yesterday: 01:05 (the edge's telemetry-send.ts). */
+const SEND_AFTER = 3_900
+
+/**
+ * The telemetry day of a scenario, read once for every process it starts: whether yesterday is due, and its date. A
+ * day is due from 01:05 UTC to midnight, so within `span` seconds of either edge this first waits the edge out (at most
+ * `span` s); each process started in the next `span` seconds then reads the same verdict and the same yesterday on its
+ * own clock. `span` bounds how long the scenario's sends can take.
+ */
+export async function telemetryDay(span: number): Promise<{ due: boolean; yesterday: string }> {
+  const toEdge = (t: number): number => (t % 86_400 < SEND_AFTER ? SEND_AFTER : 86_400) - (t % 86_400)
+  const read = now()
+  if (toEdge(read) <= span) await untilSecond(read + toEdge(read))
+  const t = now()
+  const yesterday = new Date((t - 86_400) * 1000).toISOString().slice(0, 10)
+  return { due: t % 86_400 >= SEND_AFTER, yesterday }
+}
+
 // --- the relay --------------------------------------------------------------------------------------------------
 
 export interface RelayHandle {

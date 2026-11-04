@@ -453,6 +453,7 @@ operations guide, notes). Read those references as notes; nothing here needs the
 | [`docs/audit/threat-model.md`](docs/audit/threat-model.md) | the threat model and its residual risks |
 | [`docs/audit/stream-10-review.md`](docs/audit/stream-10-review.md) | the two adversarial review rounds, their findings, and what was built and what deferred |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed in each published cut |
+| [`docs/release.md`](docs/release.md) | how a release is made: version numbers, cadence, the steps and who approves each, checking a release, undoing one |
 
 ## The checks
 

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { BUILD_INFO } from './build-info.ts'
+import { BUILD_INFO, type BuildInfo } from './build-info.ts'
 import {
   MAX_CELLS,
   MAX_COUNT,
@@ -17,10 +17,10 @@ import {
 // cells, one fewer than its cap (MAX_CELLS), and sums the rest into its `other` cell, `other` at every level; a
 // duration family keeps its keys of the most calls, one fewer than MAX_KEYS, and sums the rest into `other` bucket by
 // bucket (the red team's F-size). Every count is then the largest power of two not above it, at most 2^19, and ties
-// keep the sets' order, so the same counts make the same bytes. build is the checkout's commit when it is a published
-// cut, else `other`; node is the major from the list, else `other`; host is the kind with the most of the day's MCP
-// sessions, `other` on a tie or with none. Every string in a report is a member's name, the date, the id or a value of
-// the schema's sets.
+// keep the sets' order, so the same counts make the same bytes. build is the package's version, or from source the
+// checkout's commit, when the build list holds it, else `other`; node is the major from the list, else `other`; host is
+// the kind with the most of the day's MCP sessions, `other` on a tie or with none. Every string in a report is a
+// member's name, the date, the id or a value of the schema's sets.
 
 /**
  * A day's counts: each counted leaf by its key, the member's name and the set values below it joined by spaces (a
@@ -216,11 +216,11 @@ function hostOf(cells: Cells): string {
   return first === undefined || first[1] === second?.[1] ? 'other' : first[0].slice('sessions '.length)
 }
 
-/** The machine's facts, raw: each reaches a report only placed in its set (a commit only when it is a cut). */
+/** The machine's facts, raw: each reaches a report only placed in its set (a build only when the list holds it). */
 export interface TelemetryFacts {
   /** The install id, 32 lowercase hex. */
   readonly id: string
-  /** The running checkout's commit, or null. */
+  /** The package build's version, else the running checkout's commit, or null. */
   readonly build: string | null
   readonly os: string
   readonly arch: string
@@ -277,11 +277,12 @@ export function checkoutCommit(root = fileURLToPath(new URL('../../../', import.
 }
 
 /**
- * This machine's facts under the install id `id`: the package build's commit (build-info.ts) or else the checkout's,
- * the platform, the arch and Node's major.
+ * This machine's facts under the install id `id`: the package build's npm version (`info`, build-info.ts), or from
+ * source the checkout's commit; the platform, the arch and Node's major. The report places the build in its set, so a
+ * version or commit the build list does not hold is `other`.
  */
-export function machineFacts(id: string): TelemetryFacts {
+export function machineFacts(id: string, info: BuildInfo | null = BUILD_INFO): TelemetryFacts {
   const node = process.versions.node.split('.')[0] ?? ''
-  const build = BUILD_INFO?.commit ?? checkoutCommit()
+  const build = info?.version ?? checkoutCommit()
   return { id, build, os: process.platform, arch: process.arch, node }
 }

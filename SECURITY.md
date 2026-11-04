@@ -45,6 +45,15 @@ no load, availability or volume testing; each is a single machine that other peo
 run yourself (`docs/self-host.md`). Do not access, change or keep other people's data, and do not use social
 engineering on anyone.
 
+Reports about the project's other services are welcome, but active testing against them is out of scope: the site
+`https://bag.dev` with its install guide, the `.well-known` and handle records the project serves, and the telemetry
+endpoint `https://telemetry.bag.dev`.
+
+A known limitation: the install guide, `https://bag.dev/install`, checks the package's version, the commit the npm
+registry records and the commit `bag --version` prints, which a party that controls the registry's answers, or a
+registry set in npm's settings, could also serve, and it does not verify the package's provenance; its step 2a says
+how to check that by hand with `npm audit signatures`, which checks the provenance's signature but not who signed it.
+
 Out of scope: deployments run by others (their relays, hosts, key storage and configuration), and the third-party
 software we depend on, which you should report to its own maintainers.
 

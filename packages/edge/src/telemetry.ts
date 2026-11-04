@@ -67,7 +67,10 @@ const FOLD_AT = 256 * 1024
 /** The days before today a spool keeps: the Worker takes a date up to 8 days back, one of them for skew. */
 export const SPOOL_DAYS = 7
 
-/** How long, in seconds, a process holds counts before its next count writes them: a crash loses at most this. */
+/**
+ * How long, in seconds, a process holds counts before it writes them, at its next count or by a timer when none comes:
+ * a crash loses at most this, and a day's counts are written by 00:01 UTC, long before its report goes at 01:05.
+ */
 const HOLD = 60
 
 /** The install id of a report previewed before `on` makes the machine's: 32 zeros, never a drawn id. */
@@ -87,8 +90,9 @@ export function noticeText(preview: string): string {
 }
 
 /**
- * The notice for a caller that cannot name the command line's path; the CLI names its own (`node <main.ts> telemetry
- * preview`). No notice names `ac telemetry on`, a command a guide install does not have (the spec owner's ruling 13).
+ * The notice for a caller that cannot name the command line; the CLI names its own (its previewCommand: `npx --yes
+ * --package=@usebag/bag@<version> bag telemetry preview` from the package, `node <main.ts> telemetry preview` from
+ * source). No notice names `ac telemetry on`, a command a guide install does not have (the spec owner's ruling 13).
  */
 export const TELEMETRY_NOTICE = noticeText('telemetry preview, in the bag command line')
 
@@ -409,6 +413,8 @@ interface Tally {
   readonly days: Map<string, Cells>
   users: number
   since: number
+  /** Writes what is held HOLD seconds after a count that did not write, unless a write comes first. */
+  timer: ReturnType<typeof setTimeout> | null
 }
 
 let tally: Tally | null = null
@@ -419,7 +425,7 @@ let tally: Tally | null = null
  */
 export function startTelemetry(env: Env, clock: Clock): boolean {
   if (tally === null && telemetryOn(env)) {
-    tally = { env, clock, days: new Map(), users: 0, since: clock.now() }
+    tally = { env, clock, days: new Map(), users: 0, since: clock.now(), timer: null }
   }
   if (tally !== null) tally.users++
   return tally !== null
@@ -438,6 +444,8 @@ export function stopTelemetry(): void {
 export function flushTelemetry(): void {
   const t = tally
   if (t === null) return
+  if (t.timer !== null) clearTimeout(t.timer)
+  t.timer = null
   t.since = t.clock.now()
   const days = [...t.days]
   t.days.clear()
@@ -459,7 +467,10 @@ function tallied(key: string | null): void {
     const cells = t.days.get(day) ?? new Map<string, number>()
     t.days.set(day, cells)
     addCell(cells, key, 1)
+    // A server that goes quiet in the last minute of a day would otherwise hold it past 01:05, when the sender takes
+    // the day: what it held would then reach the spool as a second report of that day, which the endpoint drops.
     if (now - t.since >= HOLD) flushTelemetry()
+    else t.timer ??= setTimeout(flushTelemetry, HOLD * 1000).unref()
   } catch {
     // A count must not fail its caller.
   }
