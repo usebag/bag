@@ -1,0 +1,54 @@
+# Dependency updates for npm (the workspaces, one lock at the root), Cargo and the workflows' actions: weekly, minor
+# and patch grouped into one PR per ecosystem, and never a version younger than 7 days, the cooldown .npmrc's
+# min-release-age, scripts/check-release-age.mjs and scripts/check-crate-age.py already hold the locks to. The cooldown
+# covers version updates only; a security update opens regardless, and the lock checks still refuse a version younger
+# than 7 days, so such a fix needs a dated exclusion by hand. A major version is a decision for a person, not a
+# weekly bump, so majors are ignored. The workflows use no third-party action today; the github-actions entry keeps
+# any one added later current. This repository is cut from the maintainer's tree: a bump is carried there and
+# reaches main with the next cut, which replaces package-lock.json and Cargo.lock.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+    groups:
+      npm-minor-and-patch:
+        update-types: ['minor', 'patch']
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+    groups:
+      cargo-minor-and-patch:
+        update-types: ['minor', 'patch']
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+    groups:
+      actions-minor-and-patch:
+        update-types: ['minor', 'patch']
+    open-pull-requests-limit: 5
