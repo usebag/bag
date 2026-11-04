@@ -734,6 +734,24 @@ asked it to. A person releases or drops through the CLI on a terminal: `inbox --
 Replace `<relay>` with the relay's URL (for example `http://127.0.0.1:7777`) and `<address>` with the address of the
 identity to trust (`node packages/cli/src/main.ts address <name>`).
 
+**From the npm package.** The package `@usebag/bag` carries this server as its `bag-mcp` bin
+(`packages/bag/package.json`). Register it with the CLI's `host install` (`packages/cli/README.md`), run from the same
+package:
+
+```sh
+npx --yes --package=@usebag/bag@0.1.1 bag host install claude-code --as alice --relay <relay> --project <dir>
+```
+
+It first copies the package's programs to `<home>/package/`, then writes into `<dir>/.mcp.json` a server whose command
+is the absolute path of the Node that ran it and whose arguments are `<home>/package/bag-mcp.js`, `--as alice`, the
+relays (and `--rendezvous`, when given), the trust roots, `--dir <home>` and `--keep-alive-records`
+(`packages/cli/src/packaged.ts`, `stableMains`; `packages/cli/src/commands/host-install.ts`, `single`). The copy stays
+until the home goes, so the entry does not depend on npm's cache. That is the form the install guide's step 6 runs. This
+README gives no form that starts the server through `npx`: none has been run.
+
+**From source.** The forms below run the checkout's entry, `<clone>/packages/mcp/src/main.ts`, after `npm ci` there
+(above, "Requirements").
+
 Claude Code, for the current project directory (local scope):
 
 ```sh

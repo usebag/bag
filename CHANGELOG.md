@@ -4,7 +4,54 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
-## Unreleased: changes since the 2026-11-01 cut
+## Unreleased: changes since the cut 3c343d65
+
+### Security
+
+- **`SECURITY.md` says more.** The two public relays, `relay1.bag.dev` and `relay2.bag.dev`, are run by the project
+  and in scope for good-faith testing, with no load, availability or volume testing, no one else's data and no social
+  engineering. There is no bounty; reporters are credited by consent in `docs/thanks.md`. A safe harbour: good-faith
+  research within the policy is not reported to law enforcement or pursued by us.
+
+### Documentation
+
+- **`docs/partner-install.md` offers two routes**: the npm package (section 1a: the `npx` command, its `--version`
+  and `npm view ... gitHead` checked against each other, the three programs) and from source (section 1b). The later
+  sections hold for both: section 3 names the public relays and the relay image for the package route, section 5c
+  wires the MCP server through `host install`, and section 6 marks the handle script source-only.
+- **`packages/mcp/README.md`, "Install"**, gains the package route: `bag host install` run from the package copies it
+  to `<home>/package/` and registers `node <home>/package/bag-mcp.js`.
+- **The pinned install lines name 0.1.1**, in `README.md`, `docs/partner-install.md` and `packages/mcp/README.md`.
+
+## 2026-11-03: the cut 3c343d65, @usebag/bag 0.1.1
+
+- **`@usebag/bag` 0.1.1**, published from this cut (`npm view @usebag/bag@0.1.1 gitHead` names it). No code changed
+  from 0.1.0: the version, the package's home page (`https://bag.dev`) and the version its README names.
+- **The package is staged, then approved.** The publish workflow stages each version by npm's trusted publishing
+  (OIDC, no token) and checks npm's answer against the packed file; a maintainer approves the staged version on npm,
+  with two-factor authentication, before anyone can install it. The token path is gone.
+
+## 2026-11-03: the cut 58400aaf, @usebag/bag 0.1.0
+
+The cut bc212d8c of the same evening carried the same, but for one fix to the package's build test; no package was
+published from it.
+
+- **bag is an npm package, `@usebag/bag`.** One bundle with no dependency and no install script holds the command
+  line (`bag`), the MCP server (`bag-mcp`) and the A2A bridge (`bag-a2a`); it needs Node 24 or later, and
+  `npx --yes --package=@usebag/bag@0.1.0 bag` runs it without a global install. `bag --version` prints the version
+  and the commit it was built from. The package is published from that commit by a workflow with npm provenance, and
+  `npm view @usebag/bag@0.1.0 gitHead` names it. The relay is not in the package (`README.md`, "Quick start", and its
+  new section "From source").
+- **The wiring outlives npm's cache.** Run from the package, `host install`, `record keep --plist` or `--crontab` and
+  `onboard` first copy the package to `<home>/package/` and write that path, so a cleared npm cache does not break
+  them.
+- **The relay image can be pulled.** `docs/self-host.md`, "Run it with Docker", gains "Or pull the published image":
+  `ghcr.io/usebag/relay:<commit>`, tagged by commit with no `latest`, with the checks of its platforms, provenance and
+  SBOM, and a compose override you write that names the image by commit and digest.
+
+## 2026-11-03: the cut cc4f25dd
+
+New since the cut 635a89b2 of the same morning.
 
 ### Security
 
@@ -14,6 +61,30 @@ the source repository) made since the cut before it.
   address let every machine that could reach the port send as the bridge's identity, since the Host and Origin
   checks stop browsers, not programs. The default, 127.0.0.1, was already safe. Any local process can still call the
   bridge, the same trust as the command line on the same home; a caller token is a later option (`packages/a2a/README.md`).
+
+### New
+
+- **Telemetry can send, once a person turns it on.** It stays off until then. While it is on, each finished UTC day's
+  report goes once to `telemetry.bag.dev`, from 01:05 UTC the next day; `c telemetry status`, `preview`, `on`, `off`
+  and `forget` (`README.md`, "Telemetry"). The report gains the family `pairs`: the machine's trusted peers counted
+  by age (under 7 days, or more), and of those, the ones it sent to in the last 7 days. It needs consent version 2, so
+  a yes given to version 1 reads as off and is asked again. Earlier cuts send nothing.
+- **The clients go through a company proxy.** The command line, the MCP server and the bridge honour `HTTPS_PROXY`,
+  `HTTP_PROXY` and `NO_PROXY`: when a proxy is set, each restarts itself once with Node's `NODE_USE_ENV_PROXY=1`, and
+  `status` shows the network it uses. A fallback for a proxy that cuts WebSockets is not built.
+- **The relay as a container.** `deploy/docker/` builds the relay into a small image with no shell that runs as a
+  non-root user, with a compose file for one relay on the host's loopback and a Caddy TLS front
+  (`docs/self-host.md`, "Run it with Docker"). The image of this cut is published as
+  `ghcr.io/usebag/relay:cc4f25dd22448ae066cc99c2195eb9491d6ca24a`. The self-host guide's Linux steps and systemd unit
+  were run on Ubuntu.
+- **`docs/inside-a-company.md`**, a guide to using bag inside a company: the security team first, your own relays,
+  company identities and an allow-list of writers, telemetry off, the public relays only with approval, and the proxy.
+- **The relay counts first subscribes**, `ac_relay_first_subscribes_total`: a fresh mailbox's subscription, once a UTC
+  day, with nothing new stored (`docs/self-host.md`).
+- **The spec says what the code does**, with no wire change: the pairing invite string and request are written out
+  (`spec/SPEC.md` §2.4, §8.10), pair/open takes 1 to 64 relays, a nameplate's `ttl` is required, 1 to 600 seconds
+  (Appendix B, item 89), and §7.2 states the relay URL form once, as every record reader checks it.
+  `spec/vectors/pair-code.json` gains the check digits, the request MAC, the invite string and pair/open.
 
 ## 2026-11-01: the first public cut
 
