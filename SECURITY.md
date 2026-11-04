@@ -39,8 +39,24 @@ wish. If a fix needs a change to the wire format, it ships as a new wire version
 In scope: the specification (`spec/SPEC.md`), the reference implementation (`packages/`, `crates/`), the reference
 relay (`ac-relay`), and the test vectors and adversarial cases when they are wrong or let a flawed reader pass.
 
+The two public relays, `https://relay1.bag.dev` and `https://relay2.bag.dev` (`README.md`, "Public relays"), are run
+by the project, not by others, and are in scope: you may test them in good faith, within this policy. Against them, do
+no load, availability or volume testing; each is a single machine that other people use, so test limits on a relay you
+run yourself (`docs/self-host.md`). Do not access, change or keep other people's data, and do not use social
+engineering on anyone.
+
 Out of scope: deployments run by others (their relays, hosts, key storage and configuration), and the third-party
 software we depend on, which you should report to its own maintainers.
+
+## No bounty
+
+There is no bounty: we pay nothing for reports. With your consent we credit you publicly, by the name you give us, in
+the thanks list, `docs/thanks.md`. Without it, we name no one.
+
+## Safe harbour
+
+If you research in good faith and within this policy, we will not report you to law enforcement and will not pursue
+you for it. This is our word only; we cannot speak for anyone else.
 
 ## Threat model in one paragraph
 

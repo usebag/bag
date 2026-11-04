@@ -4,14 +4,53 @@ A step-by-step install and first exchange for the bag reference implementation. 
 `SECURITY.md` and `CONTRIBUTING.md` in this repository are the authority on status, licence, reporting a security issue
 and contributing.
 
+This guide is the route by hand. The agent route, [bag.dev/install](https://bag.dev/install), is a page for a coding
+agent, Claude Code: it installs the npm package and makes an identity, and leaves pairing and wiring Claude Code to
+you. The package, which section 1a runs, has its page on the npm registry:
+[npmjs.com/package/@usebag/bag](https://www.npmjs.com/package/@usebag/bag).
+
 This guide takes you from a clean machine to a working identity, a relay, published records, a message sent and
 received, and a verified audit log, and then to serving your own record at an origin you control. It goes deeper than
 the quick path in `README.md`; read that first if you want the shortest route. Every command below is a command of this
-repository. Run everything from the root of this directory. Commands are written for a Unix shell with `bash`.
+repository; from source, run everything from the root of the clone (section 1b). Commands are written for a Unix
+shell with `bash`.
 
 ## 1. What you need
 
-Clone the repository and work inside the clone:
+There are two routes to the same programs. The npm package (1a) needs Node 24 and nothing more: nothing is cloned or
+built, and `npx` runs it without installing anything globally. It holds the command line, the MCP server and the A2A
+bridge, but not the relay. From source (1b) builds everything here, the relay included, and every byte the package
+runs can be built and checked that way. Take 1a for the shortest start; take 1b to read or build the source, run the
+checks, or build a relay. Sections 3, 5c and 6 say where a step differs between the two.
+
+### 1a. The npm package
+
+You need Node 24 or later. bag is the npm package `@usebag/bag`, one bundle with no dependency and no install script.
+Name the version and the program every time. Define a shell function once per terminal and use it for every command
+below:
+
+```sh
+c() { npx --yes --package=@usebag/bag@0.1.1 bag "$@"; }
+c --version                            # prints: bag 0.1.1 <the commit it was built from>
+npm view @usebag/bag@0.1.1 gitHead     # prints the commit npm records for 0.1.1
+c help                                 # prints every command
+```
+
+The package is published from a commit of this repository by a workflow with npm provenance, and
+`npm view @usebag/bag@0.1.1 gitHead` names that commit. The two commits above must be the same, and must be the
+published commit of this release, which the agent route's page names; if they differ, or `npm view` fails (`E404`
+among the errors), stop and do not use the package. The first run fetches the package into npm's cache, `$HOME/.npm`,
+so it needs the network once.
+
+The package holds three programs: `bag`, the command line, which `c` runs; `bag-mcp`, the MCP server (section 5c);
+and `bag-a2a`, the A2A bridge, which this guide does not use. Run `c` outside any project that has a `bag` command of
+its own, so that the package's is the one that runs (the agent route starts its `c` from a working folder of its own
+for this reason). The package holds the programs only: the files this guide cites, such as `spec/SPEC.md` and the
+READMEs under `packages/`, are in the source repository.
+
+### 1b. From source
+
+Clone the repository, work inside the clone and run everything below from its root:
 
 ```sh
 git clone https://github.com/usebag/bag bag
@@ -47,7 +86,7 @@ cargo build --release --locked -p ac-relay
 `npm ci` installs the TypeScript workspaces; the CLI needs nothing more. The second command builds the relay to
 `target/release/ac-relay`. To check the whole repository, run `scripts/last_step.sh` (see `README.md`, "The checks").
 
-The CLI has no `bin` entry. Define a shell function once per terminal and use it for every command below:
+From source the CLI has no `bin` entry. Define a shell function once per terminal and use it for every command below:
 
 ```sh
 c() { node packages/cli/src/main.ts "$@"; }
@@ -87,7 +126,13 @@ records: they are public by design. Back up `keys/` yourself, offline; there is 
 
 A relay is a store-and-forward server. It stores sealed envelopes and signed records, and holds a mailbox open for a
 subscriber. It cannot read what you send. You either run your own or use the URL of one you were given; in both cases
-every command takes it as `--relay <url>`.
+every command takes it as `--relay <url>`. Two public relays run, `https://relay1.bag.dev` and
+`https://relay2.bag.dev`, and either stands in for one of your own (`README.md`, "Public relays").
+
+The relay is Rust and is not in the npm package. On the package route (section 1a), use a relay you were given or a
+public one, or run the relay's container image, built from a clone or pulled as `ghcr.io/usebag/relay:<commit>`
+(`docs/self-host.md`, "Run it with Docker"); that needs Docker with Compose and a clone of this repository for its
+compose files, but no Rust and no Node. The command below runs the binary that section 1b builds.
 
 Running your own:
 
@@ -233,7 +278,7 @@ Other commands (`delegate`, `lookup`, `group`, `held`, `status`) are in `package
 ## 5b. Your first exchange with another installation
 
 Section 5 sent a message between two identities in one home. This is the same act between two parties on two
-machines, A and B, who both cloned the repository and built it as in section 1. You need one relay URL both can reach,
+machines, A and B, who both set up bag as in section 1, by either route. You need one relay URL both can reach,
 an identity each, and a terminal each side can type into at the same time. A runs the relay (section 3) or both use
 one they were given.
 
@@ -302,15 +347,18 @@ request reaches A on the same one, A's side prints `second request <address>: th
 
 ## 5c. Connect your agent host
 
-The CLI and the MCP server are two ways to be one identity. An MCP server (`packages/mcp`) puts your address and
-mailbox inside an agent host, as tools. Use one receiver per identity: if a host runs the MCP server for `me`, do not
-also run `c inbox --watch --as me`; whichever starts second is refused as busy. A host that talks to the server over
-stdio works; three are described here, and this guide documents none of them as the only way.
+The CLI and the MCP server are two ways to be one identity. An MCP server (`packages/mcp`, the package's `bag-mcp`)
+puts your address and mailbox inside an agent host, as tools. Use one receiver per identity: if a host runs the MCP
+server for `me`, do not also run `c inbox --watch --as me`; whichever starts second is refused as busy. A host that
+talks to the server over stdio works; three are described here, and this guide documents none of them as the only way.
 
 `c host install` writes the registration for you. It needs an identity that exists, at least one `--relay`, and your
 `--trust-root` for anyone who is not already paired with you (a paired peer is already trusted). Nothing it writes holds
-a key; it holds the path of `node`, the paths of this repository, your identity name, your home and the relay URLs.
-Run it again and it changes nothing and says so. The files hold paths of your machine: do not commit or send them.
+a key; it holds the path of `node`, the paths of bag's programs, your identity name, your home and the relay URLs.
+From source those paths are in this repository. From the package, it first copies the package to `<home>/package/`
+(printing `wrote <home>/package (bag 0.1.1 <commit>)`) and writes the paths of that copy, so the registration does not
+depend on npm's cache. Run it again and it changes nothing and says so. The files hold paths of your machine: do not
+commit or send them.
 
 Claude Code, for a project directory:
 
@@ -329,7 +377,9 @@ claude mcp add bag -- node <repo>/packages/mcp/src/main.ts --as me --relay "$R" 
 ```
 
 with `<repo>` this directory as an absolute path and `<home>` your home as an absolute path (the host passes each
-argument as written; nothing expands `~`). For the Claude Code plugin: see the README.
+argument as written; nothing expands `~`). That line is the source route's. On the package route, register the server
+with `c host install` above: it copies the package to `<home>/package/` and writes `node <home>/package/bag-mcp.js`
+as the server. For the Claude Code plugin: see the README.
 
 Codex:
 
@@ -344,8 +394,10 @@ identity, never both. If the file already has a different `bag` table, the comma
 
 Any other stdio MCP host: register a server whose command is `node` and whose arguments are
 `<repo>/packages/mcp/src/main.ts --as me --relay <relay-url> --dir <home> --keep-alive-records`, in the host's own
-format. `packages/mcp/README.md`, section "Install", gives the Claude Code, Codex and opencode forms with the flags
-and what each means; where it shows a machine-specific path for `node` or `<clone>`, read it as `node` and `<repo>`.
+format. That form is the source route's; on the package route, this guide registers the server only through
+`c host install` (Claude Code or Codex, above). `packages/mcp/README.md`, section "Install", gives the Claude Code,
+Codex and opencode forms with the flags and what each means; where it shows a machine-specific path for `node` or
+`<clone>`, read it as `node` and `<repo>`.
 Tell your host to restart its MCP servers, then ask it to list the bag server's tools.
 
 If the other party in section 5b runs a different host from yours, that is a fine first exchange: each side sends one
@@ -416,10 +468,10 @@ https://<domain>/.well-known/bag/handles/<local>.json
 ```
 
 `deploy/make-handle-record.sh` signs it with the org key from step 1, which must be the key of the org's address record
-(a handle record is valid only under the domain's current key). The script reads that address record from
-`deploy/well-known/public/<domain>/.well-known/bag/address.json`, a directory this repository does not carry, so
-place your `address.json` there first, then sign, with `AC_HOME` set to the home that holds the org keys (an absolute
-path), from the root of this directory:
+(a handle record is valid only under the domain's current key). The script is source-only (section 1b): the package
+does not carry it. It reads that address record from `deploy/well-known/public/<domain>/.well-known/bag/address.json`,
+a directory this repository does not carry, so place your `address.json` there first, then sign, with `AC_HOME` set to
+the home that holds the org keys (an absolute path), from the root of this directory:
 
 ```sh
 mkdir -p deploy/well-known/public/example.com/.well-known/bag handles-out
@@ -447,8 +499,8 @@ by address or by a name in your name book, and use a `domain:` root as above.
   are not included. A comment that points to a file you do not have is a note; nothing here needs it to build or run.
 - No installer or service files for the relay or `record keep`. The packaged forms are the relay's container image
   (`docs/self-host.md`, "Run it with Docker") and the npm package `@usebag/bag` (the command line, the MCP server and
-  the A2A bridge, `README.md`, "Quick start"); this guide runs from source.
-- No `ac` on your PATH: use the `c` function above.
+  the A2A bridge, section 1a).
+- No `ac` or `bag` on your PATH: use the `c` function of your route, section 1a or 1b.
 - The macOS keychain custody works on macOS only; the file custody works everywhere.
 - The Claude Code plugin: see the README.
 
