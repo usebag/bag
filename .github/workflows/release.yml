@@ -1,90 +1,282 @@
-# Tags one public cut commit of main vX.Y.Z and makes its GitHub Release (docs/release.md, step 8).
-# This file belongs in usebag/bag at .github/workflows/release.yml, beside npm-publish.yml and relay-image.yml: the cut
-# never carries .github/ (cut/MANIFEST), so it reaches the public repository by its own PR. It is kept here so that it
-# is reviewed with the release process it runs.
-# Started by hand only (workflow_dispatch), after the version is public on npm and the relay image of the commit is
-# built (relay-image.yml, started with the same commit). Only `run` steps: no third-party action; the runner's own git,
-# curl, jq, openssl, docker and gh. The inputs reach the shell only through the environment (VERSION, COMMIT), never
-# inside a script as ${{ }}.
-# It checks before it writes anything: the commit is a public cut on main ("bag public cut of "), packages/bag is at the
-# version there, the tag and the Release do not exist, npm holds the version from that commit (gitHead) with a SLSA
-# provenance statement whose source commit is that commit too and an integrity that matches its tarball, and the relay
-# image of the commit exists. Then it writes three
-# things: the image tag vX.Y.Z on the commit's image (no rebuild, the same digest), the tag vX.Y.Z on the commit, and
-# the Release. The notes are the CHANGELOG.md section headed "## vX.Y.Z" (at the commit, else on main, so a release
-# made after the fact, as v0.1.1, reads the section a later cut added), followed by the npm tarball's sha256 and
-# integrity and the relay image's digest. A tag is never moved: a bad release is followed by the next patch.
+# The release chain of @usebag/bag: from a version staged on npm to its tag, GitHub Release, relay image, relay
+# binaries and the website's pins (docs/release.md in the cut, steps 5 to 10).
+# This file belongs in usebag/bag at .github/workflows/release.yml, beside npm-publish.yml, relay-image.yml and
+# relay-binaries.yml: the cut never carries .github/ (cut/MANIFEST), so it reaches the public repository by its own PR.
+# It is kept here so that it is reviewed with the release process it runs.
+# Started two ways. (1) When an npm-publish.yml run started by a push to main ends green (workflow_run, completed, on
+# main; GitHub runs it from this file on main): if that run staged a version, the chain takes the version, the commit,
+# the stage id and the tarball's sha256 from that run's log (the lines npm-publish.yml prints, `staged @usebag/bag@X.Y.Z
+# from <commit>, stage id <id>, <integrity>` and `sha256 <hex>`: a change to their form is a change here too); if it
+# staged nothing, the chain ends at its first job, green. (2) By hand (workflow_dispatch, a version and a public cut
+# commit), to run the chain again for a version, for example one approved while an earlier run of this file was gone.
+# The jobs, in order:
+#   staged    what to release: the version, the commit (a public cut on main at that version), the staging run's stage
+#             id and sha256; it prints what the maintainer does next.
+#   approval  runs in the environment npm-release, whose required reviewer is the maintainer, and does nothing but wait
+#             for the click (a workflow waits up to 30 days on an environment approval). Click only after approving
+#             the version on npmjs.com: the npm approval itself needs the maintainer's two-factor authentication and
+#             cannot be done by a workflow.
+#   npm       reads the registry until the version answers (80 reads, 15 seconds apart: 20 minutes), then checks
+#             gitHead, the provenance statement's source commit, the integrity, the staging run's sha256 and latest.
+#   image     relay-image.yml, called with the commit; it builds nothing when the image exists.
+#   release   the image tag vX.Y.Z, the git tag vX.Y.Z and the GitHub Release, whose notes are the CHANGELOG.md section
+#             "## vX.Y.Z" (at the commit, else on main) and the hashes.
+#   binaries  relay-binaries.yml, called with the commit and the version, only when the commit holds
+#             crates/ac-relay/THIRD-PARTY-RUST.md, the crate notices every archive carries.
+#   site      runs in npm-release too, so it waits for the maintainer's second click, given once the install guide
+#             at https://bag.dev/install serves the release (its values are applied outside GitHub, docs/release.md
+#             step 9). It checks that the served guide names the version, the commit and the sha256, then sends a
+#             repository_dispatch (event bag-release, payload version, cut and sha256) to the website's repository,
+#             named by the repository variable SITE_REPOSITORY, with the token SITE_DISPATCH_TOKEN; the website's
+#             release-pins workflow checks the release again and opens its pins pull request.
+# Every job can run again. "Re-run failed jobs" repeats a failed job and the jobs after it; a job that finds what an
+# earlier attempt made, as it should be, skips it with a line, and stops when it finds it otherwise (a tag on another
+# commit, an image tag on another digest). A tag is never moved: a bad release is followed by the next patch.
+# Only `run` steps and this repository's own reusable workflows: no third-party action. Inputs and event fields reach
+# the shell only through the environment, never inside a script as ${{ }}.
 name: release
 on:
+  workflow_run:
+    workflows: [npm publish]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
         description: "the version, X.Y.Z, as packages/bag/package.json holds it at the commit"
         required: true
       commit:
-        description: "the 40-digit public cut commit of main to tag"
+        description: "the 40-digit public cut commit of main to release"
         required: true
-permissions:
-  contents: write
-  packages: write
-concurrency:
-  group: release
-  cancel-in-progress: false
+permissions: {}
 jobs:
-  release:
+  staged:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      go: ${{ steps.what.outputs.go }}
+      version: ${{ steps.what.outputs.version }}
+      commit: ${{ steps.what.outputs.commit }}
+      sha256: ${{ steps.what.outputs.sha256 }}
+      integrity: ${{ steps.what.outputs.integrity }}
+      binaries: ${{ steps.what.outputs.binaries }}
     steps:
-      - name: the inputs, and the commit is a public cut on main at the version
+      - name: what to release, and what the maintainer does next
+        id: what
         run: |
+          STAGE_ID=""; SHA=""; INT=""
+          if [ "$EVENT" = workflow_run ]; then
+            case "$RUN_ID" in *[!0-9]*|"") echo "not a run id"; exit 1;; esac
+            COMMIT="$HEAD_SHA"
+            for i in 1 2 3 4 5 6; do
+              gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --log > "$RUNNER_TEMP/stage.log" 2>/dev/null && test -s "$RUNNER_TEMP/stage.log" && break
+              if [ "$i" = 6 ]; then echo "the log of npm-publish run $RUN_ID cannot be read"; exit 1; fi
+              sleep 10
+            done
+            # The messages, without the job, step and time fields; a script line echoed in the log starts with a colour code.
+            cut -f3- "$RUNNER_TEMP/stage.log" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' | tr -d '\r' > "$RUNNER_TEMP/lines"
+            S="$(grep -E '^staged @usebag/bag@[0-9]+\.[0-9]+\.[0-9]+ from [0-9a-f]{40}, stage id [^,]+, sha512-[A-Za-z0-9+/=]+$' "$RUNNER_TEMP/lines" | tail -n 1 || true)"
+            if [ -z "$S" ]; then
+              echo "npm-publish run $RUN_ID staged nothing (the push left the version as it was, or the version is on npm already): nothing to release"
+              echo "go=no" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            VERSION="$(printf '%s\n' "$S" | sed -E 's/^staged @usebag\/bag@([^ ]+) from .*/\1/')"
+            FROM="$(printf '%s\n' "$S" | sed -E 's/.* from ([0-9a-f]{40}),.*/\1/')"
+            STAGE_ID="$(printf '%s\n' "$S" | sed -E 's/.*, stage id ([^,]+), sha512-.*/\1/')"
+            INT="$(printf '%s\n' "$S" | sed -E 's/.*, (sha512-[A-Za-z0-9+/=]+)$/\1/')"
+            test "$FROM" = "$COMMIT" || { echo "npm-publish run $RUN_ID staged from $FROM, not from its head $COMMIT"; exit 1; }
+            SHA="$(grep -E '^sha256 [0-9a-f]{64}$' "$RUNNER_TEMP/lines" | tail -n 1 | cut -d' ' -f2 || true)"
+            test -n "$SHA" || { echo "npm-publish run $RUN_ID printed no sha256 line in its pack step"; exit 1; }
+          else
+            COMMIT="$IN_COMMIT"
+            VERSION="$IN_VERSION"
+          fi
           case "$COMMIT" in *[!0-9a-f]*|"") echo "not a commit"; exit 1;; esac
           test "${#COMMIT}" = 40
           printf '%s\n' "$VERSION" | grep -q -x -E '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' || { echo "not a version X.Y.Z"; exit 1; }
           git clone --no-checkout --quiet "https://github.com/${GITHUB_REPOSITORY}" src
           git -C src fetch --quiet origin main
-          git -C src merge-base --is-ancestor "$COMMIT" origin/main
-          git -C src log -1 --format=%s "$COMMIT" | grep -q '^bag public cut of ' || { echo "$COMMIT is not a public cut commit"; exit 1; }
+          git -C src merge-base --is-ancestor "$COMMIT" origin/main || { echo "$COMMIT is not on main"; exit 1; }
+          git -C src log -1 --format=%s "$COMMIT" | grep -q '^bag public cut of ' || { echo "$COMMIT is not a public cut commit: reject the staged version on npmjs.com (Staged Packages, Reject)"; exit 1; }
           test "$(git -C src show "$COMMIT:packages/bag/package.json" | jq -r .version)" = "$VERSION" || { echo "packages/bag at $COMMIT is not $VERSION"; exit 1; }
-          if git -C src ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then echo "the tag v$VERSION exists already"; exit 1; fi
-          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "a Release v$VERSION exists already"; exit 1; fi
-          echo "v$VERSION: $COMMIT ($(git -C src log -1 --format=%s "$COMMIT"))"
+          if git -C src cat-file -e "$COMMIT:crates/ac-relay/THIRD-PARTY-RUST.md" 2>/dev/null; then B=yes; else B=no; fi
+          {
+            echo "go=yes"
+            echo "version=$VERSION"
+            echo "commit=$COMMIT"
+            echo "sha256=$SHA"
+            echo "integrity=$INT"
+            echo "binaries=$B"
+          } >> "$GITHUB_OUTPUT"
+          echo "release @usebag/bag@$VERSION from $COMMIT ($(git -C src log -1 --format=%s "$COMMIT"))"
+          if [ -n "$STAGE_ID" ]; then echo "staged by npm-publish run $RUN_ID: stage id $STAGE_ID, tarball sha256 $SHA, $INT"; fi
+          if [ "$B" = yes ]; then echo "relay binaries: yes, the commit holds crates/ac-relay/THIRD-PARTY-RUST.md"; else echo "relay binaries: no, the commit has no crates/ac-relay/THIRD-PARTY-RUST.md"; fi
+          if curl -fsS --max-time 30 -o /dev/null "https://registry.npmjs.org/@usebag%2fbag/$VERSION" 2>/dev/null; then
+            NEXT="@usebag/bag@$VERSION is on npm already: approve the job \"approval\" of this run (Review deployments, npm-release)."
+          else
+            NEXT="approve @usebag/bag@$VERSION on npmjs.com (Staged Packages${STAGE_ID:+, stage id $STAGE_ID}, Approve, two-factor authentication), then approve the job \"approval\" of this run (Review deployments, npm-release)."
+          fi
+          echo "NEXT, the maintainer: $NEXT"
+          {
+            echo "## @usebag/bag@$VERSION from \`$COMMIT\`"
+            echo
+            echo "Next, the maintainer: $NEXT"
+          } >> "$GITHUB_STEP_SUMMARY"
         env:
-          VERSION: ${{ inputs.version }}
-          COMMIT: ${{ inputs.commit }}
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_COMMIT: ${{ inputs.commit }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: npm holds the version from the commit; the tarball's hashes
+  approval:
+    needs: staged
+    if: needs.staged.outputs.go == 'yes'
+    runs-on: ubuntu-24.04
+    environment:
+      name: npm-release
+      url: https://www.npmjs.com/package/@usebag/bag/v/${{ needs.staged.outputs.version }}
+    permissions: {}
+    steps:
+      - name: the maintainer approved the version on npm
         run: |
-          curl -fsS --max-time 30 -o "$RUNNER_TEMP/v.json" "https://registry.npmjs.org/@usebag%2fbag/$VERSION" || { echo "@usebag/bag@$VERSION is not on npm"; exit 1; }
-          test "$(jq -r .gitHead "$RUNNER_TEMP/v.json")" = "$COMMIT" || { echo "npm records $VERSION from $(jq -r .gitHead "$RUNNER_TEMP/v.json"), not $COMMIT"; exit 1; }
-          # The provenance's own source commit: the SLSA statement's resolvedDependencies entry for this repository. It is
-          # the head the publish run was started on, which can differ from gitHead (0.1.1: 4c3dd680 against 3c343d65).
+          echo "approved in npm-release: @usebag/bag@$VERSION from $COMMIT"
+        env:
+          VERSION: ${{ needs.staged.outputs.version }}
+          COMMIT: ${{ needs.staged.outputs.commit }}
+  npm:
+    needs: [staged, approval]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    outputs:
+      sha256: ${{ steps.check.outputs.sha256 }}
+      integrity: ${{ steps.check.outputs.integrity }}
+    steps:
+      - name: the registry holds the version (80 reads, 15 seconds apart)
+        run: |
+          for i in $(seq 1 80); do
+            if curl -fsS --max-time 30 -o "$RUNNER_TEMP/v.json" "https://registry.npmjs.org/@usebag%2fbag/$VERSION" 2>/dev/null; then
+              echo "read $i: the registry holds @usebag/bag@$VERSION"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "the registry does not hold @usebag/bag@$VERSION after 20 minutes: approve it on npmjs.com (Staged Packages), then re-run the failed jobs of this run"
+          exit 1
+        env:
+          VERSION: ${{ needs.staged.outputs.version }}
+      - name: gitHead, the provenance's commit, the integrity, the sha256 and latest
+        id: check
+        run: |
+          curl -fsS --max-time 30 -o "$RUNNER_TEMP/v.json" "https://registry.npmjs.org/@usebag%2fbag/$VERSION"
+          G="$(jq -r .gitHead "$RUNNER_TEMP/v.json")"
+          test "$G" = "$COMMIT" || { echo "npm records $VERSION from $G, not $COMMIT"; exit 1; }
+          echo "gitHead: the commit"
+          # The provenance's own source commit: the SLSA statement's resolvedDependencies entry for this repository, the
+          # head the publish run was started on, which can differ from gitHead (0.1.1: 4c3dd680 against 3c343d65).
           A="$(jq -r '.dist.attestations.url // ""' "$RUNNER_TEMP/v.json")"
           curl -fsS --max-time 30 -o "$RUNNER_TEMP/a.json" "$A" || { echo "$VERSION has no attestations on npm"; exit 1; }
           P="$(jq -r '.attestations[] | select(.predicateType == "https://slsa.dev/provenance/v1") | .bundle.dsseEnvelope.payload' "$RUNNER_TEMP/a.json" | base64 -d | jq -r --arg r "git+https://github.com/$GITHUB_REPOSITORY@" '[.predicate.buildDefinition.resolvedDependencies[] | select(.uri | startswith($r)) | .digest.gitCommit] | join(" ")')"
           test "$P" = "$COMMIT" || { echo "the provenance of $VERSION names ${P:-no commit of this repository}, not $COMMIT"; exit 1; }
+          echo "provenance: the commit"
           curl -fsS --max-time 60 -o "$RUNNER_TEMP/p.tgz" "$(jq -r .dist.tarball "$RUNNER_TEMP/v.json")"
           I="$(jq -r .dist.integrity "$RUNNER_TEMP/v.json")"
-          test "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/p.tgz" | openssl base64 -A)" = "$I" || { echo "the tarball does not match the registry integrity"; exit 1; }
+          test "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/p.tgz" | openssl base64 -A)" = "$I" || { echo "the tarball does not match the registry's integrity"; exit 1; }
+          if [ -n "$STAGED_INTEGRITY" ]; then
+            test "$I" = "$STAGED_INTEGRITY" || { echo "the registry's integrity $I is not the staged $STAGED_INTEGRITY"; exit 1; }
+            echo "integrity: matches the tarball and the staging run's"
+          else
+            echo "integrity: matches the tarball (started by hand: no staging run to compare with)"
+          fi
           S="$(sha256sum "$RUNNER_TEMP/p.tgz" | cut -d' ' -f1)"
-          echo "npm: @usebag/bag@$VERSION from $COMMIT, sha256 $S, $I"
-          { echo "NPM_SHA256=$S"; echo "NPM_INTEGRITY=$I"; } >> "$GITHUB_ENV"
+          if [ -n "$STAGED_SHA256" ]; then
+            test "$S" = "$STAGED_SHA256" || { echo "the tarball's sha256 $S is not the staging run's $STAGED_SHA256"; exit 1; }
+            echo "sha256: the staging run's, $S"
+          else
+            echo "sha256: $S (started by hand: no staging run to compare with)"
+          fi
+          L="$(curl -fsS --max-time 30 "https://registry.npmjs.org/-/package/@usebag%2fbag/dist-tags" | jq -r .latest)"
+          if [ "$L" = "$VERSION" ]; then
+            echo "latest: $VERSION"
+          elif [ "$EVENT" = workflow_run ]; then
+            echo "latest is $L, not $VERSION"; exit 1
+          else
+            echo "latest is $L (started by hand for $VERSION)"
+          fi
+          { echo "sha256=$S"; echo "integrity=$I"; } >> "$GITHUB_OUTPUT"
         env:
-          VERSION: ${{ inputs.version }}
-          COMMIT: ${{ inputs.commit }}
+          EVENT: ${{ github.event_name }}
+          VERSION: ${{ needs.staged.outputs.version }}
+          COMMIT: ${{ needs.staged.outputs.commit }}
+          STAGED_SHA256: ${{ needs.staged.outputs.sha256 }}
+          STAGED_INTEGRITY: ${{ needs.staged.outputs.integrity }}
+  image:
+    needs: [staged, npm]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/relay-image.yml
+    with:
+      commit: ${{ needs.staged.outputs.commit }}
+  release:
+    needs: [staged, npm, image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    concurrency:
+      group: release-tag
+      cancel-in-progress: false
+    steps:
+      - name: the tag and the Release, as an earlier attempt may have left them
+        run: |
+          git clone --no-checkout --quiet "https://github.com/${GITHUB_REPOSITORY}" src
+          git -C src fetch --quiet origin main
+          T="$(git -C src ls-remote origin "refs/tags/v$VERSION" | cut -f1)"
+          if [ -z "$T" ]; then
+            echo "the tag v$VERSION: not yet"
+          elif [ "$T" = "$COMMIT" ]; then
+            echo "the tag v$VERSION exists on $COMMIT already"
+          else
+            echo "the tag v$VERSION is on $T, not $COMMIT: a tag is never moved"; exit 1
+          fi
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then R=yes; echo "the Release v$VERSION exists already"; else R=no; echo "the Release v$VERSION: not yet"; fi
+          { echo "TAG_AT=$T"; echo "RELEASED=$R"; } >> "$GITHUB_ENV"
+        env:
+          VERSION: ${{ needs.staged.outputs.version }}
+          COMMIT: ${{ needs.staged.outputs.commit }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: the relay image of the commit, also tagged with the version
         run: |
+          case "$DIGEST" in sha256:*) ;; *) echo "relay-image.yml gave no digest for $COMMIT"; exit 1;; esac
           echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           R="ghcr.io/${GITHUB_REPOSITORY_OWNER}/relay"
-          D="$(docker buildx imagetools inspect "$R:$COMMIT" --format '{{json .Manifest}}' | jq -r .digest)" || D=""
-          case "$D" in sha256:*) ;; *) echo "no relay image $R:$COMMIT: start relay-image.yml with this commit first"; exit 1;; esac
-          docker buildx imagetools create -t "$R:v$VERSION" "$R@$D"
-          test "$(docker buildx imagetools inspect "$R:v$VERSION" --format '{{json .Manifest}}' | jq -r .digest)" = "$D"
+          D="$(docker buildx imagetools inspect "$R:$COMMIT" --format '{{json .Manifest}}' | jq -r .digest)"
+          test "$D" = "$DIGEST" || { echo "$R:$COMMIT is $D, not the $DIGEST relay-image.yml gave"; exit 1; }
+          V="$(docker buildx imagetools inspect "$R:v$VERSION" --format '{{json .Manifest}}' 2>/dev/null | jq -r .digest)" || V=""
+          if [ "$V" = "$D" ]; then
+            echo "the image tag v$VERSION names $D already"
+          elif [ -n "$V" ] && [ "$V" != null ]; then
+            echo "the image tag $R:v$VERSION names $V, not $D: a version tag is never moved"; exit 1
+          else
+            docker buildx imagetools create -t "$R:v$VERSION" "$R@$D"
+            test "$(docker buildx imagetools inspect "$R:v$VERSION" --format '{{json .Manifest}}' | jq -r .digest)" = "$D"
+          fi
           echo "relay image: $R@$D, tags $COMMIT and v$VERSION"
-          echo "RELAY_DIGEST=$D" >> "$GITHUB_ENV"
         env:
-          VERSION: ${{ inputs.version }}
-          COMMIT: ${{ inputs.commit }}
+          VERSION: ${{ needs.staged.outputs.version }}
+          COMMIT: ${{ needs.staged.outputs.commit }}
+          DIGEST: ${{ needs.image.outputs.digest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: the notes, from CHANGELOG.md
+        if: env.RELEASED == 'no'
         run: |
           section() { awk -v h="## v$VERSION" 'index($0, h) == 1 && (length($0) == length(h) || substr($0, length(h) + 1, 1) ~ /[: ]/) { on = 1; next } on && /^## / { exit } on { print }'; }
           N="$(git -C src show "$COMMIT:CHANGELOG.md" | section)"
@@ -104,14 +296,79 @@ jobs:
           echo "notes: the CHANGELOG section from $F, $(grep -c . "$RUNNER_TEMP/notes.md") lines"
           cat "$RUNNER_TEMP/notes.md"
         env:
-          VERSION: ${{ inputs.version }}
-          COMMIT: ${{ inputs.commit }}
+          VERSION: ${{ needs.staged.outputs.version }}
+          COMMIT: ${{ needs.staged.outputs.commit }}
+          NPM_SHA256: ${{ needs.npm.outputs.sha256 }}
+          NPM_INTEGRITY: ${{ needs.npm.outputs.integrity }}
+          RELAY_DIGEST: ${{ needs.image.outputs.digest }}
       - name: the tag and the GitHub Release
         run: |
-          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          if [ "$RELEASED" = yes ]; then
+            echo "the Release v$VERSION exists already: not made again"
+          elif [ -n "$TAG_AT" ]; then
+            gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
           test "$(git -C src ls-remote origin "refs/tags/v$VERSION" | cut -f1)" = "$COMMIT" || { echo "the tag v$VERSION does not point at $COMMIT"; exit 1; }
           echo "released v$VERSION at $COMMIT: $(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json url --jq .url)"
         env:
-          VERSION: ${{ inputs.version }}
-          COMMIT: ${{ inputs.commit }}
+          VERSION: ${{ needs.staged.outputs.version }}
+          COMMIT: ${{ needs.staged.outputs.commit }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  binaries:
+    needs: [staged, release]
+    if: needs.staged.outputs.binaries == 'yes'
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/relay-binaries.yml
+    with:
+      commit: ${{ needs.staged.outputs.commit }}
+      version: ${{ needs.staged.outputs.version }}
+  site:
+    needs: [staged, npm, release]
+    runs-on: ubuntu-24.04
+    environment:
+      name: npm-release
+      url: https://bag.dev/install
+    permissions: {}
+    steps:
+      - name: the served install guide names the version, the commit and the sha256
+        run: |
+          curl -fsS --max-time 30 -o "$RUNNER_TEMP/install.md" https://bag.dev/install || { echo "https://bag.dev/install did not answer"; exit 1; }
+          M=""
+          grep -q -F "@usebag/bag@$VERSION" "$RUNNER_TEMP/install.md" || M="$M, the version $VERSION"
+          grep -q -F "$COMMIT" "$RUNNER_TEMP/install.md" || M="$M, the commit $COMMIT"
+          grep -q -F "$SHA256" "$RUNNER_TEMP/install.md" || M="$M, the sha256 $SHA256"
+          if grep -q -F '{{' "$RUNNER_TEMP/install.md"; then M="$M, and no unfilled {{"; fi
+          if [ -n "$M" ]; then
+            echo "https://bag.dev/install does not name${M#,}: apply the guide's values first (docs/release.md, step 9), then re-run this job"
+            exit 1
+          fi
+          echo "https://bag.dev/install names @usebag/bag@$VERSION, $COMMIT and $SHA256"
+        env:
+          VERSION: ${{ needs.staged.outputs.version }}
+          COMMIT: ${{ needs.staged.outputs.commit }}
+          SHA256: ${{ needs.npm.outputs.sha256 }}
+      - name: tell the website's repository (repository_dispatch, event bag-release)
+        run: |
+          if [ -z "$SITE_REPOSITORY" ]; then echo "the repository variable SITE_REPOSITORY is not set: no dispatch to the website"; exit 0; fi
+          if [ -z "$GH_TOKEN" ]; then echo "the secret SITE_DISPATCH_TOKEN is not set: no dispatch to the website"; exit 0; fi
+          printf '%s\n' "$SITE_REPOSITORY" | grep -q -x -E '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+' || { echo "SITE_REPOSITORY is not owner/name"; exit 1; }
+          # The website's release-pins workflow pushes the branch release/pins-X.Y.Z, so a dispatch that got that far is
+          # seen here and not sent twice; that workflow can also be started by hand there with the same three values.
+          B="release/pins-$VERSION"
+          if gh api "repos/$SITE_REPOSITORY/git/matching-refs/heads/$B" --jq '.[].ref' 2>/dev/null | grep -q -x -F "refs/heads/$B"; then
+            echo "the website has the branch $B already, from an earlier dispatch: not sent again"
+            exit 0
+          fi
+          gh api --method POST "repos/$SITE_REPOSITORY/dispatches" -f event_type=bag-release \
+            -f "client_payload[version]=$VERSION" -f "client_payload[cut]=$COMMIT" -f "client_payload[sha256]=$SHA256" --silent
+          echo "sent bag-release to the website: @usebag/bag@$VERSION, the cut $COMMIT, sha256 $SHA256"
+        env:
+          SITE_REPOSITORY: ${{ vars.SITE_REPOSITORY }}
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          VERSION: ${{ needs.staged.outputs.version }}
+          COMMIT: ${{ needs.staged.outputs.commit }}
+          SHA256: ${{ needs.npm.outputs.sha256 }}
