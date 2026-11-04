@@ -739,7 +739,7 @@ identity to trust (`node packages/cli/src/main.ts address <name>`).
 package:
 
 ```sh
-npx --yes --package=@usebag/bag@0.1.1 bag host install claude-code --as alice --relay <relay> --project <dir>
+npx --yes --package=@usebag/bag@0.1.2 bag host install claude-code --as alice --relay <relay> --project <dir>
 ```
 
 It first copies the package's programs to `<home>/package/`, then writes into `<dir>/.mcp.json` a server whose command

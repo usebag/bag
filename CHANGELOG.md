@@ -4,14 +4,37 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
-## Unreleased: changes since the cut 3c343d65
+## v0.1.2: 2026-11-04
+
+The cut tagged v0.1.2, `@usebag/bag` 0.1.2.
+
+- **`@usebag/bag` 0.1.2**, published from this cut (`npm view @usebag/bag@0.1.2 gitHead` names it), and the first
+  release with a tag, `v0.1.2`, and a GitHub Release. 0.1.0 and 0.1.1 are not tagged.
+
+### Telemetry
+
+- **The daily report names the package version.** A report's `build` is the package's npm version when the telemetry
+  service lists it (0.1.0, 0.1.1 and 0.1.2), else `other`. Until now every report's build was `other`, though the
+  notice said the version was sent; 0.1.0 and 0.1.1 were built before the change and still send `other`. `bag version`
+  and `bag --version` are counted as the command `version`, no longer as `other`.
+- **The notice names a command that lasts.** Run from the package, the telemetry notice prints
+  `npx --yes --package=@usebag/bag@<version> bag telemetry preview`, not a file in npm's cache, which npm may clear.
+- **A day's counts reach that day's report.** A long-running process, such as the MCP server or the A2A bridge, that
+  counted in a day's last minute and then went quiet held that count until its next one, and the day's report went
+  without it. It now writes held counts a minute after a count.
 
 ### Security
 
 - **`SECURITY.md` says more.** The two public relays, `relay1.bag.dev` and `relay2.bag.dev`, are run by the project
   and in scope for good-faith testing, with no load, availability or volume testing, no one else's data and no social
-  engineering. There is no bounty; reporters are credited by consent in `docs/thanks.md`. A safe harbour: good-faith
-  research within the policy is not reported to law enforcement or pursued by us.
+  engineering. Reports about the project's other services (the site, its install guide, the `.well-known` and handle
+  records, the telemetry endpoint) are welcome, but active testing against them is out of scope. There is no bounty;
+  reporters are credited by consent in `docs/thanks.md`. A safe harbour: good-faith research within the policy is not
+  reported to law enforcement or pursued by us.
+- **A known limitation, stated.** The install guide checks the package's version and the commit that the registry and
+  `bag --version` name, which whoever controls the registry's answers could also serve; it does not verify the
+  package's provenance. Its step 2a gives the check by hand, `npm audit signatures`, which checks the provenance's
+  signature but not who signed it.
 
 ### Documentation
 
@@ -21,7 +44,10 @@ the source repository) made since the cut before it.
   wires the MCP server through `host install`, and section 6 marks the handle script source-only.
 - **`packages/mcp/README.md`, "Install"**, gains the package route: `bag host install` run from the package copies it
   to `<home>/package/` and registers `node <home>/package/bag-mcp.js`.
-- **The pinned install lines name 0.1.1**, in `README.md`, `docs/partner-install.md` and `packages/mcp/README.md`.
+- **`docs/release.md`** says how a release is made: the version change, the cut, the staged publish and its approval
+  on npm, the read-backs, the relay image, the tag and the GitHub Release, and the rollbacks.
+- **The pinned install lines name 0.1.2**, in `README.md`, `docs/partner-install.md`, `packages/mcp/README.md` and the
+  package's own `README.md`.
 
 ## v0.1.1: 2026-11-03
 
