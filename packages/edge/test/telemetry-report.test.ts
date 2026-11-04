@@ -18,6 +18,7 @@ import {
   buildTelemetryReport,
   type Cells,
   checkoutCommit,
+  countCell,
   dayOf,
   durationIndex,
   machineFacts,
@@ -153,6 +154,21 @@ describe('the builder: one schema-1 report for a UTC day', () => {
     const strange = { id: ID, build: null, os: 'aix', arch: 'ia32', node: '20' }
     const odd = buildTelemetryReport(DAY, new Map(), strange)
     expect([odd.build, odd.os, odd.arch, odd.node]).toEqual(['other', 'other', 'other', 'other'])
+  })
+
+  it('counts version as a command of its own, never other: the package answers bag version and --version', async () => {
+    expect(SETS.command).toContain('version')
+    expect(countCell('cli', ['version', '0', 'ok'])).toBe('cli version 0 ok')
+    const cells: Cells = new Map([
+      ['cli version 0 ok', 3],
+      ['cli_durations version 0', 3],
+    ])
+    const report = buildTelemetryReport(DAY, cells, FACTS)
+    expect([report.cli, report.cli_durations]).toEqual([
+      { version: { '0': { ok: 2 } } },
+      { version: [2, 0, 0, 0, 0] },
+    ])
+    await sendable(report)
   })
 
   it('takes host as the kind with the most sessions in the day, other on a tie or with none', () => {
@@ -348,7 +364,7 @@ describe('the property: no report carries a string outside the schema sets, what
   })
 })
 
-describe('the facts: the checkout commit, a cut only by the list, and the machine', () => {
+describe('the facts: the package version or the checkout commit, a build only by the list, and the machine', () => {
   it('reads HEAD detached, a loose or packed ref, and nothing else', () => {
     const repo = (head: string, files: Record<string, string> = {}): string => {
       const root = join(tmp.dir, `repo-${n++}`)
@@ -381,5 +397,20 @@ describe('the facts: the checkout commit, a cut only by the list, and the machin
     expect(facts.build === null || /^[0-9a-f]{40}$/.test(facts.build)).toBe(true)
     const cut = facts.build !== null && BUILDS.includes(facts.build)
     expect(buildTelemetryReport(DAY, new Map(), facts).build).toBe(cut ? facts.build : 'other')
+  })
+
+  it('names a package build by its npm version, a published one as itself and any other as other; from source the commit', async () => {
+    expect(BUILDS).toEqual(['0.1.0', '0.1.1'])
+    const built = (version: string) => machineFacts(ID, { version, commit: 'c'.repeat(40) })
+    for (const version of BUILDS) {
+      expect(built(version).build).toBe(version)
+      const report = buildTelemetryReport(DAY, new Map(), built(version))
+      expect(report.build).toBe(version)
+      await sendable(report)
+    }
+    for (const version of ['0.1.2', '0.0.0', '0.1.1-dirty', 'c'.repeat(40)]) {
+      expect(buildTelemetryReport(DAY, new Map(), built(version)).build, version).toBe('other')
+    }
+    expect(machineFacts(ID, null).build).toBe(checkoutCommit())
   })
 })

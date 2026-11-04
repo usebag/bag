@@ -424,20 +424,21 @@ telemetry.bag.dev; `telemetry-send.ts` is the only file with network code.
   `readTelemetrySpool(dir)` sums every line by day: every home's counts, from every process.
 - **The tally**: `startTelemetry(env, clock)` and `stopTelemetry()` bracket a process's counting (the CLI's `run` for
   each command line; a server once). `countTelemetry(member, keys)` and `countDuration(member, key, ms)` add to it;
-  it is written at the first count a minute after the last write, and at stop. While it is off a hook costs one
-  comparison. The hooks: `Audit.record` (event, decision and reason, nothing else of the line); the HTTP and WebSocket
+  it is written at the first count a minute after the last write, else by a timer a minute after a count that did not
+  write (so a server that goes quiet before midnight has the day written before 01:05), and at stop. While it is off a
+  hook costs one comparison. The hooks: `Audit.record` (event, decision and reason, nothing else of the line); the HTTP and WebSocket
   relay clients (`relays` by the relay's name, `relay_errors` by name and code; the name is `relay1` or `relay2` for
   the two public relays, else `other`, never a URL); `invitePeer` and `acceptPeer` (`pairing` by outcome code).
 - **The report**: `buildTelemetryReport(day, cells, facts)` builds exactly one schema-1 report: the members in the
   schema's order; each count family within `MAX_CELLS`, its largest cells less one kept and the rest summed into
   `other` at every level; each duration family within `MAX_KEYS`, likewise, bucket by bucket; every count bucketed to
   the largest power of two not above it, at most 2^19; ties in the sets' order, so the same counts make the same bytes.
-  `build` is the checkout's commit when it is a published cut, else `other`; `node` is the major from the list, else
-  `other`; `host` is the kind with the most of the day's MCP sessions, `other` on a tie or with none.
-  `telemetryReport(env, day)` is the
+  `build` is the package's npm version (`BUILD_INFO`), or from source the checkout's commit, when `BUILDS` lists it,
+  else `other`; `node` is the major from the list, else `other`; `host` is the kind with the most of the day's MCP
+  sessions, `other` on a tie or with none. `telemetryReport(env, day)` is the
   preview: the machine's spool for the day under its id, or `PREVIEW_ID` (32 zeros) before `on`.
 - **The schema's copy**: `src/telemetry-schema.ts` copies `deploy/telemetry/src/schema.ts` and `builds.ts`, and
-  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (09ae4a5d). The public cut carries `packages/` and never
+  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (86687485). The public cut carries `packages/` and never
   `deploy/telemetry/`, so the edge cannot import the Worker's file. `test/telemetry-report.test.ts` imports the
   Worker's files wherever the checkout holds them, fails on any difference, and runs the Worker's `checkReport` on the
   reports it builds.

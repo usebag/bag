@@ -12,6 +12,7 @@ import {
 } from '@usebag/edge'
 import { afterAll, describe, expect, it } from 'vitest'
 import { shq } from '../src/args.ts'
+import { previewCommand, verbOf } from '../src/commands/telemetry.ts'
 import { T0, type TestIo, tempDir, testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
 import { cli } from './support/run.ts'
@@ -132,6 +133,25 @@ describe('the counts: each command line once telemetry is on, every home of the 
     expect(Object.keys(rows)).toEqual(['telemetry', 'help', 'record-keep', 'other'])
     for (const row of Object.values(rows)) expect(row.reduce((a, b) => a + b, 0)).toBe(1)
     expect(readFileSync(join(m.dir, TELEMETRY_COUNTS_FILE), 'utf8')).not.toContain('frobnicate')
+  })
+
+  it('counts version and --version as version, a command of the closed set, never other', async () => {
+    expect(['--version', 'version', '--version --help'].map((line) => verbOf(line.split(' ')))).toEqual([
+      'version',
+      'version',
+      'help',
+    ])
+    const m = machine()
+    await cli(m.io, 'telemetry', 'on')
+    expect((await cli(m.io, '--version')).code).toBe(0)
+    expect((await cli(m.io, 'version')).code).toBe(0)
+    const cells = readTelemetrySpool(m.dir).get(DAY) ?? new Map<string, number>()
+    expect(Object.fromEntries([...cells].filter(([k]) => k.startsWith('cli ')))).toEqual({
+      'cli version 0 ok': 2,
+    })
+    const report = buildTelemetryReport(DAY, cells, machineFacts(PREVIEW_ID))
+    expect(report.cli).toEqual({ version: { '0': { ok: 2 } } })
+    expect(Object.keys(report.cli_durations as object)).toEqual(['version'])
   })
 
   it('sums the lines of every home on the machine into its one store, under its one id', async () => {
@@ -307,6 +327,20 @@ describe('the notice: once per machine while no choice is made, naming the previ
     const log = join(tmp.dir, `audit-${n++}.jsonl`)
     writeFileSync(log, '')
     expect(await cli(homeless, 'audit', 'verify', log)).toEqual({ code: 0, out: ['ok 0 lines'], err: [] })
+  })
+
+  it('names the preview as this CLI runs: npx with the package at its version, else node and the entry', () => {
+    const info = { version: '0.1.1', commit: 'a'.repeat(40) }
+    const npx = 'npx --yes --package=@usebag/bag@0.1.1 bag telemetry preview'
+    expect(previewCommand(info, '/home/x/.npm/_npx/0123/node_modules/@usebag/bag/dist/bag.js')).toBe(npx)
+    expect(noticeText(previewCommand(info))).toContain(
+      `See the exact report: ${npx}. Details: bag.dev/privacy`,
+    )
+    expect(previewCommand(null, 'packages/cli/src/main.ts')).toBe(
+      'node packages/cli/src/main.ts telemetry preview',
+    )
+    expect(previewCommand(null, '/a b/main.ts')).toBe("node '/a b/main.ts' telemetry preview")
+    expect(noticeText(previewCommand())).toBe(words)
   })
 
   it('follows host install without a terminal, once per machine', async () => {

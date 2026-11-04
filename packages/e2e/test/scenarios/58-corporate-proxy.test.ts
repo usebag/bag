@@ -6,7 +6,16 @@ import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { describe, expect, it, onTestFinished } from 'vitest'
-import { CLI_MAIN, cliProcess, REPO, sleep, until, withSpawnedRelays, world } from '../harness.ts'
+import {
+  CLI_MAIN,
+  cliProcess,
+  REPO,
+  sleep,
+  telemetryDay,
+  until,
+  withSpawnedRelays,
+  world,
+} from '../harness.ts'
 
 // Scenario 58: a corporate proxy (job #3). Real CLI and MCP server processes with HTTP_PROXY set and no
 // NODE_USE_ENV_PROXY, a real relay, and a CONNECT proxy on loopback that tunnels what it is asked to and records it.
@@ -129,14 +138,13 @@ describe('e2e scenario 58: behind a corporate proxy', () => {
     await client.close()
     await sleep(1_000)
 
-    // Telemetry takes the same path: a due day goes to the (loopback) endpoint by a CONNECT through the proxy.
-    const seconds = Math.floor(Date.now() / 1000) % 86_400
-    const due = seconds >= 3_960 && seconds < 86_340
+    // Telemetry takes the same path: a due day goes to the (loopback) endpoint by a CONNECT through the proxy. Its two
+    // CLI processes take at most 30 s each, so the day is read a minute clear of 01:05 UTC and of midnight.
+    const { due, yesterday } = await telemetryDay(60)
     const machine = join(w.dir, 'machine')
     const tel = envWith({ HOME: machine, AC_TELEMETRY_URL: net.endpoint, HTTP_PROXY: net.proxy })
     for (const name of ['DO_NOT_TRACK', 'CI', 'AC_TELEMETRY', 'AC_HOME']) delete tel[name]
     expect((await cliIn(tel, 'telemetry', 'on')).code).toBe(0)
-    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
     mkdirSync(join(machine, '.bag'), { recursive: true })
     const line = JSON.stringify({ v: 1, day: yesterday, counts: { pairing: { ok: 1 } } })
     writeFileSync(join(machine, '.bag', 'telemetry-counts.jsonl'), `${line}\n`, { flag: 'a' })
@@ -144,5 +152,5 @@ describe('e2e scenario 58: behind a corporate proxy', () => {
     expect((await cliIn(tel, 'telemetry', 'send')).code).toBe(0)
     expect(net.bodies.length).toBe(due ? 1 : 0)
     expect(net.targets).toEqual(due ? [new URL(net.endpoint).host] : [])
-  }, 120_000)
+  }, 180_000)
 })

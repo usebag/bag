@@ -5,11 +5,17 @@
 // difference. This is the clients' one copy: the edge maps every value outside these sets to `other` before it
 // stores or builds anything.
 
-/** The commit whose deploy/telemetry/src/schema.ts, builds.ts and index.ts these values copy (W6's `pairs`). */
-export const TELEMETRY_SCHEMA_COMMIT = '09ae4a5df4cf79d632e6e81b13dd3aaaddf55657'
+/**
+ * The commit whose deploy/telemetry/src/schema.ts, builds.ts and index.ts these values copy (the package versions
+ * 0.1.0 and 0.1.1 as builds, and `version` as a command).
+ */
+export const TELEMETRY_SCHEMA_COMMIT = '86687485497dcc4c2875d8dec2f69037506256ad'
 
-/** The published cut commits a report's `build` may name (builds.ts): none until the first public cut. */
-export const BUILDS: readonly string[] = []
+/**
+ * The builds a report's `build` may name (builds.ts): the published versions of the npm package @usebag/bag, and the
+ * commit of any public cut whose checkout reports from source, of which none is listed yet.
+ */
+export const BUILDS: readonly string[] = ['0.1.0', '0.1.1']
 
 /** The largest count a report may carry: 2^19. Every count is 0 or a power of two up to it. */
 export const MAX_COUNT = 2 ** 19
@@ -32,10 +38,11 @@ export const SETS = {
   host: words('claude-code codex other'),
   // The two public relay names; any other relay is `other`, never its URL.
   relay: words('relay1 relay2 other'),
-  // packages/cli/src/cli.ts, COMMANDS, help, and the verbs that split jobs from acts (OBS-F6).
+  // packages/cli/src/cli.ts, COMMANDS, help and version (the dispatcher answers both itself), and the verbs that split
+  // jobs from acts (OBS-F6).
   command: words(`
     keygen init restore address keys login logout grant name peer unpair record publish delegate onboard group send
-    resend inbox held audit status wake-hook session-code host lookup health telemetry help
+    resend inbox held audit status wake-hook session-code host lookup health telemetry help version
     record-keep peer-invite peer-accept host-install-claude-code host-install-codex keys-rotate other
   `),
   exit: words('0 1 2 3 other'),
@@ -107,7 +114,7 @@ export const MEMBERS: Readonly<Record<string, Member>> = {
   date: { kind: 'date' },
   // The install id, 32 lowercase hex. It names the stored object through NAME_KEY and is never stored.
   id: { kind: 'id' },
-  // The running checkout's commit when it is a published cut, else `other`.
+  // The package's version, or from source the checkout's commit, when builds.ts lists it, else `other`.
   build: { kind: 'one', set: 'build' },
   os: { kind: 'one', set: 'os' },
   arch: { kind: 'one', set: 'arch' },

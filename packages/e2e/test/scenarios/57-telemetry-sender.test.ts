@@ -6,7 +6,16 @@ import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { describe, expect, it, onTestFinished } from 'vitest'
-import { CLI_MAIN, cliProcess, REPO, sleep, until, withSpawnedRelays, world } from '../harness.ts'
+import {
+  CLI_MAIN,
+  cliProcess,
+  REPO,
+  sleep,
+  telemetryDay,
+  until,
+  withSpawnedRelays,
+  world,
+} from '../harness.ts'
 
 // Scenario 57: the client telemetry sender (the W6 design note), with real CLI, MCP server and bridge processes and a
 // fake endpoint on 127.0.0.1 that every process reaches through AC_TELEMETRY_URL (loopback only). Each process gets a
@@ -44,9 +53,6 @@ async function endpoint(): Promise<{ url: string; requests: Request[] }> {
   })
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, requests }
 }
-
-/** The UTC date `back` days before now. */
-const dateBack = (back: number): string => new Date(Date.now() - back * 86_400_000).toISOString().slice(0, 10)
 
 /** A machine's environment: this process's, its telemetry variables gone, HOME its own, the endpoint the fake. */
 function machineEnv(home: string, url: string): NodeJS.ProcessEnv {
@@ -119,10 +125,9 @@ async function closed(client: Client): Promise<void> {
 
 describe('e2e scenario 57: the client telemetry sender', () => {
   it('(57) off, nothing reaches the endpoint from the CLI, the MCP server or the bridge; on, a finished day goes once, exactly as previewed, from each', async () => {
-    const seconds = Math.floor(Date.now() / 1000) % 86_400
-    // From 01:05 UTC a day is due; a run that starts within a minute of either end of that span asserts that none goes.
-    const due = seconds >= 3_960 && seconds < 86_340
-    const yesterday = dateBack(1)
+    // From 01:05 UTC to midnight a day is due. The run fit its 120 s timeout before this wait, so the day is read 120 s
+    // clear of either edge, and every process below reads the same verdict.
+    const { due, yesterday } = await telemetryDay(120)
     const w = await withSpawnedRelays(() => world('telemetry-sender'))
     const R = w.url
     const identity = join(w.dir, 'alice-home')
@@ -186,5 +191,5 @@ describe('e2e scenario 57: the client telemetry sender', () => {
     expect(fake.requests.map((r) => [r.method, r.url, r.headers['content-type'], r.body])).toEqual(
       due ? expected.map((body) => ['POST', '/v1/report', 'application/json', body]) : [],
     )
-  }, 120_000)
+  }, 240_000)
 })

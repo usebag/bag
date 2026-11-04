@@ -1,11 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { systemRng } from '../src/adapters/system-clock.ts'
 import {
   addTelemetryCounts,
+  countTelemetry,
   readTelemetrySpool,
   setTelemetry,
+  startTelemetry,
+  stopTelemetry,
   TELEMETRY_COUNTS_FILE,
   TELEMETRY_FILE,
   TELEMETRY_SENT_FILE,
@@ -169,6 +172,32 @@ describe('sendDueTelemetry: each finished day once, as the preview prints it', (
     expect([f.calls.length, telemetrySent(m.dir)]).toEqual([0, null])
     await sendDueTelemetry(m.env, at(3_900), { fetch: f.fetch })
     expect([f.calls.length, telemetrySent(m.dir)]).toEqual([1, YESTERDAY])
+  })
+
+  it('has in the day it sends at 01:05 the count a quiet process held in the last minute of that day', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const m = machine()
+      seed(m.env, YESTERDAY)
+      const time = { now: TODAY * 86_400 - 60 }
+      expect(startTelemetry(m.env, { now: () => time.now })).toBe(true)
+      try {
+        // 23:59:30, 30 s after the last write: held. Then nothing until after 01:05: no count, no stop.
+        time.now += 30
+        countTelemetry('pairing', ['ok'])
+        vi.advanceTimersByTime(60_000)
+        const f = fakeFetch()
+        await sendDueTelemetry(m.env, { now: () => TODAY * 86_400 + 3_900 }, { fetch: f.fetch })
+        const sent = f.calls.map((c) => JSON.parse(String(c.init.body)) as { date: string; pairing: unknown })
+        expect(sent.map((b) => [b.date, b.pairing])).toEqual([[YESTERDAY, { ok: 2 }]])
+      } finally {
+        stopTelemetry()
+      }
+      // Nothing of that day is left to go as a second report of it, which the endpoint would drop.
+      expect([...readTelemetrySpool(m.dir).keys()]).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('sends the window oldest first, drops a day older than 7, and tries each day once whatever the answer', async () => {

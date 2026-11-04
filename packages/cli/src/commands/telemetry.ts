@@ -1,4 +1,6 @@
 import {
+  BUILD_INFO,
+  type BuildInfo,
   eraseTelemetry,
   machineTelemetryNotice,
   sendDueTelemetry,
@@ -110,21 +112,37 @@ const SPLIT = new Set([
   'host-install-codex',
 ])
 
-/** The verb a command line is counted under: help, a verb that splits, else its command (the edge places it). */
+/**
+ * The verb a command line is counted under: help, version for `--version` (the dispatcher's two answers), a verb that
+ * splits, else its command (the edge places it).
+ */
 export function verbOf(argv: readonly string[]): string {
   const [name = '', a = '', b = ''] = argv
   if (name === 'help' || argv.includes('--help') || argv.includes('-h')) return 'help'
+  if (name === '--version') return 'version'
   return [`${name}-${a}-${b}`, `${name}-${a}`].find((v) => SPLIT.has(v)) ?? name
+}
+
+/**
+ * The command the notice names to print the report, as this CLI is run: from the package (`info`, the edge's
+ * build-info.ts), `npx --yes --package=@usebag/bag@<version> bag telemetry preview`, the install guide's form, which
+ * works after npm clears its cache; from source, `node <main.ts> telemetry preview`.
+ */
+export function previewCommand(
+  info: BuildInfo | null = BUILD_INFO,
+  main: string = process.argv[1] ?? 'packages/cli/src/main.ts',
+): string {
+  if (info === null) return `node ${shq(main)} telemetry preview`
+  return `npx --yes --package=${shq(`@usebag/bag@${info.version}`)} bag telemetry preview`
 }
 
 /**
  * The notice once per machine (machineTelemetryNotice), on stderr after a command that returned rather than threw:
  * one a person ran at a terminal, and host install, the step that wires a server whose own stderr no person reads. It
- * names the preview as this CLI is run, never `ac telemetry on`, which a guide install lacks (the spec owner's ruling
- * 13); a machine without HOME gets none.
+ * names the preview as this CLI is run (previewCommand), never `ac telemetry on`, which a guide install lacks (the spec
+ * owner's ruling 13); a machine without HOME gets none.
  */
 export function notice(io: Io): void {
-  const cli = `node ${shq(process.argv[1] ?? 'packages/cli/src/main.ts')}`
-  const text = machineTelemetryNotice(io.env, `${cli} telemetry preview`)
+  const text = machineTelemetryNotice(io.env, previewCommand())
   if (text !== null) io.err(text)
 }

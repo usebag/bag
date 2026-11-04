@@ -790,12 +790,14 @@ copy, which a rotation can race and revert; run `group keep` for a group, never 
   The unit tests' io has neither a fetch nor a spawner, so no test sends.
 - While telemetry is on, `run` counts each command line into the machine's spool by its verb, its exit and its code,
   and how long it took. The verb is the command, or one of `record-keep`, `peer-invite`, `peer-accept`,
-  `keys-rotate`, `host-install-claude-code` and `host-install-codex`, or `help` for any `--help`. The command's edge
+  `keys-rotate`, `host-install-claude-code` and `host-install-codex`, or `help` for any `--help`, or `version` for
+  `--version`. The command's edge
   counts its audit lines, relay calls and pairings beside it. The line that turns telemetry on is not counted; the
   count of the line that turns it off goes with the spool.
 - The notice: while no choice is made, after a command a person runs at a terminal and after `host install`, once per
-  machine, on stderr. It names `node <this main.ts> telemetry preview` and never `ac telemetry on`, which a guide
-  install does not have (the spec owner's ruling 13).
+  machine, on stderr. It names `npx --yes --package=@usebag/bag@<version> bag telemetry preview` when run from the
+  package, the install guide's form, which still works after npm clears its cache, and `node <this main.ts> telemetry
+  preview` from source; never `ac telemetry on`, which a guide install does not have (the spec owner's ruling 13).
 
 ## Behind a proxy
 
