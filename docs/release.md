@@ -4,9 +4,12 @@ How bag is released: what a release is, how its version is chosen, when releases
 published version, who approves what, how anyone can check a release, and how a bad one is undone. It is written for
 the maintainers who make releases and for anyone who wants to check one.
 
-Three workflows in `.github/workflows/` of this repository do the automated part: `npm-publish.yml`,
-`relay-image.yml` and `release.yml`. All three use only `run` steps, no third-party action, and pass their inputs to the
-shell only through the environment. A person starts or approves every step that makes something public.
+Four workflows in `.github/workflows/` of this repository do the automated part, as a chain: `npm-publish.yml` stages
+the version when the cut is merged, and `release.yml` takes over when that run ends, calling `relay-image.yml` and
+`relay-binaries.yml` ("The release chain", below). All four use only `run` steps and this repository's own reusable
+workflows, no third-party action, and pass their inputs to the shell only through the environment. A person approves
+every step that makes something public: the merge of the cut, the approval on npm, and two clicks in the GitHub
+environment `npm-release`.
 
 ## What a release is
 
@@ -72,13 +75,15 @@ what it took stays true for any package that does not exist yet:
 Each step names who does it. A step marked **gate** is a person's decision, and nothing goes on without it.
 
 1. **The change.** Changes reach the source repository's `main` through reviewed, checked branches. The release's own
-   change sets `version` in `packages/bag/package.json` (and the same line in `package-lock.json`), moves the
-   `CHANGELOG.md` entries under a heading `## vX.Y.Z: YYYY-MM-DD`, which `release.yml` reads, and moves the pinned
-   install lines that name a version (in `README.md`, `docs/partner-install.md`, `packages/mcp/README.md` and
-   `packages/bag/README.md`). It also adds X.Y.Z to `BUILDS` in the telemetry Worker's build list (the Worker's source
-   is not in this repository) and in `packages/edge/src/telemetry-schema.ts`, then raises `TELEMETRY_SCHEMA_COMMIT` to
-   that commit. The telemetry Worker is deployed, a maintainer's own step with wrangler, before step 4 stages the
-   version, since the previous Worker refuses a report that carries the new version.
+   change is made by one command there, `node scripts/release-bump.mjs X.Y.Z`, which lists every line it would change
+   and writes nothing until it is given `--write` and `--who` with the name of who makes the change. It sets `version`
+   in `packages/bag/package.json` (and the same line in `package-lock.json`), moves the `CHANGELOG.md` entries under a
+   heading `## vX.Y.Z: YYYY-MM-DD`, which `release.yml` reads, and moves the pinned install lines that name a version
+   (in `README.md`, `docs/partner-install.md`, `packages/mcp/README.md` and `packages/bag/README.md`). It also adds
+   X.Y.Z to `BUILDS` in the telemetry Worker's build list (the Worker's source is not in this repository) and in
+   `packages/edge/src/telemetry-schema.ts`, then raises `TELEMETRY_SCHEMA_COMMIT` to that commit. The telemetry Worker
+   is deployed, a maintainer's own step with wrangler, before the cut's pull request is merged, since that merge stages
+   the version (step 4) and the previous Worker refuses a report that carries the new version.
 2. **The cut, gate.** The cut is built from the source repository at one commit, from an allow-list of paths, and its
    own checks run on it. A red from a run that crosses midnight UTC, in a test that reads the date, is recorded and the
    checks run again once after midnight; a second red stops the release. The cut is offered as one pull request on this
@@ -96,8 +101,8 @@ Each step names who does it. A step marked **gate** is a person's decision, and 
    `gh workflow run` answers HTTP 404 for a workflow that is not on `main`, so that pull request lands before any step
    that runs the workflow. A release that changes no workflow skips this step.
 4. **Staging (the workflow).** A push to `main` that moves the version in `packages/bag/package.json` starts
-   `npm-publish.yml`. This trigger reaches `main` with the cut and the workflow pull request that carry it, and is
-   untested until the first push that moves the version. The push only stages: nothing is public until a maintainer
+   `npm-publish.yml`; the merge of the cut is that push, and it staged 0.1.2 that way on 2026-11-04 (run 41823544667).
+   The push only stages: nothing is public until a maintainer
    approves on npmjs.com with two-factor authentication (step 5), and the trusted publisher's token can stage but
    cannot approve, so the gate is this repository's branch rules (`main` takes changes only through pull requests) and
    that approval, not the workflow run. The run builds and tests the package, packs it, and stages it on npm by trusted
@@ -127,11 +132,21 @@ Each step names who does it. A step marked **gate** is a person's decision, and 
 
    A version staged and not yet approved is not on the registry, so these checks do not see it; npm refuses to stage
    it a second time.
-5. **Approval, gate.** A maintainer approves the staged version on npmjs.com: the Staged Packages tab, Approve, then
-   two-factor authentication. The workflow's own credential can stage but cannot approve. In a terminal the same is
-   `npm stage approve <stage id>`, with npm 11.15.0 or later.
-6. **npm, read back.** The check waits for the registry, up to 20 reads 15 seconds apart, then checks the package's
-   bytes. `SHA` is the `sha256` line of the staging run's pack step:
+5. **Approval, gate, then the first click.** When the staging run ends green, `release.yml` starts by itself. Its first
+   job, `staged`, reads the version, the commit, the stage id and the tarball's sha256 from the staging run's log,
+   checks that the commit is a public cut on `main` at that version, and prints what the maintainer does next, also on
+   the run's summary page. A staging run that staged nothing ends the release run there, green. The maintainer then
+   approves the staged version on npmjs.com: the Staged Packages tab, Approve, then two-factor authentication. The
+   workflow's own credential can stage but cannot approve; in a terminal the same is `npm stage approve <stage id>`,
+   with npm 11.15.0 or later. Then the maintainer approves the release run's job `approval`, which waits in the
+   environment `npm-release` and does nothing else: on the run's page, Review deployments, `npm-release`, Approve and
+   deploy. GitHub holds a run up to 30 days for that click. If `staged` stops instead, for example because the pushed
+   commit is not a public cut, the staged version is rejected on npmjs.com ("When something is wrong").
+6. **npm, read back (the workflow).** The job `npm` waits for the registry, up to 80 reads 15 seconds apart (20
+   minutes), then makes the five checks below; latest must be the version. When the registry does not answer in time,
+   because the npm approval was not given, the job says so and fails, and "Re-run failed jobs" on the run's page goes
+   on from there once it is given. Anyone can make the same checks by hand, here with 20 reads; `SHA` is the `sha256`
+   line of the staging run's pack step:
 
    ```sh
    V=X.Y.Z; CUT=<the cut commit>; SHA=<the sha256 of the staging run>
@@ -147,37 +162,41 @@ Each step names who does it. A step marked **gate** is a person's decision, and 
 
    Five lines; a missing line stops the release. The provenance line reads the commit the SLSA statement names as its
    source, not only that a statement exists.
-7. **The relay image (the workflow, started by a maintainer).** It builds `ghcr.io/usebag/relay:<commit>` for
-   linux/amd64 and linux/arm64, each on its own native runner, with provenance and an SBOM. It runs before step 8,
-   which stops when the image of the commit does not exist:
+7. **The relay image (the workflow).** The job `image` calls `relay-image.yml` with the commit. It builds
+   `ghcr.io/usebag/relay:<commit>` for linux/amd64 and linux/arm64, each on its own native runner, with provenance and
+   an SBOM; an image of the commit that exists with both platforms is not built again. By hand, the same is:
 
    ```sh
    gh workflow run relay-image.yml --repo usebag/bag -f commit=<the cut commit>
    ```
 
-8. **The tag and the Release (the workflow, started by a maintainer).**
+8. **The tag, the Release and the binaries (the workflow).** The job `release` first finds what an earlier attempt
+   left: the tag `vX.Y.Z` must be absent or on the commit, and the image tag `vX.Y.Z` absent or on the image's digest,
+   or the job stops, since a tag is never moved. It then tags the image `vX.Y.Z` (the same digest, no rebuild), tags
+   the commit `vX.Y.Z`, and makes the Release, skipping with a line each of the three that exists already. The notes
+   are the `## vX.Y.Z` section of `CHANGELOG.md`, read at the commit, or on `main` for a release tagged after the fact,
+   followed by the hashes that step 6 checked and the image's digest. Then the job `binaries` calls
+   `relay-binaries.yml` with the commit and the version, when the commit holds `crates/ac-relay/THIRD-PARTY-RUST.md`
+   ("Relay binaries", below). For a version whose release run is gone, the whole chain runs again from its first job
+   by hand, and waits again for the click in `npm-release`:
 
    ```sh
    gh workflow run release.yml --repo usebag/bag -f version=X.Y.Z -f commit=<the cut commit>
    ```
 
-   It checks before it writes anything:
-   - the commit is a public cut on `main`, and `packages/bag` is at the version there;
-   - the tag and the Release do not exist yet;
-   - npm holds the version from that commit (`gitHead`), with a provenance statement whose source commit is that commit
-     too, and a tarball that matches its integrity;
-   - the relay image of the commit exists.
-
-   It then tags the image `vX.Y.Z` (the same digest, no rebuild), tags the commit `vX.Y.Z`, and makes the Release. The
-   notes are the `## vX.Y.Z` section of `CHANGELOG.md`, read at the commit, or on `main` for a release tagged after the
-   fact, followed by the hashes.
-9. **The install guide, gate.** The guide at https://bag.dev/install pins three values: the release commit, the
-   version, and the tarball's sha256, the `sha256` line of the staging run's pack step, which step 6 checked against
-   the registry's tarball. The maintainers set the three in their own infrastructure's configuration, keeping the
-   previous values for a rollback, then apply it: one change, the guide's Worker. Then they read it back: the
-   page names the new commit and version, the old ones on no line, and no unfilled `{{`.
-10. **The website, gate.** Version mentions on bag.dev move in a reviewed change to the website's repository (its
-    deploy is a hand-started workflow). A maintainer starts the deploy, which ends with a check of the live site:
+9. **The install guide, gate, then the second click.** The guide at https://bag.dev/install pins three values: the
+   release commit, the version, and the tarball's sha256, which step 6 checked against the registry's tarball. The
+   maintainers set the three in their own infrastructure's configuration, keeping the previous values for a rollback,
+   then apply it: one change, the guide's Worker. No workflow of this repository can make that change ("The install
+   guide", below). Then the maintainer approves the release run's job `site`, the second click in
+   `npm-release`. The job first reads https://bag.dev/install and stops, naming what is missing, unless the page names
+   the new version, commit and sha256 and holds no unfilled `{{`; after an apply, "Re-run failed jobs" repeats it.
+10. **The website, gate.** The job `site` then sends a `repository_dispatch`, the event `bag-release` with the
+    version, the cut and the sha256, to the website's repository. The website's own workflow checks the release again,
+    reads the guide as bag.dev serves it, and opens a pull request that moves the version mentions on bag.dev; a
+    maintainer merges it, and the merge deploys the website, ending with a check of the live site. A dispatch that got
+    as far as the website's branch for the version is not sent twice. Without the setup below, the job skips the
+    dispatch with a line, and the website's change is made by hand; its deploy can also be started by hand:
 
     ```sh
     gh workflow run deploy.yml --repo <the website's repository>
@@ -190,14 +209,94 @@ Each step names who does it. A step marked **gate** is a person's decision, and 
 
 | Gate | Who | What it guards |
 |---|---|---|
-| the cut's pull request | a maintainer merges it | what enters this repository's `main` |
+| the cut's pull request | a maintainer merges it | what enters this repository's `main`, and the staging it starts |
 | a workflow file's pull request | a maintainer merges it | what the workflows run |
 | the npm approval | a maintainer, with two-factor authentication | what becomes public on npm |
+| the first click, the job `approval` in `npm-release` | the maintainer, after the npm approval | the image, the tags, the Release and the binaries |
 | the install guide's apply | a maintainer | what https://bag.dev/install tells an agent to install |
-| the website's deploy | a maintainer | what bag.dev says |
+| the second click, the job `site` in `npm-release` | the maintainer, after the guide's apply | that the website's repository is told |
+| the website's pull request | a maintainer merges it | what bag.dev says; the merge deploys it |
 
-Steps 4, 7 and 8 are workflows. Step 4 starts itself on the push, and 7 and 8 are started by a maintainer. None of them
-publishes anything a gate has not passed: a staged version is not public until step 5.
+Steps 4 to 8 and the dispatch of step 10 are workflows. Step 4 starts itself on the push of the cut, and `release.yml`
+starts itself when step 4's run ends. None of them publishes anything a gate has not passed: a staged version is not
+public until step 5, nothing after the npm approval runs before the first click, and the website hears of the release
+only after the second.
+
+## The release chain
+
+`release.yml` runs these jobs, each after the one before it; the binaries and the website's dispatch both follow the
+Release and do not wait for each other.
+
+| Job | What it does | Writes |
+|---|---|---|
+| `staged` | the version, the commit, the stage id, the integrity and the sha256 from the staging run's log; the commit is a public cut on `main` at the version; what the maintainer does next | nothing |
+| `approval` | waits in `npm-release` for the first click | nothing |
+| `npm` | waits for the registry, then step 6's five checks | nothing |
+| `image` | `relay-image.yml` with the commit (step 7) | `ghcr.io/usebag/relay:<commit>` |
+| `release` | the image tag, the tag and the Release (step 8) | `relay:vX.Y.Z`, the tag `vX.Y.Z`, the Release |
+| `binaries` | `relay-binaries.yml` with the commit and the version, when the commit holds `crates/ac-relay/THIRD-PARTY-RUST.md` | the archives, their signatures and `SHA256SUMS` on the Release |
+| `site` | waits in `npm-release` for the second click; checks the served guide (step 9); tells the website (step 10) | a `repository_dispatch` to the website's repository |
+
+It starts on the end of a staging run that a push started, and it can be started by hand with a version and a commit
+(step 8's command), which runs it from `staged` again. Every job can run again: "Re-run failed jobs" on the run's page
+repeats a failed job and the jobs after it, and a job that finds what an earlier attempt made, as it should be, skips
+it with a line. It stops instead when it finds it otherwise, such as a tag on another commit, and never moves a tag.
+A click that is not given within 30 days ends the run; the chain is then started by hand.
+
+## One-time setup
+
+Done once by a maintainer with admin rights on this repository, before the first release that runs the chain. Until
+the environment exists with its reviewer, the chain does not wait for a click: GitHub creates a missing environment
+without protection rules, and the job `npm` then fails after 20 minutes because the npm approval has not happened.
+
+1. **The environment `npm-release`.** Settings, Environments, New environment, `npm-release`, Configure environment.
+   Tick Required reviewers and enter the maintainer who approves on npm (up to six people or teams; one approval
+   suffices). Leave "Prevent self-review" unticked: the push that starts the chain is the maintainer's own merge of
+   the cut, and with it ticked that maintainer could not approve. Under Deployment branches and tags, choose Selected
+   branches and tags and add `main`. Save protection rules. The same with `gh`, run by that maintainer (the first line
+   reads their own user id), which needs the Administration permission:
+
+   ```sh
+   ID="$(gh api user --jq .id)"
+   printf '{"reviewers": [{"type": "User", "id": %s}], "prevent_self_review": false, "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}' "$ID" |
+     gh api --method PUT repos/usebag/bag/environments/npm-release --input -
+   gh api --method POST repos/usebag/bag/environments/npm-release/deployment-branch-policies -f name=main -f type=branch
+   ```
+
+2. **The variable `SITE_REPOSITORY`**, the website's repository as `owner/name`:
+   `gh variable set SITE_REPOSITORY --repo usebag/bag`, which asks for the value.
+3. **The secret `SITE_DISPATCH_TOKEN`.** A fine-grained personal access token: resource owner `usebag`, only the
+   website's repository, the repository permission Contents: Read and write (sending a `repository_dispatch` needs
+   Contents write; Metadata: Read comes with it), and an expiry date. Nothing else: the website's workflow opens its
+   pull request with its own token. Then `gh secret set SITE_DISPATCH_TOKEN --repo usebag/bag`, which asks for the
+   value.
+4. **The website's side.** Its release workflow, which answers the `bag-release` dispatch, and its deploy on a merge to
+   its `main`, are merged in the website's repository.
+5. **The workflow files.** The four workflows reach `.github/workflows/` through their own pull request (step 3).
+6. **Not now:** the secret `CLOUDFLARE_INSTALL_TOKEN` would come only with option (a) of "The install guide",
+   below, which is not taken.
+
+## The install guide
+
+The guide at https://bag.dev/install is served by a Worker that the maintainers' infrastructure configuration defines
+and applies from a maintainer's machine; its state is kept there too, so no workflow of this repository can change
+it. Two ways to run step 9 were weighed, and (b) was chosen on 2026-11-04:
+
+- **(a) The Worker moves into this repository.** Its script becomes `deploy/install/worker.js` here, public. A job
+  `deploy-guide` in `release.yml`, after `release`, fills the guide's nine values and uploads the Worker with wrangler,
+  using a Cloudflare API token held as the secret `CLOUDFLARE_INSTALL_TOKEN`; `site` then follows it without a click
+  of its own. The infrastructure configuration keeps the routes and the DNS records. The move takes one removal of
+  the Worker from that configuration's state and one apply, a maintainer's. The cost: Cloudflare's Workers Scripts
+  permission applies to a whole account (developers.cloudflare.com/fundamentals/api/reference/permissions/ names no
+  narrower scope), so the token could replace every Worker of that account, the guide's among them, and it would sit
+  in this public repository's Actions. Held as a secret of the environment `npm-release`, a job reads it only after a
+  click, and only on `main`.
+- **(b) The apply stays a maintainer's one command,** run after the job `release` with the three values it printed,
+  followed by the second click. This is how it runs.
+
+Why (b): the guide is what an agent trusts to install bag, and (b) keeps the only credential that can change it off
+GitHub, at the cost of one command per release; the job `site` stops when the guide was not applied. (a) is weighed
+again when releases become weekly, with the token held as a secret of the environment `npm-release`.
 
 ## Checking a release yourself
 
@@ -222,7 +321,11 @@ publishes anything a gate has not passed: a staged version is not public until s
 - **The relay image.** A version tag is not moved; the next patch gets its own.
 - **The install guide.** It goes back to the previous release's values, kept for this, and is applied and read
   back.
-- **The website.** The change is reverted and deployed again.
+- **The website.** The change is reverted, and the merge of the revert deploys it.
+- **The release run.** A job waiting for a click is turned down with Reject (Review deployments): the run fails there
+  and nothing after it runs. A run that stopped is continued with "Re-run failed jobs" once the cause is fixed; a run
+  that is gone is started again by hand (step 8). A version staged from a commit that `staged` refuses is rejected on
+  npm.
 
 ## v0.1.1: not tagged
 
@@ -253,11 +356,13 @@ tagged release. These were its next steps before that, on its cut, `3c343d65a394
 3. **Read-back.** `git ls-remote https://github.com/usebag/bag refs/tags/v0.1.1` prints the cut. The Release notes give
    the npm tarball's sha256 as `32fc7a281aef764c874652d85341aeefb8567af7b497e05a113713dc25248b56`.
 
-## Relay binaries (designed, not built yet)
+## Relay binaries (not built yet)
 
-Once the open call for security testing is out, a fourth workflow, `relay-binaries.yml`, builds the reference relay,
-`ac-relay`, from the release commit and, given the version, uploads what it makes to the Release `vX.Y.Z` of step 8.
-Nothing below has run.
+`relay-binaries.yml` builds the reference relay, `ac-relay`, from the release commit and, given the version, uploads
+what it makes to the Release `vX.Y.Z` of step 8. The release chain calls it once the release commit holds
+`crates/ac-relay/THIRD-PARTY-RUST.md`, the notices of the Rust crates compiled into the binary, which every archive
+carries; a release without that file has no binaries. Nothing below has run yet. A target whose archive and signature
+are on the Release already is not built again, and neither is `SHA256SUMS`.
 
 - **Linux, static.** `x86_64-unknown-linux-musl` on `ubuntu-24.04` and `aarch64-unknown-linux-musl` on
   `ubuntu-24.04-arm`, each built natively. They link musl statically, so one binary runs on any Linux of its
@@ -266,12 +371,13 @@ Nothing below has run.
 - **macOS.** `aarch64-apple-darwin` on `macos-15` (Apple silicon).
 - **The build.** The toolchain pinned in `rust-toolchain.toml`, and
   `cargo build --release --locked -p ac-relay --target <target>` from the release commit.
-- **The files.** One archive per target, `ac-relay-vX.Y.Z-<target>.tar.gz`, holding the binary, `LICENSE` and
-  `THIRD-PARTY.md`, and `SHA256SUMS`, which lists the three.
+- **The files.** One archive per target, `ac-relay-vX.Y.Z-<target>.tar.gz`, holding the binary, `LICENSE`,
+  `THIRD-PARTY.md` and `THIRD-PARTY-RUST.md`, and `SHA256SUMS`, which lists the three archives.
 - **The signatures.** Each archive and `SHA256SUMS` are signed with cosign, keyless. cosign is a pinned release,
   downloaded in a run step and checked against a sha256 written in the workflow, as `npm-publish.yml` checks Node; no
-  third-party action. The signature is bound to the job's GitHub identity (its OIDC token), recorded in Sigstore's
-  public transparency log, and saved beside each file as `<file>.sigstore.json`. To check one archive:
+  third-party action. The signature is bound to the job's GitHub identity (its OIDC token), which names
+  `relay-binaries.yml` also when `release.yml` calls it, recorded in Sigstore's public transparency log, and saved
+  beside each file as `<file>.sigstore.json`. To check one archive:
 
   ```sh
   cosign verify-blob ac-relay-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz \
@@ -293,14 +399,14 @@ Nothing below has run.
 
 | # | Step | Who | Command or check |
 |---|---|---|---|
-| 1 | version, lock line, `## vX.Y.Z: YYYY-MM-DD` section, pinned install lines, telemetry `BUILDS` | maintainer | reviewed change in the source repository; the telemetry Worker deployed before step 4 |
+| 1 | version, lock line, `## vX.Y.Z: YYYY-MM-DD` section, pinned install lines, telemetry `BUILDS` | maintainer | `node scripts/release-bump.mjs X.Y.Z` in the source repository, reviewed; the telemetry Worker deployed before the cut's merge |
 | 2 | the cut, as one pull request, rebase-merged | maintainer merges | the cut's own checks pass; the cut commit is the newest `bag public cut of ` on `main` |
 | 3 | a changed workflow file, as its own pull request | maintainer merges | `gh workflow run` finds the workflow on `main` |
 | 4 | stage on npm | `npm-publish.yml`, on the merge, or started by hand | the run prints `staged @usebag/bag@X.Y.Z from <commit>, ...` and the sha256 |
-| 5 | approve | maintainer, 2FA | npmjs.com, Staged Packages, Approve |
-| 6 | npm read-back | anyone | step 6's five lines |
-| 7 | relay image | maintainer starts `relay-image.yml` | `gh workflow run relay-image.yml --repo usebag/bag -f commit=<cut>` |
-| 8 | tag and Release | maintainer starts `release.yml` | `gh workflow run release.yml --repo usebag/bag -f version=X.Y.Z -f commit=<cut>` |
-| 9 | install guide | maintainer applies | https://bag.dev/install names the new commit and version |
-| 10 | website | maintainer deploys | `gh workflow run deploy.yml --repo <the website's repository>`; bag.dev names the new version |
+| 5 | approve, then the first click | maintainer, 2FA; then `npm-release` | npmjs.com, Staged Packages, Approve; the release run's job `approval` |
+| 6 | npm read-back | the release run's job `npm`, or anyone | step 6's five lines |
+| 7 | relay image | the job `image` | `ghcr.io/usebag/relay:<commit>` exists for both platforms |
+| 8 | tag, Release, binaries | the jobs `release` and `binaries` | the Release `vX.Y.Z` on the commit, with the hashes |
+| 9 | install guide, then the second click | maintainer applies; then `npm-release` | https://bag.dev/install names the new commit, version and sha256; the job `site` |
+| 10 | website | the job `site`, then a maintainer merges the website's pull request | bag.dev names the new version |
 | 11 | read-backs | anyone | "Checking a release yourself", above |
