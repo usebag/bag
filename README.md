@@ -67,8 +67,9 @@ owner signed. An authority chain that anyone can verify offline says who may spe
   that lists two relays keeps working while one is down.
 - **Mail waits for an offline recipient.** A relay keeps each envelope for up to 7 days. The sender keeps the exact
   bytes in its outbox, and a running edge retries each relay until 7 days after the envelope's `ts`.
-- **Each step is audited.** The edge writes every step it takes to a hash-chained log. `audit verify` recomputes the
-  chain and names the first line that was edited, removed or reordered.
+- **Each step is audited.** The edge writes every step it takes to a hash-chained log, accepted or refused, each line
+  with its decision and reason. `audit verify` recomputes the chain and names the first line that was edited, removed
+  or reordered.
 - **The spec is the contract.** Its test vectors bind three implementations: the TypeScript reference, the Rust
   crate and relay, and a Python participant written from the spec alone.
 
@@ -472,9 +473,10 @@ crate-age check reads crates.io, so it needs network access.
 
 ## Security
 
-To report a security issue, read [`SECURITY.md`](SECURITY.md) first. Please do not open a public issue for one.
-Report it privately through the repository's Security tab ("Report a vulnerability") or by mail to the project's
-security address, `security@bag.dev`.
+The security testing call is open at https://bag.dev/security-testing, with the version and commit to test and the
+safe harbour. To report a security issue, read [`SECURITY.md`](SECURITY.md) first. Please do not open a public issue
+for one. Report it privately through the repository's Security tab ("Report a vulnerability") or by mail to the
+project's security address, `security@bag.dev`.
 
 The audit package is public: the threat model, [`docs/audit/threat-model.md`](docs/audit/threat-model.md), and the
 summary of two adversarial review rounds, [`docs/audit/stream-10-review.md`](docs/audit/stream-10-review.md).

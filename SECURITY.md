@@ -78,6 +78,15 @@ countersigned rotation against pinned keys, with an offline rotation key to reco
 short-lived key can still sign mail dated inside its life, so these limits protect against relays and the network, not
 against the key's holder.
 
+Forward secrecy: a message is sealed only to the recipient's current short-lived sealing key, never to a long-lived
+key, and the recipient deletes each old private key soon after it expires (at its expiry plus the envelope TTL and
+skew). A stolen sealing key therefore opens only mail within that horizon, about the key's lifetime plus retention,
+and never older mail (`spec/SPEC.md` section 10, "Forward secrecy (individuals)"). The threat model,
+`docs/audit/threat-model.md`, names three limits. R14: an identity that stops rotating keeps its old keys, so its
+horizon grows until it next rotates or prunes. R15: while an agent holds an identity (the MCP keep-alive), its key
+does not rotate, so the horizon grows by the login window, at most 8 hours. R16: a group member keeps every group key
+it has accepted, so group mail is not forward-secret on the member's device once accepted.
+
 ## The authority
 
 Section 10 of `spec/SPEC.md`, "Security considerations", is the authority on what the protocol does and does not
