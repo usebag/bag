@@ -24,7 +24,7 @@
     "check": "scripts/last_step.sh"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.15",
+    "@biomejs/biome": "2.6.4",
     "@types/node": "24.19.2",
     "@vitest/coverage-v8": "4.1.12",
     "typescript": "5.9.3",

@@ -203,7 +203,7 @@ if [[ -n "$out_given" ]]; then
   node_modules/.bin/biome format --stdin-file-path="$out" <"$work/raw" >"$work/fmt"
   verify="$work/fmt"
 else
-  node_modules/.bin/biome format --write "$out" >/dev/null
+  node_modules/.bin/biome format --write --reporter=summary "$out" >/dev/null
   verify="$out"
 fi
 # shellcheck disable=SC2016 # JavaScript, not the shell
