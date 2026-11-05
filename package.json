@@ -20,6 +20,7 @@
     "test:e2e": "npm run test:e2e -w packages/e2e",
     "vectors:check": "npm run vectors:check -w packages/core",
     "adversarial:check": "npm run adversarial:check -w packages/core",
+    "audit:bundled": "node scripts/check-bundled-advisories.mjs",
     "check": "scripts/last_step.sh"
   },
   "devDependencies": {
