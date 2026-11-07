@@ -42,7 +42,7 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
-    "rolldown": "1.2.15",
+    "rolldown": "1.2.16",
     "zod": "4.6.7"
   },
   "publishConfig": {
