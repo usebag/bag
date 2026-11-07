@@ -7,7 +7,7 @@ describe('@usebag/cli: the public API', () => {
   })
 
   it('resolves its workspace dependencies through the package names', () => {
-    expect(cli.dependsOn()).toEqual(['@usebag/core', '@usebag/edge'])
+    expect(cli.dependsOn()).toEqual(['@usebag/core', '@usebag/edge', '@usebag/enterprise-client'])
   })
 
   it('exports the runner, its io, its errors and the name book by name', () => {

@@ -22,6 +22,7 @@ import {
   trackPairs,
 } from '@usebag/edge'
 import { FrontDesk, type SessionNameOptions } from '@usebag/edge/agent'
+import type { EnterprisePorts } from '@usebag/enterprise-client'
 import type { SessionAgent } from './agent.ts'
 import { ChainKeeper, type ChainSource, type Env, loadChain, type RunCommand, runShell } from './chain.ts'
 import { type Config, parseServerConfig, type ServerConfig, USAGE } from './config.ts'
@@ -93,6 +94,8 @@ export interface ServerDeps {
   readonly names?: SessionNameOptions
   /** How often a pairing polls the relay, in ms (default PAIR_POLL_MS), for tests. */
   readonly pairPollMs?: number
+  /** The enterprise tools' ports over the process's (tools.ts, ToolContext.enterprise), for tests. */
+  readonly enterprise?: Partial<EnterprisePorts>
 }
 
 /** An --identities server's ports: a server's, with a relay client made for each identity. */
@@ -486,6 +489,7 @@ function sharedOf(
     ...more,
     ...ports,
     env: deps.env ?? {},
+    ...(deps.enterprise === undefined ? {} : { enterprise: deps.enterprise }),
     canElicit: () => mcp.server.getClientCapabilities()?.elicitation?.form !== undefined,
     elicit: (dialog, extra) =>
       mcp.server.elicitInput(dialog, {

@@ -1,5 +1,6 @@
 import { packageName as coreName } from '@usebag/core'
 import { packageName as edgeName } from '@usebag/edge'
+import { packageName as enterpriseName } from '@usebag/enterprise-client'
 
 // The public API of @usebag/cli: the command runner, its io port and the name book (also ./names). The process entry is src/main.ts.
 
@@ -16,5 +17,5 @@ export function packageName(): string {
 
 /** The workspace packages this one depends on, each read from that package's own export (the scaffold check). */
 export function dependsOn(): readonly string[] {
-  return [coreName(), edgeName()]
+  return [coreName(), edgeName(), enterpriseName()]
 }

@@ -257,9 +257,12 @@ describe('inbox --watch: every path that acks an accepted row prints it once and
     )
     store.close()
     w.relay.acks.set(w.bob, 1)
+    // The start checks a waiting row at once (recover()): with the clock set back past the skew, that check finds the
+    // envelope future-ts and the row waits again, so only the retrier, past the highest cursor, accepts it.
+    w.io.time.now -= 400
     const { running } = await watching(w, '--exec', `cat >> '${file}'`)
     expect(accepts(w.io)).toEqual([])
-    w.io.time.now += 10
+    w.io.time.now += 410
     await until('the retried run', () => lines(file).length === 1)
     expect(accepts(w.io)).toEqual([`accept ${id} ${w.alice} ${w.alice} chat.v1 {"n":1}`])
     expect(lines(file)).toEqual([summaryOf(w, id)])

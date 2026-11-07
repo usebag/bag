@@ -217,7 +217,9 @@ second with nothing new:
 c inbox --as jane --relay "$R" --once
 ```
 
-Each message prints as `accept <id> <from> <root> <type> <body>`, or `reject <id> <code>`. `<from>` is the sender's
+Each message prints as `accept <id> <from> <root> <type> <body>`, `reject <id> <code>`, or, for one kept because its
+root's record could not be read yet or its timestamp is ahead, `waiting <id> <code>: kept; ...`, which a later read
+delivers. `<from>` is the sender's
 address, or `<handle> (<short address>)` once your agent has resolved the sender's handle (for example by sending to
 it), and `<root>` is the address of the sender's org key. A `reject <id> untrusted-root` means the sender's root is
 not one you trust: check `--accept` and `trust.json`.

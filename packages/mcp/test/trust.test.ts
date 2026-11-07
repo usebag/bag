@@ -113,7 +113,7 @@ describe('L1, the MCP clause: a server started before a pairing accepts the new 
 })
 
 describe('L5, amended: only the pair tools pair, names or trusts, and only through a dialog', () => {
-  it('lists the eight tools of the base and the two pair tools; no base tool is named or described as pairing', async () => {
+  it('lists the base tools, the two pair tools and the three enterprise tools; no other tool is named or described as pairing', async () => {
     expect([...TOOL_NAMES]).toEqual([
       'send',
       'inbox',
@@ -126,6 +126,9 @@ describe('L5, amended: only the pair tools pair, names or trusts, and only throu
       'receipts',
       'pair_invite',
       'pair_accept',
+      'connect',
+      'sign_in',
+      'enterprise_status',
     ])
     const alice = await serverFor(P.alice, ['--allow-delegate'])
     const { tools } = await alice.client.listTools()
@@ -182,11 +185,20 @@ describe('L5, amended: only the pair tools pair, names or trusts, and only throu
       ['receipts', { id: invite }],
       ['pair_invite', { name: 'bob', for: invite }],
       ['pair_accept', { name: 'bob' }],
+      ['connect', { code: invite }],
+      ['sign_in', { domain: invite, instance: invite }],
+      ['enterprise_status', {}],
     ]
     const results = []
     for (const [tool, args] of calls) results.push(await alice.call(tool, args))
     // The pair tools refuse before any network: this host declared no elicitation, so no dialog can open.
-    expect(results.slice(-2).map((r) => r.value.error)).toEqual(['no-elicitation', 'no-elicitation'])
+    expect(results.slice(-5, -3).map((r) => r.value.error)).toEqual(['no-elicitation', 'no-elicitation'])
+    // The enterprise tools refuse it as usage before any network, and there is no session to show.
+    expect(results.slice(-3).map((r) => [r.isError, (r.value.lines as string[])[0]?.split(':')[0]])).toEqual([
+      [true, 'usage'],
+      [true, 'usage'],
+      [true, 'signed-out'],
+    ])
     expect(new Set(calls.map(([t]) => t))).toEqual(new Set(TOOL_NAMES))
     expect(before()).toEqual(was)
   })

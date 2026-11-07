@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { AcError, isAddress } from '@usebag/core'
+import { readSession, resolveLabel } from '@usebag/enterprise-client'
 import { CliError } from './args.ts'
 
 // Petnames: a local name book per home, <home>/names.json, that maps a short name to an address. A name is
@@ -172,6 +173,14 @@ export class NameBook {
       throw new AcError('bad-address', `${JSON.stringify(text)} is neither an address nor a name`)
     }
     throw this.#unknown(text)
+  }
+
+  /** As resolve, then, for a name the book lacks with an enterprise session in the home, the org's agent so labelled. */
+  async find(text: string, fetch?: typeof globalThis.fetch, org?: string): Promise<string> {
+    const book =
+      isAddress(text) || this.#names.has(text) || !NAME.test(text) || readSession(this.home, org) === null
+    const o = { ...(fetch && { fetch }), ...(org && { org }) }
+    return (book ? undefined : await resolveLabel(this.home, text, o)) ?? this.resolve(text)
   }
 
   /** Who `address` is: a name's current address, else the most recent former address of a name, else null. */

@@ -1,6 +1,6 @@
 {
   "name": "@usebag/bag",
-  "version": "0.1.2",
+  "version": "0.2.1",
   "description": "bag v0, a security preview: an address and a durable, end-to-end sealed mailbox for agents. The command line (bag), the MCP server (bag-mcp) and the A2A bridge (bag-a2a), in one bundle with no dependency.",
   "keywords": [
     "agents",
@@ -41,8 +41,8 @@
     "test": "vitest run --coverage"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
-    "rolldown": "1.2.14",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "rolldown": "1.2.15",
     "zod": "4.6.7"
   },
   "publishConfig": {

@@ -1,0 +1,25 @@
+{
+  "note": "The instance's contract vectors, which the client reproduces: sha256 hex of the binding's challenge and of the state call's reported_hash. Public test values: no secret, no key.",
+  "bind_nonce": [
+    {
+      "secret": "example-device-code",
+      "nonce": "6ceb280e56d65b074475a7d38ec8e24a648167f54e851dbe9d5e7ee3274ebef4"
+    },
+    {
+      "secret": "bagcode_example",
+      "nonce": "e9c903bf57b3ebe825ebe4fb748a90f0a19ce459396feae66e8de3513ffdd954"
+    }
+  ],
+  "reported_hash": [
+    {
+      "reported_relays": [{ "url": "https://relay.example", "last_subscribed_at": 1800000000 }],
+      "canonical": "[[\"https://relay.example\",1800000000]]",
+      "hash": "ab811b91208259ecdc787d931c77e7d0bc8a8f12ba959af322f8d5b761d52941"
+    },
+    {
+      "reported_relays": [],
+      "canonical": "[]",
+      "hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  ]
+}

@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import * as mcp from '../src/index.ts'
 
 describe('@usebag/mcp: its public API', () => {
-  it('names itself and the two workspace packages it builds on, and exports the server by name', () => {
+  it('names itself and the three workspace packages it builds on, and exports the server by name', () => {
     expect(mcp.packageName()).toBe('@usebag/mcp')
-    expect(mcp.dependsOn()).toEqual(['@usebag/core', '@usebag/edge'])
+    expect(mcp.dependsOn()).toEqual(['@usebag/core', '@usebag/edge', '@usebag/enterprise-client'])
     for (const name of [
       'serve',
       'startServer',
@@ -18,7 +18,7 @@ describe('@usebag/mcp: its public API', () => {
     }
     expect([mcp.SESSION, mcp.TOOL_NAMES.length, mcp.QUESTION_TYPE, mcp.HANDOFF_TYPE]).toEqual([
       'mcp',
-      11,
+      14,
       'question.v1',
       'handoff.v1',
     ])

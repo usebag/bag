@@ -70,3 +70,14 @@ it('a live inbox prints them', async () => {
 it('a one-shot inbox prints none: a connection lost fails the command with the reason', async () => {
   expect(await reported('--once', [[lost]])).toEqual([])
 })
+
+it('a one-shot inbox ends 200 ms after the relay admits it, not after its whole idle window', async () => {
+  const io = testIo(new ReportingRelay([[{ admitted: true }]]))
+  Object.assign(io, { idleMs: 5000 })
+  const dir = `${tmp.dir}/drained`
+  await cli(io, 'keygen', 'bob', '--dir', dir)
+  const start = performance.now()
+  expect((await cli(io, 'inbox', '--once', '--as', 'bob', '--relay', RELAY, '--dir', dir)).code).toBe(0)
+  const ms = performance.now() - start
+  expect([ms >= 190, ms < 2000]).toEqual([true, true])
+})

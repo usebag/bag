@@ -16,6 +16,8 @@
       "semicolons": "asNeeded"
     }
   },
+  "markdown": { "formatter": { "enabled": false }, "linter": { "enabled": false } },
+  "yaml": { "formatter": { "enabled": false }, "linter": { "enabled": false } },
   "linter": {
     "enabled": true,
     "rules": { "preset": "recommended" }

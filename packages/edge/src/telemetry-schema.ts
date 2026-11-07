@@ -7,15 +7,15 @@
 
 /**
  * The commit whose deploy/telemetry/src/schema.ts, builds.ts and index.ts these values copy (the package versions
- * 0.1.0, 0.1.1 and 0.1.2 as builds, and `version` as a command).
+ * 0.1.0, 0.1.1, 0.1.2, 0.2.0 and 0.2.1 as builds, and `version` as a command).
  */
-export const TELEMETRY_SCHEMA_COMMIT = '9cb8399c3bcc30b35db5ddaab284d4ecee6f3e59'
+export const TELEMETRY_SCHEMA_COMMIT = '20ad785ea8af8cd921341f639248b22e70b6e316'
 
 /**
  * The builds a report's `build` may name (builds.ts): the published versions of the npm package @usebag/bag, and the
  * commit of any public cut whose checkout reports from source, of which none is listed yet.
  */
-export const BUILDS: readonly string[] = ['0.1.0', '0.1.1', '0.1.2']
+export const BUILDS: readonly string[] = ['0.1.0', '0.1.1', '0.1.2', '0.2.0', '0.2.1']
 
 /** The largest count a report may carry: 2^19. Every count is 0 or a power of two up to it. */
 export const MAX_COUNT = 2 ** 19

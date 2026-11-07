@@ -1,0 +1,687 @@
+{
+  "description": "bag enterprise layer-auth signatures (not protocol objects; outside SPEC 2.4): each is Ed25519 (RFC 8032, empty context) over sha256(utf8(canonical(preimage))), SPEC 2.3, by the strict rule of SPEC 10. bag-ent/bind/1 is signed by A, the agent key; bag-ent/refresh/1 and bag-ent/state/1 by the sign-in key. Every field has a fixed form, checked before the canonical form (bad-request).",
+  "tags": {
+    "bind": "bag-ent/bind/1",
+    "refresh": "bag-ent/refresh/1",
+    "state": "bag-ent/state/1"
+  },
+  "positive": {
+    "cases": [
+      {
+        "name": "bind-valid",
+        "signer": "A",
+        "seed_hex": "4141414141414141414141414141414141414141414141414141414141414141",
+        "address": "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+        "preimage": [
+          "bag-ent/bind/1",
+          "acme.example",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+          0,
+          "78b43a88686370428bb86ae0f7e16c80607456ceaa35e960ed97d3a8f46c97a8",
+          1800000000
+        ],
+        "device_code": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "canonical": "[\"bag-ent/bind/1\",\"acme.example\",\"ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\",0,\"78b43a88686370428bb86ae0f7e16c80607456ceaa35e960ed97d3a8f46c97a8\",1800000000]",
+        "canonical_hex": "5b226261672d656e742f62696e642f31222c2261636d652e6578616d706c65222c22656432353531393a64623939356665323531363964313431636162396262626139326261613031663966326531656365376466346362326163303531393066333766636331663964222c22656432353531393a66383063636364636534616531633037616532303861326164663939613331306165343230376530333036666130323336313130623036383237626262386430222c302c2237386234336138383638363337303432386262383661653066376531366338303630373435366365616133356539363065643937643361386634366339376138222c313830303030303030305d",
+        "sha256": "0f13efeda18a6707b8caafbe77e2f5e17a4a7d4fbda799c69926fa1ff3daa8b7",
+        "sig": "4282cf5309caef911a07273209ac1d6abe684e6f8b559ecedd9561caa008bf0637df9f7da4c0b63fee7a97ff6d42881d8437094df40d292d901af39aeeaff40e"
+      },
+      {
+        "name": "bind-valid, route b: the nonce derived from the console code",
+        "signer": "A",
+        "seed_hex": "4141414141414141414141414141414141414141414141414141414141414141",
+        "address": "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+        "preimage": [
+          "bag-ent/bind/1",
+          "acme.example",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+          0,
+          "6ca35298eebf5ecc81c11367a55e54e79441f159ac22f9f0d51640508c434a5e",
+          1800000000
+        ],
+        "code": "bagcode_0123456789abcdef",
+        "canonical": "[\"bag-ent/bind/1\",\"acme.example\",\"ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d\",\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\",0,\"6ca35298eebf5ecc81c11367a55e54e79441f159ac22f9f0d51640508c434a5e\",1800000000]",
+        "canonical_hex": "5b226261672d656e742f62696e642f31222c2261636d652e6578616d706c65222c22656432353531393a64623939356665323531363964313431636162396262626139326261613031663966326531656365376466346362326163303531393066333766636331663964222c22656432353531393a66383063636364636534616531633037616532303861326164663939613331306165343230376530333036666130323336313130623036383237626262386430222c302c2236636133353239386565626635656363383163313133363761353565353465373934343166313539616332326639663064353136343035303863343334613565222c313830303030303030305d",
+        "sha256": "54b70e62a4e73e34839f8102f08e48ee4c3b99b485aaa4c4498cd0b60e18fab0",
+        "sig": "04591efa9ad779778916bf430923d9a97ffb1cc1a7af81084f8374d1dc4597fdc5a9f03f0fe5f8b888e73f531a700d381d376f77431d9e7fdb4aeae1367d9107"
+      },
+      {
+        "name": "refresh-valid",
+        "signer": "S",
+        "seed_hex": "5353535353535353535353535353535353535353535353535353535353535353",
+        "address": "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "canonical": "[\"bag-ent/refresh/1\",\"ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d\",0,\"abababababababababababababababababababababababababababababababab\",1800000000]",
+        "canonical_hex": "5b226261672d656e742f726566726573682f31222c22656432353531393a64623939356665323531363964313431636162396262626139326261613031663966326531656365376466346362326163303531393066333766636331663964222c302c2261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162222c313830303030303030305d",
+        "sha256": "47a0db794b79c08c6b7008c02818d1bd01be04a7f5d6d659853357a0786eb5dc",
+        "sig": "8b7602f9a5a2ccf6a24c7fd283e5713b243b01fc9d6dd439d42829e7e2f9a3af2c099e1ba9dfa57b61e109d47044ba1b7be383cfa123fc1f2a86c1792b6d440d"
+      },
+      {
+        "name": "state-valid",
+        "signer": "S",
+        "seed_hex": "5353535353535353535353535353535353535353535353535353535353535353",
+        "address": "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+        "preimage": [
+          "bag-ent/state/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          1,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000,
+          "b1b2a45329b7cf818169d00f4e97231df151cbc178e80ea499452abc22046020"
+        ],
+        "reported_relays": [
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          }
+        ],
+        "reported_hash": "b1b2a45329b7cf818169d00f4e97231df151cbc178e80ea499452abc22046020",
+        "canonical": "[\"bag-ent/state/1\",\"ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d\",1,\"abababababababababababababababababababababababababababababababab\",1800000000,\"b1b2a45329b7cf818169d00f4e97231df151cbc178e80ea499452abc22046020\"]",
+        "canonical_hex": "5b226261672d656e742f73746174652f31222c22656432353531393a64623939356665323531363964313431636162396262626139326261613031663966326531656365376466346362326163303531393066333766636331663964222c312c2261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162222c313830303030303030302c2262316232613435333239623763663831383136396430306634653937323331646631353163626331373865383065613439393435326162633232303436303230225d",
+        "sha256": "25560dbc6885b0e1cfc810143a5c5e34b0a1cb34018588400b492abd2a5e80df",
+        "sig": "42ef1782561cf014c1562fedbadf8b5556880c2a3c31d27ac20691f8b3fafba99cef0e327a8924a17173cb6efb38032827868c42f7c7a2ace4f94e9505061608"
+      },
+      {
+        "name": "state-valid, no relays reported",
+        "signer": "S",
+        "seed_hex": "5353535353535353535353535353535353535353535353535353535353535353",
+        "address": "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+        "preimage": [
+          "bag-ent/state/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          1,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000,
+          "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        ],
+        "reported_relays": [],
+        "reported_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "canonical": "[\"bag-ent/state/1\",\"ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d\",1,\"abababababababababababababababababababababababababababababababab\",1800000000,\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\"]",
+        "canonical_hex": "5b226261672d656e742f73746174652f31222c22656432353531393a64623939356665323531363964313431636162396262626139326261613031663966326531656365376466346362326163303531393066333766636331663964222c312c2261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162222c313830303030303030302c2234663533636461313863326261613063303335346262356639613365636265356564313261623464386531316261383733633266313131363132303262393435225d",
+        "sha256": "725fb6438c162ccaec33f20dfb89114d4c80ba2cf9ed2cb11a94bf361d97156e",
+        "sig": "aa326f625e440a4567ebd098f814b05260a739ac2ef402bcc5fc87b02e431f0a4de9e622018db4ef0e41140e7f9b5b21a430ec58eeafdde37ba399ddfa7c720c"
+      }
+    ]
+  },
+  "negative": {
+    "cases": [
+      {
+        "name": "bind-wrong-tag",
+        "address": "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "acme.example",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+          0,
+          "78b43a88686370428bb86ae0f7e16c80607456ceaa35e960ed97d3a8f46c97a8",
+          1800000000
+        ],
+        "sig": "4282cf5309caef911a07273209ac1d6abe684e6f8b559ecedd9561caa008bf0637df9f7da4c0b63fee7a97ff6d42881d8437094df40d292d901af39aeeaff40e",
+        "refused": "bad-bind-sig"
+      },
+      {
+        "name": "bind-as-hop: the binding signature over a hop preimage",
+        "address": "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+        "preimage": [
+          "ac/hop/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+          [],
+          1800000000
+        ],
+        "sig": "4282cf5309caef911a07273209ac1d6abe684e6f8b559ecedd9561caa008bf0637df9f7da4c0b63fee7a97ff6d42881d8437094df40d292d901af39aeeaff40e",
+        "refused": "bad-hop-sig"
+      },
+      {
+        "name": "refresh-bad-sig: S + L",
+        "address": "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "8b7602f9a5a2ccf6a24c7fd283e5713b243b01fc9d6dd439d42829e7e2f9a3af19dd9378c342b8d3377e01774f3e99307be383cfa123fc1f2a86c1792b6d441d",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: signed by A, not the sign-in key",
+        "address": "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "d05301b5ff80dcd3bfd806ed6789e3c9f1b46c70e7eac9178053a15e6c9a95bc59517c366a05ac71ac5981a57ec45b8cb308d8e83489aa5b0cfb595ac2ec7d02",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is the identity, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:0100000000000000000000000000000000000000000000000000000000000000",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is the point of order 2, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is a point of order 4, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:0000000000000000000000000000000000000000000000000000000000000000",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is the other point of order 4, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:0000000000000000000000000000000000000000000000000000000000000080",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is a point of order 8, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is a second point of order 8, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is a third point of order 8, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is a fourth point of order 8, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is the identity with the sign bit set (x = 0), R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:0100000000000000000000000000000000000000000000000000000000000080",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is the point of order 2 with the sign bit set (x = 0), R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is the identity written y + p, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is the identity written y + p, the sign bit set, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is a point of order 4 written y + p, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      },
+      {
+        "name": "refresh-bad-sig: the iss is the other point of order 4 written y + p, R the identity and S = 0, k = 0 mod 8",
+        "address": "ed25519:edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "preimage": [
+          "bag-ent/refresh/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "sig": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "refused": "bad-refresh-sig"
+      }
+    ],
+    "fields": [
+      {
+        "name": "bind-non-canonical: an uppercase domain",
+        "kind": "bind",
+        "fields": [
+          "Acme.Example",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+          "78b43a88686370428bb86ae0f7e16c80607456ceaa35e960ed97d3a8f46c97a8",
+          1800000000
+        ],
+        "refused": "bad-request"
+      },
+      {
+        "name": "bind-non-canonical: a domain with a port",
+        "kind": "bind",
+        "fields": [
+          "acme.example:443",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+          "78b43a88686370428bb86ae0f7e16c80607456ceaa35e960ed97d3a8f46c97a8",
+          1800000000
+        ],
+        "refused": "bad-request"
+      },
+      {
+        "name": "bind-non-canonical: the sign-in key is A",
+        "kind": "bind",
+        "fields": [
+          "acme.example",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "78b43a88686370428bb86ae0f7e16c80607456ceaa35e960ed97d3a8f46c97a8",
+          1800000000
+        ],
+        "refused": "bad-request"
+      },
+      {
+        "name": "bind-non-canonical: a ts above 2^53 - 1",
+        "kind": "bind",
+        "fields": [
+          "acme.example",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+          "78b43a88686370428bb86ae0f7e16c80607456ceaa35e960ed97d3a8f46c97a8",
+          9007199254740992
+        ],
+        "refused": "bad-request"
+      },
+      {
+        "name": "refresh: an uppercase nonce",
+        "kind": "refresh",
+        "fields": [
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+          1800000000
+        ],
+        "refused": "bad-request"
+      },
+      {
+        "name": "refresh: a negative generation",
+        "kind": "refresh",
+        "fields": [
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          -1,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "refused": "bad-request"
+      },
+      {
+        "name": "refresh: a bare key, not an address",
+        "kind": "refresh",
+        "fields": [
+          "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          0,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "refused": "bad-request"
+      },
+      {
+        "name": "state: 17 relays",
+        "kind": "state",
+        "fields": [
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          1,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "reported_relays": [
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          },
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          }
+        ],
+        "refused": "bad-request"
+      },
+      {
+        "name": "state: a relay URL with a path (a base URL has none)",
+        "kind": "state",
+        "fields": [
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          1,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000
+        ],
+        "reported_relays": [
+          {
+            "url": "https://relay.acme.example/v0",
+            "last_subscribed_at": 1800000000
+          }
+        ],
+        "refused": "bad-request"
+      }
+    ],
+    "state_body": [
+      {
+        "name": "state-body-mismatch",
+        "preimage": [
+          "bag-ent/state/1",
+          "ed25519:db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+          1,
+          "abababababababababababababababababababababababababababababababab",
+          1800000000,
+          "b1b2a45329b7cf818169d00f4e97231df151cbc178e80ea499452abc22046020"
+        ],
+        "reported_relays": [],
+        "refused": "state-body"
+      }
+    ]
+  },
+  "bind_nonce": {
+    "rule": "bind_nonce = sha256hex(utf8(\"bag-ent/bind-nonce/1\\n\" + secret)), the secret the device code (route a) or the console sign-in code (route b); the server keeps no nonce column (decided 2026-11-06)",
+    "cases": [
+      {
+        "secret": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "bind_nonce": "78b43a88686370428bb86ae0f7e16c80607456ceaa35e960ed97d3a8f46c97a8"
+      },
+      {
+        "secret": "bagcode_0123456789abcdef",
+        "bind_nonce": "6ca35298eebf5ecc81c11367a55e54e79441f159ac22f9f0d51640508c434a5e"
+      },
+      {
+        "secret": "",
+        "bind_nonce": "81b72a8b28580012d92f2c088e26fb67657bb6f9c4b9089324aeed11c110862d"
+      },
+      {
+        "secret": "example-device-code",
+        "bind_nonce": "6ceb280e56d65b074475a7d38ec8e24a648167f54e851dbe9d5e7ee3274ebef4"
+      },
+      {
+        "secret": "bagcode_example",
+        "bind_nonce": "e9c903bf57b3ebe825ebe4fb748a90f0a19ce459396feae66e8de3513ffdd954"
+      }
+    ]
+  },
+  "reported_hash": {
+    "rule": "reported_hash = sha256hex(utf8(canonical(pairs))), pairs the body reported_relays as [url, last_subscribed_at] in its order; [] when empty",
+    "cases": [
+      {
+        "reported_relays": [
+          {
+            "url": "https://relay.example",
+            "last_subscribed_at": 1800000000
+          }
+        ],
+        "reported_hash": "ab811b91208259ecdc787d931c77e7d0bc8a8f12ba959af322f8d5b761d52941"
+      },
+      {
+        "reported_relays": [],
+        "reported_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      {
+        "reported_relays": [
+          {
+            "url": "https://relay.acme.example",
+            "last_subscribed_at": 1799999400
+          }
+        ],
+        "reported_hash": "b1b2a45329b7cf818169d00f4e97231df151cbc178e80ea499452abc22046020"
+      }
+    ]
+  },
+  "generation": {
+    "rule": "g == G: accept, G := g + 1, grace_until := now + 120; g == G - 1 and now <= grace_until: grace (the current token, no advance); anything else: clone_suspected (frozen, 401 stale_generation)",
+    "cases": [
+      {
+        "name": "refresh at G: accept",
+        "G": 4,
+        "grace_until": 1799999000,
+        "now": 1800000000,
+        "generation": 4,
+        "outcome": "accept"
+      },
+      {
+        "name": "refresh-grace: G - 1 inside 120 s",
+        "G": 4,
+        "grace_until": 1800000060,
+        "now": 1800000000,
+        "generation": 3,
+        "outcome": "grace"
+      },
+      {
+        "name": "refresh-stale-gen: G - 1 after the grace",
+        "G": 4,
+        "grace_until": 1799999999,
+        "now": 1800000000,
+        "generation": 3,
+        "outcome": "clone_suspected"
+      },
+      {
+        "name": "refresh-stale-gen: G - 2",
+        "G": 4,
+        "grace_until": 1800000060,
+        "now": 1800000000,
+        "generation": 2,
+        "outcome": "clone_suspected"
+      },
+      {
+        "name": "a forked home ahead: G + 1",
+        "G": 4,
+        "grace_until": 1800000060,
+        "now": 1800000000,
+        "generation": 5,
+        "outcome": "clone_suspected"
+      }
+    ]
+  },
+  "nonce": {
+    "rule": "a nonce is remembered 600 s per agent, at least the 300 s skew: a second use inside the window is nonce-seen",
+    "cases": [
+      {
+        "name": "refresh-replay-nonce: the same signed refresh twice inside 600 s",
+        "seen_at": 1800000000,
+        "now": 1800000599,
+        "refused": "nonce-seen"
+      },
+      {
+        "name": "a nonce after the window (its ts is then past the skew too)",
+        "seen_at": 1800000000,
+        "now": 1800000601,
+        "refused": "refresh-stale"
+      }
+    ]
+  },
+  "collision": {
+    "spec_tags": [
+      "ac/accept/1",
+      "ac/addr/1",
+      "ac/agent/1",
+      "ac/fetch/1",
+      "ac/fetch/2",
+      "ac/gkey/1",
+      "ac/handle/1",
+      "ac/hop/1",
+      "ac/key/1",
+      "ac/pair-open/1",
+      "ac/peer-code/1",
+      "ac/peer-invite/1",
+      "ac/peer-request/1",
+      "ac/policy-members/1",
+      "ac/policy/1",
+      "ac/seal/1",
+      "ac/sub/1"
+    ],
+    "new_tags": ["bag-ent/bind/1", "bag-ent/refresh/1", "bag-ent/state/1"],
+    "rule": "no new tag is byte-identical to a SPEC tag or to another new tag; every SPEC tag begins \"ac/\", every new one \"bag-ent/\""
+  }
+}

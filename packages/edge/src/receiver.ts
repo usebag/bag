@@ -41,8 +41,8 @@ import type { Router } from './router.ts'
 // verify (parse, outer checks, a recipient) -> policy (chain, the receipt bound, trusted root, revocation) -> dedup
 // -> unseal -> caveats and type -> route, auditing every step, and is acked only once its row is past routing. From
 // the dedup check to the verdict nothing awaits, so the seen set is read and written in one turn. A transient
-// rejection (inbox.ts) waits and is retried until ts + TTL; a subscription the relay ends with an error frame is made
-// again. Live delivery is judged at the relay's clock as well as at ts: the row's received_at is
+// rejection (inbox.ts) waits and is retried until ts + TTL, and at once at each recover(), the start of a read; a
+// subscription the relay ends with an error frame is made again. Live delivery is judged at the relay's clock as well as at ts: the row's received_at is
 // the relay's stamp on the frame, or the receiver's own first sight when the frame has none, and a chain is refused
 // hop-expired once that second is past its earliest exp + skew, at first sight and on every retry alike. An org's
 // policy refuses or holds a row; a held row's content stays null until a release re-checks it, or a drop.
@@ -191,11 +191,22 @@ export class Receiver {
    * the relay's stamp on the frame; a new row keeps it as its received_at, or this edge's clock when there is none
    * (spec/SPEC.md §9 item 3), and a frame handed in again keeps its row's.
    */
-  async receive(
+  receive(
     relay: string,
     cursor: number,
     bytes: Uint8Array,
     receivedAt: number | null = null,
+  ): Promise<InboxRow> {
+    return this.#receive(relay, cursor, bytes, receivedAt, false)
+  }
+
+  /** receive, and with `now` a row that waits is checked at once, whatever its next_at (recover()). */
+  async #receive(
+    relay: string,
+    cursor: number,
+    bytes: Uint8Array,
+    receivedAt: number | null,
+    now: boolean,
   ): Promise<InboxRow> {
     const { clock, mailbox, store } = this.#o
     // A position is not an identity: a relay restored from an older copy issues used cursors again (spec/SPEC.md §9
@@ -203,7 +214,7 @@ export class Receiver {
     let row =
       store.inboxAt(relay, mailbox, cursor).find((r) => sameEnvelope(r.bytes, bytes)) ??
       store.inboxAdd(relay, mailbox, cursor, bytes, receivedAt ?? clock.now())
-    const due = !isWaiting(row) || (row.nextAt as number) <= clock.now()
+    const due = now || !isWaiting(row) || (row.nextAt as number) <= clock.now()
     if (!due || this.#busy.has(row.seq)) return row
     this.#busy.add(row.seq)
     try {
@@ -216,16 +227,20 @@ export class Receiver {
   }
 
   /**
-   * Finishes this mailbox's rows a crash left received, verified, or routed or queued but not acked, and retries the
-   * waiting rows that are due; acks every row that reached an outcome (so an accepted one rings the doorbell and reaches
-   * `accepted`, once) and returns those rows as they were before the ack (a row that still waits is not among them).
+   * Finishes this mailbox's rows a crash left received, verified, or routed or queued but not acked, and checks every
+   * waiting row at once, whatever its next_at; acks every row that reached an outcome (so an accepted one rings the
+   * doorbell and reaches `accepted`, once) and returns those rows as they were before the ack (a row that still waits
+   * is not among them, its next try after the backoff of its tries). A waiting row is checked here, not left to its
+   * next_at, because a receiver that starts may hold what its last check lacked: a root trusted since (inbox
+   * --trust-root, a trust file the person fixed). The relay was acked when the row first arrived and does not send its
+   * frame again, so without this check the next read would print nothing until the backoff passed while it ran.
    */
   async recover(): Promise<InboxRow[]> {
     const rows: InboxRow[] = []
     const unfinished = this.#o.store.inboxList(['received', 'verified', 'routed', 'queued'])
     // This receiver's mailbox only: a group's rows in the same store are its member receiver's (CLI inbox --group).
     for (const r of unfinished.filter((u) => u.mailbox === this.#o.mailbox)) {
-      const row = await this.receive(r.relay, r.cursor, r.bytes)
+      const row = await this.#receive(r.relay, r.cursor, r.bytes, null, true)
       if (row.state === 'received' || row.state === 'verified') continue
       rows.push(row)
       this.ack(row)

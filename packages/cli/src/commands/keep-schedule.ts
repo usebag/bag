@@ -5,8 +5,8 @@ import { CLI_MAIN } from '../entries.ts'
 // A person's own background `record keep` (the last-mile rulings, section 1): the text of a launchd job or a crontab
 // line, on stdout. Nothing here writes a job, and nothing touches launchd or cron: the person's one line does.
 
-/** Four runs a day, 6 hours apart (a job must run every 11), at a minute drawn so that jobs do not align. */
-const HOURS = [2, 8, 14, 20]
+/** Four runs a day, 6 hours apart (a job must run every 11), at a minute drawn so that jobs do not align. null: hourly. */
+const HOURS: readonly number[] | null = [2, 8, 14, 20]
 const MINUTE = randomInt(60)
 
 const xml = (s: string): string => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -15,11 +15,17 @@ const xml = (s: string): string => s.replaceAll('&', '&amp;').replaceAll('<', '&
  * A launchd job that runs `args` of the CLI at `main` (record.ts passes packaged.ts's stable entry) at HOURS, and at load. StartCalendarInterval, not StartInterval: launchd.plist(5) says
  * a calendar interval missed asleep runs at the next wake, once, and that an interval missed asleep is missed.
  */
-export function launchdJob(label: string, args: readonly string[], log: string, main = CLI_MAIN): string {
+export function launchdJob(
+  label: string,
+  args: readonly string[],
+  log: string,
+  main = CLI_MAIN,
+  hours = HOURS,
+): string {
   const argv = [process.execPath, main, ...args].map((a) => `    <string>${xml(a)}</string>`)
-  const when = HOURS.map(
-    (h) =>
-      `    <dict><key>Hour</key><integer>${h}</integer><key>Minute</key><integer>${MINUTE}</integer></dict>`,
+  const at = (h: number | null) => (h === null ? '' : `<key>Hour</key><integer>${h}</integer>`)
+  const when = (hours ?? [null]).map(
+    (h) => `    <dict>${at(h)}<key>Minute</key><integer>${MINUTE}</integer></dict>`,
   )
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -47,7 +53,7 @@ export function launchdJob(label: string, args: readonly string[], log: string, 
  * The crontab line that runs `args` of the CLI at `main` at HOURS. A run the machine sleeps through is skipped: cron
  * does not catch up.
  */
-export function crontabLine(args: readonly string[], log: string, main = CLI_MAIN): string {
+export function crontabLine(args: readonly string[], log: string, main = CLI_MAIN, hours = HOURS): string {
   const argv = [process.execPath, main, ...args].map(shq).join(' ')
-  return `${MINUTE} ${HOURS.join(',')} * * * ${argv} >> ${shq(log)} 2>&1`.replaceAll('%', '\\%')
+  return `${MINUTE} ${hours?.join(',') ?? '*'} * * * ${argv} >> ${shq(log)} 2>&1`.replaceAll('%', '\\%')
 }

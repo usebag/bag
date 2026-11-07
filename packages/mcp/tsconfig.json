@@ -11,5 +11,5 @@
     "rootDir": "."
   },
   "include": ["src", "test", "scripts", "vitest.config.ts"],
-  "references": [{ "path": "../core" }, { "path": "../edge" }]
+  "references": [{ "path": "../core" }, { "path": "../edge" }, { "path": "../enterprise-client" }]
 }

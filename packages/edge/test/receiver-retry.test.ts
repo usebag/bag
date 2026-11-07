@@ -178,7 +178,7 @@ describe('a transient rejection waits for a retry', () => {
     expect(got).toHaveLength(1)
   })
 
-  it('recovers only due rows, and returns only the rows that reached an outcome', async () => {
+  it('recovers every waiting row at once, whatever its next_at, and returns only the rows that reached an outcome', async () => {
     const store = new SqliteStore(':memory:')
     const audit = new MemoryAuditSink()
     const first = bob({ store, audit })
@@ -192,16 +192,71 @@ describe('a transient rejection waits for a retry', () => {
       [1, 'received', T0 + 3],
       [2, 'received', T0 + 2],
     ])
+    // A start checks both, the one not yet due included; each fails again and waits one more backoff.
     const second = bob({ store, audit })
-    second.clock.t = T0 + 2
+    second.clock.t = T0 + 1
     expect(await second.edge.receiver.recover()).toEqual([])
-    expect(store.inboxList().map((r) => [r.cursor, r.tries])).toEqual([
-      [1, 2],
-      [2, 2],
+    expect(store.inboxList().map((r) => [r.cursor, r.tries, r.nextAt])).toEqual([
+      [1, 3, T0 + 5],
+      [2, 2, T0 + 3],
     ])
+    // Neither is due at T0 + 2, and the next start routes both once the record is there.
     second.records.put(HOME, addressRecord(P.jane))
-    second.clock.t = T0 + 3
-    expect((await second.edge.receiver.recover()).map((r) => [r.cursor, r.state])).toEqual([[1, 'routed']])
+    second.clock.t = T0 + 2
+    const done = await second.edge.receiver.recover()
+    expect(done.map((r) => [r.cursor, r.state])).toEqual([
+      [1, 'routed'],
+      [2, 'routed'],
+    ])
+    expect(second.got.map((m) => m.id)).toEqual([waiting.id, later.id])
+  })
+
+  it('delivers a row refused for a trust failure at the next start that trusts its root, before its next_at and with no frame', async () => {
+    // The first-message stopwatch: the home trusts only a domain root that does not resolve, so the first read refuses
+    // the message resolve-failed and its own retrier tries again (tries 2, next_at two seconds on); the relay was
+    // acked and never frames it again. The next read, at once, trusts the sender's root by address.
+    const store = new SqliteStore(':memory:')
+    const clock = new FakeClock()
+    const records = new FakeRecords()
+    const relay = new MemoryRelay()
+    const audit = new MemoryAuditSink()
+    const make = (roots: { domain?: string; address?: string }[], accepted?: (row: InboxRow) => void) =>
+      new Edge({
+        keys: P.bob.keys,
+        store,
+        relays: { client: relay, urls: [HOME] },
+        records,
+        policy: { roots: roots as never, types: ['*'] },
+        clock,
+        rng: seededRng('bob-trust'),
+        audit,
+        lookup: PUBLIC_LOOKUP,
+        ...(accepted === undefined ? {} : { accepted }),
+      })
+    const e = envelope()
+    const before = make([{ domain: 'org.example.test' }])
+    expect(await before.receive(HOME, 1, e.bytes)).toMatchObject({
+      state: 'received',
+      reason: 'resolve-failed',
+    })
+    clock.t = T0 + 1
+    const waits = await before.receive(HOME, 1, e.bytes)
+    expect(waits).toMatchObject({ state: 'received', reason: 'resolve-failed', tries: 2, nextAt: T0 + 3 })
+    expect(before.receiver.ack(waits)).toMatchObject({ state: 'received' })
+
+    const accepted: InboxRow[] = []
+    const after = make([{ domain: 'org.example.test' }, { address: P.carol.address }], (row) =>
+      accepted.push(row),
+    )
+    const got: InboundMessage[] = []
+    after.setDefault({ session: 'inbox', deliver: (m) => void got.push(m) })
+    clock.t = T0 + 2
+    expect((await after.receiver.recover()).map((r) => [r.cursor, r.state, r.reason])).toEqual([
+      [1, 'routed', null],
+    ])
+    expect(got.map((m) => m.id)).toEqual([e.id])
+    expect(accepted.map((r) => r.id)).toEqual([e.id])
+    expect(store.inboxList().map((r) => [r.cursor, r.state, r.tries])).toEqual([[1, 'acked', 2]])
   })
 
   it('never handles one row twice at once: a frame redelivered while its row is in the policy step waits for it', async () => {
