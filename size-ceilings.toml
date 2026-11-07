@@ -47,7 +47,8 @@ path = 'packages/cli/src'
 # Raised 2026-10-29 from 4759 to 5241 under the same rule for that night's later raises (the measured figure plus 10 percent, rounded up): the forward-secrecy assembly measured packages/cli/src at 4764 by scripts/check-size.sh, and 4764 times 1.1 is 5240.4, rounded up.
 # Raised 2026-10-30 from 5241 to 6201 by a decision entry (the measured figure plus 10 percent): the multi-identity change (one Claude Code session with many identities: the identities file, host install and remove, the wake hook over every identity) measured packages/cli/src at 5637, and 5637 times 1.1 is 6200.7, rounded up.
 # Raised 2026-11-01 from 6237 to 6884 by a decision entry (the same entry as edge 12828): the client telemetry switch measured packages/cli/src at 6258, and 6258 times 1.1 is 6883.8, rounded up.
-ceiling = 6884 # earlier 6237, 6201, 5241, 4759, 3550, 3400 and 2875; raised 2026-10-27 from 2500 by 15 percent; earlier 2500 (2026-10-26, from 2200); earlier 1900, 1400; measured 1189, 1320, 1888 and 2191 as main grew
+# Raised 2026-11-07 from 6884 to 7623 by a decision entry (the same entry as enterprise-client 2680): the 0.2.1 assembly (branch release/0-2-1) measured packages/cli/src at 6930, and 6930 times 1.1 is 7623.0. The client defaults logic lives in packages/enterprise-client (defaults.ts); cli carries the command surface only.
+ceiling = 7623 # earlier 6884, 6237, 6201, 5241, 4759, 3550, 3400 and 2875; raised 2026-10-27 from 2500 by 15 percent; earlier 2500 (2026-10-26, from 2200); earlier 1900, 1400; measured 1189, 1320, 1888 and 2191 as main grew
 
 [mcp]
 path = 'packages/mcp/src'
@@ -56,6 +57,17 @@ path = 'packages/mcp/src'
 # Earlier: raised 2026-10-29 from 4417 to 5312 by a decision entry (the measured figure plus 10 percent): the pairing change measured packages/mcp/src at 4829, and 4829 times 1.1 is 5311.9, rounded up.
 # Earlier: raised 2026-10-28 from 3910 to 4417 by a decision entry (the measured figure plus 10 percent): the many-sessions change measured packages/mcp/src at 4015, and 4015 times 1.1 is 4416.5, rounded up.
 ceiling = 6939 # earlier 6257, 5312, 4417 and 3910; raised 2026-10-27 from 3300 by 15 percent (the recommended 3,400 plus 15%); earlier 3300 (2026-10-26, from 2800); measured 2399, then 2363
+
+[enterprise-client]
+path = 'packages/enterprise-client/src'
+# First ceiling 2026-11-07, 1953, by the rule of the latest raises (the measured figure plus 10 percent, rounded up): the
+# enterprise client ported into bag OSS as one public client (branch cli/public-client) measured
+# packages/enterprise-client/src at 1775 with this file's command, and 1775 times 1.1 is 1952.5. Proposed by the port
+# agent; it stands on the maintainer's decision entry.
+# Raised 2026-11-07 from 1953 to 2680 by a decision entry (the measured figure plus 10 percent, rounded up): the 0.2.1
+# assembly (branch release/0-2-1: the connect round trip, profiles, send and inbox session defaults, connect code labels
+# and the org directory) measured packages/enterprise-client/src at 2436, and 2436 times 1.1 is 2679.6, rounded up.
+ceiling = 2680 # earlier 1953
 
 [ac-core]
 path = 'crates/ac-core/src'

@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises'
 import {
   type CaveatEvaluator,
   codingEvaluator,
@@ -23,6 +24,7 @@ import {
   type SubscriptionLink,
   type TrustedRoot,
 } from '@usebag/edge'
+import { withSession } from '@usebag/enterprise-client'
 import { flag, list, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import {
   CLI_SESSION,
@@ -88,8 +90,8 @@ export function fromLabel(book: NameBook, from: string, handle: string | null): 
 /**
  * The line of a handled row: `accept <id> <from> <root> <type> <body>`, `reject <id> <code>`, or `quarantined <id>
  * <code>` for a row the org's policy holds (no body: none is stored; inbox --quarantined names its rule). A row that
- * waits for a retry after a transient rejection (received, with its code) prints as rejected with that
- * code, as it did before; when a retry accepts it, the Receiver acks it again and it prints as accepted. With the
+ * waits for a retry after a transient rejection (received, with resolve-failed or future-ts) is kept: `waiting <id>
+ * <code>: kept; the next read after <what> delivers it`; when a retry accepts it, it prints as accepted. With the
  * home's name book, <from> and <root> print through its label: "<name> (<short>)", a former address with its
  * warning, or as is. A verified handle of the principal, or else of the sender, follows the petname in <from>
  * (fromLabel): only from a handle
@@ -98,7 +100,10 @@ export function fromLabel(book: NameBook, from: string, handle: string | null): 
  */
 export function rowLine(row: InboxRow, book: NameBook, resolver: Pick<Resolver, 'handleOf'>): string {
   if (row.state === 'quarantined') return `quarantined ${row.id} ${row.reason}`
-  if (row.state === 'rejected' || row.state === 'received') return `reject ${row.id ?? '-'} ${row.reason}`
+  const after = row.reason === 'future-ts' ? 'its timestamp is past' : 'the trust root is fixed'
+  if (row.state === 'received')
+    return `waiting ${row.id ?? '-'} ${row.reason}: kept; the next read after ${after} delivers it`
+  if (row.state === 'rejected') return `reject ${row.id ?? '-'} ${row.reason}`
   const env = parseEnvelope(row.bytes)
   const { root, principal } = verifyChain(env.auth, env.from, env.ts)
   const content = JSON.parse(row.content as string) as SealedContent
@@ -109,7 +114,7 @@ export function rowLine(row: InboxRow, book: NameBook, resolver: Pick<Resolver, 
   return `accept ${env.id} ${from} ${book.label(root)} ${shownType(content.type)} ${JSON.stringify(content.body)}`
 }
 
-/** The states rowLine prints as `reject` (rejected, or received and waiting for a retry) or `quarantined`. */
+/** The states rowLine prints as `reject` (rejected), `waiting` (received, waiting for a retry) or `quarantined`. */
 export const REFUSED: ReadonlySet<string> = new Set(['rejected', 'received', 'quarantined'])
 
 /**
@@ -134,8 +139,9 @@ export function linkLines(io: Pick<Io, 'err'>): (link: SubscriptionLink) => void
 /** A subscription that reports every ack, and, given an idle limit, ends when no frame arrives within it. */
 export class ObservedSubscription implements Subscription {
   readonly #inner: Subscription
-  readonly #idleMs: number | null
+  #idleMs: number | null
   readonly #onAck: (cursor: number) => void
+  #quiet: AbortController | null = null
 
   constructor(inner: Subscription, idleMs: number | null, onAck: (cursor: number) => void) {
     this.#inner = inner
@@ -161,24 +167,27 @@ export class ObservedSubscription implements Subscription {
     this.#inner.close()
   }
 
+  /** The relay admitted the subscription: the limit becomes `ms` (if shorter), from now, the wait under way too. */
+  admitted(ms: number): void {
+    this.#idleMs = this.#idleMs === null ? null : Math.min(ms, this.#idleMs)
+    this.#quiet?.abort()
+  }
+
   async #next(frames: AsyncIterator<Frame>): Promise<IteratorResult<Frame> | null> {
     const pending = frames.next()
-    if (this.#idleMs === null) return pending
-    let timer: NodeJS.Timeout | undefined
-    const idle = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), this.#idleMs as number)
-    })
-    try {
-      return await Promise.race([pending, idle])
-    } finally {
-      clearTimeout(timer)
+    for (;;) {
+      if (this.#idleMs === null) return pending
+      this.#quiet = new AbortController()
+      const idle = sleep(this.#idleMs, null, { signal: this.#quiet.signal }).catch(() => undefined) // undefined: shortened
+      const got = await Promise.race([pending, idle]).finally(() => this.#quiet?.abort())
+      if (got !== undefined) return got
     }
   }
 }
 
 const [S, M, B] = [{ type: 'string' }, { type: 'string', multiple: true }, { type: 'boolean' }] as const
-const OPTIONS = { as: S, once: B, quarantined: B, policy: S, members: S, dir: S, group: S }
-const FLAGS = { 'allow-private-relays': B, 'doorbell-path': B }
+const OPTIONS = { as: S, once: B, quarantined: B, policy: S, members: S, dir: S, group: S, relay: M, org: S }
+const FLAGS = { 'allow-private-relays': B, 'doorbell-path': B, 'trust-root': M, 'accept-type': M, honor: M }
 
 /**
  * inbox --as <name> --relay <url>... [--once] [--quarantined] [--trust-root <domain|address>...] [--honor <profile>...]
@@ -205,11 +214,9 @@ export async function inbox(
 ): Promise<number> {
   const show = shown ?? ((_row: InboxRow, line: string) => io.out(line))
   const act = args[0] === 'release' || args[0] === 'drop' ? args[0] : null
-  const p = parse(act === null ? args : args.slice(1), {
-    positionals: act === null ? [] : ['seq'],
-    options: { ...OPTIONS, ...FLAGS, relay: M, 'trust-root': M, honor: M, 'accept-type': M },
-    required: ['as', 'relay'],
-  })
+  const [rest, positionals] = act === null ? [args, []] : [args.slice(1), ['seq']]
+  const parsed = parse(rest, { positionals, options: { ...OPTIONS, ...FLAGS } })
+  const p = withSession(parsed, 'inbox', io, (d) => homeDir(io, d), UsageError)
   const relays = [...new Set(list(p, 'relay').map(relayUrl))]
   const relay = relays[0] as string
   const home = homeDir(io, str(p, 'dir'))
@@ -218,7 +225,7 @@ export async function inbox(
   const [name, group] = [req(p, 'as'), str(p, 'group')]
   const g = group === undefined ? [] : [book.resolve(group)]
   const stored = Object.keys(readTrust(home)).map((r) => domainOfRoot(r) ?? r) // a domain root reads as its host
-  const roots = [...list(p, 'trust-root'), ...stored, ...g].map(trustedRoot)
+  const roots = [...new Set([...list(p, 'trust-root'), ...stored, ...g].map(p.root))].map(trustedRoot)
   const evaluators = [...honored(list(p, 'honor')), ...(group === undefined ? [] : [groupEvaluator])]
   const types = list(p, 'accept-type')
   const seq = act === null ? 0 : seqOf(p.positionals[0] as string)
@@ -234,9 +241,8 @@ export async function inbox(
     io.out(`doorbell ${doorbellPath(home, name)}`)
   }
   const receive = async (live: boolean, o: Partial<OpenOptions>, accept?: Omit<AcceptOptions, 'audit'>) => {
-    const signal = live ? io.stopSignal() : undefined
+    const [signal, linkLine] = live ? [io.stopSignal(), linkLines(io)] : [undefined, undefined]
     const base = io.relay(live ? {} : { maxReconnects: 0 })
-    const linkLine = live ? linkLines(io) : undefined
     let opened: OpenEdge | undefined
     // An accepted row prints from the edge's `accepted`, once, when the edge acks it on any path (a frame, the
     // retrier, recover()); a frame's ack prints only a refused, waiting or held row, before the edge acks it.
@@ -254,12 +260,13 @@ export async function inbox(
       publish: base.publish.bind(base),
       fetch: base.fetch.bind(base),
       fetchRecord: base.fetchRecord.bind(base),
-      subscribe: (url, mailbox, signer, hops, cursor) =>
-        new ObservedSubscription(
-          base.subscribe(url, mailbox, signer, hops, cursor, linkLine),
-          live ? null : io.idleMs,
-          (cursor) => onAck(url, cursor),
-        ),
+      subscribe: (url, mailbox, signer, hops, cursor) => {
+        // Admitted, a relay sends its backlog at once (spec/SPEC.md §8.5 step 4): --once ends 200 ms after it is quiet.
+        const link = (l: SubscriptionLink) => l.admitted && queueMicrotask(() => seen.admitted(200))
+        const inner = base.subscribe(url, mailbox, signer, hops, cursor, live ? linkLine : link)
+        const seen = new ObservedSubscription(inner, live ? null : io.idleMs, (c) => onAck(url, c))
+        return seen
+      },
     }
     // A throw from `accepted` (the edge reports it, the row stays acked) is one stderr line, as the doorbell's is.
     const onError = (e: unknown): void =>
@@ -319,10 +326,8 @@ async function decide(
   book: NameBook,
   io: Io,
 ): Promise<number> {
-  const { receiver } = edge
-  const apply = async (): Promise<InboxRow> =>
-    act === 'release' ? receiver.release(seq) : receiver.drop(seq)
-  const entry = receiver.quarantined().find((q) => q.row.seq === seq)
+  const apply = async (): Promise<InboxRow> => edge.receiver[act](seq)
+  const entry = edge.receiver.quarantined().find((q) => q.row.seq === seq)
   if (entry === undefined) await apply()
   io.out(quarantinedLine(entry as Quarantined, book))
   await confirmed(io, `${act} quarantined row ${seq}?`, `row ${seq} stays quarantined`)

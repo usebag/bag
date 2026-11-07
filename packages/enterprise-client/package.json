@@ -1,0 +1,23 @@
+{
+  "name": "@usebag/enterprise-client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bag enterprise client: connect with a console's one-time code, sign in with a person's approval, the refresh tick, the agent's records at the organisation's relays and the MCP tools; one public client, the organisation's instance gates it.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./test/support/fake-instance.ts"
+  },
+  "scripts": {
+    "test": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@usebag/core": "0.0.0",
+    "@usebag/edge": "0.0.0"
+  }
+}

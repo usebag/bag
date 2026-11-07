@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto'
-import { readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { domainOfRoot, isAddress } from '@usebag/core'
+import { writeTrustFile } from '@usebag/enterprise-client'
 import { CliError } from './args.ts'
 
 // The trust file: <home>/trust.json, the roots `peer` granted, which inbox trusts beside --trust-root and
@@ -40,9 +40,7 @@ export function addTrust(home: string, root: string, now: number): void {
   if (!isTrustRoot(root))
     throw new CliError('trust-invalid', `${JSON.stringify(root)} is not a root a trust file holds`)
   const roots = { [root]: { added_at: now }, ...readTrust(home) }
-  const tmp = join(home, `.trust.json.${randomUUID()}.tmp`)
-  writeFileSync(tmp, `${JSON.stringify({ version: 1, roots }, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
-  renameSync(tmp, join(home, 'trust.json'))
+  writeTrustFile(home, roots)
 }
 
 /**
@@ -54,8 +52,6 @@ export function removeTrust(home: string, root: string): boolean {
     throw new CliError('trust-invalid', `${JSON.stringify(root)} is not a root a trust file holds`)
   const { [root]: gone, ...roots } = readTrust(home)
   if (gone === undefined) return false
-  const tmp = join(home, `.trust.json.${randomUUID()}.tmp`)
-  writeFileSync(tmp, `${JSON.stringify({ version: 1, roots }, null, 2)}\n`, { mode: 0o600, flag: 'wx' })
-  renameSync(tmp, join(home, 'trust.json'))
+  writeTrustFile(home, roots)
   return true
 }

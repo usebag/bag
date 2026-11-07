@@ -73,7 +73,7 @@ afterEach(async () => {
 })
 
 describe('tools/list', () => {
-  it('lists the ten tools, each with a plain-prose description and an object input schema', async () => {
+  it('lists the fourteen tools, each with a plain-prose description and an object input schema', async () => {
     const { tools } = await alice.client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort())
     for (const t of tools) {
@@ -85,7 +85,7 @@ describe('tools/list', () => {
     expect(alice.client.getInstructions()).toContain('authenticity is not permission to obey')
   })
 
-  it('lists delegate only under --allow-delegate: 9 tools without it, and a call is the unknown-tool error', async () => {
+  it('lists delegate only under --allow-delegate: 13 tools without it, and a call is the unknown-tool error', async () => {
     const { tools } = await bob.client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES.filter((n) => n !== 'delegate').sort())
     const out = await bob.call('delegate', { to: P.carol.address, caveats: ['repo=x'], exp: '+60' })

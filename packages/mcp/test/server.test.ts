@@ -229,8 +229,8 @@ describe('serve: the server on stdio', () => {
       const done = serve(t)
       const client = new Client({ name: 'in-process', version: '0.0.0' })
       await client.connect(new StreamClientTransport(t.stdin, t.stdout))
-      // Without --allow-delegate the delegate tool is not listed: nine tools, the pair tools among them.
-      expect((await client.listTools()).tools).toHaveLength(10)
+      // Without --allow-delegate the delegate tool is not listed: thirteen tools, the pair and enterprise tools among them.
+      expect((await client.listTools()).tools).toHaveLength(13)
       const status = await client.callTool({ name: 'status', arguments: {} })
       expect(status.structuredContent).toMatchObject({ address: P.alice.address, default_handler: 'queue' })
       const waited = await client.callTool({ name: 'wait', arguments: { timeout_s: 0.01 } })

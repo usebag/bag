@@ -31,6 +31,8 @@ export interface TestIo extends Io {
   readonly answers: boolean[]
   /** The prompts confirm was asked. */
   readonly asked: string[]
+  /** The texts prompt wrote on stderr with no newline (connect's "Paste the code: "), in order. */
+  readonly prompts: string[]
   /** The lines readLine gives, in order (none left: null, the end of input). */
   readonly lines: string[]
 }
@@ -61,6 +63,7 @@ export function testIo(
     secrets: 0,
     answers: [],
     asked: [],
+    prompts: [],
     lines: [],
     get isTty() {
       return io.tty
@@ -71,6 +74,9 @@ export function testIo(
     confirm: async (prompt) => {
       io.asked.push(prompt)
       return io.answers.shift() ?? false
+    },
+    prompt: (text) => {
+      io.prompts.push(text)
     },
     readLine: async () => (released ? null : (io.lines.shift() ?? null)),
     readSecret: async () => {

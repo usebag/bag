@@ -106,6 +106,8 @@ describe('e2e scenario 18: two MCP servers, two agents, one real relay', () => {
       expect([alice.pid, bob.pid].every((pid) => pid !== null && pid !== process.pid)).toBe(true)
       expect((await alice.client.listTools()).tools.map((t) => t.name).sort()).toEqual([
         'ask',
+        'connect',
+        'enterprise_status',
         'handoff',
         'inbox',
         'lookup',
@@ -113,6 +115,7 @@ describe('e2e scenario 18: two MCP servers, two agents, one real relay', () => {
         'pair_invite',
         'receipts',
         'send',
+        'sign_in',
         'status',
         'wait',
       ])

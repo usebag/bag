@@ -23,6 +23,6 @@ describe('e2e toolchain smoke', () => {
     const code = `import { dependsOn } from ${JSON.stringify(entry)}; console.log(JSON.stringify(dependsOn()))`
     const child = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8' })
     expect(child.status, child.stderr).toBe(0)
-    expect(JSON.parse(child.stdout)).toEqual(['@usebag/core', '@usebag/edge'])
+    expect(JSON.parse(child.stdout)).toEqual(['@usebag/core', '@usebag/edge', '@usebag/enterprise-client'])
   })
 })

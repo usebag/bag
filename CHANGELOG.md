@@ -4,6 +4,111 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.2.1: 2026-11-07
+
+The cut tagged v0.2.1, `@usebag/bag` 0.2.1.
+
+- **`@usebag/bag` 0.2.1**, published from this cut (`npm view @usebag/bag@0.2.1 gitHead` names it).
+
+### Enterprise: connect proves the path
+
+- **`bag connect` ends with one line, `Connected as <label>; relay round trip <n> ms`.** Once the organisation
+  approves, the same command publishes the agent's records at every relay of the organisation, sends the agent one
+  envelope from its own session key through the organisation's first relay (the same send path as `bag send`) and
+  reads it back on the agent's own subscription, acknowledged so that the agent's inbox does not show it. `<n>` is that
+  round trip, on a monotonic clock. Nothing else is to be run before the first send.
+- **A step that fails is one line, exit 1, the session kept**: `Connected as <label>, but its records were not
+  published at <relay> (<code>): bag status tries again`, or `..., but the relay round trip failed at <relay>
+  (<code>): ...`. Each relay step is bounded at 5 s (`timeout`).
+- **`--verbose`** prints what connect printed before (`Connecting to <domain> at <origin>`, `Approved: agent
+  <fingerprint>`) and each relay's records; without it no fingerprint, key or address is printed. The line
+  `relay <relay>: records not published (<code>)` is replaced by the failure line above.
+- **`bag status`** (with no `--as`), for a live session, adds the same line from one probe that sends nothing (the
+  agent's address record read back from the first relay), or the failure line with exit 1.
+- **The MCP tools** `connect` and `status` (and `enterprise_status` of `bag-mcp`) return the same lines.
+- **Where the check message can show once.** When the organisation has more than one relay, the check envelope also
+  reaches the agent's other relays, up to three, and an inbox read at one of those shows it once. When older mail waits
+  ahead of it at the first relay, as after a reconnect with the same keys, connect leaves that mail alone, and the
+  agent's inbox shows the check message once after it.
+
+### Enterprise: the code's label
+
+- **A connect code carries the agent's label.** `bag connect` sends no label unless `--label` is given; `Connected as
+  <label>` prints the label the organisation returns (the code's, such as `example-com-1`, or the next free number
+  when that one is held), and the session keeps it for `bag status`. A `--label` that a live agent of the
+  organisation already holds exits 1 with `label_taken`, naming the label, and leaves the code unused. The MCP
+  `connect` tools return the same lines.
+
+### Enterprise: one profile per organisation
+
+- **Connecting to a second organisation keeps the first.** `bag connect` and `bag sign-in` on a home already signed in
+  to another organisation add the new one beside it and revoke nothing: no sign-out is asked for and no key is
+  revoked. The line names both: `Connected as <label> (<domain>); relay round trip <n> ms; also signed in to <other>:
+  bag status --org <other>`.
+- **`--org <domain>`** picks the organisation for `bag status` and `bag sign-out`. With one it is implied. With
+  several, `status` shows the most recently connected and names it and the others in one line on stderr, and refreshes
+  them all; `sign-out` without `--org` removes nothing and exits 2 with the list. `bag sign-out --org <domain>` revokes
+  that one only. The MCP `status` and `enterprise_status` tools take an optional `org`.
+- **The home's layout.** Each organisation's session files now live in `<home>/orgs/<domain>/enterprise/`;
+  `<home>/enterprise/current.json` names the most recently connected. A home of the older shape is moved into its
+  organisation's profile the first time it is read, with nothing to do. The chain file a session prints moves with it:
+  `bag status` names the new path.
+
+### Enterprise: send and inbox with no flags
+
+- **`bag send` and `bag inbox` after `bag connect`, with no other flag.** With a live enterprise session,
+  `bag send --to <name|label|address> --type <type> --body <json>` and `bag inbox --once` take the relay, the sender,
+  the chain and the trust root from the session; a flag given still wins, and with no session nothing changes. The
+  trust root is the organisation's root address, so receiving never waits on a DNS lookup, and `--trust-root
+  <domain>` for the session's own domain reads as that address. A `--to` the name book lacks is looked up as an
+  agent's label in the organisation's directory. `bag inbox --once` ends 200 ms after the relay admits it and its
+  backlog is delivered, instead of after a fixed second: about 0.45 s end to end on this machine, where it was 1.25 s.
+  With several organisations in the home, both take `--org <domain>`, and without it name the organisation they use on
+  stderr; the directory's copy is kept per organisation.
+- **`bag inbox` says when a message is kept, not refused.** A message refused for a cause that can pass prints
+  `waiting <id> resolve-failed: kept; the next read after the trust root is fixed delivers it` (or `future-ts`, `...
+  after its timestamp is past ...`) instead of `reject <id> <code>`, and the next read delivers it with no resend.
+  `reject` is kept for final verdicts.
+- **`bag send` needs no `--type`.** Without one the message's type is `chat.v1`; a `--type` given wins.
+- **`bag send --body @-` and `--body @<path>`.** The JSON body from stdin, read whole, or from a regular file (no
+  symbolic link followed), each at most 65,536 bytes: text from elsewhere never has to be quoted into the command line,
+  for example `printf '%s' "$text" | jq -c '{text: .}' | bag send --to <name> --body @-`.
+
+## v0.2.0: 2026-11-07
+
+The cut tagged v0.2.0, `@usebag/bag` 0.2.0.
+
+- **`@usebag/bag` 0.2.0**, published from this cut (`npm view @usebag/bag@0.2.0 gitHead` names it).
+
+### The enterprise client: one public client
+
+- **`bag connect`.** Connects this machine's agent to its organisation with the one-time code a person copies from
+  their organisation's bag console. The code is read from `BAG_ORG_CODE` or from one line of stdin ("Paste the code"),
+  never from the command line. The code names the instance and the organisation, so nothing else is typed: the
+  instance it names is pinned (no discovery), https or http on this machine only, the private-address guard runs
+  before any call, and no call follows a redirect. It prints `Connecting to <domain> at <origin>`, `Approved: agent
+  <fingerprint>` and `Connected as <label>`; exit 4 while the organisation's signer is still to sign. No key, token or
+  code is printed.
+- **`bag sign-in <domain> --instance <origin> [--no-wait]`.** The same session without a code: the device flow a
+  person approves in the console. It prints the link to open, the user code and the key's fingerprint, and with
+  `--no-wait` exits 4 while the approval waits; the same line run again resumes it. `--instance` pins the console origin
+  as a code does. Without `--instance`, the instance comes from `BAG_ENTERPRISE_INSTANCES`, the organisation's
+  `.well-known/bag/enterprise.json` record, or `BAG_ENTERPRISE_URL`.
+- **`bag status`** (with no `--as`) shows the enterprise session after one refresh tick: the organisation, the agent's
+  address, its state, the token, the org hop and the local hop, the generation; `--chain` prints the chain for an MCP
+  server's `--chain-cmd`; `--plist` and `--crontab` print the hourly refresh job. `bag sign-out` ends the session.
+  Exits: 0 done, 1 refused or failed, 2 usage, 3 ended or none, 4 waiting on a person or the signer.
+- **The agent's records.** After the grant, and again before they lapse, the agent publishes its address record and
+  its accept-from record at each relay the organisation names, signed by its own key on this machine; a relay that did
+  not take them is one line, `relay <relay>: records not published (<code>)`, and every tick tries again.
+- **The MCP tools.** `bag mcp` serves `connect`, `sign_in` and `status` over stdio to an MCP host, for an agent with
+  no identity yet: `claude mcp add bag -- npx -y @usebag/bag@<version> mcp`, then the person pastes the code into the
+  chat. The identity server, `bag-mcp`, lists the same three as `connect`, `sign_in` and `enterprise_status` beside
+  its other tools. Every result holds only the lines the commands print, scrubbed of the code, the device code and
+  the token.
+- **The home.** The session lives in `<home>/enterprise/` of bag's own home (`AC_HOME`, else `~/.bag`), 0700 with 0600
+  files; a home of another user is refused, and every run holds the home to its owner.
+
 ## v0.1.2: 2026-11-04
 
 The cut tagged v0.1.2, `@usebag/bag` 0.1.2.

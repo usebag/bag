@@ -184,8 +184,8 @@ describe('loadRecords: the two records from their files, verified once, or a Pol
 })
 
 describe('the MCP view of the policy: counts and metadata, never a body, and no tool that releases', () => {
-  it('has no tool to release, drop or edit policy: the tools are the ten', async () => {
-    // --allow-delegate, so that the list is the full ten (delegate is hidden without it).
+  it('has no tool to release, drop or edit policy: the tools are the fourteen', async () => {
+    // --allow-delegate, so that the list is the full fourteen (delegate is hidden without it).
     const bob = await serverFor(P.bob, ['--members', membersFile(), '--allow-delegate'])
     const { tools } = await bob.client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort())

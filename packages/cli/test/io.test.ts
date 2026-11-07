@@ -36,6 +36,16 @@ describe('processIo: the real io on a process', () => {
     expect(io.rng.bytes(32)).toHaveLength(32)
   })
 
+  it('readAll reads stdin whole as UTF-8, and gives null past its bound', async () => {
+    const chunks = [Buffer.from('{"text":'), Buffer.from('"h\u00e9"}')]
+    expect(await processIo(fakeProcess(chunks as unknown as string[])).readAll?.(100)).toBe(
+      '{"text":"h\u00e9"}',
+    )
+    expect(
+      await processIo(fakeProcess([Buffer.alloc(8), Buffer.alloc(8)] as unknown as string[])).readAll?.(15),
+    ).toBeNull()
+  })
+
   it('makes relay clients with the health probe, and a record source over them', () => {
     const io = processIo(fakeProcess())
     const client = io.relay({ maxReconnects: 0 })
@@ -47,6 +57,16 @@ describe('processIo: the real io on a process', () => {
       'txt',
       'wellKnown',
     ])
+  })
+
+  it('writes a prompt on stderr with no newline, and stdinEnded resolves when stdin ends (bag mcp)', async () => {
+    const proc = fakeProcess(['a frame\n'])
+    const io = processIo(proc)
+    io.prompt('Paste the code: ')
+    expect([proc.out, proc.err]).toEqual([[], ['Paste the code: ']])
+    const ended = io.stdinEnded?.()
+    proc.stdin.resume()
+    await expect(ended).resolves.toBeUndefined()
   })
 
   for (const signal of ['SIGINT', 'SIGTERM']) {

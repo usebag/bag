@@ -610,13 +610,17 @@ describe("send --auth and inbox --honor: a session that signs under its principa
     const { chain } = await delegated(w, ['type=other.v1'], false)
     const early = (await send(w, 'alice-session', 'chat.v1', '{}', '--auth', chain)).out[0] as string
     expect((await inboxOnce(w, '--trust-root', w.alice, '--honor', 'coding')).out).toEqual([
-      `reject ${early} resolve-failed`,
+      `waiting ${early} resolve-failed: kept; the next read after the trust root is fixed delivers it`,
     ])
     const file = join(w.dir, 'alice.address.json')
     await cli(w.io, 'record', 'address', 'alice', '--relay', RELAY, '--out', file, '--dir', w.dir)
     await cli(w.io, 'publish', RELAY, file)
     const unhonored = (await send(w, 'alice-session', 'chat.v1', '{}', '--auth', chain)).out[0] as string
-    expect((await inboxOnce(w, '--trust-root', w.alice)).out).toEqual([`reject ${unhonored} unknown-caveat`])
+    // The read's start checks the waiting row at once: the root's record is there now, so it meets its caveat too.
+    expect((await inboxOnce(w, '--trust-root', w.alice)).out).toEqual([
+      `reject ${early} unknown-caveat`,
+      `reject ${unhonored} unknown-caveat`,
+    ])
     const failing = (await send(w, 'alice-session', 'chat.v1', '{}', '--auth', chain)).out[0] as string
     expect(
       (await inboxOnce(w, '--trust-root', w.alice, '--honor', 'coding', '--honor', 'coding')).out,
@@ -735,6 +739,28 @@ describe('ObservedSubscription: reports acks, and ends a quiet stream when it ha
     }
     sub.close()
     expect([got, inner.acked, seen, inner.closed]).toEqual([[1, 2], [1, 2], [1, 2], true])
+  })
+
+  it('admitted(ms) shortens the limit from then on, the wait under way included; never lengthens it, never sets one', async () => {
+    const sub = new ObservedSubscription(fake([]), 5000, () => {})
+    const start = performance.now()
+    const ended = (async () => {
+      for await (const _ of sub) throw new Error('no frame')
+    })()
+    await new Promise((done) => setTimeout(done, 10))
+    sub.admitted(9000)
+    sub.admitted(20)
+    await ended
+    expect(performance.now() - start).toBeLessThan(1000)
+    const live = new ObservedSubscription(fake([{ cursor: 1, envelopeBytes: utf8('{}') }]), null, () => {})
+    live.admitted(20)
+    const it = live[Symbol.asyncIterator]()
+    expect((await it.next()).value?.cursor).toBe(1)
+    const more = await Promise.race([
+      it.next(),
+      new Promise((done) => setTimeout(() => done('still open'), 60)),
+    ])
+    expect(more).toBe('still open')
   })
 
   it('without an idle limit ends only when the inner stream ends', async () => {

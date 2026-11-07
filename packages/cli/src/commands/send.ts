@@ -1,5 +1,7 @@
-import { checkThread, isAddress, isHandle } from '@usebag/core'
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs'
+import { checkThread, isAddress, isHandle, MAX_ENVELOPE_BYTES } from '@usebag/core'
 import { type Edge, membershipHop, type OutboxTarget, SendHeld, type SendResult } from '@usebag/edge'
+import { withSession } from '@usebag/enterprise-client'
 import { CliError, flag, list, type Parsed, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { readChain } from '../chain.ts'
 import { CLI_SESSION, homeDir, type OpenEdge, openEdge } from '../home.ts'
@@ -71,11 +73,31 @@ export function reportSent(
   return 0
 }
 
+/**
+ * --body as given; `@-`, the JSON on stdin, read whole; `@<path>`, a regular file, never through a symbolic link. Either
+ * is at most the envelope cap (body-too-large), so text from elsewhere never has to be quoted into the command line.
+ */
+async function bodyText(io: Io, text: string): Promise<string> {
+  if (!text.startsWith('@')) return text
+  const big = () =>
+    new CliError('body-too-large', `--body ${text}: over ${MAX_ENVELOPE_BYTES} bytes, the envelope cap`)
+  if (text === '@-') return (await io.readAll?.(MAX_ENVELOPE_BYTES)) ?? Promise.reject(big())
+  const fd = openSync(text.slice(1), constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) throw new UsageError(`--body ${text} is not a regular file`)
+    if (st.size > MAX_ENVELOPE_BYTES) throw big()
+    return readFileSync(fd, 'utf8')
+  } finally {
+    closeSync(fd)
+  }
+}
+
 /** True for a --to that is resolved without the name book: an address, or a handle (spec/SPEC.md §12.3). */
 const unnamed = (t: string): boolean => isAddress(t) || isHandle(t)
 
 /**
- * send --as <name> --to <name|address|handle>... --relay <url> --type <type> --body <json> [--auth <chain.json>]
+ * send --as <name> --to <name|address|handle>... --relay <url> --body <json|@-|@file> [--type <type>] [--auth <chain.json>]
  * [--thread <id> [--prev <id>...]] [--policy <file>] [--members <file>] [--allow-private-relays] [--dir <home>]: one
  * envelope through the edge's Sender, sealed to every recipient, its exact bytes kept in the outbox and published to every recipient relay (the relay
  * given looks the recipients' records up). The identity signs as its own root, or, with --auth, as a session under the
@@ -93,7 +115,7 @@ const unnamed = (t: string): boolean => isAddress(t) || isHandle(t)
  * policy-refused before sealing, and a send a breaker trips is held: `held <id> <rule>`, for a person (held.ts).
  */
 export async function send(args: readonly string[], io: Io): Promise<number> {
-  const p = parse(args, {
+  const spec = {
     positionals: [],
     options: {
       as: { type: 'string' },
@@ -108,21 +130,25 @@ export async function send(args: readonly string[], io: Io): Promise<number> {
       members: { type: 'string' },
       'allow-private-relays': { type: 'boolean' },
       dir: { type: 'string' },
+      org: { type: 'string' },
     },
-    required: ['as', 'to', 'relay', 'type', 'body'],
-  })
+  } as const
+  const p = withSession(parse(args, spec), 'send', io, (d) => homeDir(io, d), UsageError)
   // A --to that is neither an address nor a handle is a name: the book is read only then.
   const given = list(p, 'to')
   const book = given.every(unnamed) ? null : NameBook.load(homeDir(io, str(p, 'dir')))
-  const named = given.map((t) => (unnamed(t) ? t : (book as NameBook).resolve(t)))
+  const named = await Promise.all(
+    given.map((t) => (unnamed(t) ? t : (book as NameBook).find(t, io.fetch, str(p, 'org')))),
+  )
   let body: unknown
   try {
-    body = JSON.parse(req(p, 'body'))
-  } catch {
-    throw new UsageError('--body is not JSON')
+    body = JSON.parse(await bodyText(io, req(p, 'body')))
+  } catch (e) {
+    throw e instanceof CliError || (e as { code?: unknown }).code !== undefined
+      ? e
+      : new UsageError('--body is not JSON')
   }
-  const threadId = str(p, 'thread')
-  const prev = list(p, 'prev')
+  const [threadId, prev] = [str(p, 'thread'), list(p, 'prev')]
   if (threadId === undefined && prev.length > 0) throw new UsageError('--prev needs --thread')
   const thread = threadId === undefined ? undefined : checkThread({ id: threadId, prev })
   const { opened } = openSender(io, p, named)
@@ -132,7 +158,7 @@ export async function send(args: readonly string[], io: Io): Promise<number> {
     const input = {
       to,
       relays,
-      type: req(p, 'type'),
+      type: str(p, 'type') ?? 'chat.v1',
       body,
       session: CLI_SESSION,
       ...(thread === undefined ? {} : { thread }),
@@ -142,10 +168,9 @@ export async function send(args: readonly string[], io: Io): Promise<number> {
       throw e
     })
     if (!('held' in sent)) return reportSent(io, edge, sent, () => unpaired(io, p, to))
-    const { id, rule } = sent
-    io.out(`held ${id} ${rule}`)
+    io.out(`held ${sent.id} ${sent.rule}`)
     io.out(
-      `nothing was sealed or sent: a person releases or drops it on a terminal (held release|drop ${id})`,
+      `nothing was sealed or sent: a person releases or drops it on a terminal (held release|drop ${sent.id})`,
     )
     return 0
   } finally {

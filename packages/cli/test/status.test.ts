@@ -122,7 +122,7 @@ describe('status: the doorbell line first, then one line for a subscription the 
     ])
   })
 
-  it('refuses a log whose chain does not verify (bad-audit), a missing --as, and an identity the home lacks', async () => {
+  it('refuses a log whose chain does not verify (bad-audit) and an identity the home lacks; no --as is the enterprise status', async () => {
     const { dir, io } = await home()
     const file = log(dir, [retry, retry])
     const lines = readFileSync(file, 'utf8').split('\n')
@@ -136,7 +136,10 @@ describe('status: the doorbell line first, then one line for a subscription the 
     expect((await cli(io, 'status', '--as', 'bob', '--dir', dir)).err).toEqual([
       `bag: bad-audit: ${file} line 1: not an audit line`,
     ])
-    expect((await cli(io, 'status', '--dir', dir)).err[0]).toBe('bag: usage: --as is required')
+    // Changed 2026-11-07 (the one public client): status with no --as is the bag enterprise session's, so a
+    // home with none is exit 3.
+    const bare = await cli(io, 'status', '--dir', dir)
+    expect([bare.code, bare.err[0]]).toEqual([3, 'bag: signed-out: not signed in: bag sign-in <domain>'])
     const nobody = await cli(io, 'status', '--as', 'nobody', '--dir', dir)
     expect([nobody.out, nobody.err[0]]).toEqual([[], expect.stringMatching(/^bag: ENOENT: /)])
     const outside = await cli(io, 'status', '--as', '../keys', '--dir', dir)

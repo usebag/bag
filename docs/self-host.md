@@ -244,7 +244,7 @@ Get the code at the commit you were given, and install the CLI's dependencies. E
 from this clone (`README.md`, "Quick start", steps 1 and 2, has the git bundle route too):
 
 ```sh
-git clone https://github.com/usebag/bag bag
+git clone https://github.com/usebag/bag.git bag
 cd bag
 CUT='PUT THE COMMIT HERE'                  # the 40-hex commit you were given
 git checkout --detach "$CUT"

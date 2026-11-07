@@ -1,0 +1,127 @@
+{
+  "note": "The connect-code cross-check: the instance's parser verdict on each string (refused, or '<origin> <domain>'), as the instance's own test of its connectCodeOf and parseConnectCode gave them beside this client's. Synthetic test values only: the secret is a fixed test string.",
+  "secret": "connect-test-secret-only-for-these-tests-00",
+  "minted": [
+    {
+      "instance": "https://ent.example.test",
+      "domain": "acme.example",
+      "code": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-00",
+      "bind_nonce": "ec8a81716d26d04ab68c85dcd1329aa6ab203ed0f95ced9d5bc1c13fa320a8ef"
+    },
+    {
+      "instance": "http://127.0.0.1:18788",
+      "domain": "signin-test.example.org",
+      "code": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHA6Ly8xMjcuMC4wLjE6MTg3ODgiLCJkb21haW4iOiJzaWduaW4tdGVzdC5leGFtcGxlLm9yZyJ9.connect-test-secret-only-for-these-tests-00",
+      "bind_nonce": "4bc9574f2fde2a1a208beb62f10bf82381c79b10bc33fdc13250851ea7ca59f7"
+    },
+    {
+      "instance": "http://id.bag.localhost:18789",
+      "domain": "a.example",
+      "code": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHA6Ly9pZC5iYWcubG9jYWxob3N0OjE4Nzg5IiwiZG9tYWluIjoiYS5leGFtcGxlIn0.connect-test-secret-only-for-these-tests-00",
+      "bind_nonce": "e54f60aa8b30c9c33a37037566a6f80a46acd941fff2bcc0158d3a5cc10870fe"
+    },
+    {
+      "instance": "https://[::1]:8443",
+      "domain": "b.example.com",
+      "code": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vWzo6MV06ODQ0MyIsImRvbWFpbiI6ImIuZXhhbXBsZS5jb20ifQ.connect-test-secret-only-for-these-tests-00",
+      "bind_nonce": "b57c4fb164ececfb4c76af8be2abf7e8faa6d9d201d010519c7377464cd93640"
+    }
+  ],
+  "cases": [
+    {
+      "name": "the empty string",
+      "text": "",
+      "outcome": "refused"
+    },
+    {
+      "name": "a bare console code, no payload",
+      "text": "bagcode_0123456789abcdef",
+      "outcome": "refused"
+    },
+    {
+      "name": "the secret cut by one",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-0",
+      "outcome": "refused"
+    },
+    {
+      "name": "the secret one longer",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-00x",
+      "outcome": "refused"
+    },
+    {
+      "name": "a third part",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-00.x",
+      "outcome": "refused"
+    },
+    {
+      "name": "the prefix changed",
+      "text": "bagcodeeyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "version 2",
+      "text": "bagcode_eyJ2IjoyLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "an extra key",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSIsImV4dHJhIjoxfQ.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "the keys in another order",
+      "text": "bagcode_eyJkb21haW4iOiJhY21lLmV4YW1wbGUiLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsInYiOjF9.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "a domain that is not a host",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6Ik5vdCBBIERvbWFpbiJ9.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "a domain with one label",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImxvY2FsaG9zdCJ9.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "http on a host that is not loopback",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHA6Ly9lbnQuZXhhbXBsZS50ZXN0IiwiZG9tYWluIjoiYWNtZS5leGFtcGxlIn0.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "an origin with a trailing slash",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdC8iLCJkb21haW4iOiJhY21lLmV4YW1wbGUifQ.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "an origin with a user part",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vdXNlckBlbnQuZXhhbXBsZS50ZXN0IiwiZG9tYWluIjoiYWNtZS5leGFtcGxlIn0.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "an origin in upper case",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vRU5ULmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "an ftp origin",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6ImZ0cDovL2VudC5leGFtcGxlLnRlc3QiLCJkb21haW4iOiJhY21lLmV4YW1wbGUifQ.connect-test-secret-only-for-these-tests-00",
+      "outcome": "refused"
+    },
+    {
+      "name": "a padded secret",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-0=",
+      "outcome": "refused"
+    },
+    {
+      "name": "901 characters",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-00xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "outcome": "refused"
+    },
+    {
+      "name": "the minted code, trimmed",
+      "text": "bagcode_eyJ2IjoxLCJpbnN0YW5jZSI6Imh0dHBzOi8vZW50LmV4YW1wbGUudGVzdCIsImRvbWFpbiI6ImFjbWUuZXhhbXBsZSJ9.connect-test-secret-only-for-these-tests-00",
+      "outcome": "https://ent.example.test acme.example"
+    }
+  ]
+}

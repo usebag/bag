@@ -8,10 +8,12 @@ import {
   readAuditLines,
   verifyAuditLog,
 } from '@usebag/edge'
-import { CliError, parse, req, str } from '../args.ts'
+import { chainText, enterpriseStatus } from '@usebag/enterprise-client'
+import { CliError, flag, parse, req, str, UsageError } from '../args.ts'
 import { checkIdentity, doorbellPath, homeDir } from '../home.ts'
 import type { Io } from '../io.ts'
 import { instant } from '../names.ts'
+import { deps, refresherJob } from './refresher.ts'
 
 /** The detail of the edge's end of a subscription (receiver.ts, run). */
 type Ended = { readonly relay: string; readonly refusals: number; readonly end: 'subscription-ended' }
@@ -41,7 +43,8 @@ function ended(line: AuditLine | undefined): Ended | null {
  * chain or anchor (edge.sqlite beside it, read first, as audit verify reads it) does not verify is bad-audit. No key
  * is read: the custody checks the name, and a stat finds the identity.
  */
-export function status(args: readonly string[], io: Io): number {
+export function status(args: readonly string[], io: Io): number | Promise<number> {
+  if (!args.some((a) => a === '--as' || a.startsWith('--as='))) return enterprise(args, io)
   const options = { as: { type: 'string' }, dir: { type: 'string' } } as const
   const p = parse(args, { positionals: [], options, required: ['as'] })
   const [home, name] = [homeDir(io, str(p, 'dir')), req(p, 'as')]
@@ -68,5 +71,29 @@ export function status(args: readonly string[], io: Io): number {
   const n = subscribe.filter((l) => l.decision === 'retry' || l.decision === 'reject').length
   const errors = `edge errors ${n}, last ${last.reason} at ${instant(last.ts)}`
   io.out(`mailbox refused: ${last.reason} at ${end.relay} after ${end.refusals} refusals; ${errors}`)
+  return 0
+}
+
+/**
+ * status [--org <domain>] [--chain | --plist | --crontab] [--dir <home>], no --as: the enterprise session of --org, the
+ * only one, or the most recently connected (named on stderr; all refreshed), after one tick. --chain prints the chain
+ * JSON for an MCP server's --chain-cmd; --plist and --crontab print the hourly job that runs this status, and write
+ * nothing. Exit 0 live, 1 a failed refresh or probe, 3 ended or not signed in, 4 frozen, paused or waiting.
+ */
+async function enterprise(args: readonly string[], io: Io): Promise<number> {
+  const modes = {
+    chain: { type: 'boolean' },
+    plist: { type: 'boolean' },
+    crontab: { type: 'boolean' },
+  } as const
+  const text = { type: 'string' } as const
+  const p = parse(args, { positionals: [], options: { ...modes, dir: text, org: text } })
+  const [home, org] = [homeDir(io, str(p, 'dir')), str(p, 'org')]
+  const d = { ...deps(io, home), note: (l: string) => io.err(l), ...(org === undefined ? {} : { org }) }
+  if (Object.keys(modes).filter((o) => flag(p, o)).length > 1)
+    throw new UsageError('--chain, --plist and --crontab go alone')
+  if (flag(p, 'plist') || flag(p, 'crontab')) io.out(refresherJob(home, flag(p, 'plist')))
+  else if (flag(p, 'chain')) io.out(await chainText(d))
+  else return enterpriseStatus(d)
   return 0
 }

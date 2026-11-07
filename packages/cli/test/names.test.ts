@@ -267,3 +267,17 @@ describe('name: the command line of the book', () => {
     expect((await cli(io, 'name', 'list', 'x', ...d)).err[0]).toMatch(/^bag: usage: no positional argument/)
   })
 })
+
+describe('NameBook.find: resolve, then the enterprise directory only with a session', () => {
+  it('with no enterprise session is resolve: an address, a known name, name-unknown, bad-address; no call', async () => {
+    const h = home()
+    const book = NameBook.load(h)
+    book.add('ann', A, T0)
+    const fetch = async (): Promise<Response> => {
+      throw new Error('no call without a session')
+    }
+    expect([await book.find(B, fetch), await book.find('ann', fetch)]).toEqual([B, A])
+    await expect(book.find('bob', fetch)).rejects.toMatchObject({ code: 'name-unknown' })
+    await expect(book.find('Not A Name', fetch)).rejects.toMatchObject({ code: 'bad-address' })
+  })
+})

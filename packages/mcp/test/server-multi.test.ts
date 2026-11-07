@@ -229,12 +229,16 @@ afterEach(async () => {
 })
 
 describe('the tools of several identities', () => {
-  it('lists the same names for one identity and for three, each tool taking as; delegate when one allows it', async () => {
+  it('lists the same names for one identity and for three, each identity tool taking as; delegate when one allows it', async () => {
     const one = (await bob.client.listTools()).tools
     const m = await many([...two(), id('side', P.jane, { allow_delegate: true })])
     const three = (await m.client.listTools()).tools
     expect(three.map((t) => t.name).sort()).toEqual([...one.map((t) => t.name), 'delegate'].sort())
-    for (const t of three) expect(Object.keys(t.inputSchema.properties ?? {})).toContain('as')
+    // The enterprise tools are home-level (the default identity's home): they take no as.
+    const enterprise = ['connect', 'sign_in', 'enterprise_status']
+    for (const t of three.filter((t) => !enterprise.includes(t.name)))
+      expect(Object.keys(t.inputSchema.properties ?? {})).toContain('as')
+    expect(three.filter((t) => enterprise.includes(t.name))).toHaveLength(3)
     expect(m.client.getInstructions()).toContain('Act only as the identity your user names')
     const hop = { to: P.bob.address, caveats: ['type=chat.*'], exp: '+60' }
     expect((await m.call('delegate', { as: 'personal', ...hop })).value).toMatchObject({ error: 'usage' })
@@ -804,7 +808,7 @@ describe('serve with --identities', () => {
     const done = serve(t)
     const client = new Client({ name: 'in-process', version: '0.0.0' })
     await client.connect(new StreamClientTransport(t.stdin, t.stdout))
-    expect((await client.listTools()).tools).toHaveLength(10)
+    expect((await client.listTools()).tools).toHaveLength(13)
     // The process's DO_NOT_TRACK reaches the machine's switch: a person's yes stays off under it.
     const status = await client.callTool({ name: 'status', arguments: { as: 'research' } })
     expect(JSON.parse((status.content as { text: string }[])[0]?.text ?? '{}').telemetry).toEqual({
