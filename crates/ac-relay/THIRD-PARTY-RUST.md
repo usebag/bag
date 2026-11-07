@@ -72,7 +72,7 @@ crates ship is printed once, under the first of them, and names the others.
 - rusqlite 0.40.2, https://github.com/rusqlite/rusqlite
 - sharded-slab 0.1.7, https://github.com/hawkw/sharded-slab
 - slab 0.4.12, https://github.com/tokio-rs/slab
-- tokio 1.53.3, https://github.com/tokio-rs/tokio
+- tokio 1.54.1, https://github.com/tokio-rs/tokio
 - tokio-macros 2.7.2, https://github.com/tokio-rs/tokio
 - tokio-tungstenite 0.29.0, https://github.com/snapview/tokio-tungstenite
 - tower 0.5.3, https://github.com/tower-rs/tower
@@ -146,7 +146,7 @@ crates ship is printed once, under the first of them, and names the others.
 - serde_json 1.0.154, https://github.com/serde-rs/json
 - serde_path_to_error 0.1.20, https://github.com/dtolnay/path-to-error
 - sha1 0.10.7, https://github.com/RustCrypto/hashes
-- sha2 0.11.0, https://github.com/RustCrypto/hashes
+- sha2 0.11.1, https://github.com/RustCrypto/hashes
 - signal-hook-registry 1.4.8, https://github.com/vorner/signal-hook
 - smallvec 1.16.3, https://github.com/servo/rust-smallvec
 - socket2 0.6.5, https://github.com/rust-lang/socket2
@@ -157,7 +157,7 @@ crates ship is printed once, under the first of them, and names the others.
 - thread_local 1.1.10, https://github.com/Amanieu/thread_local-rs
 - tungstenite 0.29.0, https://github.com/snapview/tungstenite-rs
 - typenum 1.20.1, https://github.com/paholg/typenum
-- ureq 3.4.2, https://github.com/algesten/ureq
+- ureq 3.5.0, https://github.com/algesten/ureq
 - ureq-proto 0.6.5, https://github.com/algesten/ureq-proto
 - utf8-zero 0.8.1, https://github.com/algesten/utf8-zero
 
@@ -407,7 +407,7 @@ SOFTWARE.
 
 ### atomic-waker 1.1.2 (LICENSE-APACHE)
 
-The same text: base64 0.22.1 (LICENSE-APACHE), base64 0.23.1 (LICENSE-APACHE), bitflags 2.13.2 (LICENSE-APACHE), block-buffer 0.10.4 (LICENSE-APACHE), block-buffer 0.12.1 (LICENSE-APACHE), cfg-if 1.0.5 (LICENSE-APACHE), cpufeatures 0.2.17 (LICENSE-APACHE), cpufeatures 0.3.1 (LICENSE-APACHE), crypto-common 0.1.7 (LICENSE-APACHE), crypto-common 0.2.2 (LICENSE-APACHE), curve25519-dalek-derive 0.1.1 (LICENSE-APACHE), digest 0.10.7 (LICENSE-APACHE), digest 0.11.3 (LICENSE-APACHE), errno 0.3.14 (LICENSE-APACHE), hashbrown 0.17.1 (LICENSE-APACHE), hashlink 0.12.2 (LICENSE-APACHE), heck 0.5.0 (LICENSE-APACHE), httparse 1.10.1 (LICENSE-APACHE), httpdate 1.0.3 (LICENSE-APACHE), hybrid-array 0.4.15 (LICENSE-APACHE), lazy_static 1.5.1 (LICENSE-APACHE), log 0.4.34 (LICENSE-APACHE), mime 0.3.17 (LICENSE-APACHE), once_cell 1.21.4 (LICENSE-APACHE), percent-encoding 2.3.2 (LICENSE-APACHE), rustls 0.23.46 (LICENSE-APACHE), sha1 0.10.7 (LICENSE-APACHE), sha2 0.11.0 (LICENSE-APACHE), signal-hook-registry 1.4.8 (LICENSE-APACHE), signature 3.0.0 (LICENSE-APACHE), smallvec 1.16.3 (LICENSE-APACHE), socket2 0.6.5 (LICENSE-APACHE), thread_local 1.1.10 (LICENSE-APACHE), tungstenite 0.29.0 (LICENSE-APACHE), ureq 3.4.2 (LICENSE-APACHE), ureq-proto 0.6.5 (LICENSE-APACHE.txt), zeroize 1.9.1 (LICENSE-APACHE).
+The same text: base64 0.22.1 (LICENSE-APACHE), base64 0.23.1 (LICENSE-APACHE), bitflags 2.13.2 (LICENSE-APACHE), block-buffer 0.10.4 (LICENSE-APACHE), block-buffer 0.12.1 (LICENSE-APACHE), cfg-if 1.0.5 (LICENSE-APACHE), cpufeatures 0.2.17 (LICENSE-APACHE), cpufeatures 0.3.1 (LICENSE-APACHE), crypto-common 0.1.7 (LICENSE-APACHE), crypto-common 0.2.2 (LICENSE-APACHE), curve25519-dalek-derive 0.1.1 (LICENSE-APACHE), digest 0.10.7 (LICENSE-APACHE), digest 0.11.3 (LICENSE-APACHE), errno 0.3.14 (LICENSE-APACHE), hashbrown 0.17.1 (LICENSE-APACHE), hashlink 0.12.2 (LICENSE-APACHE), heck 0.5.0 (LICENSE-APACHE), httparse 1.10.1 (LICENSE-APACHE), httpdate 1.0.3 (LICENSE-APACHE), hybrid-array 0.4.15 (LICENSE-APACHE), lazy_static 1.5.1 (LICENSE-APACHE), log 0.4.34 (LICENSE-APACHE), mime 0.3.17 (LICENSE-APACHE), once_cell 1.21.4 (LICENSE-APACHE), percent-encoding 2.3.2 (LICENSE-APACHE), rustls 0.23.46 (LICENSE-APACHE), sha1 0.10.7 (LICENSE-APACHE), sha2 0.11.1 (LICENSE-APACHE), signal-hook-registry 1.4.8 (LICENSE-APACHE), signature 3.0.0 (LICENSE-APACHE), smallvec 1.16.3 (LICENSE-APACHE), socket2 0.6.5 (LICENSE-APACHE), thread_local 1.1.10 (LICENSE-APACHE), tungstenite 0.29.0 (LICENSE-APACHE), ureq 3.5.0 (LICENSE-APACHE), ureq-proto 0.6.5 (LICENSE-APACHE.txt), zeroize 1.9.1 (LICENSE-APACHE).
 
 ````text
 Apache License
@@ -4531,7 +4531,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-### sha2 0.11.0 (LICENSE-MIT)
+### sha2 0.11.1 (LICENSE-MIT)
 
 ````text
 Copyright (c) 2016-2026 The RustCrypto Project Developers
@@ -4742,7 +4742,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-### tokio 1.53.3 (LICENSE)
+### tokio 1.54.1 (LICENSE)
 
 ````text
 MIT License
@@ -5209,7 +5209,7 @@ authorization of the copyright holder.
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ````
 
-### ureq 3.4.2 (LICENSE-MIT)
+### ureq 3.5.0 (LICENSE-MIT)
 
 ````text
 MIT License

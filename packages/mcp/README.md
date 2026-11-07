@@ -125,8 +125,9 @@ without it the tool is not listed, and `--allow-session-delegation` alone does n
 `delegate` is the one tool that grants authority: a hop it signs lets another key act under this identity within the
 hop's caveats until its expiry. So, since 2026-10-26 08:20 UTC (09:20 Madrid), the server lists it only when
 started with `--allow-delegate`; without the flag `tools/list`
-shows ten tools (`send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `status`, `lookup`, `pair_invite`, `pair_accept`;
-eleven with the flag; a session lists no pair tool, below, "Tools") and a call to
+shows thirteen tools (`send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `status`, `lookup`, `pair_invite`,
+`pair_accept`, `connect`, `sign_in`, `enterprise_status`; fourteen with the flag; a session lists no pair tool, below,
+"Tools") and a call to
 `delegate` is the SDK's `MCP error -32602: Tool delegate not found`. With it:
 
 - `caveats` needs at least one entry. `[]` (all of this identity's authority) is refused by the input schema
@@ -443,6 +444,31 @@ is shown only for a peer this server has resolved by handle.
   chain from a root they accept; to a peer that had finished pairing, that it unpaired you, above). `waiting` is not `held`: a waiting send goes out by itself, a held one only on a
   person's word (below, "The org policy").
 
+### Enterprise: connect, sign_in and enterprise_status
+
+Three tools connect this machine's agent to an organisation that runs a bag enterprise console, on the enterprise
+client's own flow (`@usebag/enterprise-client`: the code's parse, the pin of the console, the private-address guard and
+the redeem are its, never redone here). They are home-level, so every server lists them, a session's too: the session
+lives in the server's home (`--dir`, else `$AC_HOME`, else `~/.bag`; with `--identities`, the default identity's home),
+under `<home>/enterprise/`, and none of them takes `as`.
+
+| tool | input | does |
+|---|---|---|
+| `connect` | `code: string`, the console's one-time connect code, exactly as the person pasted it | redeems the code at the console's instance (it is used once) and connects the agent: "Connecting to example.com at https://console.example.com", "Approved: agent <fingerprint>", "Connected as <label>"; at exit 4, the organisation's signer has yet to sign. A code that does not parse is refused with the reason, before any call |
+| `sign_in` | `domain: string` (such as `example.com`), `instance: string`, the console's origin (such as `https://console.example.com`) | no code: the first call returns the link to open, the user code to enter there and the agent key's fingerprint, and a person approves it in the console; a second call reports the state (waiting, then "Connected as <label>") |
+| `enterprise_status` | none | the session as the CLI's `bag status` prints it: the organisation, the agent, its state and its clocks, after one refresh tick; with no session, the tool error `signed-out` |
+
+A result is `{exit, lines}`, as text and as structured content: the exit the command would end with and the lines it
+prints. It is a tool error where the CLI's command fails: `connect` and `sign_in` at an exit other than 0 and 4 (4 is
+waiting), `enterprise_status` at exit 1 or with no session, and every refusal, whose line is `<code>: <detail>`. A
+result never holds the code, a token or a key: each is scrubbed from every line (the code and its secret part for
+`connect`, the device code and the token before and after the call for `sign_in`) as well as never said. The code
+still reaches the server as a tool argument, so it sits in the host's transcript: its defences are its short life and
+its single use. A console on a private address is refused before any call.
+
+The CLI's standalone `bag mcp` server serves the same three for an agent with no identity yet, named `connect`,
+`sign_in` and `status` there.
+
 ### Host timeouts and the resume token
 
 Hosts cancel a tool call that runs longer than their own limit, which a server cannot learn: Codex's
@@ -739,7 +765,7 @@ identity to trust (`node packages/cli/src/main.ts address <name>`).
 package:
 
 ```sh
-npx --yes --package=@usebag/bag@0.1.2 bag host install claude-code --as alice --relay <relay> --project <dir>
+npx --yes --package=@usebag/bag@0.2.0 bag host install claude-code --as alice --relay <relay> --project <dir>
 ```
 
 It first copies the package's programs to `<home>/package/`, then writes into `<dir>/.mcp.json` a server whose command
@@ -854,7 +880,8 @@ stdout is a JSON-RPC frame. **The loaded-set gate** (`test/loaded-set.test.ts`):
 process runs servers through a scripted session over every tool and error path (`test/support/loaded-session.ts`)
 under a resolve hook (`test/support/loaded-hook.ts`) that records every module loaded from `node_modules`, by import
 and by require; the packages must be exactly the 8 of `test/loaded-packages.txt` (the SDK, zod, zod-to-json-schema,
-ajv, ajv-formats, fast-uri, fast-deep-equal, json-schema-traverse) of the 95 in the lock. If a release adds one, the
+ajv, ajv-formats, fast-uri, fast-deep-equal, json-schema-traverse) of the 95 in the lock; `@usebag/enterprise-client`
+is a workspace package under `packages/`, not one of them. If a release adds one, the
 test fails; widening the list is a deliberate decision (past these, vendor a stdio layer). e2e
 scenario 18 (`packages/e2e/test/scenarios/18-mcp-two-agents.test.ts`) runs two servers as child processes through the
 real relay, and scenario 23-mcp (`23-mcp-follow-ups.test.ts`) the window and a resume, a chain renewed through
@@ -867,7 +894,9 @@ which runs the edge's real 250 ms backoff: `status` before and after three refus
 (`subscribed` again, its refusals reset by a frame), a code outside the refusals, exactly two refusals (no `mailbox`
 field), a wait held through a refusal and the edge's backoff that then gets the next message, two relays ended and one
 of two, a wait in progress that returns `refused` at once with its window's timer and its progress tick cancelled, and
-`inbox` the same; `test/session.test.ts` a restart after a renewal (`subscribed` again) and a failed one (`stopped`,
+`inbox` the same; `test/enterprise-tools.test.ts` the enterprise tools against the enterprise client's fake instance
+(`@usebag/enterprise-client/testing`, through `ServerDeps.enterprise`), every result checked free of the code, its
+secret part, the device code, the token and each key seed; `test/session.test.ts` a restart after a renewal (`subscribed` again) and a failed one (`stopped`,
 then subscribed again at the next renewal).
 
 ## Not in v0

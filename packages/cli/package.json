@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@usebag/core": "0.0.0",
-    "@usebag/edge": "0.0.0"
+    "@usebag/edge": "0.0.0",
+    "@usebag/enterprise-client": "0.0.0"
   }
 }

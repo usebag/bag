@@ -36,6 +36,7 @@ The home is `--dir`, else `$AC_HOME`, else `$HOME/.bag`; with none of the three 
 | `<home>/names.json` | the name book: 0600, written whole to a temporary file beside it and renamed; the home made 0700 when missing | `name add`, `name forget`, `peer` |
 | `<home>/trust.json` | the roots `peer` granted (version 1): 0600, written whole and renamed; `inbox` and the MCP server read it | `peer` |
 | `<home>/groups/<name>/<group hex>/` | the group store of the identity `<name>` (0700): `g<n>.json` per generation it holds, as it received it (the wrap, never the private key), and, for the group's own identity, the admin's `state.json`; each 0600 | `group` (as the group), `inbox --group` (as a member) |
+| `<home>/enterprise/` | the bag enterprise session (0700): `session.json`, a waiting sign-in's `pending.json`, `chain.json`, `refresh.lock`; each file 0600 | `connect`, `sign-in`, `status`, `sign-out` (below, "Enterprise: connect through your agent") |
 
 Every command that signs finds the identity in the custody `keygen` chose (`src/home.ts`, `HomeCustody`). Only `send`,
 `inbox`, `held`, `lookup` and `group` open the edge store (`openEdge` in `src/home.ts`); `record keep` and `peer` open none
@@ -64,7 +65,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   item, by a fresh random seed that no record names (the signing key is kept, and a key file keeps its mtime, so `keys
   list` shows the same created time), and prints `pruned <address> long-term sealing key`. Allowed once epoch 1 is
   deleted: epoch 1 goes at its key record's exp + 605,100 s (its iat + 691,500) at the first `keys rotate` after; the
-  ruling's horizon is the cutover + 605,100 s, so the trigger is conservative. Refused before any write:
+  rule's horizon is the cutover + 605,100 s, so the trigger is conservative. Refused before any write:
   `custody-unsupported` (an agent identity), `not-individual` (the org of an onboarded agent: a `<home>/*.chain.json`
   rooted at it, under any name), `group-admin` (the home keeps admin state for the group), `no-forward-secrecy` (no
   epoch held), `before-horizon` (epoch 1 still held, with the instant after which a rotation deletes it) and
@@ -199,7 +200,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
     added to `<home>/trust.json` (an entry it has stays, so a run again adds nothing). A domain root is stored in
     SPEC.md §7.2's grammar, with no port; `inbox` and the MCP server trust it as `--trust-root <host>`, so the inbox
     line below needs no `--trust-root`. Only the typed `--accept` roots are written, with no further y (the SPEC
-    owner's ruling of 2026-10-28): the file holds the typed `--accept` roots and the peers paired with a y, never
+    owner's decision of 2026-10-28): the file holds the typed `--accept` roots and the peers paired with a y, never
     a root from an incoming message, a resolved record or a default, so a held root onboard keeps in the
     accept-from (a `kept` line) is never written here. `*` is not stored. A `--trust-root <host>:<port>` is another anchor than the stored
     `domain:<host>`: `inbox` accepts it, but resolves `https://<host>:<port>` with no TXT lookup and pins it apart,
@@ -797,7 +798,77 @@ copy, which a rotation can race and revert; run `group keep` for a group, never 
 - The notice: while no choice is made, after a command a person runs at a terminal and after `host install`, once per
   machine, on stderr. It names `npx --yes --package=@usebag/bag@<version> bag telemetry preview` when run from the
   package, the install guide's form, which still works after npm clears its cache, and `node <this main.ts> telemetry
-  preview` from source; never `ac telemetry on`, which a guide install does not have (the spec owner's ruling 13).
+  preview` from source; never `ac telemetry on`, which a guide install does not have (the spec owner's decision).
+
+### Enterprise: connect through your agent
+
+Added 2026-11-07: one public client, as `gh`, `glab` and the HashiCorp CLIs are. The
+agent side of a bag enterprise session is in this package, built on `@usebag/enterprise-client`; what an agent may do
+is decided by the organisation's instance on the server, not by the client. The commands are `src/commands/connect.ts`,
+`sign-in.ts` (sign-in and sign-out), `status.ts` (with no `--as`), `mcp.ts` and `refresher.ts`.
+
+A person gives their agent the prompt the console shows beside a minted connect code. The console fills in the exact
+version it pins (the current cut, `@usebag/bag@0.2.0`), never `@latest`:
+
+    1. Register once: claude mcp add bag -- npx -y @usebag/bag@<version> mcp (or run directly: BAG_ORG_CODE=<code> npx -y @usebag/bag@<version> connect)
+    2. Paste the code into the chat and ask the agent to connect with the bag tool `connect`.
+    3. Then `status` (the tool, or `npx -y @usebag/bag@<version> status`) shows the session: Connected as <label>, or waiting for the organisation's signer.
+    Without a code: npx -y @usebag/bag@<version> sign-in <domain> --instance <console origin> --no-wait, then the same line again once the person approved.
+
+Without a code, the person gives the domain and the console's address instead, and the agent runs, for example:
+
+    npx -y @usebag/bag@<version> sign-in example.com --instance https://console.example.com --no-wait
+
+Exits, for every command here: 0 done, 1 refused or failed, 2 usage, 3 the session has ended or none exists, 4
+waiting on a person of the organisation or its signer. An error is one line on stderr, `bag: <code>: <detail>`.
+
+- **`connect [--as <name>] [--label <text>] [--dir <home>]`**: the console's one-time code, from `BAG_ORG_CODE`, else
+  one line of stdin (on a terminal it asks `Paste the code: ` on stderr first). **Never from the command line**: an
+  argument that starts with `bag` is `usage: the code is read from stdin or BAG_ORG_CODE, never from the command
+  line`; no code is `usage: no code: paste the code from the console, or set BAG_ORG_CODE`. The code names the instance
+  and the organisation, so nothing else is typed. Lines, one per state: `Connecting to <domain> at <origin>`,
+  `Approved: agent <fingerprint, four groups of eight hex>`, `Connected as <label>`; or, exit 4, `Waiting for the
+  organisation's signer: run bag status in a minute`. Then one line per organisation relay that did not take the
+  agent's records, `relay <relay>: records not published (<code>)` (the exit stays; every tick retries them).
+- **`sign-in <domain> [--instance <origin>] [--as <name>] [--label <text>] [--code] [--no-wait] [--dir <home>]`**: the
+  device flow a person approves. It makes the agent's key `<name>` (default: the domain with dashes), its sign-in key
+  `<name>.signin` and its session key `<name>.session`, then prints `open <link> and enter the code <user code>`,
+  `fingerprint <four groups of eight hex> (the agent's key, as that page shows it)` and `approve only a code you started
+  yourself`. `--no-wait` exits 4 at once; the same line run again resumes the same sign-in: exit 4 while still
+  waiting, exit 0 with the session lines (as `status`) once approved, exit 1 if refused. `--code` redeems a console
+  code from `BAG_ORG_CODE` or stdin, never argv. Without `--instance` the instance is found from
+  `BAG_ENTERPRISE_INSTANCES`, the domain's `.well-known/bag/enterprise.json`, then `BAG_ENTERPRISE_URL`.
+- **`status [--chain | --plist | --crontab] [--dir <home>]`**, with no `--as` (`status --as <name>` is the identity's,
+  above): one refresh tick, then `signed-in <domain> agent <address> state <state>`, `instance <origin> generation <n>
+  refreshed <time>`, `token-until <time> hop-until <time> local-hop-until <time>`, a line for a state that is not live,
+  and `chain <path>: bag send --as <name>.session --auth <path> ...`. A waiting sign-in prints `waiting <domain>: ...`
+  (exit 4); none is `bag: signed-out: not signed in: bag sign-in <domain>` (exit 3). `--chain` prints the chain JSON
+  (for an MCP server's `--chain-cmd`). **The hourly refresh job**: `--plist` prints a launchd job, `--crontab` a
+  crontab line, each running `status --dir <home>` every hour into `<home>/enterprise/refresh.log`; they write
+  nothing, and the person installs the one line (launchd runs a job missed asleep at the next wake; cron does not).
+- **`sign-out [--dir <home>]`**: ends the session at the instance (the agent's address is revoked for good), then
+  removes the organisation's roots from `trust.json`, the session's files and the sign-in and session keys; the
+  identity and its mailbox stay. With only a waiting sign-in, it drops it.
+- **`mcp [--dir <home>]`**: a stdio MCP server with three tools and nothing else: `connect` (argument `code`),
+  `sign_in` (`domain` and `instance`) and `status`. Register it with
+  `claude mcp add bag -- npx -y @usebag/bag@<version> mcp`. Each result holds only the lines the commands print;
+  stdout is the transport, so the command prints nothing else. It runs until the host closes it or stdin ends.
+
+The home is `--dir`, else `AC_HOME`, else `~/.bag`, the same home as every other command; the session lives in
+`<home>/enterprise/`. The client holds the home to its owner: the home becomes 0700 and every file it writes there
+0600; another user's home is refused. **Nothing printed holds a key, a token or a code**: not on stdout, not on
+stderr, not in a tool result (each result is also scrubbed of the code given and its secret part, the device code and
+the token).
+
+**The pinned instance.** When a code or `--instance` names the instance, no discovery runs: no TXT record and no
+`.well-known` file is read. The origin must be https, or http only on a loopback host (an instance on this machine);
+anything else is usage. A non-loopback origin passes the private-address guard before any call, and every call to
+the instance refuses a redirect. The scrub, the pin and the guard are `@usebag/enterprise-client`'s; these commands
+call them.
+
+**The honest limit.** With the MCP server, the code reaches it as a tool argument, so it sits in the host's
+transcript (and wherever that transcript is kept or sent). Its defences are its life (15 minutes by default) and its
+single use: once redeemed, the string opens nothing.
 
 ## Behind a proxy
 

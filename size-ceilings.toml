@@ -57,6 +57,14 @@ path = 'packages/mcp/src'
 # Earlier: raised 2026-10-28 from 3910 to 4417 by a decision entry (the measured figure plus 10 percent): the many-sessions change measured packages/mcp/src at 4015, and 4015 times 1.1 is 4416.5, rounded up.
 ceiling = 6939 # earlier 6257, 5312, 4417 and 3910; raised 2026-10-27 from 3300 by 15 percent (the recommended 3,400 plus 15%); earlier 3300 (2026-10-26, from 2800); measured 2399, then 2363
 
+[enterprise-client]
+path = 'packages/enterprise-client/src'
+# First ceiling 2026-11-07, 1953, by the rule of the latest raises (the measured figure plus 10 percent, rounded up): the
+# enterprise client ported into bag OSS as one public client (branch cli/public-client) measured
+# packages/enterprise-client/src at 1775 with this file's command, and 1775 times 1.1 is 1952.5. Proposed by the port
+# agent; it stands on the maintainer's decision entry.
+ceiling = 1953
+
 [ac-core]
 path = 'crates/ac-core/src'
 ceiling = 3500 # raised 2026-10-26 from 2900; measured 2479, then 2482

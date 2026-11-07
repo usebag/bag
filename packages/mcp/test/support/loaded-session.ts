@@ -158,6 +158,17 @@ function expectOutcome(step: string, got: { isError: boolean; value: Json }, wan
   if (code !== want) mismatches.push(`${step}: got ${code}, want ${want}`)
 }
 
+/** Checks an enterprise tool's {exit, lines}: ok, or a tool error whose last line is "<want>: ...". */
+function expectLines(step: string, got: { isError: boolean; value: Json }, want: 'ok' | string): void {
+  const lines = got.value.lines
+  if (!Array.isArray(lines) || typeof got.value.exit !== 'number') {
+    mismatches.push(`${step}: no exit and lines`)
+    return
+  }
+  const code = got.isError ? String(lines.at(-1)).split(':')[0] : 'ok'
+  if (code !== want) mismatches.push(`${step}: got ${code}, want ${want}`)
+}
+
 /** The give-up of `fire` and `until`: a missed barrier fails here, naming what it waited for. */
 const WAIT_MS = 5000
 
@@ -234,13 +245,13 @@ async function main(): Promise<void> {
   const names = ((listed.result as { tools?: { name: string }[] } | undefined)?.tools ?? []).map(
     (t) => t.name,
   )
-  if (names.length !== 11) mismatches.push(`tools/list: ${names.length} tools`)
-  // bob runs without --allow-delegate: 10 tools, and delegate is the SDK's unknown-tool error.
+  if (names.length !== 14) mismatches.push(`tools/list: ${names.length} tools`)
+  // bob runs without --allow-delegate: 13 tools, and delegate is the SDK's unknown-tool error.
   const bobs = await bob.rpc.request('tools/list')
   const bobNames = ((bobs.result as { tools?: { name: string }[] } | undefined)?.tools ?? []).map(
     (t) => t.name,
   )
-  if (bobNames.length !== 10 || bobNames.includes('delegate'))
+  if (bobNames.length !== 13 || bobNames.includes('delegate'))
     mismatches.push(`tools/list without --allow-delegate: ${bobNames.join(', ')}`)
   expectOutcome(
     'delegate unlisted',
@@ -263,6 +274,25 @@ async function main(): Promise<void> {
     (listedSession.result as { tools?: { name: string }[] } | undefined)?.tools ?? []
   ).map((t) => t.name)
   if (sessionNames.some((n) => n.startsWith('pair_'))) mismatches.push('tools/list of a session: a pair tool')
+  for (const n of ['connect', 'sign_in', 'enterprise_status'])
+    if (!names.includes(n) || !sessionNames.includes(n)) mismatches.push(`tools/list: no ${n}`)
+  // The enterprise tools (enterprise.ts, on @usebag/enterprise-client): their refusals before any network.
+  expectLines('enterprise_status signed out', await alice.call('enterprise_status'), 'signed-out')
+  expectLines('connect no code', await alice.call('connect', { code: ' ' }), 'usage')
+  expectLines('connect bad code', await alice.call('connect', { code: 'bagcode_x.y' }), 'usage')
+  expectOutcome('connect schema', await alice.call('connect', {}), '*')
+  const origin = 'https://console.acme.example'
+  expectLines(
+    'sign_in instance',
+    await alice.call('sign_in', { domain: 'acme.example', instance: 'http://console.acme.example' }),
+    'usage',
+  )
+  expectLines(
+    'sign_in domain',
+    await alice.call('sign_in', { domain: 'Not A Domain', instance: origin }),
+    'usage',
+  )
+  expectLines('session enterprise_status', await session.call('enterprise_status'), 'signed-out')
   const pinged = await alice.rpc.request('ping')
   if (pinged.result === undefined) mismatches.push('ping: no result')
   const unknown = await alice.rpc.request('tools/call', { name: 'nope', arguments: {} })

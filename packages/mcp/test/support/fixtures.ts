@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { Rng } from '@usebag/edge'
+import type { EnterprisePorts } from '@usebag/enterprise-client'
 import { type MockInstance, vi } from 'vitest'
 import type { RunCommand } from '../../src/chain.ts'
 import { parseConfig } from '../../src/config.ts'
@@ -55,6 +56,8 @@ export interface ServerOptions {
   readonly resubscribeDelayMs?: (attempt: number) => number
   /** The server's random source (default seeded by the name). */
   readonly rng?: Rng
+  /** The enterprise tools' network, wait and relays (default the process's). */
+  readonly enterprise?: Partial<EnterprisePorts>
 }
 
 /** Starts a server for `name` in `home` on the memory relay, and connects an SDK client to it in memory. */
@@ -75,6 +78,7 @@ export async function testServer(o: ServerOptions): Promise<TestServer> {
     resubscribeDelayMs: o.resubscribeDelayMs ?? (() => 0),
     ...(o.run === undefined ? {} : { run: o.run }),
     ...(o.env === undefined ? {} : { env: o.env }),
+    ...(o.enterprise === undefined ? {} : { enterprise: o.enterprise }),
   })
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
   await running.mcp.connect(serverSide)

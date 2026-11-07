@@ -196,7 +196,7 @@ for r in ${revoke[@]+"${revoke[@]}"}; do args+=(--revoke "$r"); done
 if [[ -z "$out_given" ]]; then mkdir -p "$(dirname "$out")"; fi
 c "${args[@]}"
 if [[ -z "$out_given" ]]; then
-  node_modules/.bin/biome format --write "$out" >/dev/null
+  node_modules/.bin/biome format --write --reporter=summary "$out" >/dev/null
   # shellcheck disable=SC2016 # the ${...} below are JavaScript's, not the shell's
   node -e '
 const [label, out] = process.argv.slice(1)

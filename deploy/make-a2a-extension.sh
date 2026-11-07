@@ -87,4 +87,4 @@ if [[ -n "$out_dir" ]]; then out="$out_dir/a2a.json"; else out="$well_known/bag/
 node --disable-warning=ExperimentalWarning packages/a2a/src/card.ts --record "$record" --out "$out" --domain "$domain"
 # Under deploy/ (no --out), Biome too, as for the records; a file elsewhere is outside Biome's project, and is left as
 # card.ts wrote it (the same bytes).
-if [[ -z "$out_dir" && -x node_modules/.bin/biome ]]; then node_modules/.bin/biome format --write "$out" >/dev/null; fi
+if [[ -z "$out_dir" && -x node_modules/.bin/biome ]]; then node_modules/.bin/biome format --write --reporter=summary "$out" >/dev/null; fi

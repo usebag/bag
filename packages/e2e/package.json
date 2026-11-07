@@ -12,7 +12,7 @@
     "test:e2e": "vitest run"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@usebag/a2a": "0.0.0",
     "@usebag/cli": "0.0.0",
     "@usebag/core": "0.0.0",

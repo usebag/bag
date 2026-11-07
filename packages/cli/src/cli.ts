@@ -9,9 +9,11 @@ import {
   stopTelemetry,
   telemetryDue,
 } from '@usebag/edge'
+import { EnterpriseError } from '@usebag/enterprise-client'
 import { CliError, UsageError } from './args.ts'
 import { address } from './commands/address.ts'
 import { audit } from './commands/audit.ts'
+import { connect } from './commands/connect.ts'
 import { delegate } from './commands/delegate.ts'
 import { grant } from './commands/grant.ts'
 import { group } from './commands/group.ts'
@@ -24,6 +26,7 @@ import { keys } from './commands/keys.ts'
 import { login } from './commands/login.ts'
 import { logout } from './commands/logout.ts'
 import { lookup } from './commands/lookup.ts'
+import { mcp } from './commands/mcp.ts'
 import { name } from './commands/name.ts'
 import { onboard } from './commands/onboard.ts'
 import { peer } from './commands/peer.ts'
@@ -31,6 +34,7 @@ import { record } from './commands/record.ts'
 import { health, publish } from './commands/relay.ts'
 import { resend } from './commands/resend.ts'
 import { send } from './commands/send.ts'
+import { signIn, signOut } from './commands/sign-in.ts'
 import { status } from './commands/status.ts'
 import { notice, telemetry, verbOf } from './commands/telemetry.ts'
 import { unpair } from './commands/unpair.ts'
@@ -42,6 +46,8 @@ import { PolicyFileError } from './policy.ts'
 
 // The command line: one command per run, its exit status 0, or 1 with "bag: <code>: <detail>" on stderr (2 for
 // an org policy file that cannot be read or does not verify; 3 for onboard's records written but not resolving yet).
+// The enterprise commands (connect, sign-in, sign-out, status with no --as, mcp) exit 2 for usage, 3 for a session that
+// has ended, 4 while a person of the organisation or its signer is still to act.
 // No command prints key material: keygen, address and keys list print addresses, which are public by design.
 
 export const USAGE = `bag: the bag v0 command line (pre-release)
@@ -199,6 +205,20 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       the identity <name> becomes a group (CLI only); members read it with inbox --group, post with send --to
   audit verify <file>
       recomputes an audit log's hash chain; prints "ok <n> lines" or the first bad line
+  connect [--as <name>] [--label <text>] [--dir <home>]
+      connects this machine's agent to its organisation with the console's one-time code, read from BAG_ORG_CODE or
+      stdin, never the command line: "Connected as <label>", or exit 4 while the organisation's signer is to sign
+  sign-in <domain> [--instance <origin>] [--as <name>] [--label <text>] [--code] [--no-wait] [--dir <home>]
+      signs in to the bag enterprise instance of <domain> (--instance pins the console origin) under a person's
+      approval: prints the link, the code and the key's fingerprint; --code redeems a console code from BAG_ORG_CODE
+      or stdin. Exit 4 while a person or the signer is to act (--no-wait returns at once; run it again to resume)
+  sign-out [--dir <home>]
+      ends the enterprise session (the address is revoked for good); removes its roots, files and session keys
+  status [--chain | --plist | --crontab] [--dir <home>]
+      with no --as: the enterprise session after one refresh tick; --chain prints the chain JSON, --plist and
+      --crontab the hourly job. Exit 0 live, 3 ended or not signed in, 4 frozen, paused or waiting
+  mcp [--dir <home>]
+      the tools connect, sign_in and status as a stdio MCP server: claude mcp add bag -- npx -y @usebag/bag@<version> mcp
   status --as <name> [--dir <home>]
       first, always, "doorbell <absolute path>"; then, from the identity's audit log, when its last subscription
       ended for good (three refusals in a row): "mailbox refused: <code> at <relay> after <n> refusals; edge
@@ -252,7 +272,7 @@ keychain item that <home>/keychain/<name>.json names, or in the agent (<home>/ag
 halves; the keys live in the agent for a login window, and a command that signs as that identity refuses it); an
 identity's edge state in <home>/state/<name>/ (edge.sqlite, audit.jsonl); the name book in <home>/names.json. An
 identity signs as its own root, or as a session under a chain (send --auth). Errors exit 1 with
-"bag: <code>: <detail>" on stderr.`
+"bag: <code>: <detail>" on stderr (the enterprise commands: 2 usage, 3 ended, 4 waiting).`
 
 type Command = (args: readonly string[], io: Io) => number | Promise<number>
 
@@ -285,7 +305,16 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ['lookup', lookup],
   ['health', health],
   ['telemetry', telemetry],
+  ['connect', connect],
+  ['sign-in', signIn],
+  ['sign-out', signOut],
+  ['mcp', mcp],
 ])
+
+/** The enterprise commands, whose usage errors exit 2 as the bag enterprise contract's (status with no --as among them). */
+const exitsTwo = ([name = '', ...rest]: readonly string[]): boolean =>
+  ['connect', 'sign-in', 'sign-out', 'mcp'].includes(name) ||
+  (name === 'status' && !rest.some((a) => /^--as(=|$)/.test(a)))
 
 /** The code an error is reported with: its own from the closed set, the CLI's, a system errno, or `error`. */
 export function codeOf(e: unknown): string {
@@ -319,7 +348,8 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
     io.err(`bag: ${code}: ${detailOf(e, code)}`)
     if (e instanceof UsageError)
       io.err(`run "${programName('bag', String(process.argv[1]))} help" for the commands`)
-    exit = e instanceof PolicyFileError ? 2 : 1
+    const own = e instanceof EnterpriseError ? e.exit : 1
+    exit = e instanceof PolicyFileError || (e instanceof UsageError && exitsTwo(argv)) ? 2 : own
     return exit
   } finally {
     if (counting) {
@@ -346,6 +376,6 @@ async function dispatch(argv: readonly string[], io: Io): Promise<number> {
     throw new UsageError(name === undefined ? 'no command' : `no command ${JSON.stringify(name)}`)
   }
   const exit = await command(rest, io)
-  if ((io.isTty && name !== 'telemetry') || name === 'host') notice(io)
+  if ((io.isTty && name !== 'telemetry' && name !== 'mcp') || name === 'host') notice(io)
   return exit
 }

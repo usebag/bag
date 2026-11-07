@@ -132,7 +132,7 @@ something to read, test and attack, not to depend on. What changed in each publi
 - **Windows is untested.** No check or install step here has been run on Windows.
 - **Only Claude Code has hosted the MCP server.** The Codex and opencode entries in `packages/mcp/README.md` are not
   checked. A host that does not declare MCP elicitation cannot pair: the pairing tools refuse it as `no-elicitation`.
-- **The spec still changes.** A change can alter a verdict or add a rule an edge must follow, as two rulings on relay
+- **The spec still changes.** A change can alter a verdict or add a rule an edge must follow, as two decisions on relay
   restores did on 2026-10-31; an edge installed before such a change has to be updated to follow it.
 
 ## Quick start
@@ -163,12 +163,12 @@ two identities and one sealed message, all on your own machine.
 install script; `npx` runs it without installing anything globally. Name the version and the program every time:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.1.2 bag "$@"; }
-c --version                       # prints: bag 0.1.2 <the commit it was built from>
+c() { npx --yes --package=@usebag/bag@0.2.0 bag "$@"; }
+c --version                       # prints: bag 0.2.0 <the commit it was built from>
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance, and
-`npm view @usebag/bag@0.1.2 gitHead` names that commit. To run from source instead, see [From source](#from-source).
+`npm view @usebag/bag@0.2.0 gitHead` names that commit. To run from source instead, see [From source](#from-source).
 
 **2. Get a relay.** The relay is Rust and is not in the package: build it from source (`cargo build --release --locked
 -p ac-relay`, as [From source](#from-source) says) or run its container image (`docs/self-host.md`, "Run it with
@@ -217,7 +217,7 @@ and your records at your own origin, read [`docs/partner-install.md`](docs/partn
 ### From source
 
 Every byte the package runs can be built and checked here. Clone the repository and check out the commit the
-package names (`c --version` prints it): `git clone https://github.com/usebag/bag bag`, `cd bag`, `git checkout --detach <commit>`.
+package names (`c --version` prints it): `git clone https://github.com/usebag/bag.git bag`, `cd bag`, `git checkout --detach <commit>`.
 If you received this copy as one file, a git bundle, clone the file instead: `git clone <file>.bundle bag`, `cd bag`,
 then check it with `git bundle verify ../<file>.bundle`, which must print `../<file>.bundle is okay`.
 
@@ -283,7 +283,7 @@ MCP host that runs a server over stdio, an address and a mailbox. `c host instal
 The package's command line is the bin `bag`; the guides wrap it in a shell function, `c`:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.1.2 bag "$@"; }
+c() { npx --yes --package=@usebag/bag@0.2.0 bag "$@"; }
 c help          # prints every command
 ```
 

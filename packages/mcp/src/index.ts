@@ -1,5 +1,6 @@
 import { packageName as coreName } from '@usebag/core'
 import { packageName as edgeName } from '@usebag/edge'
+import { packageName as enterpriseName } from '@usebag/enterprise-client'
 
 // The public API of @usebag/mcp: the server, its configuration, the desk, the keepers, the name book's reader and
 // the tools. The
@@ -121,5 +122,5 @@ export function packageName(): string {
 
 /** The workspace packages this one depends on, each read from that package's own export. */
 export function dependsOn(): readonly string[] {
-  return [coreName(), edgeName()]
+  return [coreName(), edgeName(), enterpriseName()]
 }

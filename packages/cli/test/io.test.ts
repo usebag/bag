@@ -49,6 +49,16 @@ describe('processIo: the real io on a process', () => {
     ])
   })
 
+  it('writes a prompt on stderr with no newline, and stdinEnded resolves when stdin ends (bag mcp)', async () => {
+    const proc = fakeProcess(['a frame\n'])
+    const io = processIo(proc)
+    io.prompt('Paste the code: ')
+    expect([proc.out, proc.err]).toEqual([[], ['Paste the code: ']])
+    const ended = io.stdinEnded?.()
+    proc.stdin.resume()
+    await expect(ended).resolves.toBeUndefined()
+  })
+
   for (const signal of ['SIGINT', 'SIGTERM']) {
     it(`installs its stop handlers once, when asked, and aborts on ${signal}`, () => {
       const proc = fakeProcess()

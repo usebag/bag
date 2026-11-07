@@ -15,6 +15,7 @@ import {
   systemRng,
   type WsSubscriberOptions,
 } from '@usebag/edge'
+import type { DiscoveryNet, Publisher, serveMcp } from '@usebag/enterprise-client'
 
 // The CLI's one port to the world outside its arguments: the terminal (a person at it confirms), the environment, the
 // clock, the random source, the relay network, the record source, the stop signal, /usr/bin/security, and telemetry's
@@ -55,12 +56,21 @@ export interface Io {
    * none is started: the unit tests' io has none.
    */
   readonly spawnSender?: () => void
+  /** A bag enterprise session's discovery network, wait between polls and relay publisher; by default the system's. */
+  readonly enterpriseNet?: DiscoveryNet
+  readonly sleep?: (ms: number) => Promise<void>
+  readonly enterpriseRelays?: Publisher
+  /** The transport `bag mcp` serves on (a test's), else stdio until `stdinEnded`, which processIo gives. */
+  readonly mcpTransport?: Parameters<typeof serveMcp>[2]
+  readonly stdinEnded?: () => Promise<void>
   /** Whether stdin is a terminal: release and drop ask a person there, and refuse no-tty otherwise. */
   readonly isTty: boolean
   /** Whether stdout is a terminal: the recovery sheet prints only there, never to a pipe or a file. */
   readonly outIsTty?: boolean
   /** Writes `prompt` to stderr and reads one line from stdin: true for y or yes, false for anything else or none. */
   confirm(prompt: string): Promise<boolean>
+  /** Writes `text` to stderr with no newline: the prompt before a readLine (connect's "Paste the code: "). */
+  prompt(text: string): void
   /** Reads one line from stdin exactly as typed (no trim, no case change) and writes nothing; null at end of input. */
   readLine(): Promise<string | null>
   /** As readLine, with the terminal's echo off while the line is typed (the seeds of a sheet: ac restore). */
@@ -173,6 +183,10 @@ export function processIo(proc: ProcessLike = process): Io {
       proc.stderr.write(`${prompt} [y/N] `)
       return /^y(es)?$/i.test(((await readLine()) ?? '').trim())
     },
+    prompt: (text) => {
+      proc.stderr.write(text)
+    },
+    stdinEnded: () => new Promise((done) => proc.stdin.once('end', () => done())),
     readLine,
     readSecret,
     release: () => {
