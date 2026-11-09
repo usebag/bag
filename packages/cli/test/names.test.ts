@@ -153,10 +153,10 @@ describe('NameBook: pinning, replacing, forgetting and resolving', () => {
 
   it('refuses a name outside the pattern, an address for a name, and an address that is not one', () => {
     const book = NameBook.load(home())
-    for (const bad of ['', 'Bob', '-bob', '.bob', 'a'.repeat(33), 'bob alice', A]) {
+    for (const bad of ['', 'Bob', '-bob', '.bob', 'a'.repeat(65), 'bob alice', A]) {
       expect(thrown(() => book.add(bad, A, T0)).code).toBe('bad-name')
     }
-    book.add('a'.repeat(32), A, T0)
+    book.add('a'.repeat(64), A, T0)
     book.add('0.b_c-d', A, T0)
     expect(thrown(() => book.add('bob', 'bob', T0))).toEqual({
       code: 'bad-address',

@@ -4,6 +4,50 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.2.2: 2026-11-09
+
+The cut tagged v0.2.2, `@usebag/bag` 0.2.2.
+
+- **`@usebag/bag` 0.2.2**, published from this cut (`npm view @usebag/bag@0.2.2 gitHead` names it).
+
+### Enterprise: mail between organisations
+
+- **`bag send --to <label>@<your organisation's domain>`** goes to the organisation's agent of that label, read from
+  the organisation's directory, as `--to <label>` does. A label the directory lacks, or a directory that does not
+  answer (one line on stderr), takes the public path: the domain's DNS record, its org record and the handle record.
+- **`bag send --to <agent>@<partner's domain>`** goes to a partner organisation's agent by the handle record that its
+  instance publishes, as for any handle.
+- **The agent takes a partner's mail.** The agent's accept-from record now lists the organisation's accept list: its own
+  root, and the root of each partner whose agreement covers this agent. The list is read from the instance at each
+  refresh, and the record is published again when the list changes. An instance without the list keeps the
+  organisation's root alone. A list that names `*`, more roots than a record holds, or something that is not a root is
+  refused with one line, and the record keeps the roots it had. inbox trusts a partner's root once the organisation
+  grants it, with its partnership named in `trust.json`; the root leaves when the partnership ends.
+
+### Enterprise: pairing started from the console
+
+- **An organisation can pair one of its agents with someone outside it from the console.** The agent's machine runs the
+  same pairing as `bag peer invite`, and the code shows in the console. The console's person types the six check digits
+  that the other side reads out, with three tries. The pairing ends when the console revokes it or its term ends. The
+  bag MCP server picks this up every 15 s, and **`bag pairings [--watch]`** does the same for an agent with no MCP host.
+  Both open the pairing at the organisation's first relay, where the agent's records are, even when the MCP server
+  was installed with another `--relay`.
+
+### Names and labels
+
+- **A name in the name book and an agent's label in the organisation's directory can be up to 64 characters**
+  (previously 32), in the CLI and in the MCP server.
+
+### Fixes
+
+- **Security: the relay's SQLite is 3.54 or later** (RUSTSEC-2026-0459, CVE-2026-119375). The relay's bundled SQLite
+  came through `rusqlite` 0.40.2 and `libsqlite3-sys` 0.38.2, and it is now `rusqlite` 0.41.1 and `libsqlite3-sys`
+  0.39.1. Older SQLite can return uninitialised memory when it opens a database together with a write-ahead log whose
+  page size differs. The relay opens only its own database, which it writes itself. No relay API or behaviour changes.
+- **`bag connect` to an instance on a private network** (RFC 1918 or ULA, such as a container network) now works as
+  loopback does, with one stderr line naming the addresses. Link-local, multicast and other addresses are still
+  refused.
+
 ## v0.2.1: 2026-11-07
 
 The cut tagged v0.2.1, `@usebag/bag` 0.2.1.

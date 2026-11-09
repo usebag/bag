@@ -82,6 +82,9 @@ export class FakeInstance {
   /** Extra roots GET /agent/trust lists beside the org's own domain root. */
   extraRoots: { root: string; source: string; granted_by: string | null; granted_at: number }[] = []
   trustEtag = 't1'
+  /** GET /api/v1/agent/accept-list's roots and etag; null, an instance older than the list (404). */
+  acceptList: string[] | null = null
+  acceptEtag = 'a1'
   /** A /agent/code answer whose bind_nonce is not the one derived from its device code. */
   wrongNonce = false
   readonly codes = new Map<string, Code>()
@@ -123,6 +126,7 @@ export class FakeInstance {
   }
 
   readonly fetch = async (url: string, init: RequestInit): Promise<Response> => {
+    if (url === `${this.origin}/api/v1/agent/accept-list`) return this.#acceptList(init)
     const prefix = `${this.origin}/api/v1/auth`
     if (!url.startsWith(prefix)) throw new TypeError(`fetch failed: ${url}`)
     const path = url.slice(prefix.length)
@@ -139,6 +143,13 @@ export class FakeInstance {
     return out.status === 204
       ? new Response(null, { status: 204 })
       : new Response(JSON.stringify(out.body), { status: out.status })
+  }
+
+  #acceptList(init: RequestInit): Response {
+    if (this.acceptList === null) return new Response('{}', { status: 404 })
+    if (new Headers(init.headers).get('if-none-match') === this.acceptEtag)
+      return new Response(null, { status: 304 })
+    return new Response(JSON.stringify({ accept: this.acceptList, etag: this.acceptEtag }), { status: 200 })
   }
 
   #route(path: string, b: Body, bearer: string | null): { status: number; body?: unknown } {

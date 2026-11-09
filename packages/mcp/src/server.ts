@@ -26,6 +26,7 @@ import type { EnterprisePorts } from '@usebag/enterprise-client'
 import type { SessionAgent } from './agent.ts'
 import { ChainKeeper, type ChainSource, type Env, loadChain, type RunCommand, runShell } from './chain.ts'
 import { type Config, parseServerConfig, type ServerConfig, USAGE } from './config.ts'
+import { watchConsole } from './console.ts'
 import { Desk, type Message, realTimers, type Timers } from './desk.ts'
 import { RecordKeeper } from './keepalive.ts'
 import { jsonLogger, type Logger, type LogLevel, type LogValue } from './log.ts'
@@ -576,6 +577,7 @@ export async function startServer(given: Config, deps: ServerDeps): Promise<Runn
       })
   }
   registerTools(mcp, unit.ctx)
+  const unwatch = watchConsole(unit.ctx, [unit.ctx]) // the console's pairings (console.ts)
   registerPush(mcp, config.push, unit.view, log)
   if (config.push.includes('resource')) registerInboxResource(mcp, config.as, unit.view, log)
   /** A session whose grant the agent no longer holds: ask a new one, open again, register the threads again. */
@@ -684,6 +686,7 @@ export async function startServer(given: Config, deps: ServerDeps): Promise<Runn
   // While telemetry is on the process counts into the machine's spool (the edge's tally), from here to its stop.
   const counting = startTelemetry(env, clock)
   const stop = async (): Promise<void> => {
+    unwatch()
     if (unit.opened === null) session?.close() // ends a wait for the grant
     await ready.catch(() => {})
     await regranting
@@ -748,7 +751,12 @@ export async function startIdentities(server: ServerConfig, deps: ManyDeps) {
     const each = all.map((u) => `${u.config.label} ${codeOf(u.failure)}`).join(', ')
     throw new ToolError(codeOf(all[0]?.failure), `no identity could be opened (${each})`)
   }
-  registerTools(mcp, (units.get(server.defaultLabel) as Unit).ctx)
+  const root = (units.get(server.defaultLabel) as Unit).ctx
+  registerTools(mcp, root)
+  const unwatch = watchConsole(
+    root,
+    all.map((u) => u.ctx),
+  )
   registerPush(mcp, server.push, new Map(all.map((u) => [u.config.label, u.view] as const)), log)
   if (server.push.includes('resource'))
     for (const u of all) registerInboxResource(mcp, u.config.label, u.view, log)
@@ -760,6 +768,7 @@ export async function startIdentities(server: ServerConfig, deps: ManyDeps) {
   let stopping: Promise<void> | null = null
   const counting = startTelemetry(shared.env, deps.clock)
   const stop = async (): Promise<void> => {
+    unwatch()
     await Promise.allSettled(all.map((u) => u.stop()))
     if (counting) stopTelemetry()
     await mcp.close()

@@ -501,6 +501,56 @@ describe('the agent records follow the org relays (records.ts through the refres
     ])
   })
 
+  it("signs the accept list's roots at the next tick, republishes when its etag moves, and claims partner roots", async () => {
+    const w = world()
+    const sent: { url: string; roots: readonly string[] }[] = []
+    const publisher: Publisher = {
+      async publish(url, bytes) {
+        const r = parseRecord(bytes)
+        if (r.kind === 'accept-from') sent.push({ url, roots: r.roots })
+        return { id: '', duplicate: false, delivered: 0 }
+      },
+    }
+    ;(w.d as { relays?: Publisher }).relays = publisher
+    expect(await signedIn(w)).toBe(0)
+    const own = readSession(w.d.home)?.org.root as string
+    expect(sent.map((s) => s.roots)).toEqual([[own]])
+    const partner = `ed25519:${'7c'.repeat(32)}`
+    w.fake.acceptList = [own, partner]
+    w.time.now += 60
+    await tick(w.d)
+    expect(sent.map((s) => s.roots)).toEqual([[own], [own, partner]])
+    expect(readSession(w.d.home)?.accept_etag).toBe('a1')
+    // The same etag: a 304, nothing republished; a new one with another partner: republished at once.
+    w.time.now += 60
+    await tick(w.d)
+    expect(sent).toHaveLength(2)
+    w.fake.acceptList = [own, partner, 'domain:okok.example']
+    w.fake.acceptEtag = 'a2'
+    await tick(w.d)
+    expect(sent.at(-1)?.roots).toEqual([own, partner, 'domain:okok.example'])
+    // The partnership's root on /agent/trust is claimed as peer links are, and leaves when the partnership does.
+    const grant = {
+      root: partner,
+      source: 'partner:3f2c9a1e-0b7d-4e55-9a61-2c4d8e0f1a2b',
+      granted_by: 'partnership',
+      granted_at: 5,
+    }
+    w.fake.extraRoots = [grant]
+    w.fake.trustEtag = 't2'
+    w.time.now += 13 * 3600
+    expect((await tick(w.d)).trust?.added).toEqual([partner])
+    expect(readTrustFile(w.d.home, (d) => new Error(d))[partner]?.source).toBe(grant.source)
+    w.fake.extraRoots = []
+    w.fake.trustEtag = 't3'
+    w.time.now += 13 * 3600
+    expect((await tick(w.d)).trust?.removed).toEqual([partner])
+    // An instance older than the list (404): the record is the org root alone again.
+    w.fake.acceptList = null
+    await tick(w.d)
+    expect(sent.at(-1)?.roots).toEqual([own])
+  })
+
   it('keeps the session org when a refresh names another root', async () => {
     const w = world()
     ;(w.d as { relays?: Publisher }).relays = {

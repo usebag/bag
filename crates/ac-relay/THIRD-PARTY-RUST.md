@@ -67,9 +67,9 @@ crates ship is printed once, under the first of them, and names the others.
 - http-body-util 0.1.5, https://github.com/hyperium/http-body
 - hyper 1.12.0, https://github.com/hyperium/hyper
 - hyper-util 0.1.21, https://github.com/hyperium/hyper-util
-- libsqlite3-sys 0.38.2, https://github.com/rusqlite/rusqlite
+- libsqlite3-sys 0.39.1, https://github.com/rusqlite/rusqlite
 - mio 1.2.4, https://github.com/tokio-rs/mio
-- rusqlite 0.40.2, https://github.com/rusqlite/rusqlite
+- rusqlite 0.41.1, https://github.com/rusqlite/rusqlite
 - sharded-slab 0.1.7, https://github.com/hawkw/sharded-slab
 - slab 0.4.12, https://github.com/tokio-rs/slab
 - tokio 1.54.1, https://github.com/tokio-rs/tokio
@@ -3020,9 +3020,9 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ````
 
-### libsqlite3-sys 0.38.2 (LICENSE)
+### libsqlite3-sys 0.39.1 (LICENSE)
 
-The same text: rusqlite 0.40.2 (LICENSE).
+The same text: rusqlite 0.41.1 (LICENSE).
 
 ````text
 Copyright (c) 2014 The rusqlite developers

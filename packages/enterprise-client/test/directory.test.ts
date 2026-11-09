@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
-import { DIRECTORY_PATH, directory, directoryPath, resolveLabel } from '../src/directory.ts'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+import { DIRECTORY_PATH, directory, directoryPath, resolveHandle, resolveLabel } from '../src/directory.ts'
 import { EnterpriseError, type Fetch } from '../src/instance.ts'
 import { enterpriseDir, profileHome, writeJson } from '../src/session.ts'
 import { tempDir } from './support/fixtures.ts'
@@ -265,13 +265,15 @@ describe('resolveLabel', () => {
   })
 
   it('refuses what is not a label, before any call', async () => {
-    for (const bad of ['', '-ops', 'a b', 'x'.repeat(33), A, 'ops/1']) {
+    for (const bad of ['', '-ops', 'a b', 'x'.repeat(65), A, 'ops/1']) {
       const f = instance()
       expect((await refusal(resolveLabel(home(), bad, { fetch: f.fetch }))).code).toBe('usage')
       expect(f.calls).toHaveLength(0)
     }
     const f = instance(ok([agent('a.b_c-9', A)]))
     expect(await resolveLabel(home(), 'A.B_C-9', { fetch: f.fetch })).toBe(A)
+    const long = instance(ok([agent('x'.repeat(64), B)]))
+    expect(await resolveLabel(home(), 'X'.repeat(64), { fetch: long.fetch })).toBe(B)
   })
 })
 
@@ -297,5 +299,53 @@ describe('directory: one copy per organisation', () => {
     expect(directoryPath(h, 'acme.example')).toBe(
       join(h, 'orgs', 'acme.example', 'enterprise', 'directory.json'),
     )
+  })
+})
+
+describe("resolveHandle: an own-organisation handle through its profile's directory", () => {
+  it('resolves <label>@<domain> of a profile with a session, in that profile, and undefined on a miss', async () => {
+    const h = home()
+    home('https://bag.walk2.example', C, 'walk2.example', h)
+    const f = instance(ok([agent('Alice', A)]), ok([agent('Alice', A)]))
+    expect(await resolveHandle(h, 'alice@walk2.example', { fetch: f.fetch, now: () => T })).toBe(A)
+    expect(f.calls[0]?.url).toBe(`https://bag.walk2.example${DIRECTORY_PATH}`)
+    expect(await resolveHandle(h, 'bob@walk2.example', { fetch: f.fetch, now: () => T })).toBeUndefined()
+  })
+
+  it('never asks for a non-handle, another domain, or a profile with no session (a pending sign-in)', async () => {
+    const h = home()
+    mkdirSync(enterpriseDir(profileHome(h, 'wait.example')), { recursive: true, mode: 0o700 })
+    writeJson(join(enterpriseDir(profileHome(h, 'wait.example')), 'pending.json'), { v: 1 })
+    const f = instance()
+    for (const to of ['alice', A, 'alice@partner.example', 'alice@wait.example']) {
+      expect(await resolveHandle(h, to, { fetch: f.fetch, now: () => T })).toBeUndefined()
+    }
+    expect(f.calls).toHaveLength(0)
+  })
+
+  it('falls back with one line when the directory cannot answer, and keeps two agents under one label an error', async () => {
+    const h = home()
+    const lines: string[] = []
+    const down = instance(new Error('connect ECONNREFUSED'))
+    const o = { fetch: down.fetch, now: () => T, warn: (l: string) => lines.push(l) }
+    expect(await resolveHandle(h, 'alice@acme.example', o)).toBeUndefined()
+    expect(lines).toEqual([
+      'bag: the directory of acme.example did not resolve alice@acme.example (' +
+        `unreachable: ${ORIGIN} did not answer: connect ECONNREFUSED); using its handle record`,
+    ])
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      expect(await resolveHandle(h, 'alice@acme.example', { fetch: instance(new Error('x')).fetch })).toBe(
+        undefined,
+      )
+      expect(String(write.mock.calls[0]?.[0])).toMatch(
+        /^bag: the directory of acme\.example did not resolve /,
+      )
+    } finally {
+      write.mockRestore()
+    }
+    const two = instance(ok([agent('ops', A), agent('OPS', B)]))
+    const e = await refusal(resolveHandle(h, 'ops@acme.example', { fetch: two.fetch, now: () => T }))
+    expect(e.code).toBe('ambiguous-label')
   })
 })

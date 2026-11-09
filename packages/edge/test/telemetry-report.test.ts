@@ -400,7 +400,7 @@ describe('the facts: the package version or the checkout commit, a build only by
   })
 
   it('names a package build by its npm version, a published one as itself and any other as other; from source the commit', async () => {
-    expect(BUILDS).toEqual(['0.1.0', '0.1.1', '0.1.2', '0.2.0', '0.2.1'])
+    expect(BUILDS).toEqual(['0.1.0', '0.1.1', '0.1.2', '0.2.0', '0.2.1', '0.2.2'])
     const built = (version: string) => machineFacts(ID, { version, commit: 'c'.repeat(40) })
     for (const version of BUILDS) {
       expect(built(version).build).toBe(version)
@@ -408,7 +408,7 @@ describe('the facts: the package version or the checkout commit, a build only by
       expect(report.build).toBe(version)
       await sendable(report)
     }
-    for (const version of ['0.2.2', '0.0.0', '0.1.1-dirty', 'c'.repeat(40)]) {
+    for (const version of ['0.2.3', '0.0.0', '0.1.1-dirty', 'c'.repeat(40)]) {
       expect(buildTelemetryReport(DAY, new Map(), built(version)).build, version).toBe('other')
     }
     expect(machineFacts(ID, null).build).toBe(checkoutCommit())

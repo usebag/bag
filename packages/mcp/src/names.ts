@@ -13,7 +13,7 @@ import type { Message } from './desk.ts'
 
 /** The book's file in a home, and the shape of a name: the CLI's NAMES_FILE and NAME. */
 export const NAMES_FILE = 'names.json'
-export const NAME = /^[a-z0-9][a-z0-9._-]{0,31}$/
+export const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
 
 /** How a message names an address: its current name, or a name whose former address it is, with the warning. */
 export interface NameRef {

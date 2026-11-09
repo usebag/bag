@@ -106,6 +106,19 @@ describe('bag connect', () => {
     expect(status.out.at(-1)).toMatch(ROUND_TRIP('build-box'))
   })
 
+  it('an instance on a private network connects and says so on stderr, one line', async () => {
+    const { RelayGuard } = await import('@usebag/edge')
+    const guard = new RelayGuard({ own: [], lookup: async () => ['192.168.138.154'] })
+    const w = setup({}, { guard: () => guard.connectTo(ORIGIN) })
+    Object.assign(w.io.env, { BAG_ORG_CODE: w.code })
+    const r = await cli(w.io, 'connect', '--label', 'build-box', '--dir', w.dir)
+    expect(r).toEqual({
+      code: 0,
+      out: [expect.stringMatching(ROUND_TRIP('build-box'))],
+      err: [`bag: instance ${ORIGIN} is on a private network (192.168.138.154)`],
+    })
+  })
+
   it('--verbose adds the instance, the fingerprint and each relay outcome before the one line', async () => {
     const w = setup()
     Object.assign(w.io.env, { BAG_ORG_CODE: w.code })

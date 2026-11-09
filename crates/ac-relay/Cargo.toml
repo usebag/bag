@@ -20,7 +20,7 @@ getrandom = "=0.3.4"
 # (axum::serve sets no timer), and the tower glue. Already in Cargo.lock as axum's, with these features; it replaces
 # `serde`, whose one use was a derive, as a direct dependency, so ac-relay keeps 12.
 hyper-util = { version = "=0.1.21", default-features = false, features = ["http1", "server", "service", "tokio"] }
-rusqlite = { version = "=0.40.2", features = ["bundled"] }
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
 serde_json = { version = "=1.0.154", features = ["raw_value", "float_roundtrip"] }
 tokio = { version = "=1.54.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "=0.1.44"

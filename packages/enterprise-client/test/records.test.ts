@@ -84,6 +84,7 @@ describe('publishAgentRecords', () => {
       agent_address: w.keys.signing.address,
       iat: T0,
       relays: RELAYS,
+      roots: [w.root],
     })
     expect(statSync(recordsPath(w.home)).mode & 0o777).toBe(0o600)
   })
@@ -123,6 +124,25 @@ describe('publishAgentRecords', () => {
     const out = await publishAgentRecords({ ...w, session: moved, now: T0 + 1 })
     expect(out).toHaveLength(2)
     expect(readRecordsCopy(w.home)?.relays).toEqual([RELAYS[0]])
+  })
+
+  it("signs the accept list's roots and republishes at once when they change; a copy with no roots reads as the org root", async () => {
+    const w = setup()
+    await publishAgentRecords({ ...w, now: T0 })
+    const partner = generateEdgeKeys(seededRng('partner')).signing.address
+    const listed = { ...w.session, accept_roots: [w.root, partner, 'domain:okok.example'] } as Session
+    expect(recordsDue(listed, readRecordsCopy(w.home), T0 + 1)).toBe(true)
+    expect(await publishAgentRecords({ ...w, session: listed, now: T0 + 1 })).toHaveLength(4)
+    const accept = verifyRecord(parseRecord(w.sent.at(-1)?.body ?? ''), T0 + 1)
+    expect((accept as unknown as { roots: string[] }).roots).toEqual([w.root, partner, 'domain:okok.example'])
+    expect(readRecordsCopy(w.home)?.roots).toEqual([w.root, partner, 'domain:okok.example'])
+    expect(recordsDue(listed, readRecordsCopy(w.home), T0 + 2)).toBe(false)
+    // A copy written before the accept list (no roots) is not due for the org root alone, and is for a list.
+    const old = { v: 1 as const, agent_address: w.keys.signing.address, iat: T0, relays: RELAYS }
+    expect(recordsDue(w.session, old, T0 + 2)).toBe(false)
+    expect(recordsDue(listed, old, T0 + 2)).toBe(true)
+    writeFileSync(recordsPath(w.home), JSON.stringify({ ...old, roots: [1] }))
+    expect(readRecordsCopy(w.home)).toBeNull()
   })
 
   it('keeps no copy while a relay fails, so the next tick tries again', async () => {

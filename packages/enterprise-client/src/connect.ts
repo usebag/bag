@@ -1,4 +1,5 @@
 import { isAcError } from '@usebag/core'
+import { classifyAddress, GuardRefused } from '@usebag/edge'
 import { isLoopbackOrigin, parseConnectCode } from './connect-code.ts'
 import {
   connectedLine,
@@ -37,15 +38,34 @@ export interface ConnectOptions {
   readonly verbose?: boolean
 }
 
-/** Refuses an origin the private-address guard refuses (a loopback origin is a local instance and passes). */
+/**
+ * Refuses an origin the private-address guard refuses (a loopback origin is a local instance and passes). The instance
+ * is the one the operator's own code names, so a private-network address (RFC 1918, ULA) passes as loopback does, a
+ * local instance on a container network: a private address there blocks nothing an attacker could not do with a
+ * public host. One line says so on `d.note` (the CLI's stderr). Link-local, multicast, unspecified and the rest stay
+ * refused; the relay guard is unchanged.
+ */
 export async function guardOrigin(d: EnterpriseDeps, origin: string): Promise<void> {
   if (isLoopbackOrigin(origin)) return
   try {
     await d.net.guard.connectTo(origin)
   } catch (e) {
+    const inside = e instanceof GuardRefused ? privateNetwork(e.addresses) : null
+    if (inside !== null) {
+      d.note?.(`bag: instance ${origin} is on a private network (${inside.join(', ')})`)
+      return
+    }
     const code = isAcError(e) ? e.code : 'discovery_failed'
     throw new EnterpriseError(code, `${origin} is refused: ${(e as Error).message}`)
   }
+}
+
+/** The non-public addresses of a refusal when every one is on a private network (private or ula); else null. */
+function privateNetwork(addresses: readonly string[]): string[] | null {
+  const classes = addresses.map(classifyAddress)
+  const inside = addresses.filter((_, i) => classes[i] !== 'public')
+  if (inside.length === 0) return null
+  return classes.every((c) => c === 'public' || c === 'private' || c === 'ula') ? inside : null
 }
 
 export async function connect(d: EnterpriseDeps, o: ConnectOptions): Promise<number> {

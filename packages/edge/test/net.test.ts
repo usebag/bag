@@ -230,13 +230,24 @@ describe('connectTo: the address a discovery fetch connects to, the one the guar
     expect(await guard.connectTo('https://93.184.216.34/x')).toBe('93.184.216.34')
     const refused = await guard.connectTo('https://10.1.2.3/x').catch((e: unknown) => e)
     expect(refused).toBeInstanceOf(GuardRefused)
-    expect(refused).toMatchObject({ code: 'resolve-failed', refusal: { range: 'private' } })
+    expect(refused).toMatchObject({
+      code: 'resolve-failed',
+      refusal: { range: 'private' },
+      addresses: ['10.1.2.3'],
+    })
     expect((refused as Error).message).toBe(
       'resolve-failed: https://10.1.2.3/x: 10.1.2.3 is a private address',
     )
     const lan = new RelayGuard({ own: [], lookup: async () => ['1.1.1.1', 'fe80::1%en0'] })
     await expect(lan.connectTo('https://acme.test')).rejects.toMatchObject({
       refusal: { range: 'link-local' },
+      addresses: ['1.1.1.1', 'fe80::1%en0'],
+    })
+    // The refusal carries every answer it judged, so a caller can read each one's class.
+    const orb = new RelayGuard({ own: [], lookup: async () => ['192.168.138.154', 'fd07:b51a:cc66::2'] })
+    await expect(orb.connectTo('https://bag.orb.local')).rejects.toMatchObject({
+      refusal: { range: 'private' },
+      addresses: ['192.168.138.154', 'fd07:b51a:cc66::2'],
     })
   })
 

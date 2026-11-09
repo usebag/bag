@@ -31,5 +31,7 @@ export async function connect(args: readonly string[], io: Io): Promise<number> 
   if (text.trim() === '')
     throw new UsageError('no code: paste the code from the console, or set BAG_ORG_CODE')
   const named = { ...(name === undefined ? {} : { name }), ...(label === undefined ? {} : { label }) }
-  return connectWith(deps(io, home), { text, version: VERSION, verbose: flag(p, 'verbose'), ...named })
+  // The line that the instance is on a private network goes beside the output, to stderr.
+  const d = { ...deps(io, home), note: (l: string) => io.err(l) }
+  return connectWith(d, { text, version: VERSION, verbose: flag(p, 'verbose'), ...named })
 }
