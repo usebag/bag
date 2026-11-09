@@ -80,17 +80,22 @@ function setup(
     relays,
   }
   const out: string[] = []
-  const deps = () =>
-    enterpriseDeps(
+  // The lines beside the output (the CLI's stderr).
+  const notes: string[] = []
+  const deps = () => ({
+    ...enterpriseDeps(
       ports,
       home,
       (l) => out.push(l),
       async () => {
         throw new Error('connect reads no code of its own')
       },
-    )
+    ),
+    note: (l: string) => notes.push(l),
+  })
   const run = async (text: string, more: Partial<ConnectOptions> = {}): Promise<Run> => {
     out.length = 0
+    notes.length = 0
     try {
       const exit = await connect(deps(), { text, version: VERSION, ...more })
       return { exit, out: [...out], error: null }
@@ -104,7 +109,7 @@ function setup(
     const exit = await enterpriseStatus(deps())
     return { exit, out: [...out] }
   }
-  return { fake, seen, home, run, status, pasted, published, relays, time, deps }
+  return { fake, seen, home, run, status, pasted, published, relays, time, deps, notes }
 }
 
 /** The key seeds of a home: none may ever be said. */
@@ -203,6 +208,50 @@ describe('connect', () => {
       },
     })
     expect((await plain.run(plain.pasted)).error?.code).toBe('discovery_failed')
+  })
+
+  it('an instance on a private network (RFC 1918, ULA) connects with one line beside the output; link-local, multicast and unspecified stay refused', async () => {
+    const { RelayGuard } = await import('@usebag/edge')
+    const resolving = (...answers: string[]) => {
+      const guard = new RelayGuard({ own: [], lookup: async () => answers })
+      return () => guard.connectTo('https://ent.example.test')
+    }
+    for (const answers of [
+      ['192.168.138.154'],
+      ['10.0.0.7'],
+      ['172.16.0.2'],
+      ['fd07:b51a:cc66::2'],
+      ['93.184.215.14', '10.0.0.7'],
+    ]) {
+      const w = setup({ guard: resolving(...answers) })
+      const r = await w.run(w.pasted)
+      expect([r.exit, r.out], answers.join()).toEqual([0, [expect.stringMatching(ROUND_TRIP)]])
+      const inside = answers.filter((a) => a !== '93.184.215.14').join(', ')
+      expect(w.notes).toEqual([`bag: instance https://ent.example.test is on a private network (${inside})`])
+      expect(w.fake.calls[0]?.path).toBe('/agent/redeem')
+    }
+    for (const answers of [
+      ['169.254.1.1'],
+      ['fe80::1'],
+      ['224.0.0.1'],
+      ['0.0.0.0'],
+      ['192.168.1.2', '169.254.1.1'],
+      ['127.0.0.1'],
+    ]) {
+      const w = setup({ guard: resolving(...answers) })
+      const r = await w.run(w.pasted)
+      expect([r.exit, r.error?.code, r.out], answers.join()).toEqual([1, 'resolve-failed', []])
+      expect(r.error?.message).toMatch(/^resolve-failed: https:\/\/ent\.example\.test is refused: /)
+      expect(w.notes).toEqual([])
+      expect(w.fake.calls).toEqual([])
+    }
+    // A private-address literal names its address the same way.
+    const literal = new RelayGuard({ own: [] })
+    const lan = setup({ guard: () => literal.connectTo('https://192.168.138.154') })
+    expect((await lan.run(lan.pasted)).exit).toBe(0)
+    expect(lan.notes).toEqual([
+      'bag: instance https://ent.example.test is on a private network (192.168.138.154)',
+    ])
   })
 
   it("approved, but the organisation's signer has not signed: exit 4 with its line; a used code is refused, exit 1", async () => {

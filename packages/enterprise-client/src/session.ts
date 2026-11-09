@@ -189,6 +189,9 @@ export interface Session {
   readonly trust_applied: string | null
   /** The peer links this organisation granted at its last trust answer (its sync claims those, and its own). */
   readonly trust_peers?: readonly string[]
+  /** The agent's accept list at the instance's last answer (accept-list.ts), and its etag; unset, [org.root]. */
+  readonly accept_roots?: readonly string[]
+  readonly accept_etag?: string
   readonly state: 'live' | 'frozen' | 'paused' | 'lapsed' | 'ended'
   readonly reason: string | null
   readonly refreshed_at: number

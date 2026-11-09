@@ -12,8 +12,8 @@ import { CliError } from './args.ts'
 
 /** The book's file in a home. */
 export const NAMES_FILE = 'names.json'
-/** A name: lowercase letters, digits, dot, underscore and dash, 1 to 32, starting with a letter or digit. */
-export const NAME = /^[a-z0-9][a-z0-9._-]{0,31}$/
+/** A name: lowercase letters, digits, dot, underscore and dash, 1 to 64, starting with a letter or digit. */
+export const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
 
 /** An address a name had before a --replace, and when it was replaced (Unix seconds). */
 export interface Previous {

@@ -158,16 +158,25 @@ export class RelayGuard {
    */
   async connectTo(url: string): Promise<string | null> {
     if (this.allows(url)) return null
-    const { refusal, address } = await this.#judge(url)
-    if (refusal !== null) throw new GuardRefused(refusal)
+    const { refusal, address, answers } = await this.#judge(url)
+    if (refusal !== null) throw new GuardRefused(refusal, answers)
     if (address === null) throw new AcError('resolve-failed', `${url}: ${hostOf(url)} does not resolve`)
     return address
   }
 
-  /** The guard's verdict on a URL it does not allow outright, and the address it checked (null for none). */
-  async #judge(url: string): Promise<{ refusal: Refusal | null; address: string | null }> {
-    const pass = (address: string | null) => ({ refusal: null, address })
-    const refuse = (refusal: Refusal) => ({ refusal, address: null })
+  /**
+   * The guard's verdict on a URL it does not allow outright, the address it checked (null for none), and the addresses
+   * it judged (the literal, or every answer of the name's lookup).
+   */
+  async #judge(
+    url: string,
+  ): Promise<{ refusal: Refusal | null; address: string | null; answers: readonly string[] }> {
+    const pass = (address: string | null) => ({ refusal: null, address, answers: [] })
+    const refuse = (refusal: Refusal, answers: readonly string[] = []) => ({
+      refusal,
+      address: null,
+      answers,
+    })
     let parsed: URL
     try {
       parsed = new URL(url)
@@ -182,7 +191,7 @@ export class RelayGuard {
     if (literal !== null) {
       return literal === 'public'
         ? pass(host)
-        : refuse({ range: literal, detail: `${url}: ${host} is a ${literal} address` })
+        : refuse({ range: literal, detail: `${url}: ${host} is a ${literal} address` }, [host])
     }
     if (host === 'localhost' || host.endsWith('.localhost')) {
       return refuse({ range: 'loopback', detail: `${url}: ${host} is a loopback name (RFC 6761)` })
@@ -198,10 +207,13 @@ export class RelayGuard {
     const first = inside[0]
     if (first === undefined) return pass(answers.find((_, i) => classes[i] === 'public') ?? null)
     const n = answers.length
-    return refuse({
-      range: first,
-      detail: `${url}: ${host} resolves to a non-public address (${[...new Set(inside)].join(', ')}) among ${n} answer${n === 1 ? '' : 's'}`,
-    })
+    return refuse(
+      {
+        range: first,
+        detail: `${url}: ${host} resolves to a non-public address (${[...new Set(inside)].join(', ')}) among ${n} answer${n === 1 ? '' : 's'}`,
+      },
+      answers,
+    )
   }
 
   /** Throws resolve-failed for a URL the guard refuses. */
@@ -214,11 +226,14 @@ export class RelayGuard {
 /** A guard's refusal of a discovery fetch: resolve-failed, carrying the refusal (a lookup reports it as refused). */
 export class GuardRefused extends AcError {
   readonly refusal: Refusal
+  /** The addresses the guard judged: the URL's literal address, or every answer of its name's lookup; else none. */
+  readonly addresses: readonly string[]
 
-  constructor(refusal: Refusal) {
+  constructor(refusal: Refusal, addresses: readonly string[] = []) {
     super('resolve-failed', refusal.detail)
     this.name = 'GuardRefused'
     this.refusal = refusal
+    this.addresses = addresses
   }
 }
 

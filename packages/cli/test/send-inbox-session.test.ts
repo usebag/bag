@@ -193,6 +193,84 @@ describe('send and inbox with the defaults of a live enterprise session', () => 
     expect(none.err[0]).toMatch(/^bag: name-unknown: no name "nobody" in /)
   })
 
+  it("--to <label>@<own domain>: the organisation's agent from its directory first, else the public path", async () => {
+    const asked: string[] = []
+    const fake = w.io.fetch as (url: string, init: RequestInit) => Promise<Response>
+    let answer = (): Response =>
+      Response.json({ agents: [{ label: 'Peer-Box', address: agent, connectedAt: 'x' }], etag: 'e2' })
+    Object.assign(w.io, {
+      fetch: async (url: string, init: RequestInit) => {
+        if (!url.endsWith('/api/v1/agent/directory')) return fake(url, init)
+        asked.push(url)
+        return answer()
+      },
+    })
+    w.io.time.now += 61
+    const send = (to: string) =>
+      cli(w.io, 'send', '--to', to, '--type', 'note', '--body', '4', '--dir', w.dir)
+    const r = await send(`peer-box@${DOMAIN}`)
+    expect([r.code, r.out[1], r.err]).toEqual([0, `published ${RELAY} tries=1`, []])
+    expect(JSON.parse(new TextDecoder().decode(w.relay.envelopes.get(r.out[0] as string))).to).toEqual([
+      agent,
+    ])
+    // A label the directory lacks takes the public path: here no TXT record for the domain, so resolve-failed.
+    const miss = await send(`nobody@${DOMAIN}`)
+    expect([miss.code, miss.err[0]]).toEqual([1, expect.stringMatching(/^bag: resolve-failed: /)])
+    // Another organisation's handle never asks this directory.
+    const calls = asked.length
+    expect((await send('peer-box@partner.example')).err[0]).toMatch(/^bag: resolve-failed: /)
+    expect(asked).toHaveLength(calls)
+    // A directory that cannot answer: its older copy serves, with a line on stderr, and a miss there is the public path.
+    w.io.time.now += 61
+    answer = () => new Response('down', { status: 500 })
+    const down = await send(`nobody@${DOMAIN}`)
+    expect(down.err[0]).toMatch(/ did not answer the directory \(http-500\); using the copy from /)
+    expect(down.err[1]).toMatch(/^bag: resolve-failed: /)
+  })
+
+  it('pairings: a link the console revoked leaves trust.json, unpaired posted; no session is a usage line', async () => {
+    const id = '3f2c9a1e-0b7d-4e55-9a61-2c4d8e0f1a2b'
+    const peer = `ed25519:${'5e'.repeat(32)}`
+    const profile = join(w.dir, 'orgs', DOMAIN, 'enterprise')
+    const link = { id, peer, name: 'sam', paired_at: w.io.time.now, until: null }
+    writeFileSync(join(profile, 'pairings.json'), JSON.stringify({ v: 1, links: [link], done: [] }), {
+      mode: 0o600,
+    })
+    expect((await cli(w.io, 'name', 'add', 'sam', peer, '--dir', w.dir)).code).toBe(0)
+    const trust = JSON.parse(readFileSync(join(w.dir, 'trust.json'), 'utf8'))
+    trust.roots[peer] = { added_at: w.io.time.now }
+    writeFileSync(join(w.dir, 'trust.json'), JSON.stringify(trust), { mode: 0o600 })
+    const posted: string[] = []
+    const fake = w.io.fetch as (url: string, init: RequestInit) => Promise<Response>
+    Object.assign(w.io, {
+      fetch: async (url: string, init: RequestInit) => {
+        if (url.endsWith('/api/v1/agent/pairings')) {
+          const c = {
+            id,
+            action: 'unpair',
+            termDays: null,
+            outsideAddress: peer,
+            name: 'sam',
+            expiresAt: 0,
+            spoken: null,
+          }
+          return Response.json({ pairings: [c], etag: 'p1' })
+        }
+        if (url.includes('/api/v1/agent/pairings/')) {
+          posted.push(`${url.split('/').at(-1)} ${String(init.body)}`)
+          return new Response(null, { status: 204 })
+        }
+        return fake(url, init)
+      },
+    })
+    const r = await cli(w.io, 'pairings', '--dir', w.dir)
+    expect([r.code, r.out[0]]).toEqual([0, `unpaired ${id}`])
+    expect(posted).toEqual([`${id} {"event":"unpaired"}`])
+    expect(Object.keys(JSON.parse(readFileSync(join(w.dir, 'trust.json'), 'utf8')).roots)).not.toContain(peer)
+    const none = await cli(w.io, 'pairings', '--dir', join(w.dir, 'nowhere'))
+    expect(none.err[0]).toMatch(/^bag: usage: no enterprise session in .*: run bag connect$/)
+  })
+
   it('a session that is not live fills in nothing, and the usage line says why', async () => {
     w.io.time.now += 30 * 86_400
     const r = await cli(w.io, 'inbox', '--once', '--dir', w.dir)

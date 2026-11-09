@@ -643,7 +643,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
 ### Names and pairing
 
 - **`name add <name> <address> [--replace] [--dir <home>]`**, **`name list [--dir <home>]`**, **`name forget <name>
-  [--dir <home>]`**: the home's name book, `<home>/names.json`. A name is `[a-z0-9][a-z0-9._-]`, at most 32 (`bad-name`
+  [--dir <home>]`**: the home's name book, `<home>/names.json`. A name is `[a-z0-9][a-z0-9._-]`, at most 64 (`bad-name`
   otherwise), pinned to one address: another address for a known name is `name-exists` unless `--replace`, which keeps
   the old one as former. `add` prints `<name> <address>`; `list` prints `<name> <address>` per name, sorted, and
   `  former <address> replaced <unix>` per former address; `forget` prints nothing (`name-unknown` for a name the book
@@ -834,7 +834,7 @@ is decided by the organisation's instance on the server, not by the client. The 
 `sign-in.ts` (sign-in and sign-out), `status.ts` (with no `--as`), `mcp.ts` and `refresher.ts`.
 
 A person gives their agent the prompt the console shows beside a minted connect code. The console fills in the exact
-version it pins (the current cut, `@usebag/bag@0.2.1`), never `@latest`:
+version it pins (the current cut, `@usebag/bag@0.2.2`), never `@latest`:
 
     1. Register once: claude mcp add bag -- npx -y @usebag/bag@<version> mcp (or run directly: BAG_ORG_CODE=<code> npx -y @usebag/bag@<version> connect)
     2. Paste the code into the chat and ask the agent to connect with the bag tool `connect`.

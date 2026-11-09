@@ -5,8 +5,8 @@ import { domainOfRoot, isAddress, isDomainHost } from '@usebag/core'
 
 // The bag home's trust file as a bag enterprise session writes it: <home>/trust.json, version 1, 0600, written whole and
 // renamed, as bag's own CLI and MCP server write it. A root is an address or `domain:<host>` (SPEC 7.4), never `*`. An
-// entry the organisation granted carries provenance (the agent contract's trust roots): `source`, `org:<domain>` or
-// `peer:<link id>`, with `granted_by` and `granted_at`; at most 64 such. bag's readers ignore the three extra fields
+// entry the organisation granted carries provenance (the agent contract's trust roots): `source`, `org:<domain>`,
+// `peer:<link id>` or `partner:<partnership id>` (a partner organisation's root), with `granted_by` and `granted_at`; at most 64 such. bag's readers ignore the three extra fields
 // (they check only `added_at`), so a home this package wrote stays a trust file of version 1 to them. An entry with no
 // source is a person's own act and wins: no organisation overwrites it and no sign-out removes it. @usebag/edge exports
 // no reader or writer of this file (bag's CLI and MCP server each keep their own), so this package keeps its own.
@@ -25,7 +25,7 @@ export const isTrustRoot = (root: string): boolean => isAddress(root) || domainO
 
 const source = (s: unknown): boolean =>
   typeof s === 'string' &&
-  ((s.startsWith('org:') && isDomainHost(s.slice(4))) || /^peer:[A-Za-z0-9._-]{1,64}$/.test(s))
+  ((s.startsWith('org:') && isDomainHost(s.slice(4))) || /^(?:peer|partner):[A-Za-z0-9._-]{1,64}$/.test(s))
 
 function entryOk(e: Partial<Record<keyof TrustEntry, unknown>> | null): boolean {
   const by = e?.granted_by
@@ -114,4 +114,15 @@ export function syncSourcedTrust(
     throw fail(`over ${MAX_SOURCED_ROOTS} roots granted by organisations`)
   writeTrustFile(home, roots)
   return sync
+}
+
+/**
+ * Removes a root a pairing wrote (an entry with no source) from a home's trust file, as unpair does: a link the
+ * console revoked or whose term ended (pairings.ts). An organisation's sourced entry stays; false when none was there.
+ */
+export function removePairedRoot(home: string, root: string, fail: (detail: string) => Error): boolean {
+  const { [root]: gone, ...roots } = readTrustFile(home, fail)
+  if (gone === undefined || gone.source !== undefined) return false
+  writeTrustFile(home, roots)
+  return true
 }

@@ -5,6 +5,7 @@ import { packageName as edgeName } from '@usebag/edge'
 // one-time code, sign-in by the device flow, the refresh tick, the agent's records at the organisation's relays, the
 // MCP tools). bag's commands (@usebag/cli) and its MCP server (@usebag/mcp) are built on it.
 
+export { ACCEPT_LIST_PATH, acceptRoots, syncAcceptList } from './accept-list.ts'
 export {
   type AgentSignInOptions,
   pinnedInstance,
@@ -20,7 +21,7 @@ export {
   parseConnectCode,
 } from './connect-code.ts'
 export { withSession } from './defaults.ts'
-export { type Directory, type DirectoryOptions, directory, resolveLabel } from './directory.ts'
+export { type Directory, type DirectoryOptions, directory, resolveHandle, resolveLabel } from './directory.ts'
 export {
   bareOrigin,
   type DiscoveryNet,
@@ -55,6 +56,18 @@ export {
   statePreimage,
 } from './layer-auth.ts'
 export { createMcpServer, MCP_TOOLS, serveMcp } from './mcp.ts'
+export {
+  endLinks,
+  newPairs,
+  PAIRINGS_PATH,
+  type PairedLink,
+  type PairingCommand,
+  type PairingPorts,
+  pairedPeers,
+  pairingCommands,
+  readPairings,
+  runPairing,
+} from './pairings.ts'
 export { type EnterprisePorts, enterpriseDeps, systemPorts, VERSION } from './ports.ts'
 export {
   ACCEPT_MAX_BYTES,

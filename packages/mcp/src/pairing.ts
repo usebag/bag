@@ -26,6 +26,7 @@ import {
   RelayError,
   RelayGuard,
 } from '@usebag/edge'
+import type { PairingPorts } from '@usebag/enterprise-client'
 import { incompleteLine } from './keepalive.ts'
 import { NAME, Names } from './names.ts'
 import { type ProgressExtra, startProgress } from './progress.ts'
@@ -295,6 +296,52 @@ export class Pairings {
     return { requested: true, expires_at: iso(exp), resume: live.token, note: NOT_PAIRED }
   }
 
+  /** True while a pairing of this server has not ended: one runs at a time across its identities. */
+  busy(): boolean {
+    return this.#all.some((p) => p.#live !== null && p.#live.end === null)
+  }
+
+  /**
+   * The console's ceremony (decision 38c, console.ts): pair_invite's invitePeer on this identity's keys and relay, with
+   * the console's person in the inviter's seat (runPairing checks the digits typed there). It holds the server's one
+   * pairing until the edge ends; it writes nothing, for runPairing writes after it (as the CLI's `bag pairings`).
+   */
+  readonly consoleInvite: PairingPorts['invite'] = async (o) => {
+    if (this.busy()) throw new ToolError('busy', 'a pairing is running')
+    const live = new Live('console', toHex(this.#ctx.rng.bytes(16)), 'console', () => {})
+    this.#live = live
+    try {
+      const { keys, relay, key } = await this.#keys(live)
+      // The organisation's relay, where the agent's records are (records.ts), over this server's --relay, which a host
+      // install may have named otherwise: the invitation meets there, as the CLI's bag pairings opens it.
+      const at = o.relay ?? relay
+      const got = await invitePeer(this.#ports(live, o.relay === undefined ? [] : [o.relay]), {
+        relay: at,
+        keys,
+        ...key,
+        ttl: o.ttl,
+        rendezvous: o.relay ?? this.#ctx.config.rendezvous,
+        ...(o.only === undefined ? {} : { only: o.only }),
+        opened: (text, exp) => {
+          live.exp = exp
+          this.#audit('queue', 'invite-open', null, { name: live.name })
+          o.opened(text, exp)
+        },
+        refused: (from, code) => this.#audit('reject', 'request', from, { code }),
+        leaked: (from) => this.#audit('reject', 'request', from, { code: 'leaked' }),
+        ask: (q) => {
+          live.from = q.from
+          return o.ask(q)
+        },
+        write: () => {},
+      })
+      this.#audit('accept', 'admit', got.from, { name: live.name })
+      return got.from
+    } finally {
+      this.#drop(live)
+    }
+  }
+
   /** True while a pairing here with one of `to` has not ended: a send to it is refused until the admit. */
   pendingWith(to: readonly string[]): boolean {
     const live = this.#live
@@ -327,8 +374,7 @@ export class Pairings {
     if (name === undefined || !NAME.test(name))
       throw new ToolError('usage', `name is the peer's petname (${NAME.source})`)
     if (only !== undefined && !isAddress(only)) throw new ToolError('usage', 'for takes an address')
-    if (this.#all.some((p) => p.#live !== null && p.#live.end === null))
-      throw new ToolError('busy', 'a pairing is running: resume it, or wait for it to end')
+    if (this.busy()) throw new ToolError('busy', 'a pairing is running: resume it, or wait for it to end')
     const { home } = ctx.config
     // Before a code goes out or a person is asked, for the peer's address may come only with its request, after the
     // whole ceremony: a held name goes on only under for, its own address. #held and the paste check a name taken since.
@@ -413,10 +459,10 @@ export class Pairings {
    * request, unless --allow-private-relays. The home's copy of the address record stands in for one that a relay swept,
    * so a pairing does not publish an empty first record over it. A relay that did not take a record goes on `live`.
    */
-  #ports(live: Live) {
+  #ports(live: Live, more: readonly string[] = []) {
     const { opened, clock, rng, pollMs, config } = this.#ctx
     const { home, as } = config
-    const own = [...config.relays, config.rendezvous]
+    const own = [...config.relays, config.rendezvous, ...more]
     const guard = new RelayGuard({ own, allowPrivate: config.allowPrivateRelays })
     return {
       client: opened.client,

@@ -58,6 +58,16 @@ describe('Names: reading the book', () => {
     ] as const) {
       expect(entry(name, e)).toBe(reason(name))
     }
+    // The CLI's grammar: at most 64, so a book the CLI wrote with a 64-character name reads here too.
+    expect(entry('a'.repeat(65), { address: A, added_at: 1 })).toBe(reason('a'.repeat(65)))
+    const long = home(
+      JSON.stringify({ version: 1, names: { ['a'.repeat(64)]: { address: A, added_at: 1 } } }),
+    )
+    expect(
+      Names.read(long)
+        .list()
+        .map((e) => e.name),
+    ).toEqual(['a'.repeat(64)])
   })
 })
 

@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs'
 import { checkThread, isAddress, isHandle, MAX_ENVELOPE_BYTES } from '@usebag/core'
 import { type Edge, membershipHop, type OutboxTarget, SendHeld, type SendResult } from '@usebag/edge'
-import { withSession } from '@usebag/enterprise-client'
+import { resolveHandle, withSession } from '@usebag/enterprise-client'
 import { CliError, flag, list, type Parsed, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { readChain } from '../chain.ts'
 import { CLI_SESSION, homeDir, type OpenEdge, openEdge } from '../home.ts'
@@ -110,7 +110,9 @@ const unnamed = (t: string): boolean => isAddress(t) || isHandle(t)
  * book lacks it. A handle, `jane@acme.example`, is resolved by the edge (spec/SPEC.md §12.4 item 4: the domain's TXT
  * record, its org record, the handle record under the org's pinned key, checked against the org's revoked list at
  * every send) to its address, whose records are read at the org record's relays first; a step that fails is
- * resolve-failed naming it (or revoked), and nothing is sent.
+ * resolve-failed naming it (or revoked), and nothing is sent. A handle whose domain is a profile of the home with a
+ * session is first the organisation's directory's agent of that label (resolveHandle); a miss, or a directory that
+ * cannot answer (a line on stderr), takes the public path.
  * With --members, the edge sends through its outbound gate: a recipient the deny list names is refused
  * policy-refused before sealing, and a send a breaker trips is held: `held <id> <rule>`, for a person (held.ts).
  */
@@ -137,8 +139,12 @@ export async function send(args: readonly string[], io: Io): Promise<number> {
   // A --to that is neither an address nor a handle is a name: the book is read only then.
   const given = list(p, 'to')
   const book = given.every(unnamed) ? null : NameBook.load(homeDir(io, str(p, 'dir')))
+  // A handle of a profile's own organisation is the directory's agent first (resolveHandle), else the public path.
+  const own = { ...(io.fetch && { fetch: io.fetch }), warn: (line: string) => io.err(line) }
+  const handle = async (t: string) =>
+    isHandle(t) ? ((await resolveHandle(homeDir(io, str(p, 'dir')), t, own)) ?? t) : t
   const named = await Promise.all(
-    given.map((t) => (unnamed(t) ? t : (book as NameBook).find(t, io.fetch, str(p, 'org')))),
+    given.map((t) => (unnamed(t) ? handle(t) : (book as NameBook).find(t, io.fetch, str(p, 'org')))),
   )
   let body: unknown
   try {

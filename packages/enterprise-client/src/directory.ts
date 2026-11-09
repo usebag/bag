@@ -1,9 +1,9 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { isAddress } from '@usebag/core'
+import { isAddress, isHandle, parseHandle } from '@usebag/core'
 import { isLoopbackOrigin } from './connect-code.ts'
 import { EnterpriseError, type Fetch } from './instance.ts'
-import { enterpriseDir, profileHome, readSession, type Session, writeJson } from './session.ts'
+import { enterpriseDir, profileHome, profiles, readSession, type Session, writeJson } from './session.ts'
 
 // The organisation's directory: every agent of the organisation by its label (the console's agents list), so that an
 // agent is addressable by its label from connect onwards, with no name book entry and no record step. GET
@@ -16,7 +16,7 @@ import { enterpriseDir, profileHome, readSession, type Session, writeJson } from
 
 export const DIRECTORY_PATH = '/api/v1/agent/directory'
 /** A label as the directory resolves it: the grammar of the name book's names, compared in lowercase. */
-export const LABEL = /^[a-z0-9][a-z0-9._-]{0,31}$/
+export const LABEL = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const [TTL_MS, TIMEOUT_MS] = [60_000, 3_000]
 const WORD = /^[a-z][a-z0-9_-]{0,63}$/
 
@@ -176,4 +176,24 @@ export async function resolveLabel(home: string, label: string, o: DirectoryOpti
   const all = `${found.length} agents: ${found.join(' and ')}`
   if (found.length > 1) throw new EnterpriseError('ambiguous-label', `${want} names ${all}`)
   return found[0] as string | undefined
+}
+
+/**
+ * The address of an own-organisation handle, `<label>@<domain>`, whose domain is a profile of the home with a session:
+ * the directory's agent of that label (resolveLabel, in that profile). Undefined for any other handle, for a label the
+ * directory lacks, and when the directory cannot answer (a line on stderr): the caller then takes the public path (the
+ * handle record at the domain's origin). Two agents under one label stay ambiguous-label.
+ */
+export async function resolveHandle(home: string, handle: string, o: DirectoryOptions = {}) {
+  if (!isHandle(handle)) return undefined
+  const { local, domain } = parseHandle(handle)
+  if (!profiles(home).includes(domain) || readSession(home, domain) === null) return undefined
+  try {
+    return await resolveLabel(home, local, { ...o, org: domain })
+  } catch (e) {
+    if ((e as { code?: unknown }).code === 'ambiguous-label') throw e
+    const line = `bag: the directory of ${domain} did not resolve ${handle} (${plain((e as Error).message)}); using its handle record`
+    ;(o.warn ?? ((l: string) => process.stderr.write(`${l}\n`)))(line)
+    return undefined
+  }
 }

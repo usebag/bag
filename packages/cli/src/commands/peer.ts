@@ -52,6 +52,27 @@ export function peer(args: readonly string[], io: Io): Promise<number> {
  * resolve-failed unless --allow-private-relays (spec/SPEC.md §9 item 11). `named` is the book as it is now with the
  * peer named: it refuses a name taken since the first check, and a save from it keeps what another command wrote.
  */
+/** The edge's pairing ports for `as` in `home`: the relay client, the guard over `own`, the epochs' steps. */
+export function pairingPorts(
+  io: Io,
+  home: string,
+  as: string,
+  keys: ReturnType<typeof loadKeys>,
+  own: string[],
+  allowPrivate = false,
+) {
+  return {
+    client: io.relay({}),
+    clock: io.clock,
+    rng: io.rng,
+    pollMs: io.idleMs,
+    guard: new RelayGuard({ own, allowPrivate }),
+    continueFrom: (found: AddressRecord | null) => continueFrom(found, home, as, keys.signing.address),
+    keepAddress: (r: AddressRecord) => keepAddressCopy(home, as, r),
+    lagging: (lag: Lagging) => laggingLines(io, keys.signing.address, [lag]),
+  }
+}
+
 function common(p: Parsed, io: Io, what: string) {
   needTty(io, what)
   const name = req(p, 'name')
@@ -76,17 +97,7 @@ function common(p: Parsed, io: Io, what: string) {
   const also = domain === undefined ? '' : `, trusting every agent of ${domain}`
   const relay = relayUrl(req(p, 'relay'))
   const rendezvous = relayUrl(str(p, 'rendezvous') ?? relay)
-  const guard = new RelayGuard({ own: [relay, rendezvous], allowPrivate: flag(p, 'allow-private-relays') })
-  const ports = {
-    client: io.relay({}),
-    clock: io.clock,
-    rng: io.rng,
-    pollMs: io.idleMs,
-    guard,
-    continueFrom: (found: AddressRecord | null) => continueFrom(found, home, as, keys.signing.address),
-    keepAddress: (r: AddressRecord) => keepAddressCopy(home, as, r),
-    lagging: (lag: Lagging) => laggingLines(io, keys.signing.address, [lag]),
-  }
+  const ports = pairingPorts(io, home, as, keys, [relay, rendezvous], flag(p, 'allow-private-relays'))
   const key = (): ReturnType<typeof currentKey> => currentKey(io, home, as, keys, relay)
   return { home, keys, key, ports, relay, rendezvous, name, only, named, root, also }
 }

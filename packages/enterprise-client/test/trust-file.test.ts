@@ -19,7 +19,7 @@ const home = (roots?: unknown): string => {
 }
 const fail = (detail: string): Error => Object.assign(new Error(detail), { code: 'trust-invalid' })
 const org = (root: string, source = 'org:acme.example') => ({ root, source, granted_by: 'p1', granted_at: 7 })
-const owns = (s: string) => s === 'org:acme.example' || s.startsWith('peer:')
+const owns = (s: string) => s === 'org:acme.example' || s.startsWith('peer:') || s.startsWith('partner:')
 /** The rule of bag's own readers: a root and an integer added_at, other members ignored. */
 const oldReader = (roots: TrustRoots) =>
   Object.entries(roots).every(
@@ -32,11 +32,20 @@ describe('the trust file with provenance', () => {
     const sync = syncSourcedTrust(
       h,
       owns,
-      [org('domain:acme.example'), org('domain:peer.example', 'peer:l1')],
+      [
+        org('domain:acme.example'),
+        org('domain:peer.example', 'peer:l1'),
+        org('domain:okok.example', 'partner:p-1'),
+      ],
       T0,
       fail,
     )
-    expect(sync).toEqual({ added: ['domain:peer.example'], removed: [], person: ['domain:acme.example'] })
+    expect(sync).toEqual({
+      added: ['domain:peer.example', 'domain:okok.example'],
+      removed: [],
+      person: ['domain:acme.example'],
+    })
+    expect(readTrustFile(h, fail)['domain:okok.example']?.source).toBe('partner:p-1')
     const roots = readTrustFile(h, fail)
     expect(roots['domain:peer.example']).toEqual({
       added_at: T0,
@@ -46,7 +55,10 @@ describe('the trust file with provenance', () => {
     })
     expect(roots['domain:acme.example']).toEqual({ added_at: 2 })
     expect(oldReader(roots)).toBe(true)
-    expect(syncSourcedTrust(h, owns, [], T0, fail).removed).toEqual(['domain:peer.example'])
+    expect(syncSourcedTrust(h, owns, [], T0, fail).removed).toEqual([
+      'domain:peer.example',
+      'domain:okok.example',
+    ])
     expect(Object.keys(readTrustFile(h, fail))).toEqual(['domain:friend.example', 'domain:acme.example'])
   })
 

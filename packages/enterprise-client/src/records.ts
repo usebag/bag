@@ -1,11 +1,11 @@
 // The agent's own records at its organisation's relays (the agent contract's records): after the grant, and again before
 // they lapse, the agent publishes its address record (its signing key, its sealing key, the org's relays) and its
-// accept-from record (the org's root as an accepted root) at each relay the grant names (org.relays). Without them no
+// accept-from record (the agent's accept list: the org's root, and each partner's in scope, accept-list.ts) at each relay the grant names (org.relays). Without them no
 // peer can resolve the agent's address (send: resolve-failed) and no relay takes mail for it. Both are signed by A, the
 // agent key, here on the agent's machine; the instance never sees them.
 //
-// When: due when no copy is kept, when the org's relays changed, or at half the address record's ttl (the relays drop
-// a record at its ttl). The kept copy, <home>/enterprise/records.json (0600), holds the iat and the relays only.
+// When: due when no copy is kept, when the org's relays or the accept list changed, or at half the address record's ttl (the relays drop
+// a record at its ttl). The kept copy, <home>/enterprise/records.json (0600), holds the iat, the relays and the roots.
 // A relay that refuses or does not answer is one line and does not fail the tick: the next tick tries again.
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -18,6 +18,8 @@ import {
   toHex,
 } from '@usebag/core'
 import type { EdgeKeys, RelayClient } from '@usebag/edge'
+import { acceptRoots } from './accept-list.ts'
+import { pairedPeers } from './pairings.ts'
 import { type Session, writeJson } from './session.ts'
 
 /** The address record's ttl: the most the relays take, a day. */
@@ -32,6 +34,8 @@ export interface RecordsCopy {
   readonly agent_address: string
   readonly iat: number
   readonly relays: string[]
+  /** The accept-from record's roots; a copy from before the accept list names none, and reads as [org.root]. */
+  readonly roots?: string[]
 }
 
 export type Publisher = Pick<RelayClient, 'publish'>
@@ -48,7 +52,8 @@ export function readRecordsCopy(home: string): RecordsCopy | null {
       typeof c.agent_address === 'string' &&
       Number.isSafeInteger(c.iat) &&
       Array.isArray(c.relays) &&
-      c.relays.every((r) => typeof r === 'string')
+      c.relays.every((r) => typeof r === 'string') &&
+      (c.roots === undefined || (Array.isArray(c.roots) && c.roots.every((r) => typeof r === 'string')))
     return ok ? c : null
   } catch {
     return null
@@ -60,12 +65,23 @@ function writeRecordsCopy(home: string, c: RecordsCopy): void {
   writeJson(recordsPath(home), c)
 }
 
-/** True when the agent's records are to be published: a live session with relays, and no fresh copy for them. */
-export function recordsDue(s: Session, copy: RecordsCopy | null, now: number): boolean {
+/** True when the agent's records are to be published: a live session with relays, and no fresh copy for them and its roots. */
+/** The accept-from record's roots: the organisation's accept list, then the peers this profile paired (pairings.ts). */
+export const signedRoots = (s: Session, peers: readonly string[] = []): string[] => [
+  ...new Set([...acceptRoots(s), ...peers]),
+]
+
+export function recordsDue(
+  s: Session,
+  copy: RecordsCopy | null,
+  now: number,
+  peers: readonly string[] = [],
+): boolean {
   if (s.state !== 'live' || s.org.relays.length === 0) return false
   if (copy === null || copy.agent_address !== s.agent_address) return true
-  const same =
-    copy.relays.length === s.org.relays.length && copy.relays.every((r, i) => r === s.org.relays[i])
+  const equal = (a: readonly string[], b: readonly string[]) =>
+    a.length === b.length && a.every((r, i) => r === b[i])
+  const same = equal(copy.relays, s.org.relays) && equal(copy.roots ?? [s.org.root], signedRoots(s, peers))
   return !same || now >= copy.iat + Math.floor(ADDRESS_TTL / 2)
 }
 
@@ -74,6 +90,7 @@ export function agentRecords(
   keys: EdgeKeys,
   s: Session,
   iat: number,
+  peers: readonly string[] = [],
 ): { address: AddressRecord; accept: AcceptFromRecord } {
   const self = keys.signing.address
   const address = signRecord(keys.signing, {
@@ -90,7 +107,7 @@ export function agentRecords(
   const accept = signRecord(keys.signing, {
     kind: 'accept-from',
     owner: self,
-    roots: [s.org.root],
+    roots: signedRoots(s, peers),
     max_bytes: ACCEPT_MAX_BYTES,
     ttl: ACCEPT_TTL,
     iat,
@@ -126,10 +143,11 @@ export async function publishAgentRecords(input: {
 }): Promise<PublishOutcome[]> {
   const { home, session: s, keys, publisher, now } = input
   const copy = readRecordsCopy(home)
-  if (!recordsDue(s, copy, now)) return []
+  const peers = pairedPeers(home)
+  if (!recordsDue(s, copy, now, peers)) return []
   if (keys.signing.address !== s.agent_address) return []
   const iat = Math.max(now, (copy?.iat ?? 0) + 1)
-  const { address, accept } = agentRecords(keys, s, iat)
+  const { address, accept } = agentRecords(keys, s, iat, peers)
   const out: PublishOutcome[] = []
   for (const relay of s.org.relays) {
     for (const r of [address, accept]) {
@@ -142,7 +160,8 @@ export async function publishAgentRecords(input: {
     }
   }
   if (out.every((o) => o.ok)) {
-    writeRecordsCopy(home, { v: 1, agent_address: s.agent_address, iat, relays: [...s.org.relays] })
+    const roots = signedRoots(s, peers)
+    writeRecordsCopy(home, { v: 1, agent_address: s.agent_address, iat, relays: [...s.org.relays], roots })
   }
   return out
 }

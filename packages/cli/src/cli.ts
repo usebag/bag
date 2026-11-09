@@ -29,6 +29,7 @@ import { lookup } from './commands/lookup.ts'
 import { mcp } from './commands/mcp.ts'
 import { name } from './commands/name.ts'
 import { onboard } from './commands/onboard.ts'
+import { pairings } from './commands/pairings.ts'
 import { peer } from './commands/peer.ts'
 import { record } from './commands/record.ts'
 import { health, publish } from './commands/relay.ts'
@@ -111,6 +112,9 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       pairs two identities on two terminals: invite prints a one-use pairing code (or string), live 600 s at
       most; accept shows six check digits, which its person reads to the inviter before answering y; invite never shows them and takes them typed (3 tries). Each side then names the other,
       trusts it in <home>/trust.json (0600; inbox and the MCP server read it) and adds it to its accept-from record
+  pairings [--watch] [--org <domain>] [--dir <home>]
+      the console's pairings for this machine's enterprise agent, once or every 15 s: peer invite's ceremony with
+      the console's person typing the digits; a link the console revokes, or whose term ends, is unpaired
   unpair <address|domain:<host>> --as <name> --relay <url>... [--dir <home>]
       the one way a root leaves: on a terminal, after one y, removes it from <home>/trust.json and from
       the newest accept-from of <name> (re-signed, max_bytes and ttl kept, published at each relay);
@@ -158,7 +162,7 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       lookup of domain:<host> and the handle as a peer's edge resolves them ("check <line>"). --check runs only the
       self-check. Exits 0 when the handle resolves end to end, 3 when written and published but not resolving yet
   name add <name> <address> [--replace] [--dir <home>] | name list [--dir <home>] | name forget <name> [--dir <home>]
-      the home's local name book, <home>/names.json (0600): a name ([a-z0-9][a-z0-9._-], at most 32) pinned to one
+      the home's local name book, <home>/names.json (0600): a name ([a-z0-9][a-z0-9._-], at most 64) pinned to one
       address, changed only with --replace, which keeps the old one as former; list prints "<name> <address>" and a
       "  former <address> replaced <unix>" line per former address. Names are resolved here, never sent on the wire
   send --to <name|label|address> --body <json|@-|@file> [--type <type>] [--org <domain>]   with a live enterprise session: the rest its own
@@ -291,6 +295,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ['name', name],
   ['peer', peer],
   ['unpair', unpair],
+  ['pairings', pairings],
   ['record', record],
   ['publish', publish],
   ['delegate', delegate],

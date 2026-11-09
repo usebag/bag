@@ -404,6 +404,13 @@ function threadId(text: string): string {
 /** Each server's pair tools, for a send refused root-not-accepted to a peer it is pairing with. */
 const PAIRINGS = new WeakMap<ToolContext, Pairings>()
 
+/** Each server's maker of its identities' Pairings, by the context its tools were registered on (console.ts). */
+const MAKERS = new WeakMap<ToolContext, (c: ToolContext) => Pairings>()
+
+/** The Pairings of identity `c` of the server registered on `root`; null for one with no pair tools (a session). */
+export const pairingsFor = (root: ToolContext, c: ToolContext): Pairings | null =>
+  MAKERS.get(root)?.(c) ?? null
+
 /** What such a refusal says: the pairing is not finished, not a relay ban. */
 export const PAIRING_UNFINISHED =
   'pairing with this peer is not finished: wait for paired: true, then send again (this is not a relay ban)'
@@ -1081,6 +1088,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     PAIRINGS.set(c, p)
     return p
   }
+  MAKERS.set(ctx, pairingsOf)
   const name = z
     .string()
     .optional()

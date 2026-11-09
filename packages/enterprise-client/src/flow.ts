@@ -13,9 +13,11 @@ import {
   SqliteStore,
   type Subscription,
 } from '@usebag/edge'
+import { syncAcceptList } from './accept-list.ts'
 import { type DiscoveryNet, discoverInstance } from './discovery.ts'
 import { AGENT_PATHS, call, EnterpriseError, type Fetch } from './instance.ts'
 import { bindNonce, bindPreimage, layerNonce, refreshPreimage, statePreimage } from './layer-auth.ts'
+import { endLinks, pairingCommands } from './pairings.ts'
 import {
   outcomeLine,
   type Publisher,
@@ -24,7 +26,7 @@ import {
   recordsPath,
 } from './records.ts'
 import * as f from './session.ts'
-import { type SourcedRoot, syncSourcedTrust, type TrustSync } from './trust-file.ts'
+import { removePairedRoot, type SourcedRoot, syncSourcedTrust, type TrustSync } from './trust-file.ts'
 
 // The agent side of a bag enterprise session (the instance's agent contract): sign-in by the device flow or a console
 // code with the binding, the refresher (one per home, under its lock) with the generation, the chain org root -> A ->
@@ -83,14 +85,16 @@ const isStr = (v: unknown): v is string => typeof v === 'string'
 const isInt = (v: unknown): v is number => Number.isSafeInteger(v)
 const iso = (s: number | null | undefined): string =>
   s === null || s === undefined ? 'none' : new Date(s * 1000).toISOString().replace('.000Z', 'Z')
+/** A source a profile is granted by name: a peer link, or a partnership of its organisation with another. */
+const linked = (src: string): boolean => src.startsWith('peer:') || src.startsWith('partner:')
 /**
- * The trust sources a profile's sync claims: its org's, and the peer links it was granted (`peers`). A session from
- * before profiles kept no list: it claims every peer link while it is the home's only profile.
+ * The trust sources a profile's sync claims: its org's, and the peer links and partnerships it was granted (`peers`).
+ * A session from before profiles kept no list: it claims every one while it is the home's only profile.
  */
 const owns = (d: EnterpriseDeps, s: f.Session, peers: readonly string[] = []) => {
   const all = s.trust_peers === undefined && f.profiles(d.home).length <= 1
   const mine = new Set([...(s.trust_peers ?? []), ...peers])
-  return (src: string) => src === `org:${s.domain}` || (src.startsWith('peer:') && (all || mine.has(src)))
+  return (src: string) => src === `org:${s.domain}` || (linked(src) && (all || mine.has(src)))
 }
 /** A profile's own home (session.ts profileHome). */
 const dirOf = (d: EnterpriseDeps, domain: string): string => f.profileHome(d.home, domain)
@@ -413,6 +417,18 @@ async function records(d: EnterpriseDeps, s: f.Session): Promise<PublishOutcome[
   })
 }
 
+/**
+ * The pairings the console revoked or whose term passed, ended before the records are signed, so the accept-from drops
+ * their peers at once (pairings.ts). An instance that does not answer the pairings ends only the terms that passed.
+ */
+async function endedLinks(d: EnterpriseDeps, s: f.Session): Promise<void> {
+  if (s.state !== 'live' || d.fetch === undefined) return
+  const commands = (await pairingCommands(s, d.fetch)) ?? []
+  const remove = async (peer: string) => void removePairedRoot(d.home, peer, trustFail)
+  const ended = await endLinks(s, d.fetch, dirOf(d, s.domain), commands, { remove, now: () => d.clock.now() })
+  for (const id of ended) d.note?.(`bag: pairing ${id} ended; its peer left trust.json`)
+}
+
 /** What one tick did: the session after it, a refusal it met, whether another process held the lock. */
 export interface Tick {
   readonly session: f.Session | null
@@ -491,7 +507,7 @@ async function trust(d: EnterpriseDeps, s: f.Session): Promise<[f.Session, Trust
   if (!Array.isArray(t.roots) || typeof t.trust_etag !== 'string')
     throw new EnterpriseError('bad-answer', 'the trust answer has no roots')
   const roots = t.roots as SourcedRoot[]
-  const peers = roots.map((r) => r?.source).filter((x) => typeof x === 'string' && x.startsWith('peer:'))
+  const peers = roots.map((r) => r?.source).filter((x) => typeof x === 'string' && linked(x))
   const sync = syncSourcedTrust(d.home, owns(d, s, peers), roots, d.clock.now(), trustFail)
   return [{ ...s, trust_etag: t.trust_etag, trust_applied: t.trust_etag, trust_peers: peers }, sync]
 }
@@ -546,8 +562,9 @@ export async function tick(d: EnterpriseDeps): Promise<Tick> {
     if (s.state === 'ended' || s.state === 'lapsed') return { session: s, error: null, held: false }
     if (refreshDue(s, d.clock.now())) s = await refresh(d, s)
     const [next, sync] = await trust(d, localHop(d, s))
-    s = await stateCall(d, next)
+    s = await syncAcceptList(await stateCall(d, next), d.fetch, d.note ?? (() => {}))
     f.write(x, 'session', s)
+    await endedLinks(d, s)
     const published = await records(d, s)
     return {
       session: s,

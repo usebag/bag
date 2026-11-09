@@ -67,7 +67,10 @@ path = 'packages/enterprise-client/src'
 # Raised 2026-11-07 from 1953 to 2680 by a decision entry (the measured figure plus 10 percent, rounded up): the 0.2.1
 # assembly (branch release/0-2-1: the connect round trip, profiles, send and inbox session defaults, connect code labels
 # and the org directory) measured packages/enterprise-client/src at 2436, and 2436 times 1.1 is 2679.6, rounded up.
-ceiling = 2680 # earlier 1953
+# Raised 2026-11-09 from 2680 to 3143 by a decision entry (decision 43 of ruling 313, the measured figure plus 10 percent,
+# rounded up): the 0.2.2 assembly (branch release/0-2-2: the own-organisation handle, the accept list and the console
+# pairings) measured packages/enterprise-client/src at 2857, and 2857 times 1.1 is 3142.7, rounded up.
+ceiling = 3143 # earlier 2680, 1953
 
 [ac-core]
 path = 'crates/ac-core/src'
