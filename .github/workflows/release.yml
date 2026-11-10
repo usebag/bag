@@ -334,16 +334,29 @@ jobs:
       url: https://bag.dev/install
     permissions: {}
     steps:
+      # The guide's values are applied by hand (docs/release.md, step 9), before or after the click that starts this job,
+      # so it reads the page once a minute for up to 30 minutes and fails only when the last read still lacks a value.
       - name: the served install guide names the version, the commit and the sha256
+        timeout-minutes: 35
         run: |
-          curl -fsS --max-time 30 -o "$RUNNER_TEMP/install.md" https://bag.dev/install || { echo "https://bag.dev/install did not answer"; exit 1; }
-          M=""
-          grep -q -F "@usebag/bag@$VERSION" "$RUNNER_TEMP/install.md" || M="$M, the version $VERSION"
-          grep -q -F "$COMMIT" "$RUNNER_TEMP/install.md" || M="$M, the commit $COMMIT"
-          grep -q -F "$SHA256" "$RUNNER_TEMP/install.md" || M="$M, the sha256 $SHA256"
-          if grep -q -F '{{' "$RUNNER_TEMP/install.md"; then M="$M, and no unfilled {{"; fi
+          for i in $(seq 1 30); do
+            M=""
+            if curl -fsS --max-time 30 -o "$RUNNER_TEMP/install.md" https://bag.dev/install; then
+              grep -q -F "@usebag/bag@$VERSION" "$RUNNER_TEMP/install.md" || M="$M, the version $VERSION"
+              grep -q -F "$COMMIT" "$RUNNER_TEMP/install.md" || M="$M, the commit $COMMIT"
+              grep -q -F "$SHA256" "$RUNNER_TEMP/install.md" || M="$M, the sha256 $SHA256"
+              if grep -q -F '{{' "$RUNNER_TEMP/install.md"; then M="$M, and no unfilled {{"; fi
+              [ -z "$M" ] && break
+              N="$(grep -o -E '@usebag/bag@[0-9]+[.][0-9]+[.][0-9]+' "$RUNNER_TEMP/install.md" | sort -u | tr '\n' ' ')"
+              echo "read $i of 30: https://bag.dev/install names ${N:-no version}and lacks${M#,}"
+            else
+              M=" an answer"
+              echo "read $i of 30: https://bag.dev/install did not answer"
+            fi
+            [ "$i" -lt 30 ] && sleep 60
+          done
           if [ -n "$M" ]; then
-            echo "https://bag.dev/install does not name${M#,}: apply the guide's values first (docs/release.md, step 9), then re-run this job"
+            echo "https://bag.dev/install does not name${M#,} after 30 reads: apply the guide's values (docs/release.md, step 9), then re-run this job"
             exit 1
           fi
           echo "https://bag.dev/install names @usebag/bag@$VERSION, $COMMIT and $SHA256"
