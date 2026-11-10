@@ -7,6 +7,7 @@ import { AcError, handlePath, type RecordKind } from '@usebag/core'
 import { type RelayGuard, systemDns } from '../net.ts'
 import type { Dns, RecordSource, RelayClient } from '../ports.ts'
 import { proxyFor, proxyShown } from '../proxy.ts'
+import { testZoneDns, testZoneFetch } from '../test-zone.ts'
 import { MAX_RESPONSE_BYTES } from './http-relay.ts'
 
 // An org's records at its one origin (spec/SPEC.md §12.1): its address record at
@@ -157,23 +158,33 @@ export function createRecordSource(
 ): RecordSource {
   const insecure = options.allowInsecureHttp === true
   const get = options.get ?? httpGet
-  const at = async (url: string, guard: RelayGuard | undefined): Promise<OriginAnswer> => {
-    const connect = insecure || guard === undefined ? null : await guard.connectTo(url)
+  // A test-zone host the switch maps (test-zone.ts) is fetched over http at its loopback address, naming the host.
+  const urlOf = (host: string, path: string) =>
+    testZoneFetch(host, path) ?? { url: originUrl(host, path, insecure), connect: undefined }
+  const at = async (
+    { url, connect: mapped }: { url: string; connect: string | undefined },
+    guard: RelayGuard | undefined,
+  ): Promise<OriginAnswer> => {
+    const connect =
+      mapped !== undefined ? mapped : insecure || guard === undefined ? null : await guard.connectTo(url)
     return get(url, connect, options.timeoutMs ?? 10_000, MAX_RESPONSE_BYTES)
   }
   const answered = (url: string, status: number): AcError =>
     new AcError('resolve-failed', `${url} answered ${status}`)
-  const dns = options.dns ?? (insecure ? null : systemDns)
+  const base = options.dns ?? (insecure ? null : systemDns)
+  const dns = base === null ? null : testZoneDns(base)
   return {
     async wellKnown(host, guard) {
-      const url = wellKnownUrl(host, insecure)
-      const { status, body } = await at(url, guard)
+      const where = urlOf(host, WELL_KNOWN_PATH)
+      const { url } = where
+      const { status, body } = await at(where, guard)
       if (body === null) throw answered(url, status)
       return body
     },
     async handleRecord(host, handle, guard) {
-      const url = originUrl(host, handlePath(handle), insecure)
-      const { status, body } = await at(url, guard)
+      const where = urlOf(host, handlePath(handle))
+      const { url } = where
+      const { status, body } = await at(where, guard)
       if (status === 404) return null
       if (body === null) throw answered(url, status)
       return body

@@ -31,6 +31,7 @@ import {
   type SubscriptionLink,
 } from '@usebag/edge'
 import type { AgentOpener, EnvelopeOpener } from '@usebag/edge/agent'
+import { receiptsAnswered } from '@usebag/enterprise-client'
 import { type SessionAgent, sessionAgent } from './agent.ts'
 import { readChain } from './chain.ts'
 import { type Config, ConfigError } from './config.ts'
@@ -349,7 +350,8 @@ export function openIdentity(config: Config, deps: OpenDeps): Opened {
       keys,
       auth: chain,
       ...(config.mailbox === null ? {} : { mailbox: config.mailbox }),
-      receiptsTo: () => config.receiptsTo,
+      // The organisation of an enterprise session can turn its agents' receipts off (receiptsAnswered), read each time.
+      receiptsTo: () => (receiptsAnswered(config.home, config.as) ? config.receiptsTo : []),
       store,
       relays: { client, urls: config.relays },
       records: (deps.records ?? createRecordSource)(client),

@@ -340,3 +340,18 @@ export {
   telemetryEndpoint,
   telemetrySent,
 } from './telemetry-send.ts'
+export {
+  activateTestZone,
+  isInTestZone,
+  setTestZone,
+  TEST_ZONE,
+  TEST_ZONE_FILE_ENV,
+  TEST_ZONE_ORIGINS_ENV,
+  type TestZone,
+  testZone,
+  testZoneDns,
+  testZoneFetch,
+  testZoneFromEnv,
+  testZoneLine,
+  testZoneOrigin,
+} from './test-zone.ts'

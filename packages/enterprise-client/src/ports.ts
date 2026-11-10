@@ -7,6 +7,7 @@ import {
   systemClock,
   systemDns,
   systemRng,
+  testZoneDns,
 } from '@usebag/edge'
 import type { DiscoveryNet } from './discovery.ts'
 import type { EnterpriseDeps } from './flow.ts'
@@ -58,13 +59,16 @@ export function enterpriseDeps(
  * The process's ports under `env`: the system clock, CSPRNG and DNS, globalThis.fetch, the edge's guarded well-known
  * GET (httpGet, the one bag's CLI reads well-known records with) and a private-address guard with no own relays.
  */
+/** The system's DNS, with the test zone switch's zone file answering its names while the switch is on. */
+const zoned = testZoneDns(systemDns)
+
 export function systemPorts(env: Readonly<Record<string, string | undefined>>): EnterprisePorts {
   return {
     env,
     clock: systemClock,
     rng: systemRng,
     fetch: globalThis.fetch,
-    net: { txt: (name) => systemDns.txt(name), get: httpGet, guard: new RelayGuard({ own: [] }) },
+    net: { txt: (name) => zoned.txt(name), get: httpGet, guard: new RelayGuard({ own: [] }) },
     sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
   }
 }

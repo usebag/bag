@@ -192,6 +192,8 @@ export interface Session {
   /** The agent's accept list at the instance's last answer (accept-list.ts), and its etag; unset, [org.root]. */
   readonly accept_roots?: readonly string[]
   readonly accept_etag?: string
+  /** false when the organisation's agents answer no read receipts (GET /agent/trust's receipts); unset, they do. */
+  readonly receipts?: false
   readonly state: 'live' | 'frozen' | 'paused' | 'lapsed' | 'ended'
   readonly reason: string | null
   readonly refreshed_at: number
@@ -306,4 +308,20 @@ export function checkOrg(org: unknown, domain: string): Org {
   if (!ok || !o.relays.every((r) => typeof r === 'string' && /^https?:\/\//.test(r)))
     throw new EnterpriseError('bad-answer', `the instance named no organisation for ${domain}`)
   return { domain, root: o.root, relays: [...o.relays] }
+}
+
+/**
+ * Whether the agent `name` of this home answers read receipts: false when a session of `name` in any profile holds its
+ * organisation's receipts: false (GET /agent/trust), else true. A session that does not read changes nothing here.
+ */
+export function receiptsAnswered(home: string, name: string): boolean {
+  for (const domain of profiles(home)) {
+    try {
+      const s = readSession(home, domain)
+      if (s?.name === name && s.receipts === false) return false
+    } catch {
+      // unreadable: the commands report it; receipts stay as the identity configured them
+    }
+  }
+  return true
 }

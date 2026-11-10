@@ -509,7 +509,13 @@ async function trust(d: EnterpriseDeps, s: f.Session): Promise<[f.Session, Trust
   const roots = t.roots as SourcedRoot[]
   const peers = roots.map((r) => r?.source).filter((x) => typeof x === 'string' && linked(x))
   const sync = syncSourcedTrust(d.home, owns(d, s, peers), roots, d.clock.now(), trustFail)
-  return [{ ...s, trust_etag: t.trust_etag, trust_applied: t.trust_etag, trust_peers: peers }, sync]
+  // receipts: false turns this agent's read receipts off; true, or no field (an older instance), leaves them on.
+  const { receipts: _, ...rest } = s
+  const off = t.receipts === false ? { receipts: false as const } : {}
+  return [
+    { ...rest, trust_etag: t.trust_etag, trust_applied: t.trust_etag, trust_peers: peers, ...off },
+    sync,
+  ]
 }
 
 /** POST /agent/state about hourly, signed by the sign-in key over the generation this home holds; no relays yet. */

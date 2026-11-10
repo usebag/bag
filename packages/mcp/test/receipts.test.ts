@@ -1,6 +1,7 @@
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Rng } from '@usebag/edge'
+import { writeJson } from '@usebag/enterprise-client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseConfig, parseServerConfig, type ServerConfig } from '../src/config.ts'
 import { INSTRUCTIONS, RECEIPT_NOTE } from '../src/tools.ts'
@@ -127,6 +128,23 @@ describe('read receipts through the tools', () => {
     expect(await seen(alice, id)).toEqual([])
     expect(toAlice()).toBe(0)
     expect((await bob.call('status')).value.receipts_to).toEqual([])
+  })
+
+  it("is off when the reader's organisation turned its agents' receipts off, and on again when it turns them on", async () => {
+    // The reader bob is its home's enterprise agent; GET /agent/trust's receipts: false is kept as the session's.
+    const dir = join(tmp.dir, 'orgs', 'acme.example', 'enterprise')
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const session = (more: object) => ({ v: 1, domain: 'acme.example', name: 'bob', state: 'live', ...more })
+    writeJson(join(dir, 'session.json'), session({ receipts: false }))
+    const alice = await start('alice', [])
+    const bob = await start('bob', ['--receipts-to', P.alice.address])
+    const off = await delivered(alice, bob, true)
+    await new Promise((r) => setTimeout(r, 30))
+    expect([await seen(alice, off), toAlice()]).toEqual([[], 0])
+    writeJson(join(dir, 'session.json'), session({}))
+    const on = await delivered(alice, bob, true)
+    await until('the receipt', () => toAlice() === 1)
+    await until('its arrival', () => alice.running.opened.edge.receipts(on).length === 1)
   })
 
   it('a peer the reader did not name gets nothing, nor one who did not ask', async () => {

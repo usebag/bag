@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import * as core from '@usebag/core'
-import { GuardRefused } from '@usebag/edge'
+import { GuardRefused, setTestZone } from '@usebag/edge'
 import { describe, expect, it } from 'vitest'
 import { bareOrigin, type DiscoveryNet, discoverInstance } from '../src/discovery.ts'
 import { call, EnterpriseError, type Fetch } from '../src/instance.ts'
@@ -144,6 +144,29 @@ describe('discovery: the override, no record for a reserved name, the record, th
       return { status, body: body === null ? null : core.utf8(body) }
     },
     guard: { connectTo: async () => '192.0.2.34' },
+  })
+
+  it("under the test zone switch reads a mapped domain's record at its loopback origin, and takes a loopback instance", async () => {
+    const seen: string[] = []
+    const body = '{"v":1,"instance":"http://127.0.0.1:8790"}'
+    const domain = 'acme.pilot.bag.dev'
+    // Off: the record is fetched through the guard at the TXT origin, and a loopback instance in it is refused.
+    await expect(discoverInstance(domain, {}, net(200, body, [], seen))).rejects.toThrow(/is not \{ "v": 1/)
+    setTestZone({ file: '/unused', origins: new Map([[domain, 'http://127.0.0.1:8788']]) })
+    try {
+      expect(await discoverInstance(domain, {}, net(200, body, [], seen))).toBe('http://127.0.0.1:8790')
+      await expect(discoverInstance('okok.pilot.bag.dev', {}, net(200, body))).rejects.toThrow(
+        /is not \{ "v": 1/,
+      )
+    } finally {
+      setTestZone(null)
+    }
+    expect(seen).toEqual([
+      `txt _bag.${domain}`,
+      `get https://${domain}/.well-known/bag/enterprise.json 192.0.2.34`,
+      `txt _bag.${domain}`,
+      `get http://${domain}:8788/.well-known/bag/enterprise.json 127.0.0.1`,
+    ])
   })
 
   it('takes the record at the TXT origin through the guard, over the stand-in', async () => {
