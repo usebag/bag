@@ -4,6 +4,29 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.2.3: 2026-11-10
+
+The cut tagged v0.2.3, `@usebag/bag` 0.2.3.
+
+- **`@usebag/bag` 0.2.3**, published from this cut (`npm view @usebag/bag@0.2.3 gitHead` names it).
+
+### Enterprise: pairing and trust
+
+- **A pairing revoked from the console leaves the agent's accept-from at once.** The bag MCP server signs and publishes
+  the accept-from again after a console pass that ends a pairing or runs one, as `bag pairings` already did, instead of
+  at the next hourly refresh.
+- **Read receipts follow the organisation's setting.** While the organisation's instance has read receipts off, the bag
+  MCP server's `--receipts-to` answers none; it answers again once the setting is back on. An instance that does not
+  send the setting keeps receipts on. The CLI sends no receipts.
+
+### Testing
+
+- **A test zone switch, off by default**, for two bag enterprise instances and their relays on one machine under the
+  zone `pilot.bag.dev`. It is on only when `BAG_TEST_ZONE_FILE` names a zone file, and then the CLI and the MCP server
+  print one stderr line that says so: TXT lookups in that zone read the file, `BAG_TEST_ZONE_ORIGINS` maps a domain's
+  origin to a loopback address, and the relay guard lets loopback relays through. Malformed values print a usage line
+  and exit 2. Never for real use; with the variables unset nothing changes.
+
 ## v0.2.2: 2026-11-09
 
 The cut tagged v0.2.2, `@usebag/bag` 0.2.2.

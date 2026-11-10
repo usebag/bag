@@ -1,5 +1,5 @@
 import { discover, isDomainHost, parseJson, txtName } from '@usebag/core'
-import type { OriginGet, RelayGuard } from '@usebag/edge'
+import { type OriginGet, type RelayGuard, testZoneFetch } from '@usebag/edge'
 import { EnterpriseError } from './instance.ts'
 
 // How `bag sign-in <domain>` finds its bag enterprise instance (the agent contract's discovery), a fault never
@@ -44,10 +44,16 @@ async function fromRecord(domain: string, net: DiscoveryNet): Promise<string | n
   if (RESERVED_LABELS.includes(domain.slice(domain.lastIndexOf('.') + 1))) return null
   let url = domain
   let answer: Awaited<ReturnType<OriginGet>>
+  let loopback = false
   try {
+    // Under the test zone switch (the edge's test-zone.ts) a mapped origin host is read over http at its loopback
+    // address, the request still naming the host.
     const name = txtName(domain)
-    url = discover(name === null ? [] : await net.txt(name), domain).origin + ENTERPRISE_RECORD_PATH
-    answer = await net.get(url, await net.guard.connectTo(url), 10_000, 4096)
+    const origin = discover(name === null ? [] : await net.txt(name), domain).origin
+    const mapped = testZoneFetch(new URL(origin).hostname, ENTERPRISE_RECORD_PATH)
+    loopback = mapped !== null
+    url = mapped?.url ?? origin + ENTERPRISE_RECORD_PATH
+    answer = await net.get(url, mapped?.connect ?? (await net.guard.connectTo(url)), 10_000, 4096)
   } catch (e) {
     throw failed(`the enterprise record of ${domain} could not be fetched (${url}): ${(e as Error).message}`)
   }
@@ -60,7 +66,8 @@ async function fromRecord(domain: string, net: DiscoveryNet): Promise<string | n
     // malformed: below
   }
   const ok = doc?.v === 1 && Object.keys(doc).length === 2 && typeof doc.instance === 'string'
-  const instance = ok ? bareOrigin(doc?.instance as string, false) : null
+  // Under the switch a mapped test-zone domain's record may name an instance on loopback, as the instance runs there.
+  const instance = ok ? bareOrigin(doc?.instance as string, loopback) : null
   if (instance === null) throw failed(`${url} is not { "v": 1, "instance": "<https origin>" }`)
   return instance
 }

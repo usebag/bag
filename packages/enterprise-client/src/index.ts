@@ -91,6 +91,7 @@ export {
   type Pending,
   readPending,
   readSession,
+  receiptsAnswered,
   type Session,
   secureHome,
   writeJson,

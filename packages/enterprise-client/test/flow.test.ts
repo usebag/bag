@@ -18,7 +18,14 @@ import {
 import { EnterpriseError } from '../src/instance.ts'
 import { bindNonce, bindPreimage } from '../src/layer-auth.ts'
 import { type Publisher, readRecordsCopy } from '../src/records.ts'
-import { chainPath, profileHome, readPending, readSession, secureHome } from '../src/session.ts'
+import {
+  chainPath,
+  profileHome,
+  readPending,
+  readSession,
+  receiptsAnswered,
+  secureHome,
+} from '../src/session.ts'
 import { readTrustFile, writeTrustFile } from '../src/trust-file.ts'
 import { FakeInstance } from './support/fake-instance.ts'
 import { FakeRelay } from './support/fake-relay.ts'
@@ -549,6 +556,25 @@ describe('the agent records follow the org relays (records.ts through the refres
     w.fake.acceptList = null
     await tick(w.d)
     expect(sent.at(-1)?.roots).toEqual([own])
+  })
+
+  it("keeps the organisation's receipts: false with the trust sync, and drops it on true or an answer without it", async () => {
+    const w = world()
+    expect(await signedIn(w)).toBe(0)
+    const s = () => readSession(w.d.home)
+    expect([s()?.receipts, receiptsAnswered(w.d.home, s()?.name as string)]).toEqual([undefined, true])
+    const step = async (receipts: boolean | null, etag: string) => {
+      w.fake.receipts = receipts
+      w.fake.trustEtag = etag
+      w.time.now += 13 * 3600
+      expect((await tick(w.d)).error).toBeNull()
+      return [s()?.receipts, receiptsAnswered(w.d.home, s()?.name as string)]
+    }
+    expect(await step(false, 'r1')).toEqual([false, false])
+    expect(receiptsAnswered(w.d.home, 'another-agent')).toBe(true)
+    expect(await step(true, 'r2')).toEqual([undefined, true])
+    expect(await step(false, 'r3')).toEqual([false, false])
+    expect(await step(null, 'r4')).toEqual([undefined, true])
   })
 
   it('keeps the session org when a refresh names another root', async () => {

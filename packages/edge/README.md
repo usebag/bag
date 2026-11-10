@@ -438,7 +438,7 @@ telemetry.bag.dev; `telemetry-send.ts` is the only file with network code.
   sessions, `other` on a tie or with none. `telemetryReport(env, day)` is the
   preview: the machine's spool for the day under its id, or `PREVIEW_ID` (32 zeros) before `on`.
 - **The schema's copy**: `src/telemetry-schema.ts` copies `deploy/telemetry/src/schema.ts` and `builds.ts`, and
-  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (a1daf96f). The public cut carries `packages/` and never
+  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (7a331fb5). The public cut carries `packages/` and never
   `deploy/telemetry/`, so the edge cannot import the Worker's file. `test/telemetry-report.test.ts` imports the
   Worker's files wherever the checkout holds them, fails on any difference, and runs the Worker's `checkReport` on the
   reports it builds.

@@ -2,6 +2,7 @@ import { lookup as dnsLookup, resolveTxt } from 'node:dns/promises'
 import { isIPv4, isIPv6 } from 'node:net'
 import { AcError } from '@usebag/core'
 import type { Dns } from './ports.ts'
+import { testZoneLoopback } from './test-zone.ts'
 
 // The private-address guard. A relay URL whose host is a loopback, link-local, private (RFC 1918),
 // unique-local, multicast or unspecified address, IPv4 or IPv6 (an IPv4-mapped or NAT64 address read as the IPv4 it
@@ -188,6 +189,8 @@ export class RelayGuard {
     }
     const host = hostOf(url)
     const literal = classifyAddress(host)
+    // The test zone switch (test-zone.ts) lets a loopback literal through, and nothing else.
+    if (literal === 'loopback' && testZoneLoopback()) return pass(host)
     if (literal !== null) {
       return literal === 'public'
         ? pass(host)

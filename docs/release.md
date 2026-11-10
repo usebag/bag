@@ -86,8 +86,13 @@ Each step names who does it. A step marked **gate** is a person's decision, and 
    the version (step 4) and the previous Worker refuses a report that carries the new version.
 2. **The cut, gate.** The cut is built from the source repository at one commit, from an allow-list of paths, and its
    own checks run on it. A red from a run that crosses midnight UTC, in a test that reads the date, is recorded and the
-   checks run again once after midnight; a second red stops the release. The cut is offered as one pull request on this
-   repository, and a maintainer merges it with a rebase merge. That writes the commit anew on `main`, so the cut's sha
+   checks run again once after midnight; a second red stops the release. The pull request's commit is the cut's tree
+   on top of this repository's `main`, keeping `main`'s `.github/`, which the cut never carries; the source
+   repository's `scripts/cut-commit.sh` makes it, and refuses when any other file of `main` would vanish. Anything
+   pinned to a source commit and a public commit (a client built from the source, which names the public commit) is
+   checked with `scripts/cut-commit.sh --verify <public clone> <public commit> <cut directory> --source <source commit>`:
+   it exits 0 only when the public commit holds exactly the cut's tree outside `.github/`. The cut is
+   offered as one pull request on this repository, and a maintainer merges it with a rebase merge. That writes the commit anew on `main`, so the cut's sha
    on `main` is not the pull request's. Every later step takes the commit on `main`, the newest whose subject begins
    `bag public cut of `:
 
@@ -132,6 +137,14 @@ Each step names who does it. A step marked **gate** is a person's decision, and 
 
    A version staged and not yet approved is not on the registry, so these checks do not see it; npm refuses to stage
    it a second time.
+
+   A staging run started by hand does not start `release.yml`. Its `workflow_run` path takes only staging runs that a
+   push started, so every job of the release run it triggers is skipped, `staged` first. Step 5 is then started by
+   hand, with the line that step 8 gives for a release run that is gone (0.2.2 went this way on 2026-11-09):
+
+   ```sh
+   gh workflow run release.yml --repo usebag/bag -f version=X.Y.Z -f commit=<the cut commit>
+   ```
 5. **Approval, gate, then the first click.** When the staging run ends green, `release.yml` starts by itself. Its first
    job, `staged`, reads the version, the commit, the stage id and the tarball's sha256 from the staging run's log,
    checks that the commit is a public cut on `main` at that version, and prints what the maintainer does next, also on
@@ -188,13 +201,19 @@ Each step names who does it. A step marked **gate** is a person's decision, and 
    release commit, the version, and the tarball's sha256, which step 6 checked against the registry's tarball. The
    maintainers set the three in their own infrastructure's configuration, keeping the previous values for a rollback,
    then apply it: one change, the guide's Worker. No workflow of this repository can make that change ("The install
-   guide", below). Then the maintainer approves the release run's job `site`, the second click in
-   `npm-release`. The job first reads https://bag.dev/install and stops, naming what is missing, unless the page names
-   the new version, commit and sha256 and holds no unfilled `{{`; after an apply, "Re-run failed jobs" repeats it.
+   guide", below). The job `site` reads https://bag.dev/install and stops, naming what is missing, unless the page names
+   the new version, commit and sha256 and holds no unfilled `{{`. So the order is:
+   1. Apply the guide's Worker, and check that https://bag.dev/install names the three values.
+   2. On the release run's page, "Re-run failed jobs", if `site` already ran and stopped. A run that reaches `site`
+      before the apply stops there, and the release run shows as failed until this re-run.
+   3. Approve the job `site`, the second click in `npm-release`: Review deployments, `npm-release`, Approve and deploy.
+   0.2.2 went this way on 2026-11-09: `site` stopped on the 0.2.1 guide, then passed on its re-run after the apply.
 10. **The website, gate.** The job `site` then sends a `repository_dispatch`, the event `bag-release` with the
     version, the cut and the sha256, to the website's repository. The website's own workflow checks the release again,
     reads the guide as bag.dev serves it, and opens a pull request that moves the version mentions on bag.dev; a
-    maintainer merges it, and the merge deploys the website, ending with a check of the live site. A dispatch that got
+    maintainer merges it, and the merge deploys the website, ending with a check of the live site. That pull request is
+    opened by the GitHub Actions bot, so its own checks (`ci` and `preview`) do not run until a maintainer approves the
+    workflow runs on the pull request's page; until then they show "action required", and the merge waits for them. A dispatch that got
     as far as the website's branch for the version is not sent twice. Without the setup below, the job skips the
     dispatch with a line, and the website's change is made by hand; its deploy can also be started by hand:
 

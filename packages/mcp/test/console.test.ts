@@ -151,6 +151,28 @@ describe('consolePass', () => {
     expect(log.lines.map((l) => l.event)).toEqual(['console-unpaired'])
   })
 
+  it('runs the enterprise tick after a pass that ended a link or ran a pairing, and not after one that changed nothing', async () => {
+    const h = home()
+    addTrust(h, PEER, T0)
+    const link = { id: ID, peer: PEER, name: 'bob', paired_at: T0, until: null }
+    writeJson(join(h, 'orgs', DOMAIN, 'enterprise', 'pairings.json'), { v: 1, links: [link], done: [] })
+    let ticks = 0
+    const republish = async () => {
+      ticks++
+    }
+    const pass = (commands: PairingCommand[]) =>
+      consolePass({ ...deps(h, instance(commands).fetch, pairer().p), republish })
+    await pass([pair({ action: 'unpair', spoken: null })])
+    expect([ticks, trust(h)]).toEqual([1, []])
+    await pass([])
+    expect(ticks).toBe(1)
+    const other = '7d1e0c2b-4a5f-4b6e-8c7d-9e0f1a2b3c4d'
+    await pass([pair({ id: other })])
+    expect([ticks, trust(h)]).toEqual([2, [PEER]])
+    await pass([pair({ id: other })])
+    expect(ticks).toBe(2)
+  })
+
   it('makes no call with no session, a session not live, or an identity this server does not hold', async () => {
     const at = instance([pair()])
     const c = pairer()

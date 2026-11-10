@@ -66,6 +66,7 @@ describe('@usebag/enterprise-client: the public API', () => {
       'readRecordsCopy',
       'readSession',
       'readTrustFile',
+      'receiptsAnswered',
       'recordsDue',
       'recordsPath',
       'refreshDue',

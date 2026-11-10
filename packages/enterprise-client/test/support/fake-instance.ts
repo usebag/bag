@@ -82,6 +82,8 @@ export class FakeInstance {
   /** Extra roots GET /agent/trust lists beside the org's own domain root. */
   extraRoots: { root: string; source: string; granted_by: string | null; granted_at: number }[] = []
   trustEtag = 't1'
+  /** GET /agent/trust's receipts (the organisation's agents answer read receipts); null, an instance without it. */
+  receipts: boolean | null = null
   /** GET /api/v1/agent/accept-list's roots and etag; null, an instance older than the list (404). */
   acceptList: string[] | null = null
   acceptEtag = 'a1'
@@ -370,7 +372,11 @@ export class FakeInstance {
       granted_by: 'person-1',
       granted_at: 1,
     }
-    return { status: 200, body: { trust_etag: this.trustEtag, roots: [own, ...this.extraRoots] } }
+    const receipts = this.receipts === null ? {} : { receipts: this.receipts }
+    return {
+      status: 200,
+      body: { trust_etag: this.trustEtag, roots: [own, ...this.extraRoots], ...receipts },
+    }
   }
 }
 
