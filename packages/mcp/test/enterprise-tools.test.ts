@@ -124,11 +124,11 @@ function shown(out: Outcome): { isError: boolean; exit: unknown; lines: string[]
 const ARGS = { domain: DOMAIN, instance: 'https://ent.example.test' }
 
 describe('the enterprise tools of the identity server', () => {
-  it('lists connect, sign_in and enterprise_status beside the eleven: the full set, with their shapes', async () => {
+  it('lists connect, sign_in and enterprise_status beside the twelve: the full set, with their shapes', async () => {
     const w = await setup()
     const { tools } = await w.server.client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort())
-    expect(TOOL_NAMES).toHaveLength(14)
+    expect(TOOL_NAMES).toHaveLength(15)
     const tool = (name: string) => tools.find((t) => t.name === name)
     expect(tool('connect')?.inputSchema.required).toEqual(['code'])
     expect(tool('sign_in')?.inputSchema.required).toEqual(['domain', 'instance'])

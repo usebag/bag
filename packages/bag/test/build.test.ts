@@ -54,6 +54,14 @@ describe('the build', () => {
     ])
   })
 
+  it('makes bag-omp-wake.js one file: node built-ins only and a default export, so a link to it loads alone', () => {
+    const wake = readFileSync(join(out, 'bag-omp-wake.js'), 'utf8')
+    const from = [...wake.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1])
+    expect(from.length).toBeGreaterThan(0)
+    expect(from.every((f) => f?.startsWith('node:'))).toBe(true)
+    expect(wake).toMatch(/bagWake as default/)
+  })
+
   it('carries the version of package.json and the source commit', () => {
     expect(built.version).toBe(packageVersion())
     expect(built.commit).toMatch(/^[0-9a-f]{40}(-dirty)?$/)

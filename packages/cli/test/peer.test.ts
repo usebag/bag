@@ -1201,3 +1201,89 @@ describe('forward secrecy: the key record a pairing carries (currentKey)', () =>
     expect([held.sealing_key, held.iat, held.revoked, held.relays]).toEqual([null, T0, [bob.address], [R1]])
   })
 })
+
+describe('pair: the guided one command runs the peer ceremony in one terminal', () => {
+  const pairInvite = (p: Party, as: string, ...more: string[]): Promise<Ran> =>
+    cli(p.io, 'pair', '--as', p.name, '--relay', p.relay, '--name', as, '--dir', p.dir, ...more)
+  const pairAccept = (p: Party, as: string, text: string, ...more: string[]): Promise<Ran> =>
+    cli(
+      p.io,
+      'pair',
+      '--as',
+      p.name,
+      '--relay',
+      p.relay,
+      '--name',
+      as,
+      '--dir',
+      p.dir,
+      '--allow-private-relays',
+      text,
+      ...more,
+    )
+
+  it('invites with no code and accepts with one, pairing two homes, each with its guiding line', async () => {
+    const net = new Network()
+    const alice = await party(net, 'alice', R1, true)
+    const bob = await party(net, 'bob', R2, true)
+    const inviting = pairInvite(alice, 'bob')
+    const text = await printed(alice)
+    const [a, b] = await Promise.all([inviting, pairAccept(bob, 'alice', text)])
+    expect([a.code, b.code, a.err, b.err]).toEqual([0, 0, [], []])
+    expect(a.out).toContain(
+      'Making a one-use pairing code for a peer. Send it to them; they read you six digits, which you type here. Nothing is trusted until you do.',
+    )
+    expect(b.out.some((l) => l.startsWith("Pairing from your peer's code."))).toBe(true)
+    expect(a.out.at(-1)).toBe(`paired bob ${bob.address}`)
+    expect(b.out.at(-1)).toBe(`paired alice ${alice.address}`)
+    expect(roots(net, R1, alice)).toContain(bob.address)
+    expect(readTrust(alice.dir)[bob.address]).toBeDefined()
+    expect(readTrust(bob.dir)[alice.address]).toBeDefined()
+  })
+
+  it('refuses no-tty before anything, and asks for the petname when --name is left out', async () => {
+    const net = new Network()
+    const io = testIo(net)
+    const dir = join(tmp.dir, `pair-tty-${n++}`)
+    await cli(io, 'keygen', 'alice', '--dir', dir)
+    io.tty = false
+    const notty = await cli(io, 'pair', '--as', 'alice', '--relay', R1, '--name', 'bob', '--dir', dir)
+    expect(notty.err[0]).toMatch(/^bag: no-tty: pair is a person's act/)
+    io.tty = true
+    io.lines.length = 0
+    const noname = await cli(io, 'pair', '--as', 'alice', '--relay', R1, '--dir', dir)
+    expect(noname.err[0]).toBe('bag: usage: a petname is required: pass --name, or type one when asked')
+  })
+})
+
+describe('a pairing leaves the records at every relay the identity names (host-install second-relay warning)', () => {
+  it('a fresh identity with two relays has its address and accept-from at both after the ceremony', async () => {
+    const net = new Network()
+    const alice = await party(net, 'alice', R1, true)
+    const bob = await party(net, 'bob', R2, true)
+    const inviting = invite(alice, 'bob', '--relay', R3)
+    const text = await printed(alice)
+    const [a, b] = await Promise.all([inviting, accept(bob, 'alice', text)])
+    expect([a.code, b.code, a.err, b.err]).toEqual([0, 0, [], []])
+    for (const url of [R1, R3]) {
+      expect(net.record(url, alice.address, 'address')).not.toBeNull()
+      expect(roots(net, url, alice)).toContain(bob.address)
+    }
+  })
+
+  it('a relay that refuses the records is a warning line, not a failure of the pairing', async () => {
+    const net = new Network()
+    const alice = await party(net, 'alice', R1, true)
+    const bob = await party(net, 'bob', R2, true)
+    net.at(R3).failRecordPublish.set(R3, new RelayError(null, 0, null, 'no answer'))
+    const inviting = invite(alice, 'bob', '--relay', R3)
+    const text = await printed(alice)
+    const [a, b] = await Promise.all([inviting, accept(bob, 'alice', text)])
+    expect([a.code, b.code]).toEqual([0, 0])
+    expect(a.out).toContain(`failed address ${alice.address} ${R3} unreachable`)
+    expect(a.out.at(-1)).toBe(`paired bob ${bob.address}`)
+    // The up relay still has both records.
+    expect(net.record(R1, alice.address, 'address')).not.toBeNull()
+    expect(roots(net, R1, alice)).toContain(bob.address)
+  })
+})

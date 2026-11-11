@@ -78,10 +78,13 @@ export { BUILD_INFO, type BuildInfo } from './build-info.ts'
 export { checkName } from './custody/files.ts'
 export { type CustodyTarget, HomeCustody, type HomeCustodyOptions } from './custody/home.ts'
 export {
+  acceptCopy,
   addressCopy,
   continueFrom,
   type Epoch,
+  heldAccept,
   KeyEpochStore,
+  keepAcceptCopy,
   keepAddressCopy,
   lastAddress,
 } from './custody/key-records.ts'

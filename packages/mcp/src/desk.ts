@@ -333,21 +333,35 @@ export class Desk {
     return [...this.#unread]
   }
 
-  /** The inbox's counts, and the rejections by code; a quarantined row is counted apart. */
-  counts(): { readonly counts: Counts; readonly rejected_by_code: Readonly<Record<string, number>> } {
+  /**
+   * The inbox's counts, and the rejections by code; a quarantined row is counted apart, and so is a second copy of a
+   * message this identity accepted from another of its relays (the receiver drops it as a duplicate): no rejection.
+   */
+  counts(): {
+    readonly counts: Counts
+    readonly rejected_by_code: Readonly<Record<string, number>>
+    readonly copies_already_received_via_another_relay: number
+  } {
     const byCode: Record<string, number> = {}
     let accepted = 0
     let routed = 0
     let rejected = 0
     let quarantined = 0
     let inFlight = 0
-    for (const r of this.#edge.inbox()) {
+    let copies = 0
+    const rows = this.#edge.inbox()
+    // The relay each accepted message came by first, by envelope id.
+    const came = new Map<string, string>()
+    for (const r of rows) if (r.content !== null && r.id !== null && !came.has(r.id)) came.set(r.id, r.relay)
+    for (const r of rows) {
       if (r.state === 'received' || r.state === 'verified') inFlight++
       else if (r.state === 'quarantined') quarantined++
       else if (r.content !== null) {
         accepted++
         if (r.session !== null) routed++
-      } else {
+      } else if (r.reason === 'duplicate' && r.id !== null && (came.get(r.id) ?? r.relay) !== r.relay)
+        copies++
+      else {
         rejected++
         const code = r.reason as string
         byCode[code] = (byCode[code] ?? 0) + 1
@@ -362,7 +376,7 @@ export class Desk {
       in_flight: inFlight,
       unread: this.#unread.length,
     }
-    return { counts, rejected_by_code: byCode }
+    return { counts, rejected_by_code: byCode, copies_already_received_via_another_relay: copies }
   }
 
   /** Settles every pending wait with null, and every later one at once: the server is stopping. */

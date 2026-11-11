@@ -274,4 +274,21 @@ describe('http-relay: the relay API of spec/SPEC.md §8 on the global fetch', ()
       expect([e.code, e.status], bad).toEqual(['bad-shape', 200])
     }
   })
+
+  it('publishes 1 KiB, 8 KiB and a full 64 KiB envelope whole, and a relay that never answers one ends the try in time', async () => {
+    server.handle = (_req, res) => json(res, 200, { ok: true, id: ID, duplicate: false, delivered: 1 })
+    for (const size of [1024, 8192, 65_536]) {
+      const bytes = utf8(`{"v":1,"pad":"${'p'.repeat(size - 16)}"}`)
+      expect(bytes.length).toBe(size)
+      expect(await relay.publish(server.url, bytes)).toEqual({ id: ID, duplicate: false, delivered: 1 })
+      expect(new Uint8Array(server.seen.at(-1)?.body as Buffer)).toEqual(bytes)
+    }
+    // A relay that takes the whole body and never answers: the try fails with no answer (status 0) by its timeout.
+    server.handle = () => {}
+    const slow = createHttpRelay({ timeoutMs: 100 })
+    const started = Date.now()
+    const e = await failure(slow.publish(server.url, utf8(`{"v":1,"pad":"${'p'.repeat(65_520)}"}`)))
+    expect(e.status).toBe(0)
+    expect(Date.now() - started).toBeLessThan(5000)
+  })
 })

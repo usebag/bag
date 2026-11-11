@@ -19,6 +19,7 @@ import {
   verifyRecord,
 } from '@usebag/core'
 import {
+  acceptCopy,
   addressCopy,
   continueFrom,
   INCOMPLETE_REVOCATION,
@@ -34,6 +35,7 @@ import { checkNoWindow, homeDir, loadKeys, renewing, windowOf } from '../home.ts
 import { keyOf, readIdentities } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { stableMains } from '../packaged.ts'
+import { confirmed, needTty } from '../policy.ts'
 import { crontabLine, launchdJob } from './keep-schedule.ts'
 import { undate } from './login.ts'
 
@@ -157,7 +159,7 @@ function staleAtRotation(home: string, old: string, next: string, now: number): 
  * and pins, so the record outlives the org's key rotations. Each root is checked by the core
  * first, so a bad one is named (bad-record); the record is printed, or written to --out, with the roots as given.
  */
-function acceptFromRecord(args: readonly string[], io: Io): number {
+async function acceptFromRecord(args: readonly string[], io: Io): Promise<number> {
   const p = parse(args, {
     positionals: ['name'],
     options: {
@@ -169,11 +171,25 @@ function acceptFromRecord(args: readonly string[], io: Io): number {
     },
     required: ['root', 'max-bytes', 'ttl'],
   })
-  const keys = loadKeys(io, homeDir(io, str(p, 'dir')), p.positionals[0] as string)
+  const name = p.positionals[0] as string
+  const home = homeDir(io, str(p, 'dir'))
+  const keys = loadKeys(io, home, name)
+  const owner = keys.signing.address
+  const roots = list(p, 'root').map(checkAcceptRoot)
+  // A full replacement of the roots: dropping a held root unpairs that peer, a person's act like `unpair`, so a
+  // non-terminal caller is refused before anything is written, and a person confirms the drop by name. The held set is
+  // the home copy (acceptCopy), which keepAcceptCopy keeps current even when a rotation strands the relay copy; the
+  // record-2026-11-11 collapse was a re-sign that rebuilt the roots from a stranded copy. onboard's run keeps every
+  // held root in its --root set (acceptRoots unions the copy), so its cron run drops nothing and is never refused here.
+  const dropped = (acceptCopy(home, name, owner)?.roots ?? []).filter((root) => !roots.includes(root))
+  if (dropped.length > 0) {
+    needTty(io, 'record accept-from that drops a root')
+    await confirmed(io, `drop ${dropped.join(' ')} from the accept-from of ${name}?`, 'nothing was written')
+  }
   const r = signRecord(keys.signing, {
     kind: 'accept-from',
-    owner: keys.signing.address,
-    roots: list(p, 'root').map(checkAcceptRoot),
+    owner,
+    roots,
     max_bytes: int(p, 'max-bytes') as number,
     ttl: int(p, 'ttl') as number,
     iat: io.clock.now(),

@@ -26,6 +26,15 @@ import type { Io } from '../io.ts'
 export const POLL_MS = 1000
 
 /**
+ * How long a ring waits for the rest of its burst before it fires, in milliseconds: the MCP server rings once per
+ * accepted message, so mail from several senders lands as several rings a few ms apart. The newest mtime after the wait
+ * is the one remembered, since the model reads every message delivered by then; remembering the first ring of a burst
+ * made the next Stop hook fire again for mail already read (problem 9 of the omp brief, 2026-11-11). The omp wake
+ * extension (omp-wake.ts) waits the same.
+ */
+export const SETTLE_MS = 300
+
+/**
  * The seconds a Codex Stop hook waits for mail (`--max`). Short on purpose: the hook is awaited inline in the turn
  * loop and takes no cancellation from pending input (codex-rs core/src/session/turn.rs, core/src/hook_runtime.rs
  * run_turn_stop_hooks), so a message the person types waits out the wait; only an interrupt (Esc) ends it. Codex's own
@@ -150,8 +159,8 @@ interface Bell {
  * The pid of the MCP server holding `lockFile` (an identity's mcp.lock) when it runs in another session than this
  * hook: a live pid whose claude process (sessionAnchor) is not this hook's, or that has none above it. Null when the
  * lock is absent or holds no live pid, when it is this session's own server, or when no claude is above this hook.
- * A second session on one fixed identity has its server refused `busy`, which the host shows only as a closed server,
- * while the identity's doorbell still rings its hook: the ring then says where the message can be read.
+ * A second session on one fixed identity has a server that stays up and answers that the identity is held, and by
+ * whom, while the identity's doorbell still rings its hook: the ring then says where the message can be read.
  */
 function serverElsewhere(lockFile: string, session?: SessionNameOptions): number | null {
   let pid: unknown
@@ -404,6 +413,11 @@ export async function wakeHook(
         return true
       })
       if (!print && rung.length > 0) {
+        await delay(SETTLE_MS, undefined, { signal }).catch(() => undefined)
+        for (const b of rung) {
+          const m = mtime(b.bell)
+          if (m !== last[bells.indexOf(b)]) remember(b.seen, m)
+        }
         const to = rung.map((b) => b.label).join(', ')
         const away = file === undefined ? serverElsewhere((rung[0] as Bell).server, session) : null
         if (away !== null) {

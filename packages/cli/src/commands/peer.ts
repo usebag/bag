@@ -1,11 +1,13 @@
-import { type AddressRecord, isAddress, isDomainHost } from '@usebag/core'
+import { type AcceptFromRecord, type AddressRecord, isAddress, isDomainHost } from '@usebag/core'
 import {
   acceptPeer,
   continueFrom,
   digitsMatch,
+  heldAccept,
   INVITE_PREFIX,
   inviteOf,
   invitePeer,
+  keepAcceptCopy,
   keepAddressCopy,
   type Lagging,
   MAX_DIGIT_TRIES,
@@ -13,7 +15,7 @@ import {
   RelayGuard,
   refuseOtherInviter,
 } from '@usebag/edge'
-import { CliError, flag, int, type Parsed, parse, relayUrl, req, str, UsageError } from '../args.ts'
+import { CliError, flag, int, list, type Parsed, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { currentKey, laggingLines } from '../epochs.ts'
 import { homeDir, loadKeys } from '../home.ts'
 import type { Io } from '../io.ts'
@@ -34,6 +36,7 @@ import { addTrust } from '../trust.ts'
 // peer's address may come only with its request, after the whole ceremony; it goes on only under --for, its own address.
 
 const S = { type: 'string' } as const
+const MULTI = { type: 'string', multiple: true } as const
 const PRIVATE = { 'allow-private-relays': { type: 'boolean' } } as const
 
 /** peer invite | peer accept. */
@@ -69,6 +72,8 @@ export function pairingPorts(
     guard: new RelayGuard({ own, allowPrivate }),
     continueFrom: (found: AddressRecord | null) => continueFrom(found, home, as, keys.signing.address),
     keepAddress: (r: AddressRecord) => keepAddressCopy(home, as, r),
+    continueFromAccept: (found: AcceptFromRecord | null) => heldAccept(found, home, as, keys.signing.address),
+    keepAccept: (r: AcceptFromRecord) => keepAcceptCopy(home, as, r),
     lagging: (lag: Lagging) => laggingLines(io, keys.signing.address, [lag]),
   }
 }
@@ -95,11 +100,14 @@ function common(p: Parsed, io: Io, what: string) {
   const keys = loadKeys(io, home, as)
   const root = (address: string): string => (domain === undefined ? address : `domain:${domain}`)
   const also = domain === undefined ? '' : `, trusting every agent of ${domain}`
-  const relay = relayUrl(req(p, 'relay'))
+  // Every --relay the identity names, deduplicated: its records are left at all of them when the pairing completes, not
+  // the rendezvous alone. The first is the one the ceremony runs on and the default rendezvous.
+  const relays = [...new Set(list(p, 'relay').map(relayUrl))]
+  const relay = relays[0] as string
   const rendezvous = relayUrl(str(p, 'rendezvous') ?? relay)
-  const ports = pairingPorts(io, home, as, keys, [relay, rendezvous], flag(p, 'allow-private-relays'))
+  const ports = pairingPorts(io, home, as, keys, [...relays, rendezvous], flag(p, 'allow-private-relays'))
   const key = (): ReturnType<typeof currentKey> => currentKey(io, home, as, keys, relay)
-  return { home, keys, key, ports, relay, rendezvous, name, only, named, root, also }
+  return { home, keys, key, ports, relay, relays, rendezvous, name, only, named, root, also }
 }
 
 /**
@@ -113,7 +121,7 @@ function common(p: Parsed, io: Io, what: string) {
 async function invite(args: readonly string[], io: Io): Promise<number> {
   const options = {
     as: S,
-    relay: S,
+    relay: MULTI,
     rendezvous: S,
     name: S,
     for: S,
@@ -125,7 +133,7 @@ async function invite(args: readonly string[], io: Io): Promise<number> {
   const p = parse(args, { positionals: [], options, required: ['as', 'relay', 'name'] })
   const ttl = int(p, 'ttl') ?? MAX_INVITE_TTL
   if (ttl > MAX_INVITE_TTL) throw new UsageError(`--ttl is at most ${MAX_INVITE_TTL} seconds, not ${ttl}`)
-  const { home, keys, key, ports, relay, rendezvous, name, only, named, root, also } = common(
+  const { home, keys, key, ports, relay, relays, rendezvous, name, only, named, root, also } = common(
     p,
     io,
     'peer invite',
@@ -133,6 +141,7 @@ async function invite(args: readonly string[], io: Io): Promise<number> {
   const say = 'the other side reads you six digits, and you type them here'
   const q = await invitePeer(ports, {
     relay,
+    relays,
     rendezvous,
     keys,
     key: await key(),
@@ -173,9 +182,18 @@ async function invite(args: readonly string[], io: Io): Promise<number> {
  * `requested; waiting until <end> for the inviter's answer`, then `paired <name> <address>`.
  */
 async function accept(args: readonly string[], io: Io): Promise<number> {
-  const options = { as: S, relay: S, rendezvous: S, name: S, for: S, dir: S, 'trust-domain': S, ...PRIVATE }
+  const options = {
+    as: S,
+    relay: MULTI,
+    rendezvous: S,
+    name: S,
+    for: S,
+    dir: S,
+    'trust-domain': S,
+    ...PRIVATE,
+  }
   const p = parse(args, { positionals: ['invite'], options, required: ['as', 'relay', 'name'] })
-  const { home, keys, key, ports, relay, rendezvous, name, only, named, root, also } = common(
+  const { home, keys, key, ports, relay, relays, rendezvous, name, only, named, root, also } = common(
     p,
     io,
     'peer accept',
@@ -185,6 +203,7 @@ async function accept(args: readonly string[], io: Io): Promise<number> {
   named(v.inviter)
   await acceptPeer(ports, keys, relay, v, {
     key: await key(),
+    relays,
     ask: async (code) => {
       io.out(`inviter ${v.inviter} at ${v.relay}`)
       io.out(`check digits ${code}`)

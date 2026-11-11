@@ -245,13 +245,13 @@ async function main(): Promise<void> {
   const names = ((listed.result as { tools?: { name: string }[] } | undefined)?.tools ?? []).map(
     (t) => t.name,
   )
-  if (names.length !== 14) mismatches.push(`tools/list: ${names.length} tools`)
-  // bob runs without --allow-delegate: 13 tools, and delegate is the SDK's unknown-tool error.
+  if (names.length !== 15) mismatches.push(`tools/list: ${names.length} tools`)
+  // bob runs without --allow-delegate: 14 tools, and delegate is the SDK's unknown-tool error.
   const bobs = await bob.rpc.request('tools/list')
   const bobNames = ((bobs.result as { tools?: { name: string }[] } | undefined)?.tools ?? []).map(
     (t) => t.name,
   )
-  if (bobNames.length !== 13 || bobNames.includes('delegate'))
+  if (bobNames.length !== 14 || bobNames.includes('delegate'))
     mismatches.push(`tools/list without --allow-delegate: ${bobNames.join(', ')}`)
   expectOutcome(
     'delegate unlisted',
@@ -300,6 +300,7 @@ async function main(): Promise<void> {
 
   // status, inbox and send, with their refusals
   expectOutcome('status', await alice.call('status'), 'ok')
+  expectOutcome('facts', await alice.call('facts'), 'ok')
   expectOutcome('inbox', await alice.call('inbox'), 'ok')
   expectOutcome('inbox since', await alice.call('inbox', { since: 'yesterday' }), 'usage')
   expectOutcome(

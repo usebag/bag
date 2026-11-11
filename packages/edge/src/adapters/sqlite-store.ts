@@ -449,6 +449,13 @@ export class SqliteStore implements EdgeStore {
     ).run(subject, kind, bytes, expiresAt)
   }
 
+  cacheDrop(subject: string, kind: CacheKind): boolean {
+    return (
+      Number(this.#q('DELETE FROM record_cache WHERE subject = ? AND kind = ?').run(subject, kind).changes) >
+      0
+    )
+  }
+
   auditAnchorGet(name: string): AuditAnchor | null {
     const r = this.#q('SELECT seq, hash FROM audit_anchor WHERE name = ?').get(name)
     return r === undefined ? null : { seq: r.seq as number, hash: r.hash as string }

@@ -201,13 +201,14 @@ Each step names who does it. A step marked **gate** is a person's decision, and 
    release commit, the version, and the tarball's sha256, which step 6 checked against the registry's tarball. The
    maintainers set the three in their own infrastructure's configuration, keeping the previous values for a rollback,
    then apply it: one change, the guide's Worker. No workflow of this repository can make that change ("The install
-   guide", below). The job `site` reads https://bag.dev/install and stops, naming what is missing, unless the page names
-   the new version, commit and sha256 and holds no unfilled `{{`. So the order is:
+   guide", below). The job `site` reads https://bag.dev/install once a minute for up to 30 minutes, printing at each
+   read what the page names and lacks, and goes on at the first read that names the new version, commit and sha256 and
+   holds no unfilled `{{`. So the apply and the second click can come in either order, within 30 minutes of each other:
    1. Apply the guide's Worker, and check that https://bag.dev/install names the three values.
-   2. On the release run's page, "Re-run failed jobs", if `site` already ran and stopped. A run that reaches `site`
-      before the apply stops there, and the release run shows as failed until this re-run.
-   3. Approve the job `site`, the second click in `npm-release`: Review deployments, `npm-release`, Approve and deploy.
-   0.2.2 went this way on 2026-11-09: `site` stopped on the 0.2.1 guide, then passed on its re-run after the apply.
+   2. Approve the job `site`, the second click in `npm-release`: Review deployments, `npm-release`, Approve and deploy.
+   3. If the 30 minutes ran out first, `site` stops, naming what is missing: apply, then "Re-run failed jobs" on the
+      release run's page. 0.2.2 (2026-11-09) and 0.2.3 (2026-11-10) went that way, with a `site` that read the page
+      only once.
 10. **The website, gate.** The job `site` then sends a `repository_dispatch`, the event `bag-release` with the
     version, the cut and the sha256, to the website's repository. The website's own workflow checks the release again,
     reads the guide as bag.dev serves it, and opens a pull request that moves the version mentions on bag.dev; a

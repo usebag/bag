@@ -127,6 +127,7 @@ describe('a scripted child session prints no secret', () => {
       ['connect', { code: 'bagcode_not-a-code.not-a-secret' }],
       ['enterprise_status', {}],
       ['status', {}],
+      ['facts', {}],
     ]
     const tools = await client.listTools()
     expect(tools.tools.map((t) => t.name).sort()).toEqual(
@@ -135,6 +136,7 @@ describe('a scripted child session prints no secret', () => {
         'connect',
         'delegate',
         'enterprise_status',
+        'facts',
         'handoff',
         'inbox',
         'lookup',

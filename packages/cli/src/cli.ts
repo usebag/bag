@@ -29,6 +29,7 @@ import { lookup } from './commands/lookup.ts'
 import { mcp } from './commands/mcp.ts'
 import { name } from './commands/name.ts'
 import { onboard } from './commands/onboard.ts'
+import { pair } from './commands/pair.ts'
 import { pairings } from './commands/pairings.ts'
 import { peer } from './commands/peer.ts'
 import { record } from './commands/record.ts'
@@ -107,8 +108,13 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
   logout --as <name> [--dir <home>]
       ends the window, drops every grant, and revokes the sessions' keys on the wire; on a device it signs nothing
       and prints "unrevoked <address> until <time>" per session, and the record address --revoke step for P
-  peer invite --as <name> --relay <url> [--rendezvous <url>] --name <petname> [--for <address>] [--ttl <seconds>] [--allow-private-relays] [--dir <home>]
-  peer accept --as <name> --relay <url> [--rendezvous <url>] --name <petname> [--for <address>] <code or invite> [--allow-private-relays] [--dir <home>]
+  pair --as <name> --relay <url>... [--rendezvous <url>] [--name <petname>] [--for <address>] [--ttl <seconds>] [--trust-domain <host>] [--allow-private-relays] [--dir <home>] [<code or invite>]
+      the guided pairing one command: with a code or invite string it accepts (shows the six check digits to read
+      out, then one y); with none it invites (prints a one-use code, waits, and takes the six digits the peer reads).
+      For a host whose dialogs the model cannot answer; --name is asked at the terminal when it is left out. It runs
+      the peer invite / peer accept ceremony below
+  peer invite --as <name> --relay <url>... [--rendezvous <url>] --name <petname> [--for <address>] [--ttl <seconds>] [--allow-private-relays] [--dir <home>]
+  peer accept --as <name> --relay <url>... [--rendezvous <url>] --name <petname> [--for <address>] <code or invite> [--allow-private-relays] [--dir <home>]
       pairs two identities on two terminals: invite prints a one-use pairing code (or string), live 600 s at
       most; accept shows six check digits, which its person reads to the inviter before answering y; invite never shows them and takes them typed (3 tries). Each side then names the other,
       trusts it in <home>/trust.json (0600; inbox and the MCP server read it) and adds it to its accept-from record
@@ -245,17 +251,21 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
   wake-hook --identities <file> [--max <seconds>] [--exit-code <n>] [--no-idle-wake] [--print]
       the same for every identity of an identities file, each by its own doorbell; a ring names the identity's label
   session-code --as <principal> --session auto [--dir <home>]: for a synchronous SessionStart hook, prints the grant request's code as JSON
-  host install <claude-code|codex> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... [--grant-caveat <caveat>]... (--project <dir> | --user) [--mode worker|mcp] [--dir <home>]
+  host install <claude-code|codex|omp> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... [--grant-caveat <caveat>]... (--project <dir> | --user) [--mode worker|mcp] [--dir <home>]
       claude-code --project <dir>: the MCP server in <dir>/.mcp.json and a SessionStart and a Stop wake-hook in
       <dir>/.claude/settings.json; codex --user [--mode worker|mcp]: worker (the default; Codex has no idle wake) prints
       the inbox --watch --exec 'codex exec ...' line and writes nothing, mcp writes ~/.codex/config.toml and a Stop
       hook in ~/.codex/hooks.json (a turn that ends waits up to 30 s for mail; trust it with /hooks in Codex); mcp needs
-      --grant-caveat and starts the server as --session auto:codex, one Codex session per server.
+      --grant-caveat and starts the server as --session auto:codex, one Codex session per server; omp --project
+      <dir>: the MCP server in <dir>/.omp/mcp.json and <dir>/.omp/hooks/pre/bag-wake.js, a link to the wake
+      extension in <home>/package/, which starts one turn per delivered message (docs/host-omp.md).
       Merges into what is there, a second run changes nothing and says so; any other place is
       "not documented yet". claude-code --identities <file> [--label <label>] adds the identity to an identities
       file (absolute, outside the project, 0600) and wires the server and the hook to the file
   host remove claude-code --project <dir> --identities <file> --label <label>
       takes the identity out of the file; no key, home or state is touched
+  host remove omp --as <name> --project <dir>
+      takes that identity's mcpServers.bag out of <dir>/.omp/mcp.json and bag's wake link out of .omp/hooks/pre/
   health <relay-url>
       prints "ok" when the relay answers its health probe
   telemetry on | off | status | preview [--date <YYYY-MM-DD>] | send | forget
@@ -293,6 +303,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ['logout', logout],
   ['grant', grant],
   ['name', name],
+  ['pair', pair],
   ['peer', peer],
   ['unpair', unpair],
   ['pairings', pairings],

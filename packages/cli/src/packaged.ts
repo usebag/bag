@@ -12,7 +12,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { BUILD_INFO, checkoutCommit } from '@usebag/edge'
-import { CLI_MAIN, MCP_MAIN, PACKAGED } from './entries.ts'
+import { CLI_MAIN, MCP_MAIN, OMP_WAKE, PACKAGED } from './entries.ts'
 
 // The package build (packages/bag) and the commands that write this CLI's or the server's path into another
 // program's files. Run by npx, the package lives in npm's cache (~/.npm/_npx/<hash>/), which npm may clear: a path
@@ -33,6 +33,8 @@ export function versionLine(): string {
 export interface Mains {
   readonly cli: string
   readonly mcp: string
+  /** The omp wake extension (omp-wake.ts, built as bag-omp-wake.js). */
+  readonly omp: string
   readonly copied: string | null
 }
 
@@ -43,10 +45,16 @@ export interface Mains {
  * one lacks are removed; when the package already runs from there, or the copy there is already this one, nothing is
  * copied.
  */
-export function stableMains(home: string, cli = CLI_MAIN, mcp = MCP_MAIN, packaged = PACKAGED): Mains {
-  if (!packaged) return { cli, mcp, copied: null }
+export function stableMains(
+  home: string,
+  cli = CLI_MAIN,
+  mcp = MCP_MAIN,
+  packaged = PACKAGED,
+  omp = OMP_WAKE,
+): Mains {
+  if (!packaged) return { cli, mcp, omp, copied: null }
   const [from, to] = [dirname(cli), join(home, 'package')]
-  const mains = { cli: join(to, basename(cli)), mcp: join(to, basename(mcp)) }
+  const mains = { cli: join(to, basename(cli)), mcp: join(to, basename(mcp)), omp: join(to, basename(omp)) }
   // A recursive mkdir does not tighten a directory that is already there, so the mode is set either way.
   mkdirSync(to, { recursive: true, mode: 0o700 })
   chmodSync(to, 0o700)

@@ -5,7 +5,7 @@ import { RelayError, readTelemetrySpool, setTelemetry, systemRng, telemetryId } 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SESSION, TRUST_NOTE } from '../src/desk.ts'
 import { hostKind } from '../src/server.ts'
-import { DELEGATE_MAX_SECONDS, INSTRUCTIONS, TOOL_NAMES } from '../src/tools.ts'
+import { DELEGATE_MAX_SECONDS, INSTRUCTIONS, SIZE_NOTE, TOOL_NAMES } from '../src/tools.ts'
 import {
   addressRecord,
   FakeClock,
@@ -119,6 +119,18 @@ describe('tools/list', () => {
 })
 
 describe('send', () => {
+  it('holds a body of about 32,000 characters of JSON text, as its description says; past it envelope-too-large', async () => {
+    const send = (n: number) =>
+      alice.call('send', { to: [P.bob.address], type: 'chat.v1', body: 'x'.repeat(n) })
+    expect((await send(32_000)).isError).toBe(false)
+    expect((await send(33_000)).value).toMatchObject({ error: 'envelope-too-large' })
+    const tool = (await alice.client.listTools()).tools.find((t) => t.name === 'send')
+    expect(tool?.description?.endsWith(SIZE_NOTE)).toBe(true)
+    expect(SIZE_NOTE).toBe(
+      'A body holds about 32,000 characters of JSON text (the envelope cap is 65,536 bytes); past it the send is refused envelope-too-large.',
+    )
+  })
+
   it('builds, seals, persists and publishes: the id, the thread and each target; bob reads it with its trust block', async () => {
     const pending = bob.call('wait', { timeout_s: 30 })
     const sent = await alice.call('send', { to: [P.bob.address], type: 'chat.v1', body: { text: 'hi' } })
@@ -626,6 +638,7 @@ describe('status', () => {
       trust_file: 0,
       counts: { accepted: 0, routed: 0, queued: 0, rejected: 0, quarantined: 0, in_flight: 0, unread: 0 },
       rejected_by_code: {},
+      copies_already_received_via_another_relay: 0,
       last_audit_seq: 0,
       edge_errors: 0,
       last_edge_error: null,
@@ -639,6 +652,9 @@ describe('status', () => {
       peers: [],
       policy: { counts: [], quarantined: 0, pending: 0 },
       doorbell_path: join(tmp.dir, 'alice', 'state', 'alice', 'doorbell'),
+      model: null,
+      main_session: null,
+      host_facts: 'missing',
       telemetry: { on: false, reason: 'no-file', choice: null },
       telemetry_counts: null,
       network: { https: null, http: null, no_proxy: null, active: false },

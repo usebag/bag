@@ -77,6 +77,15 @@ export interface PairingPorts {
   readonly continueFrom?: (found: Address | null) => Address | null
   /** Keeps a record a pairing published as that copy: keepAddressCopy. */
   readonly keepAddress?: (record: Address) => void
+  /**
+   * The held accept-from, given what its relay holds (`found`): the home copy when a relay holds none or an older one
+   * (acceptCopy over continueFrom). Without it, a relay copy stranded by a rotation reads as no held roots, and a
+   * re-sign that adds or restores roots rebuilds from nothing (the [owner] collapse of 2026-11-11). Null when neither
+   * holds one: a first pairing.
+   */
+  readonly continueFromAccept?: (found: Accept | null) => Accept | null
+  /** Keeps the accept-from a pairing published as that copy: keepAcceptCopy, the home's anchor for its roots. */
+  readonly keepAccept?: (record: Accept) => void
   /** Told each relay that did not take this identity's record; the keep-alive carries the rest (Appendix B 110). */
   readonly lagging?: (lag: Lagging) => void
 }
@@ -201,7 +210,7 @@ async function share(p: PairingPorts, at: Relays, r: core.AcRecord, theirs = fal
   if (!theirs) for (const lag of offered.lagging) p.lagging?.(lag)
 }
 
-/** An address record of `k` naming `sealing` (or none), with `held`'s relays, rotation key and revoked list if any. */
+/** An address record of `k` naming `sealing` (or none), the given `relays`, and `held`'s rotation key and revoked list. */
 function addressOf(
   k: EdgeKeys,
   sealing: string | null,
@@ -214,7 +223,7 @@ function addressOf(
     kind: 'address',
     key: k.signing.address,
     sealing_key: sealing,
-    relays: held?.relays ?? relays,
+    relays,
     rotation_key: held?.rotation_key ?? null,
     revoked: held?.revoked ?? [],
     ttl,
@@ -243,23 +252,41 @@ async function ownFound(p: PairingPorts, relay: string, me: string): Promise<Add
  * (`fs`) or when the held record names none, so a sealing key is never written back into a record without
  * one.
  */
-async function ownAddress(p: PairingPorts, relay: string, k: EdgeKeys, fs: boolean): Promise<Address> {
-  const found = await ownFound(p, relay, k.signing.address)
+async function ownAddress(p: PairingPorts, relays: Relays, k: EdgeKeys, fs: boolean): Promise<Address> {
+  const found = await ownFound(p, relays[0] as string, k.signing.address)
   const held = p.continueFrom === undefined ? found : p.continueFrom(found)
   const now = p.clock.now()
   const sealing = fs || held?.sealing_key === null ? null : core.toHex(k.sealing.publicKey)
-  if (held !== null && held === found && held.sealing_key === sealing && now <= held.iat + held.ttl)
+  // The record lists every relay the identity names (the union of what it held and `relays`), not the one the ceremony
+  // runs on, so a pairing leaves its records at all of them (the host-install's second-relay warning, 2026-11-11). A
+  // held record is kept only when it is current and already names them all; else it is re-signed to add the rest.
+  const names = held === null ? [...relays] : [...new Set([...held.relays, ...relays])]
+  const held_names_all = held !== null && relays.every((u) => held.relays.includes(u))
+  if (
+    held !== null &&
+    held === found &&
+    held.sealing_key === sealing &&
+    now <= held.iat + held.ttl &&
+    held_names_all
+  )
     return held
-  const r = addressOf(k, sealing, [relay], core.MAX_ADDRESS_TTL, Math.max(now, (held?.iat ?? -1) + 1), held)
-  await share(p, [...new Set([relay, ...r.relays])], r)
+  const r = addressOf(k, sealing, names, core.MAX_ADDRESS_TTL, Math.max(now, (held?.iat ?? -1) + 1), held)
+  await share(p, [...new Set([...relays, ...r.relays])], r)
   p.keepAddress?.(r)
   return r
 }
 
-/** Re-signs the newest accept-from: `peer` added (a list: those roots, the rollback). Returns the old roots. */
+/**
+ * Re-signs the newest accept-from, `peer` added (a string), or set to exactly `peer` (a list, the rollback). The held
+ * set is the relay's, healed from the home copy when a relay holds none or an older one (continueFromAccept), so a
+ * rotation that stranded the relay copy never reads as no roots and the add or rollback keeps the roots held. The
+ * published record is kept as the home copy (keepAccept). Returns the held roots it read: the rollback the inviter
+ * restores on a no-answer, [owner] only when neither a relay nor the home copy held one (a first pairing, ruling 9).
+ */
 async function admit(p: PairingPorts, at: Relays, k: EdgeKeys, peer: string | Relays): Promise<Relays> {
   const owner = k.signing.address
-  const old = (await newest(p.client, at, owner, 'accept-from')) as Accept | null
+  const found = (await newest(p.client, at, owner, 'accept-from')) as Accept | null
+  const old = p.continueFromAccept ? p.continueFromAccept(found) : found
   const was = old?.roots ?? []
   const roots =
     typeof peer !== 'string' ? peer : was.includes('*') || was.includes(peer) ? was : [...was, peer]
@@ -269,6 +296,7 @@ async function admit(p: PairingPorts, at: Relays, k: EdgeKeys, peer: string | Re
   // Not share: stale-record here is a record this one would have replaced, a change it must not pass over.
   const publish = (url: string) => p.client.publish(url, core.serializeRecord(r))
   for (const lag of heldSomewhere(await offerRecord(r, at, publish)).lagging) p.lagging?.(lag)
+  p.keepAccept?.(r)
   return old?.roots ?? [owner]
 }
 
@@ -336,6 +364,8 @@ function invitationAccept(i: EdgeKeys, ttl: number, iat: number): Accept {
  */
 export interface Inviter {
   readonly relay: string
+  /** Every relay the identity names (its config or --relay list), where its records are left; `[relay]` by default. */
+  readonly relays?: Relays
   readonly rendezvous?: string
   readonly keys: EdgeKeys
   readonly key?: core.KeyRecord
@@ -427,9 +457,9 @@ async function inviting(p: PairingPorts, o: Inviter): Promise<PeerRequest> {
   try {
     await pub(addressOf(i, core.toHex(i.sealing.publicKey), [at], o.ttl, iat, null))
     await pub(invitationAccept(i, o.ttl, iat))
-    const mine = await ownAddress(p, o.relay, o.keys, o.key !== undefined)
+    const mine = await ownAddress(p, o.relays ?? [o.relay], o.keys, o.key !== undefined)
     // Its records at the relay the acceptor reads them from, which its address record may not name, and at the relays
-    // it lists; a relay that holds one already keeps it (share).
+    // it lists (every relay it names, for a fresh record lists them all now); a relay that holds one already keeps it.
     const reached = [...new Set([at, ...mine.relays])]
     if (!mine.relays.includes(at)) await share(p, [at], mine)
     if (o.key !== undefined) await share(p, reached, o.key)
@@ -467,6 +497,8 @@ async function inviting(p: PairingPorts, o: Inviter): Promise<PeerRequest> {
     await share(p, mine.relays, q.record, true)
     if (q.key !== null) await share(p, mine.relays, q.key, true)
     const seen = (await newest(p.client, q.record.relays, q.from, 'accept-from'))?.iat ?? -1
+    // The held set before the speculative add (relay healed from the home copy): a rotation that stranded the relay
+    // copy no longer reads as no roots, so the rollback restores the real paired roots instead of a bare [owner].
     const before = await admit(p, reached, o.keys, q.from)
     const answer = admitted(p, exp, q.record.relays, q.from, v.inviter, seen)
     if (!(await answer.catch(() => false))) {
@@ -487,6 +519,8 @@ async function inviting(p: PairingPorts, o: Inviter): Promise<PeerRequest> {
  */
 export interface Acceptor {
   readonly key?: core.KeyRecord
+  /** Every relay the identity names (its config or --relay list), where its records are left; `[relay]` by default. */
+  readonly relays?: Relays
   readonly ask: (code: string) => Promise<void>
   readonly sent: (exp: number) => void
   readonly write: () => void
@@ -506,7 +540,7 @@ async function accepting(p: PairingPorts, k: EdgeKeys, relay: string, v: Invite,
   }
   const exp = i.iat + i.ttl
   await h.ask(pairingCode(v, me, sealing))
-  const mine = await ownAddress(p, relay, k, h.key !== undefined)
+  const mine = await ownAddress(p, h.relays ?? [relay], k, h.key !== undefined)
   // Its key record at its own relays too, where its peers resolve it (the inviter shares it at the inviter's).
   if (h.key !== undefined) await share(p, [...new Set([relay, ...mine.relays])], h.key)
   const seen = (await newest(p.client, [v.relay], v.inviter, 'accept-from'))?.iat ?? -1

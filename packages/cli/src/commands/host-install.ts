@@ -1,8 +1,20 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { parseRecord, recordSigner, serializeRecord, verifyRecord } from '@usebag/core'
+import { acceptCopy, addressCopy } from '@usebag/edge'
 import { CliError, flag, list, type Parsed, parse, relayUrl, shq, str, UsageError } from '../args.ts'
-import { checkIdentity, homeDir } from '../home.ts'
+import { checkIdentity, homeCustody, homeDir } from '../home.ts'
 import {
   addIdentity,
   type Identities,
@@ -160,6 +172,129 @@ function hookPlan(doc: Json, hook: Json, drop: readonly string[]): Json | null {
   return Object.keys(added).length === 0 ? null : added
 }
 
+/** The omp `.omp/mcp.json` entry: the single-identity server line, as the live omp agents ran it (with --push log). */
+const ompEntry = (m: Mains, e: Identity): Json => ({
+  type: 'stdio',
+  command: process.execPath,
+  args: [...((single(m, e).args as string[]) ?? []), '--push', 'log'],
+})
+
+/** The omp wake link in a project: discovered by omp from .omp/hooks/pre/, named with the entry's own extension. */
+const ompLink = (dir: string, m: Mains): string =>
+  join(dir, '.omp', 'hooks', 'pre', `bag-wake${extname(m.omp)}`)
+
+/** The two names the omp wake link may have (from source .ts, from the package .js). */
+const ompLinks = (dir: string): string[] =>
+  ['.js', '.ts'].map((x) => join(dir, '.omp', 'hooks', 'pre', `bag-wake${x}`))
+
+/** Whether `link` is a symbolic link to an omp wake entry of bag (any home, any version). */
+function bagLink(link: string): boolean {
+  try {
+    if (!lstatSync(link).isSymbolicLink()) return false
+    return ['bag-omp-wake.js', 'omp-wake.ts'].includes(basename(readlinkSync(link)))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * omp --project <dir>: `.omp/mcp.json` (mcpServers.bag, the single-identity line with type stdio and --push log) and
+ * the wake link, `.omp/hooks/pre/bag-wake.js` a symbolic link to <home>/package/bag-omp-wake.js (from source,
+ * bag-wake.ts to packages/cli/src/omp-wake.ts): one maintained file, never a copy in the project. A bag entry with
+ * other settings, or a file at the link that is not bag's link, is refused before anything is written; a link of
+ * bag's to another place (an older home) is replaced. A second run changes nothing and says so.
+ */
+function installOmp(m: Mains, dir: string, me: Identity, out: string[]): void {
+  const entry = ompEntry(m, me)
+  const mcp = plan(join(dir, '.omp', 'mcp.json'), (doc) => {
+    const servers = child(doc, 'mcpServers')
+    const have = servers.bag
+    if (have !== undefined && !isDeepStrictEqual(have, entry)) {
+      throw new CliError(
+        'exists',
+        `${join(dir, '.omp', 'mcp.json')} has mcpServers.bag with other settings: edit or remove it first`,
+      )
+    }
+    if (have !== undefined) return null
+    servers.bag = entry
+    return { bag: entry }
+  })
+  const link = ompLink(dir, m)
+  const foreign = ompLinks(dir).filter((l) => {
+    try {
+      lstatSync(l)
+    } catch {
+      return false
+    }
+    return !bagLink(l)
+  })
+  if (foreign.length > 0) {
+    throw new CliError(
+      'exists',
+      `${foreign.join(', ')} is not bag's wake link (a hand-written wake?): move it away first, then run this again`,
+    )
+  }
+  const same = bagLink(link) && readlinkSync(link) === m.omp
+  const stale = ompLinks(dir).filter((l) => bagLink(l) && !(l === link && same))
+  write([mcp], out)
+  for (const l of stale) {
+    rmSync(l)
+    out.push(`removed ${l} (an earlier link of bag's)`)
+  }
+  if (same) out.push(`unchanged ${link}`)
+  else {
+    mkdirSync(dirname(link), { recursive: true })
+    const tmp = `${link}.${process.pid}.tmp`
+    rmSync(tmp, { force: true })
+    symlinkSync(m.omp, tmp)
+    renameSync(tmp, link)
+    out.push(`wrote ${link} -> ${m.omp}`)
+  }
+  for (const f of ['.mcp.json', 'mcp.json'].map((n) => join(dir, '.claude', n))) {
+    try {
+      const doc = JSON.parse(readFileSync(f, 'utf8')) as { mcpServers?: Json }
+      if (doc.mcpServers?.bag !== undefined) {
+        out.push(
+          `warning: ${f} also names a bag server, which omp loads too: two servers for one folder; remove one`,
+        )
+      }
+    } catch {
+      // absent or not JSON: omp reads nothing there
+    }
+  }
+  if (mcp.added === null && same && stale.length === 0) out.push('nothing to change')
+  out.push(
+    'the wake starts with the next omp session in this folder: one turn per ring of the doorbell, queued while a turn runs; only the main interactive session wakes (not omp -p, --mode rpc or a subagent), and every spawned session needs its own --model',
+  )
+}
+
+/** host remove omp --project <dir> --as <name>: takes out the bag entry of that identity and bag's wake link. */
+function removeOmp(dir: string, name: string, out: string[]): void {
+  const file = join(dir, '.omp', 'mcp.json')
+  const mcp = plan(file, (doc) => {
+    const servers = child(doc, 'mcpServers')
+    const args = (servers.bag as { args?: unknown } | undefined)?.args
+    if (servers.bag === undefined) return null
+    if (!Array.isArray(args) || args[args.indexOf('--as') + 1] !== name || !args.includes('--as')) {
+      throw new CliError(
+        'not-found',
+        `${file} has a bag server for another identity than ${name}: not removed`,
+      )
+    }
+    const removed = servers.bag as Json
+    delete servers.bag
+    return { removed }
+  })
+  if (mcp.added !== null) {
+    writeFileSync(file, `${JSON.stringify(mcp.doc, null, 2)}\n`)
+    out.push(`wrote ${file} (mcpServers.bag removed)`)
+  } else out.push(`unchanged ${file}`)
+  for (const l of ompLinks(dir).filter(bagLink)) {
+    rmSync(l)
+    out.push(`removed ${l}`)
+  }
+}
+
 /** The line for a package copied to a stable place (packaged.ts), first in the output; none from source. */
 const copiedLines = (m: Mains): string[] =>
   m.copied === null ? [] : [`wrote ${m.copied} (${versionLine()})`]
@@ -251,7 +386,7 @@ function remove(p: Parsed, io: Io, file: string, dir: string): number {
 }
 
 /**
- * host install <claude-code|codex> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]...
+ * host install <claude-code|codex|omp> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]...
  * [--dir <home>] [--grant-caveat <caveat>]... (--project <dir> | --user): registers the identity's MCP server with a
  * host and, for Claude Code, the wake hook. --rendezvous is passed to the server, the relay its pairing codes meet at.
  * Only the places packages/mcp/README.md documents are written; any other is a usage error
@@ -273,7 +408,7 @@ function remove(p: Parsed, io: Io, file: string, dir: string): number {
  * name, the home, relay URLs and trust roots (addresses, public). claude-code --identities <file> [--label <label>]
  * adds the identity to an identities file instead (`install`), and host remove claude-code takes one out (`remove`).
  */
-export function hostInstall(args: readonly string[], io: Io): number {
+export function hostInstall(args: readonly string[], io: Io): number | Promise<number> {
   const options = {
     as: { type: 'string' },
     dir: { type: 'string' },
@@ -292,9 +427,10 @@ export function hostInstall(args: readonly string[], io: Io): number {
   if (verb !== 'install' && verb !== 'remove') {
     throw new UsageError(`host takes install or remove, not ${JSON.stringify(verb)}`)
   }
-  if (host !== 'claude-code' && host !== 'codex') {
-    throw new UsageError(`no host ${JSON.stringify(host)}: the hosts are claude-code and codex`)
+  if (host !== 'claude-code' && host !== 'codex' && host !== 'omp') {
+    throw new UsageError(`no host ${JSON.stringify(host)}: the hosts are claude-code, codex and omp`)
   }
+  if (host === 'omp') return hostOmp(p, io, verb)
   if (verb === 'install' && str(p, 'as') === undefined) throw new UsageError('--as is required')
   const file = str(p, 'identities')
   if (file !== undefined && host === 'codex')
@@ -425,6 +561,140 @@ export function hostInstall(args: readonly string[], io: Io): number {
       `the worker path (no MCP table written: one receiver per identity): ${line} --exec 'codex exec --skip-git-repo-check --sandbox read-only "bag: $(cat)"'`,
     )
   }
+  // claude-code --project: the same read-only check of the identity's records at its relays as the omp form.
+  if (host === 'claude-code') {
+    return recordWarnings(io, home, relays, name).then((warnings) => {
+      for (const line of [...out, ...warnings]) io.out(line)
+      return 0
+    })
+  }
+  for (const line of out) io.out(line)
+  return 0
+}
+
+/**
+ * The identity's records at its relays, read and mended where that is safe, as output lines. A relay that holds no
+ * address or no accept-from record of `name` refuses mail to it (not-hosted). When another named relay or the home's copy
+ * holds the record (<name>.address.json and <name>.accept.json in the home's records folder), the newest one is
+ * published as it is to
+ * each relay that lacks it, the same act as `record keep --once` with nothing re-signed, and a line says so (an identity
+ * paired through the CLI floor has its records at the rendezvous relay only, helper-1's acceptance run, 2026-11-11). Only
+ * a record no relay and no copy holds is a warning, pointing to `bag onboard`: --keep-alive-records keeps records alive
+ * but never makes the first ones (packages/mcp/src/keepalive.ts). A relay that does not answer is named as unchecked.
+ * Never a refusal: a relay may be briefly away.
+ */
+async function recordWarnings(
+  io: Io,
+  home: string,
+  relays: readonly string[],
+  name: string,
+): Promise<string[]> {
+  const address = homeCustody(io, home).entry(name).address
+  const client = io.relay({})
+  const kinds = ['address', 'accept-from'] as const
+  const out: string[] = []
+  const now = io.clock.now()
+  // A record's bytes when they verify now as `name`'s record of that kind, else null.
+  const own = (
+    bytes: Uint8Array | null,
+    kind: (typeof kinds)[number],
+  ): { bytes: Uint8Array; iat: number } | null => {
+    if (bytes === null) return null
+    try {
+      const r = verifyRecord(parseRecord(bytes), now)
+      return r.kind === kind && recordSigner(r) === address ? { bytes, iat: r.iat } : null
+    } catch {
+      return null
+    }
+  }
+  const held = new Map<string, (Uint8Array | null)[]>()
+  for (const url of relays) {
+    try {
+      held.set(url, await Promise.all(kinds.map((k) => client.fetchRecord(url, address, k))))
+    } catch (e) {
+      const code = (e as { code?: unknown }).code
+      out.push(
+        `warning: ${url} did not answer (${typeof code === 'string' ? code : 'error'}): the records of ${name} there were not checked`,
+      )
+    }
+  }
+  const copies = [addressCopy(home, name, address), acceptCopy(home, name, address)]
+  const missing = new Map<string, string[]>()
+  for (const [i, kind] of kinds.entries()) {
+    let best: { bytes: Uint8Array; iat: number; from: string } | null = null
+    for (const [url, got] of held) {
+      const r = own(got[i] ?? null, kind)
+      if (r !== null && r.iat > (best?.iat ?? -1)) best = { ...r, from: url }
+    }
+    const copy = copies[i]
+    if (best === null && copy) {
+      const r = own(serializeRecord(copy), kind)
+      if (r !== null) best = { ...r, from: `the home copy (${join(home, 'records')})` }
+    }
+    for (const [url, got] of held) {
+      if (got[i] !== null) continue
+      if (best === null) {
+        missing.set(url, [...(missing.get(url) ?? []), kind])
+        continue
+      }
+      try {
+        await client.publish(url, best.bytes)
+        out.push(
+          `republished the ${kind} record of ${name} to ${url} (it was at ${best.from}; nothing re-signed)`,
+        )
+      } catch (e) {
+        const code = (e as { code?: unknown }).code
+        out.push(
+          `warning: ${url} refused the ${kind} record of ${name} (${typeof code === 'string' ? code : 'error'}): run bag record keep --once --as ${name} with every relay`,
+        )
+      }
+    }
+  }
+  for (const [url, kindsMissing] of missing) {
+    out.push(
+      `warning: no ${kindsMissing.join(' and ')} record at ${url} for ${name}, and no relay or home copy holds one: run bag onboard first (docs/partner-install.md section 4); until then the relay refuses mail to ${name}`,
+    )
+  }
+  return out
+}
+
+/** host install|remove omp: the omp form of hostInstall (installOmp, removeOmp). */
+async function hostOmp(p: Parsed, io: Io, verb: 'install' | 'remove'): Promise<number> {
+  for (const f of ['user', 'mode', 'grant-caveat', 'identities', 'label'] as const) {
+    if (p.values[f] !== undefined) throw new UsageError(`--${f} is not taken by omp`)
+  }
+  const project = str(p, 'project')
+  if (project === undefined) throw new UsageError('omp needs --project <dir>: the folder omp runs in')
+  const name = str(p, 'as')
+  if (name === undefined) throw new UsageError('--as is required')
+  const dir = resolve(project)
+  if (!existsSync(dir)) throw new CliError('ENOENT', `no project directory ${dir}`)
+  const out: string[] = []
+  if (verb === 'remove') {
+    removeOmp(dir, name, out)
+    for (const line of out) io.out(line)
+    return 0
+  }
+  const home = resolve(homeDir(io, str(p, 'dir')))
+  checkIdentity(io, home, name)
+  const relays = list(p, 'relay').map(relayUrl)
+  if (relays.length === 0) throw new UsageError('--relay <url> is required, at least once')
+  const roots = list(p, 'trust-root')
+  for (const r of roots) trustedRoot(r)
+  const meet = str(p, 'rendezvous')
+  const me: Identity = {
+    label: name,
+    key: name,
+    home,
+    relays,
+    ...(meet === undefined ? {} : { rendezvous: relayUrl(meet) }),
+    ...(roots.length === 0 ? {} : { trust_roots: roots }),
+    keep_alive_records: true,
+  }
+  const m = stableMains(home)
+  out.push(...copiedLines(m))
+  installOmp(m, dir, me, out)
+  out.push(...(await recordWarnings(io, home, relays, name)))
   for (const line of out) io.out(line)
   return 0
 }

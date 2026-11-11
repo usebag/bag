@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import {
+  type AcceptFromRecord,
   type AddressRecord,
   isAddress,
   type KeyRecord,
@@ -14,10 +15,12 @@ import {
   digitsMatch,
   type EdgeKeys,
   HomeCustody,
+  heldAccept,
   INVITE_PREFIX,
   inviteOf,
   invitePeer,
   KeyEpochStore,
+  keepAcceptCopy,
   keepAddressCopy,
   type Lagging,
   MAX_DIGIT_TRIES,
@@ -27,6 +30,15 @@ import {
   RelayGuard,
 } from '@usebag/edge'
 import type { PairingPorts } from '@usebag/enterprise-client'
+import {
+  bridgePresent,
+  CONSENT_POLL_MS,
+  Consent,
+  type ConsentKind,
+  type ConsentOutcome,
+  type ConsentPeer,
+  pidAlive,
+} from './consent.ts'
 import { incompleteLine } from './keepalive.ts'
 import { NAME, Names } from './names.ts'
 import { type ProgressExtra, startProgress } from './progress.ts'
@@ -56,6 +68,14 @@ export const PAIRING_CODES =
 
 /** What pair_accept says while it is not paired: a send to the inviter before its admit is refused. */
 export const NOT_PAIRED = 'not paired yet: send nothing to this peer until pair_accept answers paired: true'
+
+/** What a bridge pair_accept's first result says: the host is asking the person; resume to wait. */
+export const BRIDGE_ASK =
+  'a dialog is open in your host for your user to answer (you cannot, and must not try): tell them it is waiting there, then call this tool again with resume alone to wait, until paired: true or a refusal'
+
+/** What a bridge pair_invite's first result says: the host shows the code; resume to wait for the peer and the digits. */
+export const BRIDGE_SHOW =
+  'your host is showing your user the code to hand to the peer out of band, so you need not print it; once your user says the peer has it, call this tool again with resume alone to wait. When the peer requests, your host asks your user to type the six digits the peer reads them; only your user answers.'
 
 /**
  * What pair_invite's first result adds: the description already asked for the code in a code block, yet in two real
@@ -147,6 +167,11 @@ class Live {
   refusal: unknown = null
   /** Ended here and audited: every later ask is no, and the edge's end is only logged. */
   over = false
+  /** True when the host cannot elicit but a consent bridge is present: the person answers through files, not dialogs. */
+  bridge = false
+  /** The consent request now open (one at a time), and the stop for its background poll timer. */
+  consent: Consent | null = null
+  consentStop: () => void = () => {}
   /** The relays that did not take a record of this identity's, one entry for each relay and kind. */
   readonly lagging: Lagging[] = []
   #waiters: (() => void)[] = []
@@ -195,11 +220,13 @@ export class Pairings {
     const { resume, ...rest } = a
     if (resume !== undefined) return this.#resume('pair_invite', resume, rest, extra)
     const live = this.#start('pair_invite', a.name, a.for)
+    if (live.bridge) return this.#bridgeInvite(live, a.for, a.ttl)
     const only = a.for ?? (await this.#first(live, this.#boundPeer(live, extra), true))
     const { keys, relay, key } = await this.#first(live, this.#keys(live))
     const opened = Promise.withResolvers<{ text: string; exp: number }>()
     const run = invitePeer(this.#ports(live), {
       relay,
+      relays: this.#ctx.config.relays,
       keys,
       ...key,
       ttl: a.ttl ?? MAX_INVITE_TTL,
@@ -234,6 +261,11 @@ export class Pairings {
     const { resume, ...rest } = a
     if (resume !== undefined) return this.#resume('pair_accept', resume, rest, extra)
     const live = this.#start('pair_accept', a.name, a.for)
+    if (live.bridge) {
+      const run = this.#bridgeAccept(live, a.for)
+      this.#settle(live, 'decline', run, (peer) => this.#paired(live, peer))
+      return { requested: false, asked: true, resume: live.token, note: BRIDGE_ASK }
+    }
     const v = await this.#first(
       live,
       (async () => {
@@ -271,6 +303,7 @@ export class Pairings {
     const sent = Promise.withResolvers<number>()
     const run = acceptPeer(this.#ports(live), keys, relay, v, {
       ...key,
+      relays: this.#ctx.config.relays,
       // The check digits alone on line 1, the one place they are shown. The read-out is the security step, by another
       // channel than the code's, for a code edited in transit is caught only if the digits do not go the same way
       // (spec/SPEC.md §8.10, both dialogs say so), and this confirm only sends the request: the inviter's dialog opens after it, and types what was read out.
@@ -365,12 +398,12 @@ export class Pairings {
   /** The checks before any dialog or network (no-elicitation, name, for, busy, a held name), then the live pairing. */
   #start(tool: string, name: Opt<string>, only?: Opt<string>): Live {
     const ctx = this.#ctx
-    // No terminal command is suggested: pairing is the person's act in dialogs, in a host that shows them.
-    if (!ctx.canElicit())
-      throw new ToolError(
-        'no-elicitation',
-        'this host cannot show your user a dialog, so it cannot pair: pair in an interactive Claude Code session',
-      )
+    // This host cannot show a dialog (omp has no elicitation at all). With a live consent bridge (the host's extension
+    // writes .bridge in a main TUI session), the person answers through files, below; without one (print, rpc, json),
+    // name the exact terminal command instead, never a silent decline (decision 83i, and deliverable 6 of W5).
+    const bridge = !ctx.canElicit()
+    if (bridge && !bridgePresent(ctx.config.home, ctx.config.as, ctx.clock.now(), pidAlive))
+      throw new ToolError('no-elicitation', this.#pairInstead(name))
     if (name === undefined || !NAME.test(name))
       throw new ToolError('usage', `name is the peer's petname (${NAME.source})`)
     if (only !== undefined && !isAddress(only)) throw new ToolError('usage', 'for takes an address')
@@ -385,8 +418,184 @@ export class Pairings {
       addTrust(home, peer, ctx.clock.now())
     }
     const live = new Live(tool, toHex(ctx.rng.bytes(16)), name, write)
+    live.bridge = bridge
     this.#live = live
     return live
+  }
+
+  /**
+   * The terminal command a person runs to pair when this host cannot show a dialog, in place of a silent decline
+   * (deliverable 6): `bag pair` on this identity and relay prints a one-use code to send the peer, or takes the peer's
+   * code as a final argument. The petname is named when the tool gave a valid one, else `bag pair` asks for it. The
+   * model relays the line and does not call a pair tool again until the person has run it; it never claims it ran it.
+   */
+  #pairInstead(name: Opt<string>): string {
+    const { home, as, relays, rendezvous } = this.#ctx.config
+    const relay = relays[0] ?? ''
+    const rz = rendezvous !== undefined && rendezvous !== relay ? ` --rendezvous ${rendezvous}` : ''
+    const pet = name !== undefined && NAME.test(name) ? ` --name ${name}` : ''
+    const dir = / /.test(home) ? ` --dir '${home}'` : ` --dir ${home}`
+    const line = `bag pair --as ${as}${relay === '' ? '' : ` --relay ${relay}`}${rz}${pet}${dir}`
+    return (
+      'this host cannot show your user the pairing dialog, so a tool cannot pair here. Give your user this exact ' +
+      'line to run in their own terminal, and say what it does; do not call a pair tool again until they tell you it ' +
+      `is done, and never say you ran it: ${line} . With no code it prints a one-use pairing code to send the peer; ` +
+      "to accept a peer's code instead, they add that code or invite string as a final argument. It asks for the " +
+      "peer's petname when one is not in the line, shows six check digits, and writes the pairing after one y."
+    )
+  }
+
+  /**
+   * The acceptor's bridge flow (decision 83i): the person pastes the peer's code into the host (pair-accept-code, so the
+   * code is never a tool argument), the server resolves the inviter from it as the paste dialog does, then shows the six
+   * check digits for a confirm (pair-accept), and on Yes sends the request. It runs as the background `run` #settle ends.
+   */
+  async #bridgeAccept(live: Live, only: Opt<string>): Promise<string> {
+    const ports = this.#ports(live)
+    const paste = await this.#consentAsk(live, 'pair-accept-code', null, null)
+    if (!paste.accepted) throw this.#refusalOf(paste)
+    const v = await inviteOf(ports, this.#ctx.config.rendezvous, paste.code ?? '')
+    refuseLinks(this.#ctx, { to: v.inviter })
+    if (only !== undefined && v.inviter !== only)
+      throw new ToolError('not-for', `that invitation is from ${v.inviter}, not ${only}: nothing was sent`)
+    Names.read(this.#ctx.config.home).check(live.name, v.inviter)
+    live.from = v.inviter
+    const { keys, relay, key } = await this.#keys(live)
+    await acceptPeer(ports, keys, relay, v, {
+      ...key,
+      relays: this.#ctx.config.relays,
+      ask: async (code) => {
+        const o = await this.#consentAsk(live, 'pair-accept', this.#peer(live.name, v.inviter), code)
+        if (!o.accepted) throw new ToolError('declined', `the check digits were not confirmed: ${o.reason}`)
+      },
+      sent: (exp) => {
+        live.exp = exp
+      },
+      write: () => live.write(v.inviter),
+    }).catch((e: unknown) => {
+      throw usedInvite(e)
+    })
+    return v.inviter
+  }
+
+  /**
+   * The inviter's bridge flow: the edge opens the invitation, the host shows the code (pair-invite-show, a pure confirm
+   * that is not the gate), and when the peer's request comes #bridgeCompare asks the person to type the six digits the
+   * peer reads out. The first result carries the code, as the dialog path's does.
+   */
+  async #bridgeInvite(live: Live, only: Opt<string>, ttl: Opt<number>): Promise<Json> {
+    const { keys, relay, key } = await this.#first(live, this.#keys(live))
+    const opened = Promise.withResolvers<{ text: string; exp: number }>()
+    const run = invitePeer(this.#ports(live), {
+      relay,
+      relays: this.#ctx.config.relays,
+      keys,
+      ...key,
+      ttl: ttl ?? MAX_INVITE_TTL,
+      rendezvous: this.#ctx.config.rendezvous,
+      ...(only === undefined ? {} : { only }),
+      opened: (text, exp) => {
+        live.exp = exp
+        this.#audit('queue', 'invite-open', null, { name: live.name })
+        opened.resolve({ text, exp })
+      },
+      refused: (from, code) => this.#audit('reject', 'request', from, { code }),
+      leaked: (from) => this.#audit('reject', 'request', from, { code: 'leaked' }),
+      ask: (q) => this.#bridgeCompare(live, q),
+      write: (q) => live.write(q.from),
+    })
+    this.#settle(live, 'refuse', run, (q) => this.#paired(live, q.from))
+    const { text, exp } = await this.#first(
+      live,
+      Promise.race([opened.promise, run.then(() => opened.promise)]),
+    )
+    // Show the code through the host; the compare is the security gate, so a refusal of the show is not read.
+    void this.#consentAsk(live, 'pair-invite-show', null, text)
+    const given = text.startsWith(INVITE_PREFIX) ? { invite: text } : { code: text }
+    return { invite_open: true, ...given, expires_at: iso(exp), resume: live.token, note: BRIDGE_SHOW }
+  }
+
+  /** The inviter's compare over the bridge: cancels the show request, asks the person to type the digits, verifies them. */
+  async #bridgeCompare(live: Live, q: PeerRequest): Promise<boolean> {
+    this.#audit('queue', 'request', q.from, {})
+    live.from = q.from
+    if (live.over) return false
+    try {
+      refuseLinks(this.#ctx, { to: q.from })
+      Names.read(this.#ctx.config.home).check(live.name, q.from)
+    } catch (e) {
+      live.refusal = e
+      return false
+    }
+    const o = await this.#consentAsk(live, 'pair-accept', this.#peer(live.name, q.from), null)
+    if (!o.accepted) {
+      live.refusal ??= this.#refusalOf(o)
+      return false
+    }
+    return digitsMatch(o.code ?? '', q.code)
+  }
+
+  /**
+   * Writes a consent request and polls its answer in the background (this.#ctx.timers, every 250 ms), resolving when it
+   * settles or times out. One runs at a time: it cancels any open request first, so the inviter's compare replaces the
+   * show request. The pairing's #drop cancels a live one when it ends.
+   */
+  #consentAsk(
+    live: Live,
+    kind: ConsentKind,
+    peer: ConsentPeer | null,
+    code: string | null,
+  ): Promise<ConsentOutcome> {
+    const { config, clock, rng, timers } = this.#ctx
+    this.#cancelConsent(live)
+    const consent = new Consent(
+      config.home,
+      config.as,
+      toHex(rng.bytes(8)),
+      kind,
+      peer,
+      code,
+      config.relays[0] as string,
+      clock.now(),
+    )
+    live.consent = consent
+    this.#audit('queue', kind, peer?.address ?? null, { name: live.name })
+    return new Promise<ConsentOutcome>((resolve) => {
+      const tick = (): void => {
+        const o = consent.poll(clock.now())
+        if (o === 'pending') {
+          live.consentStop = timers.after(CONSENT_POLL_MS, tick)
+          return
+        }
+        if (live.consent === consent) {
+          live.consent = null
+          live.consentStop = () => {}
+        }
+        resolve(o)
+      }
+      tick()
+    })
+  }
+
+  /** Stops the background poll and removes the open consent's files, if any. */
+  #cancelConsent(live: Live): void {
+    live.consentStop()
+    live.consentStop = () => {}
+    if (live.consent !== null) {
+      live.consent.cancel()
+      live.consent = null
+    }
+  }
+
+  /** A consent request's peer block: its petname, address and root (the address; a domain root stays the CLI's). */
+  #peer(name: string, address: string): ConsentPeer {
+    return { name, address, root: address }
+  }
+
+  /** The tool error a refused consent becomes: a cancel is cancelled, anything else declined, with its reason. */
+  #refusalOf(o: { readonly accepted: false; readonly reason: string }): ToolError {
+    if (o.reason === 'cancelled') return new ToolError('cancelled', 'the pairing ended')
+    return new ToolError('declined', `not accepted in the host (${o.reason}): nothing was written`)
   }
 
   /**
@@ -472,6 +681,9 @@ export class Pairings {
       guard,
       continueFrom: (found: AddressRecord | null) => continueFrom(found, home, as, opened.signer.address),
       keepAddress: (r: AddressRecord) => keepAddressCopy(home, as, r),
+      continueFromAccept: (found: AcceptFromRecord | null) =>
+        heldAccept(found, home, as, opened.signer.address),
+      keepAccept: (r: AcceptFromRecord) => keepAcceptCopy(home, as, r),
       lagging: (lag: Lagging) => this.#lagged(live, lag),
     }
   }
@@ -564,6 +776,7 @@ export class Pairings {
   }
 
   #drop(live: Live): void {
+    this.#cancelConsent(live)
     if (this.#live === live) this.#live = null
   }
 

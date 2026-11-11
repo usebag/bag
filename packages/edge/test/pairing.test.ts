@@ -631,6 +631,44 @@ describe('invitePeer and acceptPeer', () => {
     expect(a.log).toEqual([])
   })
 
+  it('restores the roots from the home copy when a rotation stranded the relay accept-from, not [owner] (83c)', async () => {
+    const relay = new Relay()
+    const [base, b, c] = [side(relay), side(relay), side(relay)]
+    // a was paired with c; its home copy holds that accept-from, but a rotation left the relay holding none (the
+    // 2026-11-11 collapse: keys.rotate republished:false stranded the relay copy). continueFromAccept heals from it.
+    let held: AcceptFromRecord | null = signRecord(base.keys.signing, {
+      kind: 'accept-from',
+      owner: base.address,
+      roots: [c.address],
+      max_bytes: 65_536,
+      ttl: 604_800,
+      iat: T0,
+    })
+    const a: Side = {
+      ...base,
+      p: {
+        ...base.p,
+        continueFromAccept: (found: AcceptFromRecord | null) => found ?? held,
+        keepAccept: (r: AcceptFromRecord) => {
+          held = r
+        },
+      },
+    }
+    const inviting = invite(a, R1, {
+      ask: async () => {
+        relay.failingRecords.set(R2, full)
+        return true
+      },
+    })
+    expect(await fail(accept(b, R2, await opened(a)))).toBe('body-too-large')
+    relay.failingFetches.set(R2, down)
+    a.clock.t = END
+    expect(await fail(inviting)).toBe('no-answer')
+    // The rollback restored c, the paired root, rather than collapsing to [a]: qrfolk is not dropped.
+    expect(relay.record<AcceptFromRecord>(R1, a.address, 'accept-from')?.roots).toEqual([c.address])
+    expect(held?.roots).toEqual([c.address])
+  })
+
   const down = new RelayError(null, 0, null, 'unreachable')
   const full = new RelayError('body-too-large', 413, null, 'no')
   type Ending = {
@@ -900,6 +938,22 @@ describe('one listed relay down (spec/SPEC.md Appendix B 110)', () => {
       [`accept-from ${R2} unreachable false`],
     ])
     expect([a.log, b.log].map((l) => l.at(-1))).toEqual([`write ${b.address}`, 'write'])
+  })
+
+  it('leaves the records at every relay the record names, from a single ceremony relay (as the MCP tools do)', async () => {
+    const relay = new Relay()
+    const [a, b] = [side(relay), side(relay)]
+    // Each names [R1, R2] and has both published; the ceremony runs on R1 alone, as the MCP pair tools pass relays[0].
+    for (const s of [a, b])
+      for (const url of [R1, R2]) await publish(relay, url, recordOf(s, sealingOf(s), [R1, R2]))
+    const inviting = invite(a, R1)
+    await accept(b, R1, await opened(a))
+    await inviting
+    for (const url of [R1, R2]) {
+      expect(relay.record<AcceptFromRecord>(url, a.address, 'accept-from')?.roots).toContain(b.address)
+      expect(relay.record<AcceptFromRecord>(url, b.address, 'accept-from')?.roots).toContain(a.address)
+      expect(relay.record<AddressRecord>(url, a.address, 'address')).not.toBeNull()
+    }
   })
 
   it('does not wait out the invitation on a peer whose listed relay is down: the other shows the admit', async () => {

@@ -197,6 +197,20 @@ describe('wake-hook: the first run baselines, a changed doorbell fires once, the
     expect(readdirSync(join(w.dir, 'state', 'bob')).sort()).toEqual(['doorbell', 'wake-seen'])
   })
 
+  it('a burst of rings is one wake: the newest mtime after the settle is remembered, so the next hook is silent (problem 9)', async () => {
+    const w = await world()
+    w.touch(1_700_000_001)
+    await hook(w, '--max', '0')
+    const waiting = wakeHook(['--as', 'bob', '--dir', w.dir, '--max', '30'], w.io, 5)
+    await sleep(40)
+    w.touch(1_700_000_002)
+    await sleep(60)
+    const last = w.touch(1_700_000_003)
+    expect(await waiting).toBe(2)
+    expect(readFileSync(w.seen, 'utf8')).toBe(`${last}\n`)
+    expect(await hook(w, '--max', '0')).toEqual({ code: 0, out: [], err: [] })
+  })
+
   it('sees a touch made while it waits', async () => {
     const w = await world()
     w.touch(1_700_000_001)

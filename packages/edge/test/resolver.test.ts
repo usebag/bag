@@ -205,6 +205,32 @@ describe('Resolver: well-known and relay records, cached no longer than they are
     expect(records.calls).toBeGreaterThan(fetched)
   })
 
+  it("forget drops a recipient's cached record: a move from relay X to Y is read at once, not after the old ttl", async () => {
+    const X = 'http://relay-x.test'
+    const Y = 'http://relay-y.test'
+    const records = new FakeRecords()
+    records.put(HOME, addressRecord(P.bob, { relays: [X], ttl: DAY }))
+    const { resolver, store } = setup(records)
+    expect((await resolver.recipient(P.bob.address)).relays).toEqual([X])
+    records.put(HOME, addressRecord(P.bob, { relays: [Y], ttl: DAY, iat: T0 + 1 }))
+    expect((await resolver.recipient(P.bob.address)).relays).toEqual([X])
+    expect(resolver.forget(P.bob.address)).toBe(true)
+    expect(store.cacheGet(`address:${P.bob.address}`, 'address', T0)).toBeNull()
+    expect((await resolver.recipient(P.bob.address)).relays).toEqual([Y])
+    expect(resolver.forget(P.bob.address)).toBe(true)
+    expect(resolver.forget(P.bob.address)).toBe(false)
+  })
+
+  it('forget never rolls back: an older record answering after the drop is resolve-failed', async () => {
+    const records = new FakeRecords()
+    records.put(HOME, addressRecord(P.bob, { relays: [R1], ttl: DAY, iat: T0 + 5 }))
+    const { resolver } = setup(records)
+    await resolver.recipient(P.bob.address)
+    records.put(HOME, addressRecord(P.bob, { relays: [R1], ttl: DAY, iat: T0 }))
+    expect(resolver.forget(P.bob.address)).toBe(true)
+    await expect(resolver.recipient(P.bob.address)).rejects.toMatchObject({ code: 'resolve-failed' })
+  })
+
   it('skips a relay that fails or serves a bad record when another serves a good one', async () => {
     const records = new FakeRecords()
     records.relays.set(`${R1} ${P.bob.address} address`, new Error('down'))

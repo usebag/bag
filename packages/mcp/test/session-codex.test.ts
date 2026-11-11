@@ -219,15 +219,15 @@ describe('--session auto:codex: failures, close and regrant', () => {
     const b = await codex(2)
     expect((await call(b, 'status', { sessionId: ID })).value).toMatchObject({
       error: 'busy',
-      detail: expect.stringContaining('the MCP server with pid 1 holds this identity'),
+      detail: expect.stringContaining('is held by another session (pid 1'),
     })
     expect(() => b.running.opened).toThrow(/^no-session: not named/)
     const lock = join(h.tmp.dir, 'state', nameOf(ID), 'mcp.lock')
-    expect(JSON.parse(readFileSync(lock, 'utf8'))).toEqual({ pid: 1 })
+    expect(JSON.parse(readFileSync(lock, 'utf8'))).toMatchObject({ pid: 1 })
     await close(a)
     expect(existsSync(lock)).toBe(false)
     expect((await call(b, 'status', { sessionId: ID })).value).toMatchObject(pending(ID))
-    expect(JSON.parse(readFileSync(lock, 'utf8'))).toEqual({ pid: 2 })
+    expect(JSON.parse(readFileSync(lock, 'utf8'))).toMatchObject({ pid: 2 })
   })
 
   it('closes unbound: the stop settles, the start rejects busy, and nothing was made', async () => {
