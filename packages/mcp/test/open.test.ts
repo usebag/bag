@@ -1,17 +1,20 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { type Hop, isAcError, parseEnvelope, serializeRecord, signHop, toHex } from '@usebag/core'
 import { RelayError } from '@usebag/edge'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { type Config, ConfigError, parseConfig } from '../src/config.ts'
 import {
   acquireLock,
+  HeldError,
   jitteredDelay,
+  noteLockHost,
   type OpenDeps,
   observed,
   openIdentity,
   pidAlive,
+  readLock,
   startDelayMs,
 } from '../src/open.ts'
 import {
@@ -82,7 +85,12 @@ describe('the lock file: one server per identity', () => {
   it('takes a free lock with its pid, 0600, and the release removes it', () => {
     const path = join(tmp.dir, 'mcp.lock')
     const release = acquireLock(path, 7, () => true)
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ pid: 7 })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
+      pid: 7,
+      started_at: expect.any(String),
+      cwd: process.cwd(),
+      ppid: process.ppid,
+    })
     expect(statSync(path).mode & 0o777).toBe(0o600)
     release()
     expect(existsSync(path)).toBe(false)
@@ -92,7 +100,7 @@ describe('the lock file: one server per identity', () => {
     const path = join(tmp.dir, 'mcp.lock')
     for (const keepAlive of [true, false]) {
       const release = acquireLock(path, 7, () => true, keepAlive)
-      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ pid: 7, keep_alive: keepAlive })
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ pid: 7, keep_alive: keepAlive })
       expect(failure(() => acquireLock(path, 8, () => true))).toBe('busy')
       release()
       expect(existsSync(path)).toBe(false)
@@ -104,16 +112,102 @@ describe('the lock file: one server per identity', () => {
     acquireLock(path, 7, () => true)
     expect(failure(() => acquireLock(path, 8, (pid) => pid === 7))).toBe('busy')
     const release = acquireLock(path, 8, () => false)
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ pid: 8 })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ pid: 8 })
     writeFileSync(path, '{"pid":"eight"}')
     expect(acquireLock(path, 10, () => true)).toBeTypeOf('function')
     writeFileSync(path, 'not json')
     const third = acquireLock(path, 9, () => true)
-    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ pid: 9 })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ pid: 9 })
     release()
     expect(existsSync(path)).toBe(true)
     third()
     expect(existsSync(path)).toBe(false)
+  })
+
+  it('names the holder in the refusal: pid, start time, host and folder, and reads a lock an older server wrote', () => {
+    const path = join(tmp.dir, 'mcp.lock')
+    writeFileSync(
+      path,
+      JSON.stringify({ pid: 7, started_at: '2026-11-11T12:00:00.000Z', cwd: '/work/a', host: 'omp' }),
+    )
+    expect(readLock(path)).toEqual({
+      pid: 7,
+      startedAt: '2026-11-11T12:00:00.000Z',
+      cwd: '/work/a',
+      host: 'omp',
+    })
+    try {
+      acquireLock(path, 8, () => true)
+      throw new Error('it opened')
+    } catch (e) {
+      expect(e).toBeInstanceOf(HeldError)
+      expect((e as HeldError).message).toBe(
+        'busy: bag: the identity ' +
+          `${basename(tmp.dir)} is held by another session (pid 7, started 2026-11-11T12:00:00.000Z, omp) in /work/a; ` +
+          'close that session or run bag in its own folder',
+      )
+    }
+    writeFileSync(path, '{"pid":7,"keep_alive":true}')
+    expect(readLock(path)).toEqual({ pid: 7 })
+    writeFileSync(path, 'nope')
+    expect(readLock(path)).toBeNull()
+  })
+
+  it('noteLockHost adds the host to its own lock only', () => {
+    const path = join(tmp.dir, 'mcp.lock')
+    acquireLock(path, 7, () => true)
+    noteLockHost(path, 9, 'codex')
+    expect(readLock(path)?.host).toBeUndefined()
+    noteLockHost(path, 7, 'omp')
+    expect(readLock(path)).toMatchObject({ pid: 7, host: 'omp' })
+    noteLockHost(join(tmp.dir, 'none.lock'), 7, 'omp')
+  })
+
+  it('does not leave a half-written or temporary file, and takes a lock over only from a holder that is gone', () => {
+    const path = join(tmp.dir, 'mcp.lock')
+    const release = acquireLock(path, 7, () => true)
+    expect(readdirSync(tmp.dir).filter((f) => f.includes('mcp.lock'))).toEqual(['mcp.lock'])
+    release()
+    // Two servers find the lock of a dead holder: the first takes it, the second is refused as held by the first.
+    writeFileSync(path, '{"pid":5}')
+    const first = acquireLock(path, 8, (p) => p === 8)
+    expect(() => acquireLock(path, 9, (p) => p === 8)).toThrow(HeldError)
+    expect(readLock(path)?.pid).toBe(8)
+    first()
+  })
+
+  it('puts back a live lock that was swapped in while the stale one was moved aside', () => {
+    const path = join(tmp.dir, 'mcp.lock')
+    writeFileSync(path, '{"pid":5}')
+    const swapping = (p: number): boolean => {
+      if (p !== 5) return p === 6
+      writeFileSync(path, '{"pid":6}') // another server takes it over between the check and the move
+      return false
+    }
+    try {
+      acquireLock(path, 9, swapping)
+      throw new Error('it opened')
+    } catch (e) {
+      expect(e).toBeInstanceOf(HeldError)
+      expect((e as HeldError).holder.pid).toBe(6)
+    }
+    expect(readLock(path)?.pid).toBe(6)
+    expect(readdirSync(tmp.dir).filter((f) => f.includes('stale'))).toEqual([])
+  })
+
+  it('treats a lock whose pid another process now has as stale: that process started after the lock was written', () => {
+    const path = join(tmp.dir, 'mcp.lock')
+    // This process is alive and started long after 2000.
+    writeFileSync(path, JSON.stringify({ pid: process.pid, started_at: '2000-01-01T00:00:00.000Z' }))
+    const release = acquireLock(path, 8, () => true)
+    expect(readLock(path)?.pid).toBe(8)
+    release()
+    // Written now, it is a live holder.
+    writeFileSync(path, JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }))
+    expect(() => acquireLock(path, 8, () => true)).toThrow(HeldError)
+    // A lock without started_at is judged by the file's time.
+    writeFileSync(path, JSON.stringify({ pid: process.pid }))
+    expect(() => acquireLock(path, 8, () => true)).toThrow(HeldError)
   })
 
   it('rethrows an error other than EEXIST: a state directory that does not exist', () => {

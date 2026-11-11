@@ -10,5 +10,8 @@ export const CLI_MAIN = fileURLToPath(new URL('./main.ts', import.meta.url))
 /** The MCP server's entry. */
 export const MCP_MAIN = fileURLToPath(new URL('../../mcp/src/main.ts', import.meta.url))
 
+/** The omp wake extension's entry (`host install omp` links a project's .omp/hooks/pre/bag-wake to it). */
+export const OMP_WAKE = fileURLToPath(new URL('./omp-wake.ts', import.meta.url))
+
 /** Whether this runs from the package's bundle, not from source. */
 export const PACKAGED: boolean = false

@@ -83,9 +83,10 @@ describe('stdout carries MCP frames and nothing else', () => {
       ['send', { to: [P.bob.address] }],
       ['delegate', { to: 'nobody', caveats: ['repo=x'], exp: '+1' }],
       ['lookup', { address: P.bob.address }],
+      ['facts', {}],
     ]
     const results = []
-    expect((await client.listTools()).tools).toHaveLength(14)
+    expect((await client.listTools()).tools).toHaveLength(15)
     for (const [name, args] of calls) results.push(await client.callTool({ name, arguments: args }))
     expect(results.map((r) => r.isError === true)).toEqual([
       false,
@@ -97,6 +98,7 @@ describe('stdout carries MCP frames and nothing else', () => {
       true,
       true,
       true,
+      false,
       false,
     ])
     // The relay gives no answer: send and ask are kept waiting, handoff fails resolve-failed as before.

@@ -4,6 +4,86 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.3.0: 2026-11-11
+
+The cut tagged v0.3.0, `@usebag/bag` 0.3.0.
+
+- **`@usebag/bag` 0.3.0**, published from this cut (`npm view @usebag/bag@0.3.0 gitHead` names it).
+
+### MCP server
+
+- **A `facts` tool: the model's id, session cost and context from the host, never guessed.** The host writes
+  `host-facts.json` in the identity's state directory, and `facts` returns each figure with its age, says which ones
+  the host did not provide, marks facts over 10 minutes old stale, and says first when the session is a spawned
+  sub-session rather than the one that speaks for the identity. `status` carries `model` and `main_session`. See
+  `docs/agent-facts.md`. Telemetry counts `facts` calls under the tool `facts`: the telemetry Worker's
+  `SCHEMA_COMMIT` and the client's `TELEMETRY_SCHEMA_COMMIT` name the release's schema commit, set at release-bump,
+  and the Worker is deployed first (the release runbook's step 4a), since it refuses reports from a schema commit it
+  does not know.
+- **`facts` and `status` in a held server.** While another session holds the identity, both answer `held: true`,
+  `held_by` (pid, start time, folder, host and the lock's `path`), a `note` that this session does not speak for the
+  identity, the server's own `pid`, `started_at` and `uptime_s`, `held_since` (null, with `held_from_start`, when it
+  was held from its start) and `host_facts: null` with `host_facts_state: "held"`. Neither reads the holder's
+  `host-facts.json`.
+- **A second copy is not a rejection.** A message that arrives again over another of the identity's relays is counted in
+  `status` as `copies_already_received_via_another_relay`, no longer under `rejected` (`duplicate`).
+- **`send` says how big a body can be:** about 32,000 characters of JSON text (the envelope cap is 65,536 bytes); past
+  it the send is refused `envelope-too-large`.
+- **Large sends no longer hang when the server's stdin is a terminal.** A host that runs `bag-mcp` on a pty (an omp
+  background service does) wrote each request as one line into a terminal in canonical mode, which passes at most
+  1,024 bytes of a line on macOS: a send with a body over about 880 bytes never reached the server and its caller
+  waited for good. When stdin is a terminal the server now puts it in raw mode once it has started (one `stdin` line on stderr
+  says so), restores it on exit, and stops on Ctrl-C or Ctrl-D. Over pipes, as MCP hosts start it, nothing changes.
+  Message size limits: `docs/message-size.md`.
+- **Pairing works inside a host that cannot show dialogs, when it runs a bag extension (the consent bridge).** omp has
+  no MCP elicitation, so the pair tools could before only hand you the `bag pair` terminal command. Now, when the
+  host's extension marks a user-interface session (a presence file in the identity's consent directory), the server
+  asks you through files the extension answers: you paste the peer's code, read the six check digits out to the peer and
+  press Yes, with no terminal and the model never seeing the code or the digits. A question stands 120 seconds; a
+  timeout counts as No. With no such extension (a piped or background run), nothing changes: a host with dialogs uses
+  them, and one without keeps getting the `bag pair` command (see `docs/pairing-without-dialogs.md`).
+
+### omp
+
+- **`bag host install omp --as <name> --relay <url>... --project <dir>`** wires an omp folder in one command: the bag
+  server in `.omp/mcp.json`, and `.omp/hooks/pre/bag-wake.js`, a link to bag's wake extension in `<home>/package/`.
+  The extension starts one turn per delivered message, holds a message that arrives during a turn until the turn
+  ends, wakes only the main interactive session, and writes the session's model, cost and context use for the
+  `facts` tool. `bag host remove omp` undoes it. See `docs/host-omp.md`.
+
+### Locks
+
+- **A second session in a folder is told who holds the identity.** A bag MCP server that finds the identity held by a
+  live server no longer exits (the host showed only "Connection closed"). It stays up: `status` returns `held_by` (pid,
+  start time, folder, host) and every other tool answers `bag: the identity NAME is held by another session (pid N,
+  started T); close that session or run bag in its own folder`. It tries the lock every three seconds and takes the
+  identity over when the holder ends.
+- **A server whose host died releases the lock.** Besides the end of stdin, the server checks every two seconds that the
+  process that started it is still its parent, and stops, removing `mcp.lock`, when it is not.
+- **`mcp.lock` says more.** It now holds `started_at`, `cwd`, `ppid` and, once the client has introduced itself, `host`
+  beside `pid`; readers that want the pid alone are unchanged.
+- **`bag inbox` beside a running server** stops with `held:` and names the holder instead of the store's lock file, and
+  `bag status` prints a `held_by` line. See `docs/one-identity-per-folder.md`.
+
+### Fixes
+
+- **A pairing leaves your records at every relay you name, not the rendezvous alone.** `peer invite`, `peer accept` and
+  `pair` now take `--relay` more than once, and a completed pairing publishes the identity's address and accept-from
+  records at every relay named, so a later host install does not warn that a second relay is missing them; a relay that
+  refuses is a warning line, not a failure of the pairing.
+- **The Claude Code and Codex wake hook no longer wakes twice for one burst of mail.** Several messages arriving
+  together ring the doorbell several times; the hook now waits 300 ms and remembers the last ring, so the next Stop
+  hook stays silent for mail the model has already read.
+- **A send to a recipient whose relays moved reaches them.** When every target of a send is given up, as not hosted
+  or unreachable, the sender reads its recipients' records again once, forgetting what it had cached, and sends again
+  when that read names other relays for a recipient; when nothing changed, the send ends as before.
+- **`host install` says when a relay will refuse the identity's mail.** For omp, and for Claude Code with `--project`,
+  the install reads the identity's address and accept-from records at each relay it names, and warns, pointing to
+  `bag onboard`, when no relay and no copy in the home holds one.
+- **`host install` mends a relay that lacks a record another one holds.** When a named relay holds no address or
+  accept-from record of the identity but another named relay or the home's copy does, the install publishes the newest
+  copy to that relay as it is, with nothing re-signed (the same act as `bag record keep --once`), and a line says so.
+
 ## v0.2.3: 2026-11-10
 
 The cut tagged v0.2.3, `@usebag/bag` 0.2.3.

@@ -7,15 +7,24 @@
 
 /**
  * The commit whose deploy/telemetry/src/schema.ts, builds.ts and index.ts these values copy (the package versions
- * 0.1.0, 0.1.1, 0.1.2, 0.2.0, 0.2.1, 0.2.2 and 0.2.3 as builds, and `version` as a command).
+ * 0.1.0, 0.1.1, 0.1.2, 0.2.0, 0.2.1, 0.2.2, 0.2.3 and 0.3.0 as builds, and `version` as a command).
  */
-export const TELEMETRY_SCHEMA_COMMIT = '7a331fb5263a94c1bc9027b0512abcb99582ab07'
+export const TELEMETRY_SCHEMA_COMMIT = 'f9ffa38fbca38f4466bd2bf1f1430377cb736d6e'
 
 /**
  * The builds a report's `build` may name (builds.ts): the published versions of the npm package @usebag/bag, and the
  * commit of any public cut whose checkout reports from source, of which none is listed yet.
  */
-export const BUILDS: readonly string[] = ['0.1.0', '0.1.1', '0.1.2', '0.2.0', '0.2.1', '0.2.2', '0.2.3']
+export const BUILDS: readonly string[] = [
+  '0.1.0',
+  '0.1.1',
+  '0.1.2',
+  '0.2.0',
+  '0.2.1',
+  '0.2.2',
+  '0.2.3',
+  '0.3.0',
+]
 
 /** The largest count a report may carry: 2^19. Every count is 0 or a power of two up to it. */
 export const MAX_COUNT = 2 ** 19
@@ -47,7 +56,9 @@ export const SETS = {
   `),
   exit: words('0 1 2 3 other'),
   // packages/mcp/src/tools.ts, TOOL_NAMES; `other` takes the cells a family's cap merges (MAX_CELLS).
-  tool: words('send inbox wait delegate ask handoff status lookup receipts pair_invite pair_accept other'),
+  tool: words(
+    'send inbox wait delegate ask handoff status facts lookup receipts pair_invite pair_accept other',
+  ),
   // packages/a2a/src/protocol.ts: METHODS' names, and `ok` or ERRORS' names as a request's outcome.
   method: words(`
     SendMessage SendStreamingMessage GetTask ListTasks CancelTask SubscribeToTask CreateTaskPushNotificationConfig

@@ -387,6 +387,22 @@ export class Resolver {
     return (await this.#fromRelays(address, 'address', hints)).record as AddressRecord | null
   }
 
+  /**
+   * Forgets the cached records of `address` (its address and key records), so the next lookup asks the relays: for a
+   * sender whose every relay of a cached address record refused it (not-hosted, unreachable, no-mailbox), since the
+   * recipient may have moved relays or published its first accept-from elsewhere, and the cache would otherwise keep the
+   * old relays for the old record's whole ttl (up to a day). The iat-seen guard still refuses a record older than one
+   * that verified, so forgetting never rolls an identity back. True when a record was cached.
+   */
+  forget(address: string): boolean {
+    const subject = `address:${address}`
+    const dropped = (['address', 'key'] as const).map((kind) => {
+      this.#sources.delete(`${subject} ${kind}`)
+      return this.#o.store.cacheDrop(subject, kind)
+    })
+    return dropped.some(Boolean)
+  }
+
   /** The key record of a key, looked up as `address` is. */
   async key(address: string, hints: readonly string[] = []): Promise<KeyRecord | null> {
     return (await this.#fromRelays(address, 'key', hints)).record as KeyRecord | null

@@ -49,6 +49,8 @@ export interface ServerOptions {
   /** TXT and handle records, for handle tests. */
   readonly naming?: FakeNaming
   readonly pid?: number
+  /** Which pids are live, for a lock another server holds (default none). */
+  readonly alive?: (pid: number) => boolean
   /** How --chain-cmd runs (default: the real /bin/sh). */
   readonly run?: RunCommand
   readonly env?: Readonly<Record<string, string | undefined>>
@@ -72,7 +74,7 @@ export async function testServer(o: ServerOptions): Promise<TestServer> {
     records: fakeRecords(o.domains ?? new Map(), o.naming),
     timers: o.timers,
     pid: o.pid ?? 4242,
-    alive: () => false,
+    alive: o.alive ?? (() => false),
     log,
     // The edge's resubscription waits (250 ms doubling) would put real time into the tests; none unless asked.
     resubscribeDelayMs: o.resubscribeDelayMs ?? (() => 0),

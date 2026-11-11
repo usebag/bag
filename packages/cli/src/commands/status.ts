@@ -10,6 +10,7 @@ import {
 } from '@usebag/edge'
 import { chainText, enterpriseStatus } from '@usebag/enterprise-client'
 import { CliError, flag, parse, req, str, UsageError } from '../args.ts'
+import { describeHolder, holder } from '../held.ts'
 import { checkIdentity, doorbellPath, homeDir } from '../home.ts'
 import type { Io } from '../io.ts'
 import { instant } from '../names.ts'
@@ -50,6 +51,8 @@ export function status(args: readonly string[], io: Io): number | Promise<number
   const [home, name] = [homeDir(io, str(p, 'dir')), req(p, 'as')]
   checkIdentity(io, home, name)
   io.out(`doorbell ${doorbellPath(home, name)}`)
+  const held = holder(home, name)
+  if (held !== null) io.out(`held_by ${describeHolder(held)}`)
   // Behind a proxy, the proxy this process sends through: scheme, host and port only, never a user or password.
   const net = proxyStatus(io.env)
   if (net.https !== null || net.http !== null) {

@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 import { format } from 'node:util'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -31,7 +33,9 @@ import { Desk, type Message, realTimers, type Timers } from './desk.ts'
 import { RecordKeeper } from './keepalive.ts'
 import { jsonLogger, type Logger, type LogLevel, type LogValue } from './log.ts'
 import {
+  HeldError,
   jitteredDelay,
+  noteLockHost,
   type OpenDeps,
   type Opened,
   openIdentity,
@@ -75,6 +79,12 @@ export const START_SPREAD_S = 20
 
 /** How long a failed identity of an --identities server waits to be opened again, in ms (no basis). */
 export const REOPEN_MS = 60_000
+/** A server whose identity another session holds tries the lock again this often: the takeover after that session ends. */
+export const HELD_RETRY_MS = 3000
+/** The longest wait between takeover tries after a failure other than "held". */
+export const HELD_RETRY_MAX_MS = 30_000
+/** How often a server checks that the process that started it is still its parent (an orphan releases the lock). */
+export const PARENT_CHECK_MS = 2000
 
 export interface ServerDeps {
   readonly clock: Clock
@@ -156,7 +166,20 @@ export class Unit {
   records: RecordKeeper | null = null
   chain: ChainKeeper | null = null
   /** Why it is not open (state failed). */
-  failure: unknown = null
+  get failure(): unknown {
+    return this.#failure
+  }
+  set failure(e: unknown) {
+    // held_since: the time another session took an identity this unit had held; null while not held or held from the start.
+    if (e === null) this.#heldSince = null
+    else if (e instanceof HeldError && !(this.#failure instanceof HeldError) && this.#owned)
+      this.#heldSince ??= this.#deps.clock.now()
+    this.#failure = e
+  }
+  /** When another session took the identity from it (clock seconds), or null: not held, or held from its start. */
+  get heldSince(): number | null {
+    return this.#failure instanceof HeldError ? this.#heldSince : null
+  }
   state: 'starting' | 'running' | 'failed' = 'starting'
   /** Its address, read from its key even when it fails to open: what the guards compare with. */
   address: string | null = null
@@ -170,6 +193,10 @@ export class Unit {
   /** Cancels its start wait, or its reopening (a unit waits for one at most). */
   #cancel: () => void = () => {}
   #stopped = false
+  #failure: unknown = null
+  #heldSince: number | null = null
+  /** It has opened the identity once. */
+  #owned = false
 
   constructor(config: Config, shared: Shared, deps: ServerDeps, multi: boolean, waiting?: () => unknown) {
     this.config = config
@@ -177,7 +204,10 @@ export class Unit {
     this.#multi = multi
     this.#waiting = waiting
     this.subscriptions = new Subscriptions(config.relays, deps.clock, deps.log)
-    this.view = { delivered: new Set(), unread: () => this.ctx.desk.unread() }
+    this.view = {
+      delivered: new Set(),
+      unread: () => (this.failure instanceof HeldError ? [] : this.ctx.desk.unread()),
+    }
     const unit = this
     this.ctx = {
       ...shared,
@@ -198,6 +228,9 @@ export class Unit {
       },
       get records() {
         return unit.records
+      },
+      get heldSince() {
+        return unit.heldSince
       },
     }
   }
@@ -275,6 +308,7 @@ export class Unit {
     })
     this.desk = desk
     this.opened = o
+    this.#owned = true
     this.address = o.identity.address
     return o
   }
@@ -465,6 +499,53 @@ export class Unit {
 /** The host kind of an MCP client's name, as the telemetry schema's sessions count it: another Claude app is other. */
 export const hostKind = (name = ''): string =>
   /claude[ -]?code/i.test(name) ? 'claude-code' : /codex/i.test(name) ? 'codex' : 'other'
+
+/** A process as `ps` shows it: its parent and its command. */
+export type PsRow = { readonly ppid: number; readonly comm: string } | null
+
+function psRow(pid: number): PsRow {
+  try {
+    const out = execFileSync('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], {
+      encoding: 'utf8',
+      timeout: 2000,
+    })
+    const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(out)
+    return m === null ? null : { ppid: Number(m[1]), comm: m[2] as string }
+  } catch {
+    return null
+  }
+}
+
+/** Launchers that sit between a host and the server and may outlive the host. */
+const WRAPPERS = /^(?:-?(?:sh|bash|zsh|dash|fish)|env|npx|npm|pnpm|yarn|bunx|uvx)$/
+
+/**
+ * The processes whose end means the host is gone, read at process start: the parent, and while a watched process is a
+ * launcher (a shell, npx, env) its parent too, to four. Stops at pid 1. Other ancestors (a terminal, a login shell)
+ * can end while the host lives on, so they are not watched.
+ */
+export function watchedParents(pid: number, ps: (pid: number) => PsRow = psRow): number[] {
+  const own = ps(pid)
+  const chain: number[] = []
+  let next = own?.ppid ?? process.ppid
+  while (next > 1 && chain.length < 4) {
+    chain.push(next)
+    const row = ps(next)
+    if (row === null || !WRAPPERS.test(row.comm.split('/').at(-1) ?? '')) break
+    next = row.ppid
+  }
+  return chain
+}
+
+/** The host kind written into the lock beside the pid: claude-code, codex, omp or other, from the MCP client's name. */
+export const lockHost = (name = ''): string =>
+  /claude[ -]?code/i.test(name)
+    ? 'claude-code'
+    : /codex/i.test(name)
+      ? 'codex'
+      : /\bomp\b|oh-my-pi/i.test(name)
+        ? 'omp'
+        : 'other'
 
 /** The source of a session's chain, or null for a self-rooted principal. */
 function chainSource(config: Config): ChainSource | null {
@@ -673,7 +754,60 @@ export async function startServer(given: Config, deps: ServerDeps): Promise<Runn
     unit.started(renewal?.kind ?? null, front === null ? {} : { session: config.as, desk: front.desk })
     unit.chain?.start()
   }
-  const ready = open()
+  // The host's kind goes into the lock once the client has said who it is (and again at a takeover).
+  const lockPath = join(config.home, 'state', config.as, 'mcp.lock')
+  const noteHost = (): void => {
+    const name = mcp.server.getClientVersion()?.name
+    if (session === null && unit.opened !== null && name !== undefined)
+      noteLockHost(lockPath, deps.pid, lockHost(name))
+  }
+  const initialized = mcp.server.oninitialized
+  mcp.server.oninitialized = () => {
+    initialized?.()
+    noteHost()
+  }
+  // A fixed identity another live session holds is no start failure: the server stays up, every tool answers who
+  // holds it (status: held_by), and the lock is tried again, so this server takes over when that session ends.
+  let cancelHeld: () => void = () => {}
+  let heldPid = 0
+  let retrying: Promise<void> = Promise.resolve()
+  let wait = HELD_RETRY_MS
+  // Any failure to take the identity over after the first try (a lost race, a store that is busy) is tried again, with
+  // a growing wait; only the first try's failure other than "held" ends the server, as before.
+  const arm = (): void => {
+    cancelHeld = deps.timers.after(wait, () => {
+      retrying = attempt(false).then(
+        () => {
+          if (unit.opened === null || stopping !== null) return
+          log.log('info', 'takeover', { pid: heldPid })
+          unit.records?.start()
+        },
+        () => {},
+      )
+    })
+  }
+  const attempt = async (first: boolean): Promise<void> => {
+    try {
+      await open()
+      unit.failure = null
+      wait = HELD_RETRY_MS
+      noteHost()
+    } catch (e) {
+      if (session !== null || stopping !== null || (first && !(e instanceof HeldError))) throw e
+      if (e instanceof HeldError) {
+        if (heldPid !== e.holder.pid)
+          log.log('warn', 'held', { pid: e.holder.pid, lock: e.path, ...coded(e) })
+        heldPid = e.holder.pid
+        wait = HELD_RETRY_MS
+      } else {
+        if (codeOf(unit.failure) !== codeOf(e)) log.log('error', 'start', coded(e))
+        wait = Math.min(wait * 2, HELD_RETRY_MAX_MS)
+      }
+      unit.failure = e
+      arm()
+    }
+  }
+  const ready = attempt(true)
   if (session === null) await ready
   ready.catch((e) => {
     unit.failure = e
@@ -687,6 +821,8 @@ export async function startServer(given: Config, deps: ServerDeps): Promise<Runn
   const counting = startTelemetry(env, clock)
   const stop = async (): Promise<void> => {
     unwatch()
+    cancelHeld()
+    await retrying
     if (unit.opened === null) session?.close() // ends a wait for the grant
     await ready.catch(() => {})
     await regranting
@@ -795,6 +931,8 @@ export interface ProcessIo {
   readonly timers: Timers
   readonly pid: number
   readonly alive: (pid: number) => boolean
+  /** The pid of the process that started this one, read again at each check; absent: no orphan check. */
+  readonly parentPid?: () => number
   readonly signals: {
     once(event: 'SIGINT' | 'SIGTERM', listener: () => void): unknown
     removeListener(event: 'SIGINT' | 'SIGTERM', listener: () => void): unknown
@@ -807,6 +945,25 @@ export interface ProcessIo {
    * Without it the process sends none: a test's io has none.
    */
   readonly fetch?: typeof fetch
+}
+
+/**
+ * What io.parentPid answers: the parent's pid while every watched process (watchedParents, read now, at start) is alive
+ * and the parent is still the parent, else -1. A server started with pid 1 as its parent watches nothing.
+ */
+function parentWatch(): () => number {
+  const chain = watchedParents(process.pid)
+  const [parent] = chain
+  if (parent === undefined) return () => process.ppid
+  const gone = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0)
+      return false
+    } catch (e) {
+      return (e as { code?: unknown }).code !== 'EPERM'
+    }
+  }
+  return () => (process.ppid === parent && !chain.some(gone) ? parent : -1)
 }
 
 /** The real process: its streams, environment and signals, the system clock and CSPRNG, the relay over the network. */
@@ -826,6 +983,7 @@ export function processIo(): ProcessIo {
     timers: realTimers,
     pid: process.pid,
     alive: pidAlive,
+    parentPid: parentWatch(),
     signals: process,
     console,
     run: runShell,
@@ -834,6 +992,76 @@ export function processIo(): ProcessIo {
 }
 
 type ConsoleLike = Pick<Console, 'log' | 'info' | 'debug' | 'warn' | 'error'>
+
+/** The longest line a terminal in canonical mode passes on (MAX_CANON on macOS; Linux's is 4,096): longer ones never arrive. */
+export const TERMINAL_LINE_BYTES = 1024
+
+/** A stdin that may be a terminal: node's tty.ReadStream has both. */
+type MaybeTerminal = Readable & { readonly isTTY?: boolean; setRawMode?(raw: boolean): unknown }
+
+/**
+ * A stdin that may be a terminal. enter puts it in raw mode and ends the run on Ctrl-C (0x03) or Ctrl-D (0x04); undo
+ * restores its mode. Until enter it stays canonical, so the terminal still turns Ctrl-C into SIGINT while the server
+ * starts (the red team's read, 2026-11-11: a start that hangs on a relay could otherwise not be stopped from it).
+ */
+interface RawTerminal {
+  enter(end: () => void): void
+  undo(): void
+}
+
+/** Runs once when the process exits, however it exits; returns the removal. Tests pass their own. */
+export type OnExit = (restore: () => void) => () => void
+
+const processExit: OnExit = (restore) => {
+  process.once('exit', restore)
+  return () => {
+    process.removeListener('exit', restore)
+  }
+}
+
+/**
+ * Puts a stdin that is a terminal into raw mode (none else changes). A host that runs the server on a pty, as an omp
+ * background service does, writes each request as one line, and a terminal in canonical mode holds at most
+ * TERMINAL_LINE_BYTES of a line: past it the kernel drops the rest, the newline with it, so a send whose request
+ * passes 1,024 bytes (a body of about 880) never reaches the server and the caller waits for good (observed
+ * 2026-11-11, bag 0.2.3). Raw mode passes every byte as it comes and echoes none back into stdout, so frames of any
+ * size arrive. It also stops the terminal turning Ctrl-C into SIGINT and Ctrl-D into an end, so watch reads them:
+ * neither byte can stand in a JSON text unescaped, so no frame holds one.
+ */
+export function rawTerminal(stdin: Readable, log: Logger, onExit: OnExit = processExit): RawTerminal {
+  const tty = stdin as MaybeTerminal
+  if (tty.isTTY !== true || typeof tty.setRawMode !== 'function') return { enter() {}, undo() {} }
+  let onData: ((chunk: Buffer | string) => void) | null = null
+  let raw = false
+  let unhook: (() => void) | null = null
+  const restoreMode = (): void => {
+    if (!raw) return
+    raw = false
+    tty.setRawMode?.(false)
+  }
+  return {
+    enter(end) {
+      if (raw) return
+      tty.setRawMode?.(true)
+      raw = true
+      // An uncaught throw or an outside process.exit skips serve()'s finally: the terminal must not stay raw.
+      unhook = onExit(restoreMode)
+      log.log('info', 'stdin', { terminal: true, mode: 'raw', line_limit_bytes: TERMINAL_LINE_BYTES })
+      onData = (chunk) => {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+        if (bytes.includes(0x03) || bytes.includes(0x04)) end()
+      }
+      stdin.on('data', onData)
+    },
+    undo() {
+      if (onData !== null) stdin.removeListener('data', onData)
+      onData = null
+      unhook?.()
+      unhook = null
+      restoreMode()
+    },
+  }
+}
 
 /** Turns console.log, info, debug, warn and error into `console` lines of the log on stderr; returns the undo. */
 function guardConsole(c: ConsoleLike, log: Logger): () => void {
@@ -851,8 +1079,8 @@ function guardConsole(c: ConsoleLike, log: Logger): () => void {
 }
 
 /**
- * Runs the server on the process's stdio until stdin ends, the client closes, or SIGINT or SIGTERM arrives. Resolves
- * with the exit status: 0 after a stop, 2 for a flag it cannot take or an org policy file that cannot be read or does
+ * Runs the server on the process's stdio until stdin ends, the client closes, or SIGINT or SIGTERM arrives (on a
+ * terminal stdin, which runs raw: rawTerminal, Ctrl-C or Ctrl-D too). Resolves with the exit status: 0 after a stop, 2 for a flag it cannot take or an org policy file that cannot be read or does
  * not verify, 1 when the identity cannot be opened or started (with --identities: when none can be opened).
  */
 export async function serve(io: ProcessIo): Promise<number> {
@@ -874,6 +1102,7 @@ export async function serve(io: ProcessIo): Promise<number> {
   // Behind a proxy, one line naming it without its user or password, a warning when Node does not send through it.
   const net = proxyStatus(io.env)
   if (net.https !== null || net.http !== null) log.log(net.active ? 'info' : 'warn', 'network', { ...net })
+  const terminal = rawTerminal(io.stdin, log)
   const restore = guardConsole(io.console, log)
   try {
     let running: Pick<Running, 'mcp' | 'stop'>
@@ -914,7 +1143,26 @@ export async function serve(io: ProcessIo): Promise<number> {
     io.signals.once('SIGTERM', onSignal)
     running.mcp.server.onclose = finish
     await running.mcp.connect(new StdioServerTransport(io.stdin, io.stdout))
+    // Raw only now: the server has started and the SIGINT and SIGTERM handlers are in place.
+    terminal.enter(finish)
+    // A host that died without closing our stdin (another process holds the pipe's write end) leaves this process
+    // with a new parent; it ends, and its stop releases the lock.
+    const parent = io.parentPid?.() ?? 0
+    let cancelWatch: () => void = () => {}
+    if (parent > 1 && io.parentPid !== undefined) {
+      const check = (): void => {
+        const now = (io.parentPid as () => number)()
+        if (now !== parent) {
+          log.log('warn', 'orphaned', { parent, now })
+          finish()
+          return
+        }
+        cancelWatch = io.timers.after(PARENT_CHECK_MS, check)
+      }
+      cancelWatch = io.timers.after(PARENT_CHECK_MS, check)
+    }
     await done
+    cancelWatch()
     io.signals.removeListener('SIGINT', onSignal)
     io.signals.removeListener('SIGTERM', onSignal)
     io.stdin.removeListener('end', finish)
@@ -924,5 +1172,6 @@ export async function serve(io: ProcessIo): Promise<number> {
     return 0
   } finally {
     restore()
+    terminal.undo()
   }
 }

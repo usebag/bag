@@ -18,7 +18,7 @@ describe('@usebag/mcp: its public API', () => {
     }
     expect([mcp.SESSION, mcp.TOOL_NAMES.length, mcp.QUESTION_TYPE, mcp.HANDOFF_TYPE]).toEqual([
       'mcp',
-      14,
+      15,
       'question.v1',
       'handoff.v1',
     ])

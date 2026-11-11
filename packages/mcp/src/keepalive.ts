@@ -14,8 +14,10 @@ import {
   continueFrom,
   type Edge,
   EdgeError,
+  heldAccept,
   INCOMPLETE_REVOCATION,
   jitterOf,
+  keepAcceptCopy,
   keepAddressCopy,
   type Lagging,
   type Offered,
@@ -333,6 +335,10 @@ export class RecordKeeper {
       if (accept?.kind === 'accept-from' && accept.iat > (this.#accept?.iat ?? -1)) this.#accept = accept
       if (this.#o.epochs) await this.#read(url, 'key')
     }
+    // Heal the accept-from from the home copy when no relay holds one (a rotation stranded it): the carry re-publishes
+    // it, so a stranded copy never leaves peers unable to resolve the roots; else keep the copy current (newer-stays).
+    if (this.#accept === null) this.#accept = heldAccept(null, home, name, signer.address)
+    else keepAcceptCopy(home, name, this.#accept)
     const found = this.#address
     if (found !== null && found !== before) this.#keep(found)
     if (found === null && unread) return null
@@ -466,6 +472,7 @@ export class RecordKeeper {
     this.#address = next
     this.#keep(next)
     this.#accept = nextAccept
+    if (nextAccept !== null) keepAcceptCopy(this.#o.home, this.#o.name, nextAccept)
     return { offers, renewed: next }
   }
 

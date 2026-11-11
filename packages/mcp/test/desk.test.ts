@@ -69,6 +69,27 @@ describe('the desk', () => {
     expect(desk.counts().counts.unread).toBe(1)
   })
 
+  it('counts a second copy of an accepted message from another relay apart, not as rejected; a duplicate otherwise stays a rejection', async () => {
+    await alice.call('send', { to: [P.bob.address], type: 'chat.v1', body: 1 })
+    await until('acked', () => bob.running.opened.store.inboxList(['acked']).length === 1)
+    const { store } = bob.running.opened
+    const first = store.inboxList(['acked'])[0] as InboxRow
+    const bytes = new TextEncoder().encode('{}')
+    const dropped = (relay: string, cursor: number, id: string): void => {
+      const seq = store.inboxAdd(relay, P.bob.address, cursor, bytes, 0)
+      store.inboxPut(seq, { state: 'rejected', id, reason: 'duplicate' }, 0)
+    }
+    dropped('http://other.test', 1, first.id as string) // the same message, by a second relay
+    dropped(first.relay, 9, first.id as string) // again by the relay it came by: a replay, still rejected
+    dropped('http://other.test', 2, 'never-accepted') // a duplicate of nothing accepted here
+    expect(bob.running.desk.counts()).toMatchObject({
+      counts: { accepted: 1, rejected: 2 },
+      rejected_by_code: { duplicate: 2 },
+      copies_already_received_via_another_relay: 1,
+    })
+    expect((await bob.call('status')).value).toMatchObject({ copies_already_received_via_another_relay: 1 })
+  })
+
   it('leaves rows in flight out of inbox, counts them as in flight, and stops the next cursor before them', async () => {
     await alice.call('send', { to: [P.bob.address], type: 'chat.v1', body: 1 })
     await until('acked', () => bob.running.opened.store.inboxList(['acked']).length === 1)

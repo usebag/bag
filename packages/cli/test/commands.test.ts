@@ -1,4 +1,4 @@
-import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { type AddressRecord, isAddress, parseRecord, toHex, verifyRecord, verifyRotation } from '@usebag/core'
 import { RelayError } from '@usebag/edge'
@@ -172,6 +172,42 @@ describe('record: signed address and accept-from records, at the clock, to stdou
     expect((await cli(io, 'record', 'key', 'bob')).err[0]).toBe(
       'bag: usage: record address <name> ..., record accept-from <name> ... or record keep --as <name> ...',
     )
+  })
+
+  it('refuses a non-terminal caller that drops a held root, confirms the drop on a terminal (83c)', async () => {
+    const io = testIo(new MemoryRelay())
+    const dir = home()
+    const bob = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
+    const alice = (await cli(io, 'keygen', 'alice', '--dir', dir)).out[0] as string
+    const args = ['--max-bytes', '65536', '--ttl', '604800', '--dir', dir]
+    // Seed the home copy (bob's accept-from record in the home) with [alice, bob]: no drop, so this write needs no
+    // terminal.
+    mkdirSync(join(dir, 'records'), { recursive: true })
+    const copy = join(dir, 'records', 'bob.accept.json')
+    const drop = ['record', 'accept-from', 'bob', '--root', bob, ...args]
+    expect(
+      (await cli(io, 'record', 'accept-from', 'bob', '--root', alice, '--root', bob, ...args, '--out', copy))
+        .code,
+    ).toBe(0)
+    // Dropping alice is a person's act, like unpair: refused when stdin is not a terminal, nothing written.
+    io.tty = false
+    expect((await cli(io, ...drop)).err[0]).toMatch(
+      /^bag: no-tty: record accept-from that drops a root is a person's act/,
+    )
+    // On a terminal, a no leaves nothing written; the prompt names the dropped root.
+    io.tty = true
+    io.answers.push(false)
+    expect((await cli(io, ...drop)).err[0]).toBe('bag: declined: nothing was written')
+    expect(io.asked.at(-1)).toBe(`drop ${alice} from the accept-from of bob?`)
+    // A yes writes the narrowed record.
+    io.answers.push(true)
+    expect(verifyRecord(parseRecord((await cli(io, ...drop)).out[0] as string), T0)).toMatchObject({
+      roots: [bob],
+    })
+    // A run that keeps every held root (adds one) drops nothing, so a non-terminal cron run is never refused.
+    io.tty = false
+    const grow = await cli(io, 'record', 'accept-from', 'bob', '--root', alice, '--root', bob, ...args)
+    expect(grow.code).toBe(0)
   })
 })
 

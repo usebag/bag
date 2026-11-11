@@ -34,6 +34,9 @@ export const ENTRIES: Readonly<Record<string, string>> = {
   bag: 'packages/cli/src/main.ts',
   'bag-mcp': 'packages/mcp/src/main.ts',
   'bag-a2a': 'packages/a2a/src/main.ts',
+  // The omp wake extension: `bag host install omp` links projects to <home>/package/bag-omp-wake.js, so the name is
+  // stable. The published package carries only what ENTRIES lists.
+  'bag-omp-wake': 'packages/cli/src/omp-wake.ts',
 }
 
 /** The package's version, from its package.json. */
@@ -122,6 +125,7 @@ export async function build(out = join(PACKAGE, 'dist'), commit = sourceCommit()
         "import { fileURLToPath } from 'node:url'",
         "export const CLI_MAIN = fileURLToPath(new URL('./bag.js', import.meta.url))",
         "export const MCP_MAIN = fileURLToPath(new URL('./bag-mcp.js', import.meta.url))",
+        "export const OMP_WAKE = fileURLToPath(new URL('./bag-omp-wake.js', import.meta.url))",
         'export const PACKAGED = true',
         '',
       ].join('\n'),

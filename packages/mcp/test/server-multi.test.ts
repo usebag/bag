@@ -15,7 +15,7 @@ import {
   type ServerConfig,
 } from '../src/config.ts'
 import type { Desk } from '../src/desk.ts'
-import type { Opened } from '../src/open.ts'
+import { HeldError, type Opened } from '../src/open.ts'
 import {
   type ProcessIo,
   REOPEN_MS,
@@ -615,6 +615,45 @@ describe('failure isolation', () => {
     await until('research has it', () => accepted(m.unit('research')) === 1)
   })
 
+  it('held: status and facts as that identity say who holds it; held_since is null from the start, the time once it had the identity', async () => {
+    const { m, free } = await heldResearch()
+    const fromStart = (await m.call('facts', { as: 'research' })).value
+    expect(fromStart).toMatchObject({
+      held: true,
+      held_by: { pid: 999, path: lockOf('research', P.carol) },
+      note: 'This session does not speak for carol; the session with pid 999 holds it.',
+      held_since: null,
+      held_from_start: true,
+      host_facts: null,
+      host_facts_state: 'held',
+    })
+    expect((await m.call('status', { as: 'research' })).value).toMatchObject({
+      held: true,
+      held_from_start: true,
+    })
+    free()
+    timers.fire((ms) => ms === REOPEN_MS)
+    timers.fire((ms) => ms === SPREAD)
+    await until('research runs', () => m.unit('research').state === 'running')
+    // It had the identity; another session takes it (as a reopening after a failure would find it).
+    const u = m.unit('research')
+    await u.shut()
+    u.opened = null
+    clock.t += 7
+    u.failure = new RelayError(null, 0, null, 'down')
+    u.failure = new HeldError('carol', { pid: 998 }, lockOf('research', P.carol))
+    clock.t += 3
+    u.failure = new HeldError('carol', { pid: 998 }, lockOf('research', P.carol))
+    expect((await m.call('facts', { as: 'research' })).value).toMatchObject({
+      held: true,
+      held_by: { pid: 998 },
+      held_since: iso(clock.now() - 3),
+      held_from_start: false,
+    })
+    u.failure = null
+    expect(u.heldSince).toBeNull()
+  })
+
   it('a stopped server opens nothing again: the reopen timer of a failed identity is cancelled at stop', async () => {
     const { m, free } = await heldResearch()
     expect(timers.live()).toEqual([REOPEN_MS])
@@ -808,7 +847,7 @@ describe('serve with --identities', () => {
     const done = serve(t)
     const client = new Client({ name: 'in-process', version: '0.0.0' })
     await client.connect(new StreamClientTransport(t.stdin, t.stdout))
-    expect((await client.listTools()).tools).toHaveLength(13)
+    expect((await client.listTools()).tools).toHaveLength(14)
     // The process's DO_NOT_TRACK reaches the machine's switch: a person's yes stays off under it.
     const status = await client.callTool({ name: 'status', arguments: { as: 'research' } })
     expect(JSON.parse((status.content as { text: string }[])[0]?.text ?? '{}').telemetry).toEqual({

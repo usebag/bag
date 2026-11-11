@@ -130,7 +130,8 @@ something to read, test and attack, not to depend on. What changed in each publi
   that is taken over can delete its own backup. A restore loses the mail the relay acknowledged after its last upload,
   unless another relay the recipient lists took it.
 - **Windows is untested.** No check or install step here has been run on Windows.
-- **Only Claude Code has hosted the MCP server.** The Codex and opencode entries in `packages/mcp/README.md` are not
+- **Claude Code and omp have hosted the MCP server.** omp 18.17.0 was checked with `host install omp`
+  ([`docs/host-omp.md`](docs/host-omp.md)); the Codex and opencode entries in `packages/mcp/README.md` are not
   checked. A host that does not declare MCP elicitation cannot pair: the pairing tools refuse it as `no-elicitation`.
 - **The spec still changes.** A change can alter a verdict or add a rule an edge must follow, as two decisions on relay
   restores did on 2026-10-31; an edge installed before such a change has to be updated to follow it.
@@ -163,12 +164,12 @@ two identities and one sealed message, all on your own machine.
 install script; `npx` runs it without installing anything globally. Name the version and the program every time:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.2.3 bag "$@"; }
-c --version                       # prints: bag 0.2.3 <the commit it was built from>
+c() { npx --yes --package=@usebag/bag@0.3.0 bag "$@"; }
+c --version                       # prints: bag 0.3.0 <the commit it was built from>
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance, and
-`npm view @usebag/bag@0.2.3 gitHead` names that commit. To run from source instead, see [From source](#from-source).
+`npm view @usebag/bag@0.3.0 gitHead` names that commit. To run from source instead, see [From source](#from-source).
 
 **2. Get a relay.** The relay is Rust and is not in the package: build it from source (`cargo build --release --locked
 -p ac-relay`, as [From source](#from-source) says) or run its container image (`docs/self-host.md`, "Run it with
@@ -283,7 +284,7 @@ MCP host that runs a server over stdio, an address and a mailbox. `c host instal
 The package's command line is the bin `bag`; the guides wrap it in a shell function, `c`:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.2.3 bag "$@"; }
+c() { npx --yes --package=@usebag/bag@0.3.0 bag "$@"; }
 c help          # prints every command
 ```
 
@@ -297,7 +298,7 @@ From source it is `node packages/cli/src/main.ts` ([From source](#from-source)).
 | pair with another person's identity | `peer invite`, `peer accept`, `unpair` |
 | name peers and find their records | `name add`, `lookup` |
 | put an agent on your organisation's domain | `onboard`, `delegate` |
-| connect an agent host | `host install claude-code`, `host install codex` |
+| connect an agent host | `host install claude-code`, `host install codex`, `host install omp` |
 | check | `health`, `status`, `audit verify` |
 
 Errors exit 1 with `bag: <code>: <detail>` on stderr. [`packages/cli/README.md`](packages/cli/README.md) documents
@@ -445,6 +446,7 @@ operations guide, notes). Read those references as notes; nothing here needs the
 | [`docs/partner-install.md`](docs/partner-install.md) | the step-by-step install: identities, a relay, records, sending, a first exchange with another installation, an agent host, your record at your own origin |
 | [`docs/onboarding.md`](docs/onboarding.md) | one agent on your organisation's own domain with one command, `onboard` |
 | [`docs/self-host.md`](docs/self-host.md) | running your own relay: with Docker (built or pulled), build, a TLS front, backups and restore, limits, health, metrics and logs, pointing identities, agents and pairing at it, two relays, upgrades, hardening, every flag |
+| [`docs/host-omp.md`](docs/host-omp.md) | running bag in omp: `host install omp`, the wake extension that starts a turn per delivered message, one identity per folder, sub-sessions, and moving a folder wired by hand |
 | [`docs/inside-a-company.md`](docs/inside-a-company.md) | using bag inside a company: the security team first, your own relays inside the network, company identities and an allow-list of who may write, telemetry off, the public relays only with approval, and running behind a company proxy |
 | [`packages/cli/README.md`](packages/cli/README.md) | the commands of the CLI and their flags |
 | [`packages/mcp/README.md`](packages/mcp/README.md) | the MCP server: identities, flags, tools, and its install in each host |

@@ -341,6 +341,8 @@ export interface EdgeStore {
   /** A cached record's bytes while `now` is before its expires_at. */
   cacheGet(subject: string, kind: CacheKind, now: number): Uint8Array | null
   cachePut(subject: string, kind: CacheKind, bytes: Uint8Array, expiresAt: number): void
+  /** Drops a cached record, whatever its expires_at; true when there was one. */
+  cacheDrop(subject: string, kind: CacheKind): boolean
   /** The anchor of the audit log `name`, or null when none was kept. */
   auditAnchorGet(name: string): AuditAnchor | null
   auditAnchorPut(name: string, anchor: AuditAnchor, now: number): void

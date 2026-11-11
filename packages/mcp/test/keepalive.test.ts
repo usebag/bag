@@ -17,6 +17,7 @@ import {
   addressCopy,
   INCOMPLETE_REVOCATION,
   KeyEpochStore,
+  keepAcceptCopy,
   keepAddressCopy,
   type Lagging,
   RelayError,
@@ -694,6 +695,19 @@ describe('a swept record comes back from the copy in the home', () => {
     expect([next.iat, next.rotation_key, next.revoked]).toEqual([T0, P.org.address, [P.jane.address]])
     expect(k.status().healed).toEqual({ signed_at: at(copy.iat), stale_since: null })
     expect(copyAt(home())?.iat).toBe(T0)
+    k.stop()
+  })
+
+  it('re-publishes the accept-from from the home copy when a rotation stranded the relay copy (83c)', async () => {
+    // The address record stands at the relay; the accept-from is stranded (none at the relay), its roots held only in
+    // the home copy. The cycle heals #accept from the copy and carries it back, so peers resolve the roots again and a
+    // pairing never rebuilds them from nothing (the 2026-11-11 collapse to [owner]).
+    await put(address(P.alice, { sealing: null }))
+    keepAcceptCopy(home(), 'alice', accept(P.alice))
+    expect(relay.records.has(`${RELAY} ${P.alice.address} accept-from`)).toBe(false)
+    const { keeper: k } = keeper()
+    await k.start()
+    expect((stored('accept-from') as AcceptFromRecord).roots).toEqual([P.bob.address])
     k.stop()
   })
 

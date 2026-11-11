@@ -16,10 +16,14 @@ const ROOT = `ed25519:${'ab'.repeat(32)}`
 const MCP_MAIN = fileURLToPath(new URL('../../mcp/src/main.ts', import.meta.url))
 const CLI_MAIN = fileURLToPath(new URL('../src/main.ts', import.meta.url))
 const CAVEAT = 'topic:build'
+/** The read-only records check's line for bob, a fresh identity: the test relay holds none of his records. */
+const WARN = `warning: no address and accept-from record at ${RELAY} for bob, and no relay or home copy holds one: run bag onboard first (docs/partner-install.md section 4); until then the relay refuses mail to bob`
 let n = 0
 
 interface World {
   readonly io: TestIo
+  /** The relay the io's client reaches. */
+  readonly memory: MemoryRelay
   /** The home with the identity bob. */
   readonly dir: string
   /** An empty project directory, and the HOME the io has. */
@@ -32,9 +36,10 @@ async function world(homeName = 'home'): Promise<World> {
   const [dir, project, userHome] = [join(base, homeName), join(base, 'project'), join(base, 'user')]
   mkdirSync(project, { recursive: true })
   mkdirSync(userHome, { recursive: true })
-  const io = testIo(new MemoryRelay(), { HOME: userHome })
+  const memory = new MemoryRelay()
+  const io = testIo(memory, { HOME: userHome })
   expect((await cli(io, 'keygen', 'bob', '--dir', dir)).code).toBe(0)
-  return { io, dir, project, userHome }
+  return { io, memory, dir, project, userHome }
 }
 
 const install = (w: World, host: string, ...more: string[]) =>
@@ -94,13 +99,14 @@ describe('host install claude-code: the MCP entry in .mcp.json and the wake hook
         `  ${JSON.stringify({ bag: entry })}`,
         `wrote ${settings}`,
         `  ${JSON.stringify({ SessionStart: group, Stop: group })}`,
+        WARN,
       ],
       err: [],
     })
     const [a, b] = [text(mcp), text(settings)]
     expect(await install(w, 'claude-code', '--trust-root', ROOT, '--project', w.project)).toEqual({
       code: 0,
-      out: [`unchanged ${mcp}`, `unchanged ${settings}`, 'nothing to change'],
+      out: [`unchanged ${mcp}`, `unchanged ${settings}`, 'nothing to change', WARN],
       err: [],
     })
     expect([text(mcp), text(settings)]).toEqual([a, b])
@@ -149,6 +155,77 @@ describe('host install claude-code: the MCP entry in .mcp.json and the wake hook
     )
   })
 
+  it('republishes the records one named relay holds to another that lacks them, as the omp form does', async () => {
+    const w = await world()
+    const [R1, R2] = ['http://127.0.0.1:7', 'http://127.0.0.1:8']
+    const file = (k: string) => join(w.dir, `${k}.json`)
+    const rel = ['--relay', R1, '--relay', R2]
+    expect(
+      (
+        await cli(
+          w.io,
+          'record',
+          'address',
+          'bob',
+          ...rel,
+          '--sealing-key',
+          '--out',
+          file('a'),
+          '--dir',
+          w.dir,
+        )
+      ).code,
+    ).toBe(0)
+    const accept = ['record', 'accept-from', 'bob', '--root', '*', '--max-bytes', '65536', '--ttl', '86400']
+    expect((await cli(w.io, ...accept, '--out', file('f'), '--dir', w.dir)).code).toBe(0)
+    w.memory.recordsAt.set(R1, new Map())
+    w.memory.recordsAt.set(R2, new Map())
+    for (const k of ['a', 'f']) expect((await cli(w.io, 'publish', R1, file(k), '--dir', w.dir)).code).toBe(0)
+    const got = await cli(
+      w.io,
+      'host',
+      'install',
+      'claude-code',
+      '--as',
+      'bob',
+      '--dir',
+      w.dir,
+      ...rel,
+      '--project',
+      w.project,
+    )
+    expect(got.code).toBe(0)
+    expect(got.out.filter((l) => l.startsWith('republished') || l.startsWith('warning'))).toEqual([
+      `republished the address record of bob to ${R2} (it was at ${R1}; nothing re-signed)`,
+      `republished the accept-from record of bob to ${R2} (it was at ${R1}; nothing re-signed)`,
+    ])
+  })
+
+  it('says nothing of records the relay holds, and still prints only what it wrote', async () => {
+    const w = await world()
+    const file = (k: string) => join(w.dir, `${k}.json`)
+    const addr = [
+      'record',
+      'address',
+      'bob',
+      '--relay',
+      RELAY,
+      '--sealing-key',
+      '--out',
+      file('a'),
+      '--dir',
+      w.dir,
+    ]
+    expect((await cli(w.io, ...addr)).code).toBe(0)
+    expect((await cli(w.io, 'publish', RELAY, file('a'), '--dir', w.dir)).code).toBe(0)
+    const accept = ['record', 'accept-from', 'bob', '--root', '*', '--max-bytes', '65536', '--ttl', '86400']
+    expect((await cli(w.io, ...accept, '--out', file('f'), '--dir', w.dir)).code).toBe(0)
+    expect((await cli(w.io, 'publish', RELAY, file('f'), '--dir', w.dir)).code).toBe(0)
+    const got = await install(w, 'claude-code', '--project', w.project)
+    expect(got.code).toBe(0)
+    expect(got.out.filter((l) => l.startsWith('warning:'))).toEqual([])
+  })
+
   it("replaces an earlier install's hook (no --max, timeout 3600), prints it removed, and keeps the person's hooks", async () => {
     const w = await world()
     const settings = join(w.project, '.claude', 'settings.json')
@@ -163,8 +240,12 @@ describe('host install claude-code: the MCP entry in .mcp.json and the wake hook
     expect(got.out.slice(2)).toEqual([
       `wrote ${settings}`,
       `  ${JSON.stringify({ removed: before.command, SessionStart: [group], Stop: [group] })}`,
+      WARN,
     ])
-    expect((await install(w, 'claude-code', '--project', w.project)).out.at(-1)).toBe('nothing to change')
+    expect((await install(w, 'claude-code', '--project', w.project)).out.slice(-2)).toEqual([
+      'nothing to change',
+      WARN,
+    ])
   })
 
   it('refuses a bag entry with other settings, and files that are not the shape it merges into', async () => {
@@ -501,7 +582,7 @@ describe('host install: what it refuses', () => {
   it('names the two hosts for any other, and takes only install', async () => {
     const w = await world()
     expect((await install(w, 'cursor', '--user')).err[0]).toBe(
-      'bag: usage: no host "cursor": the hosts are claude-code and codex',
+      'bag: usage: no host "cursor": the hosts are claude-code, codex and omp',
     )
     expect((await cli(w.io, 'host', 'uninstall', 'codex', '--as', 'bob')).err[0]).toBe(
       'bag: usage: host takes install or remove, not "uninstall"',

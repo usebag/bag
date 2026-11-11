@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createServer, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
@@ -10,7 +10,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runShell } from '../src/chain.ts'
 import { type Config, ConfigError, parseConfig, USAGE } from '../src/config.ts'
 import { realTimers } from '../src/desk.ts'
-import { type ProcessIo, processIo, serve, startServer } from '../src/server.ts'
+import { inboxUri } from '../src/resource.ts'
+import {
+  HELD_RETRY_MS,
+  lockHost,
+  PARENT_CHECK_MS,
+  type ProcessIo,
+  processIo,
+  serve,
+  startServer,
+  watchedParents,
+} from '../src/server.ts'
 import {
   FakeClock,
   fakeRecords,
@@ -187,32 +197,148 @@ describe('serve: the server on stdio', () => {
     expect(await done).toBe(0)
   })
 
-  it('a second server of the same fixed identity exits 1 with one busy line naming the holder, writing nothing to stdout', async () => {
+  it('a second server of the same fixed identity stays up: status says held_by, every other tool the held-by error, and it takes over once the holder ends', async () => {
     const first = io(args('--trust-root', P.bob.address))
     const done = serve(first)
     await until('the first server started', () =>
       errLines(first).some((l) => l.event === 'start' && l.level === 'info'),
     )
-    const second = io(args('--trust-root', P.bob.address), { pid: 4343, alive: (p) => p === 4242 })
-    expect(await serve(second)).toBe(1)
-    expect(errLines(second)).toEqual([
-      {
-        level: 'error',
-        event: 'start',
-        code: 'busy',
-        detail: expect.stringMatching(
-          /^the MCP server with pid 4242 holds this identity .*: another session \(Claude Code, Codex\) /,
-        ),
-        ts: expect.any(String),
-      },
-    ])
-    // Both ways out, for the person who reads the host's MCP log: the host shows only that the server closed.
-    const detail = String(errLines(second)[0]?.detail)
-    expect(detail).toMatch(/ runs it, one server per fixed name; close that session, /)
-    expect(detail).toMatch(/or give this one its own identity: --session auto or a second --as$/)
-    expect(Buffer.concat(second.out).length).toBe(0)
+    const timers = new ManualTimers()
+    const second = io(args('--trust-root', P.bob.address), {
+      pid: 4343,
+      alive: (p) => p === 4242,
+      timers,
+      records: fakeRecords(new Map()),
+    })
+    const secondDone = serve(second)
+    const client = new Client({ name: 'omp', version: '0.0.0' })
+    await client.connect(new StreamClientTransport(second.stdin, second.stdout))
+    const held =
+      /^bag: the identity alice is held by another session \(pid 4242, started \S+\) in .+; close that session or run bag in its own folder$/
+    const status = await client.callTool({ name: 'status', arguments: {} })
+    expect(status.structuredContent).toMatchObject({
+      held: true,
+      held_by: { pid: 4242, started_at: expect.any(String), cwd: expect.any(String), host: null },
+    })
+    expect((status.structuredContent as { message: string }).message).toMatch(held)
+    const inbox = await client.callTool({ name: 'inbox', arguments: {} })
+    expect(inbox.isError).toBe(true)
+    expect(inbox.structuredContent).toMatchObject({ error: 'busy', detail: expect.stringMatching(held) })
+    expect(errLines(second).filter((l) => l.event === 'held')).toHaveLength(1)
+    // The first server's host note: it wrote started_at, cwd and ppid beside its pid.
+    const lock = JSON.parse(readFileSync(join(tmp.dir, 'state', 'alice', 'mcp.lock'), 'utf8'))
+    expect(lock).toMatchObject({ pid: 4242, started_at: expect.any(String), cwd: process.cwd() })
+    // The retry while the holder lives changes nothing; after it ends, the next retry takes the identity over.
+    timers.fire((ms) => ms === HELD_RETRY_MS)
+    await until('the retry ran', () => timers.live().includes(HELD_RETRY_MS))
     first.stdin.end()
-    expect(await done).toBe(0) // the refusal left the first server's lock alone
+    expect(await done).toBe(0)
+    timers.fire((ms) => ms === HELD_RETRY_MS)
+    await until('the second took over', () => errLines(second).some((l) => l.event === 'takeover'))
+    expect(JSON.parse(readFileSync(join(tmp.dir, 'state', 'alice', 'mcp.lock'), 'utf8'))).toMatchObject({
+      pid: 4343,
+      host: 'omp',
+    })
+    const after = await client.callTool({ name: 'status', arguments: {} })
+    expect(after.structuredContent).toMatchObject({ address: P.alice.address })
+    second.stdin.end()
+    expect(await secondDone).toBe(0)
+  })
+
+  it('an orphaned server (its parent pid changed, stdin still open) logs one line, exits 0 and releases its lock', async () => {
+    let parent = 900
+    const timers = new ManualTimers()
+    const t = io(args('--trust-root', P.bob.address), { timers, parentPid: () => parent })
+    const done = serve(t)
+    await until('the server started', () =>
+      errLines(t).some((l) => l.event === 'start' && l.level === 'info'),
+    )
+    const lock = join(tmp.dir, 'state', 'alice', 'mcp.lock')
+    expect(existsSync(lock)).toBe(true)
+    timers.fire((ms) => ms === PARENT_CHECK_MS)
+    expect(errLines(t).some((l) => l.event === 'orphaned')).toBe(false)
+    parent = 1
+    await until('the check re-armed', () => timers.live().includes(PARENT_CHECK_MS))
+    timers.fire((ms) => ms === PARENT_CHECK_MS)
+    expect(await done).toBe(0)
+    expect(errLines(t).filter((l) => l.event === 'orphaned')).toEqual([
+      { ts: expect.any(String), level: 'warn', event: 'orphaned', parent: 900, now: 1 },
+    ])
+    expect(existsSync(lock)).toBe(false)
+  })
+
+  it('names the host kind for the lock from the MCP client name', () => {
+    expect(
+      ['omp-coding-agent', 'claude-code', 'codex-mcp-client', 'zed', undefined].map((n) => lockHost(n)),
+    ).toEqual(['omp', 'claude-code', 'codex', 'other', 'other'])
+  })
+
+  it('a held server: a takeover that fails other than held is tried again with a longer wait; stop cancels the retry; its inbox resource reads empty', async () => {
+    const first = io(args('--trust-root', P.bob.address))
+    const done = serve(first)
+    await until('the first server started', () =>
+      errLines(first).some((l) => l.event === 'start' && l.level === 'info'),
+    )
+    const timers = new ManualTimers()
+    const second = io(args('--trust-root', P.bob.address, '--push', 'resource'), {
+      pid: 4343,
+      alive: (p) => p === 4242,
+      timers,
+      records: fakeRecords(new Map()),
+    })
+    const secondDone = serve(second)
+    const client = new Client({ name: 'omp', version: '0.0.0' })
+    await client.connect(new StreamClientTransport(second.stdin, second.stdout))
+    const read = await client.readResource({ uri: new URL(inboxUri('alice')).href })
+    expect(JSON.parse(String((read.contents[0] as { text: string }).text))).toEqual(expect.anything())
+    first.stdin.end()
+    expect(await done).toBe(0)
+    // Another writer holds the store when the lock is free: the takeover fails with busy (not held) and is tried again.
+    const state = join(tmp.dir, 'state', 'alice')
+    const other = new SqliteStore(join(state, 'edge.sqlite'))
+    try {
+      timers.fire((ms) => ms === HELD_RETRY_MS)
+      await until('it armed a longer retry', () => timers.live().includes(2 * HELD_RETRY_MS))
+      expect(existsSync(join(state, 'mcp.lock'))).toBe(false) // a failed opening let go of its lock
+    } finally {
+      other.close()
+    }
+    timers.fire((ms) => ms === 2 * HELD_RETRY_MS)
+    await until('the second took over', () => errLines(second).some((l) => l.event === 'takeover'))
+    second.stdin.end()
+    expect(await secondDone).toBe(0)
+  })
+
+  it('ending a held server cancels its retry', async () => {
+    const first = io(args('--trust-root', P.bob.address))
+    const done = serve(first)
+    await until('the first server started', () =>
+      errLines(first).some((l) => l.event === 'start' && l.level === 'info'),
+    )
+    const timers = new ManualTimers()
+    const second = io(args('--trust-root', P.bob.address), { pid: 4343, alive: (p) => p === 4242, timers })
+    const secondDone = serve(second)
+    await until('it is held', () => errLines(second).some((l) => l.event === 'held'))
+    expect(timers.live()).toEqual([HELD_RETRY_MS])
+    second.stdin.end()
+    expect(await secondDone).toBe(0)
+    expect(timers.live()).toEqual([])
+    first.stdin.end()
+    expect(await done).toBe(0)
+  })
+
+  it('watches the parent and the launchers above it, read at start', () => {
+    const rows: Record<number, { ppid: number; comm: string }> = {
+      10: { ppid: 20, comm: '/usr/bin/node' },
+      20: { ppid: 30, comm: '/bin/sh' },
+      30: { ppid: 40, comm: 'npx' },
+      40: { ppid: 1, comm: 'claude' },
+    }
+    expect(watchedParents(10, (p) => rows[p] ?? null)).toEqual([20, 30, 40])
+    // The host is not a launcher: its own parent (a terminal) is not watched.
+    rows[30] = { ppid: 40, comm: 'omp' }
+    expect(watchedParents(10, (p) => rows[p] ?? null)).toEqual([20, 30])
+    expect(watchedParents(10, () => ({ ppid: 1, comm: 'node' }))).toEqual([])
   })
 
   it('exits 1 when the identity cannot be opened: a key that does not exist', async () => {
@@ -229,8 +355,8 @@ describe('serve: the server on stdio', () => {
       const done = serve(t)
       const client = new Client({ name: 'in-process', version: '0.0.0' })
       await client.connect(new StreamClientTransport(t.stdin, t.stdout))
-      // Without --allow-delegate the delegate tool is not listed: thirteen tools, the pair and enterprise tools among them.
-      expect((await client.listTools()).tools).toHaveLength(13)
+      // Without --allow-delegate the delegate tool is not listed: fourteen tools, the pair and enterprise tools among them.
+      expect((await client.listTools()).tools).toHaveLength(14)
       const status = await client.callTool({ name: 'status', arguments: {} })
       expect(status.structuredContent).toMatchObject({ address: P.alice.address, default_handler: 'queue' })
       const waited = await client.callTool({ name: 'wait', arguments: { timeout_s: 0.01 } })

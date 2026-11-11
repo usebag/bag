@@ -1,6 +1,7 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
+  type AcceptFromRecord,
   AcError,
   type AddressRecord,
   decodeAddress,
@@ -59,6 +60,56 @@ export function keepAddressCopy(home: string, name: string, record: AddressRecor
   const temp = `${file}.${process.pid}.tmp`
   writeFileSync(temp, `${new TextDecoder().decode(serializeRecord(record))}\n`)
   renameSync(temp, file)
+}
+
+/** The copy of the accept-from record last written for `name` in `home`: a pairing's admit and every publisher since. */
+const acceptCopyPath = (home: string, name: string): string => join(home, 'records', `${name}.accept.json`)
+
+/**
+ * That copy, when the core verifies it at its own iat and it is an accept-from of `owner`; else (or with no file) null.
+ * The home's one anchor for the accept-from's roots, so a relay copy stranded by a rotation never forces a re-sign to
+ * rebuild them from nothing (the collapse of 2026-11-11: a stranded copy let a pairing's rollback publish [owner]).
+ */
+export function acceptCopy(home: string, name: string, owner: string): AcceptFromRecord | null {
+  try {
+    const parsed = parseRecord(readFileSync(acceptCopyPath(home, name)))
+    const r = verifyRecord(parsed, parsed.iat)
+    return r.kind === 'accept-from' && r.owner === owner ? r : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Keeps `record` as that copy, whole: a temporary file beside it renamed over it, mode 0600 (the records dir is 0700).
+ * A copy as new or newer stays, as the address copy's does: the copy is the home's anchor for the roots, and a relay
+ * can answer an old record.
+ */
+export function keepAcceptCopy(home: string, name: string, record: AcceptFromRecord): void {
+  const held = acceptCopy(home, name, record.owner)
+  if (held !== null && held.iat >= record.iat) return
+  const file = acceptCopyPath(home, name)
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  const temp = `${file}.${process.pid}.tmp`
+  writeFileSync(temp, `${new TextDecoder().decode(serializeRecord(record))}\n`, { mode: 0o600 })
+  renameSync(temp, file)
+}
+
+/**
+ * The accept-from an identity holds, given the newest its relays hold (`found`): that record, unless the home copy is
+ * newer (a relay replaying an old one), the copy when a relay holds none (a rotation stranded it), or null when neither
+ * holds one. The accept-from's `continueFrom`; unlike the address record's it needs no no-held-record guard, since a
+ * relay never sweeps an accept-from (crates/ac-relay/src/store.rs) and it carries no revoked list.
+ */
+export function heldAccept(
+  found: AcceptFromRecord | null,
+  home: string,
+  name: string,
+  owner: string,
+): AcceptFromRecord | null {
+  const copy = acceptCopy(home, name, owner)
+  if (found === null) return copy
+  return copy !== null && copy.iat > found.iat ? copy : found
 }
 
 /**

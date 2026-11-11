@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -652,6 +652,37 @@ describe('pair_invite and pair_accept', () => {
     await clean(invite, code)
   })
 
+  it('a fresh identity leaves its records at every configured relay, not the rendezvous alone (W5c)', async () => {
+    const SECOND = 'http://second.test'
+    const alice = await side(P.alice, true, ['--relay', SECOND]) // config.relays = [RELAY, SECOND]
+    const bob = await side(P.bob)
+    const invited = await alice.call('pair_invite', { name: 'bob' })
+    const invite = inviteOf(alice)
+    bob.person.push(
+      () => accept({ invite }),
+      () => accept({ confirm: true }),
+    )
+    const asked = await bob.call('pair_accept', { name: 'alice' })
+    const code = codeIn(bob.dialogs[1])
+    alice.person.push(() => accept({ digits: code }))
+    const a = await alice.call('pair_invite', { resume: invited.value.resume as string })
+    const b = await bob.call('pair_accept', { resume: asked.value.resume as string })
+    expect([a.value, b.value]).toEqual([
+      { paired: true, peer: P.bob.address, name: 'bob' },
+      { paired: true, peer: P.alice.address, name: 'alice' },
+    ])
+    // Alice's address and accept-from are at BOTH relays, and the address record names both.
+    for (const url of [RELAY, SECOND]) {
+      const addr = relay.records.get(`${url} ${P.alice.address} address`)
+      expect(addr === undefined ? null : (parseRecord(addr) as AddressRecord).relays).toEqual([RELAY, SECOND])
+      const from = relay.records.get(`${url} ${P.alice.address} accept-from`)
+      expect(from === undefined ? null : (parseRecord(from) as AcceptFromRecord).roots).toContain(
+        P.bob.address,
+      )
+    }
+    await clean(invite, code)
+  })
+
   it('pairs with the inviter on its current key record, the key shared, the address trusted', async () => {
     const alice = await side(P.alice)
     const epochs = new KeyEpochStore(join(alice.home, 'key-records'))
@@ -688,10 +719,11 @@ describe('pair_invite and pair_accept', () => {
       const out = await alice.call(tool, { name: 'bob' })
       expect(out.isError).toBe(true)
       expect(out.value.error).toBe('no-elicitation')
-      // No terminal command.
-      expect(out.value.detail).toBe(
-        'this host cannot show your user a dialog, so it cannot pair: pair in an interactive Claude Code session',
-      )
+      // The exact terminal command to run instead, never a silent decline (deliverable 6).
+      expect(out.value.detail).toContain('bag pair --as ')
+      expect(out.value.detail).toContain('--name bob')
+      expect(out.value.detail).toContain('run in their own terminal')
+      expect(out.value.detail).toContain('never say you ran it')
     }
     expect([relay.records.size, relay.published, files(alice), steps(alice)]).toEqual([
       records,
@@ -1807,3 +1839,125 @@ async function requestedFor(alice: Side, answer: () => Answer) {
   alice.person.push(answer)
   return { bob, invite, asked, resume }
 }
+
+describe('the consent bridge: a host with no elicitation answers through files (decision 83i)', () => {
+  const consentDir = (s: Side): string => join(s.home, 'state', s.party.name, 'consent')
+
+  /** Writes a live .bridge so the server treats the bridge as present (pid alive, fresh at the fake clock). */
+  function bridgeOn(s: Side): void {
+    const d = consentDir(s)
+    mkdirSync(d, { recursive: true })
+    const at = new Date(clock.t * 1000).toISOString()
+    writeFileSync(
+      join(d, '.bridge'),
+      JSON.stringify({ v: 1, pid: process.pid, host: 'omp', mode: 'tui', at }),
+    )
+  }
+
+  /** The one open consent request: its id and parsed body. */
+  function requestOf(s: Side): { id: string; req: Record<string, unknown> } {
+    const d = consentDir(s)
+    const f = readdirSync(d).find((x) => /^[0-9a-f]{16}\.json$/.test(x)) as string
+    return {
+      id: f.slice(0, 16),
+      req: JSON.parse(readFileSync(join(d, f), 'utf8')) as Record<string, unknown>,
+    }
+  }
+
+  /** The fake answerer: writes <id>.answer.json, stamped now (before expires_at). */
+  function answerConsent(s: Side, id: string, body: Record<string, unknown>): void {
+    const answered_at = new Date(clock.t * 1000).toISOString()
+    writeFileSync(
+      join(consentDir(s), `${id}.answer.json`),
+      JSON.stringify({ v: 1, id, answered_at, ...body }),
+    )
+  }
+
+  it('takes the fallback with no bridge, and with one asks through a pair-accept-code request', async () => {
+    const alice = await side(P.alice, false)
+    // No .bridge: today's no-elicitation answer with the bag pair line.
+    expect((await alice.call('pair_accept', { name: 'bob' })).value.error).toBe('no-elicitation')
+    bridgeOn(alice)
+    const asked = await alice.call('pair_accept', { name: 'bob' })
+    expect(asked.value).toMatchObject({ asked: true })
+    expect(requestOf(alice).req).toMatchObject({ kind: 'pair-accept-code', peer: null, code: null })
+    // A refused paste ends the pairing declined, and removes the files.
+    const { id } = requestOf(alice)
+    answerConsent(alice, id, { accepted: false, code: null })
+    timers.fire()
+    expect((await alice.call('pair_accept', { resume: asked.value.resume })).value.error).toBe('declined')
+    expect(readdirSync(consentDir(alice)).filter((x) => x.endsWith('.json') && x !== '.bridge')).toEqual([])
+  })
+
+  it('shows the code through a pair-invite-show request when it invites over the bridge', async () => {
+    const alice = await side(P.alice, false)
+    bridgeOn(alice)
+    const invited = await alice.call('pair_invite', { name: 'carol' })
+    expect(invited.value.invite_open).toBe(true)
+    const show = requestOf(alice).req
+    expect(show).toMatchObject({ kind: 'pair-invite-show' })
+    expect(typeof show.code).toBe('string')
+  })
+
+  it('times out a paste no one answers, at expires_at, as a declined pairing', async () => {
+    const alice = await side(P.alice, false)
+    bridgeOn(alice)
+    const asked = await alice.call('pair_accept', { name: 'bob' })
+    clock.t += 121 // past the consent's 120 s expires_at
+    timers.fire()
+    expect((await alice.call('pair_accept', { resume: asked.value.resume })).value.error).toBe('declined')
+  })
+
+  // Fires the consent polls (250 ms) but not a resume's window (max-tool-seconds), so a resume blocks until the end.
+  const tick = (): void => timers.fire((ms) => ms < 1000)
+  const realWait = (ms = 5): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+  /** Polls (real time) for `s`'s open request of `kind`, ticking the consent polls, and returns it. */
+  async function nextRequest(s: Side, kind: string): Promise<{ id: string; req: Record<string, unknown> }> {
+    for (let i = 0; i < 400; i++) {
+      for (const f of readdirSync(consentDir(s)).filter((x) => /^[0-9a-f]{16}\.json$/.test(x))) {
+        const req = JSON.parse(readFileSync(join(consentDir(s), f), 'utf8')) as Record<string, unknown>
+        if (req.kind === kind) return { id: f.slice(0, 16), req }
+      }
+      tick()
+      await realWait()
+    }
+    throw new Error(`no ${kind} request for ${s.party.name}`)
+  }
+
+  it('pairs two bridge sides end to end through files only: no dialog, each person presses Yes', async () => {
+    const alice = await side(P.alice, false)
+    const bob = await side(P.bob, false)
+    bridgeOn(alice)
+    bridgeOn(bob)
+    const invited = await alice.call('pair_invite', { name: 'bob' })
+    const codeText = (invited.value.code ?? invited.value.invite) as string
+    const aliceEnd = alice.call('pair_invite', { resume: invited.value.resume })
+    const asked = await bob.call('pair_accept', { name: 'alice' })
+    const bobEnd = bob.call('pair_accept', { resume: asked.value.resume })
+    // Bob pastes Alice's code (the code never a tool argument), then reads the digits out and presses Yes.
+    const paste = await nextRequest(bob, 'pair-accept-code')
+    answerConsent(bob, paste.id, { accepted: true, code: codeText })
+    tick()
+    const confirm = await nextRequest(bob, 'pair-accept')
+    expect(confirm.req).toMatchObject({ kind: 'pair-accept', peer: { name: 'alice' } })
+    const digits = confirm.req.code as string
+    expect(digits).toMatch(/^\d{3} \d{3}$/)
+    answerConsent(bob, confirm.id, { accepted: true, code: null })
+    tick()
+    // Alice types the six digits Bob read her, and presses Yes.
+    const compare = await nextRequest(alice, 'pair-accept')
+    expect(compare.req.code).toBeNull()
+    answerConsent(alice, compare.id, { accepted: true, code: digits })
+    tick()
+    expect((await bobEnd).value).toMatchObject({ paired: true, name: 'alice' })
+    expect((await aliceEnd).value).toMatchObject({ paired: true, name: 'bob' })
+    // Both sides trust the other's root and leave no consent files behind.
+    const roots = (h: string): Record<string, unknown> =>
+      (JSON.parse(readFileSync(join(h, 'trust.json'), 'utf8')) as { roots: Record<string, unknown> }).roots
+    expect(roots(bob.home)[P.alice.address]).toBeDefined()
+    expect(roots(alice.home)[P.bob.address]).toBeDefined()
+    for (const s of [alice, bob])
+      expect(readdirSync(consentDir(s)).filter((x) => x.endsWith('.json'))).toEqual([])
+  })
+})

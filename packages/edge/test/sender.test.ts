@@ -72,6 +72,16 @@ function directory(): FakeRecords {
 }
 
 const ok: PublishResult = { id: 'x', duplicate: false, delivered: 1 }
+
+/** A relay that refuses not-hosted at the URLs in `refuse` and takes every other publish. */
+class ByUrl extends ScriptedRelay {
+  readonly refuse = new Set<string>()
+  override async publish(url: string, bytes: Uint8Array): Promise<PublishResult> {
+    this.published.push({ url, bytes })
+    if (this.refuse.has(url)) throw new RelayError('not-hosted', 403, null, 'no accept-from')
+    return ok
+  }
+}
 const down = (): RelayError => new RelayError(null, 0, null, 'connection refused')
 
 describe('Sender: resolve, build, persist, publish (spec/SPEC.md §9.1)', () => {
@@ -210,6 +220,71 @@ describe('Sender: resolve, build, persist, publish (spec/SPEC.md §9.1)', () => 
       reason: 'publish-failed',
     })
     expect(relay.published).toHaveLength(3)
+  })
+
+  it('a send every relay refuses not-hosted re-reads the recipient once: a move from relay X to Y goes out via Y', async () => {
+    const X = 'http://relay-x.test'
+    const Y = 'http://relay-y.test'
+    const relay = new ByUrl()
+    const records = new FakeRecords()
+    records.put(HOME, addressRecord(P.carol, { relays: [X], ttl: 86_400 }))
+    const { edge, store } = setup({ relay, records })
+    expect((await edge.send({ to: [P.carol.address], type: 't', body: 0 })).targets[0]?.state).toBe(
+      'published',
+    )
+    records.put(HOME, addressRecord(P.carol, { relays: [Y], ttl: 86_400, iat: T0 + 1 }))
+    relay.refuse.add(X)
+    const sent = await edge.send({ to: [P.carol.address], type: 't', body: 1 })
+    expect(sent.targets.map((t) => [t.relay, t.state])).toEqual([[Y, 'published']])
+    expect(relay.published.map((p) => p.url)).toEqual([X, X, Y])
+    const stale = parseEnvelope((relay.published[1] as { bytes: Uint8Array }).bytes).id
+    expect(store.outboxTargets(stale).map((t) => [t.state, t.reason])).toEqual([['failed', 'not-hosted']])
+    // The first envelope stays in the outbox as history (bag deletes no outbox row) but is never due again: no flush,
+    // at any time, publishes it beside the re-sent one.
+    expect(store.outboxDue(T0 + 10 * 86_400).filter((d) => d.target.id === stale)).toEqual([])
+    expect(store.outboxGet(stale)).not.toBeNull()
+  })
+
+  it('does not re-send to a recipient whose fresh record names the same relays: one publish, failed not-hosted', async () => {
+    const X = 'http://relay-x.test'
+    const relay = new ByUrl()
+    relay.refuse.add(X)
+    const records = new FakeRecords()
+    records.put(HOME, addressRecord(P.carol, { relays: [X], ttl: 86_400 }))
+    const { edge } = setup({ relay, records })
+    const sent = await edge.send({ to: [P.carol.address], type: 't', body: 1 })
+    expect(sent.targets.map((t) => [t.relay, t.state, t.reason])).toEqual([[X, 'failed', 'not-hosted']])
+    expect(relay.published.map((p) => p.url)).toEqual([X])
+  })
+
+  it('does not re-send when reading the recipient again fails: the send keeps its own failure', async () => {
+    const X = 'http://relay-x.test'
+    const relay = new ByUrl()
+    const records = new FakeRecords()
+    records.put(HOME, addressRecord(P.carol, { relays: [X], ttl: 86_400 }))
+    const { edge } = setup({ relay, records })
+    await edge.send({ to: [P.carol.address], type: 't', body: 0 })
+    relay.refuse.add(X)
+    records.relays.set(`${HOME} ${P.carol.address} address`, new Error('down'))
+    const sent = await edge.send({ to: [P.carol.address], type: 't', body: 1 })
+    expect(sent.targets.map((t) => [t.relay, t.state, t.reason])).toEqual([[X, 'failed', 'not-hosted']])
+    expect(relay.published.map((p) => p.url)).toEqual([X, X])
+  })
+
+  it('re-sends at most once per send: a moved recipient whose new relay refuses too is one re-send, then failed', async () => {
+    const X = 'http://relay-x.test'
+    const Y = 'http://relay-y.test'
+    const relay = new ByUrl()
+    const records = new FakeRecords()
+    records.put(HOME, addressRecord(P.carol, { relays: [X], ttl: 86_400 }))
+    const { edge } = setup({ relay, records })
+    await edge.send({ to: [P.carol.address], type: 't', body: 0 })
+    records.put(HOME, addressRecord(P.carol, { relays: [Y], ttl: 86_400, iat: T0 + 1 }))
+    relay.refuse.add(X)
+    relay.refuse.add(Y)
+    const sent = await edge.send({ to: [P.carol.address], type: 't', body: 1 })
+    expect(sent.targets.map((t) => [t.relay, t.state, t.reason])).toEqual([[Y, 'failed', 'not-hosted']])
+    expect(relay.published.map((p) => p.url)).toEqual([X, X, Y])
   })
 
   it("fails at once on a refusal the same bytes would meet again, keeping the relay's code", async () => {

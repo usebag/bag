@@ -26,6 +26,7 @@ import {
 } from '@usebag/edge'
 import { withSession } from '@usebag/enterprise-client'
 import { flag, list, parse, relayUrl, req, str, UsageError } from '../args.ts'
+import { refuseWhileHeld } from '../held.ts'
 import {
   CLI_SESSION,
   checkIdentity,
@@ -240,6 +241,8 @@ export async function inbox(
     checkIdentity(io, home, name)
     io.out(`doorbell ${doorbellPath(home, name)}`)
   }
+  // Both would take the mailbox's cursor and acks: beside a running server the command says who holds it.
+  refuseWhileHeld(home, name, `inbox${act === null ? '' : ` ${act}`}`)
   const receive = async (live: boolean, o: Partial<OpenOptions>, accept?: Omit<AcceptOptions, 'audit'>) => {
     const [signal, linkLine] = live ? [io.stopSignal(), linkLines(io)] : [undefined, undefined]
     const base = io.relay(live ? {} : { maxReconnects: 0 })

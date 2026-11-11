@@ -202,6 +202,7 @@ describe('the MCP view of the policy: counts and metadata, never a body, and no 
     expect(bob.running.desk.counts()).toEqual({
       counts: { accepted: 0, routed: 0, queued: 0, rejected: 0, quarantined: 1, in_flight: 0, unread: 0 },
       rejected_by_code: {},
+      copies_already_received_via_another_relay: 0,
     })
     const status = await bob.call('status')
     expect(status.value.policy).toEqual({

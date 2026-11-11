@@ -161,6 +161,12 @@ export const K = 3
 /** Tries with no answer after which a target is given up for the next listed relay (§4.3: a few tries, never the TTL). */
 export const RETIRE_TRIES = 3
 
+/**
+ * The target reasons that make a send stale-route when every target has one: a relay that does not host the recipient
+ * (it holds no accept-from of theirs) or does not answer. bag has no separate no-mailbox code: not-hosted is it.
+ */
+const STALE_ROUTE: ReadonlySet<string> = new Set(['not-hosted', UNREACHABLE])
+
 /** One recipient's share of an envelope (§4.3): its listed relays, those it counts now, and the next one to promote. */
 type Share = { readonly list: readonly string[]; readonly counted: Set<string>; next: number }
 
@@ -202,8 +208,11 @@ export class Sender {
     return this.#send(input)
   }
 
-  /** send, for the waiting row `waiting` when it comes from one: the row leaves as the envelope enters the outbox. */
-  async #send(input: SendInput, waiting?: number): Promise<SendResult> {
+  /**
+   * send, for the waiting row `waiting` when it comes from one: the row leaves as the envelope enters the outbox.
+   * `again` is true for the one re-send of a send whose every relay refused it as stale (STALE_ROUTE).
+   */
+  async #send(input: SendInput, waiting?: number, again = false): Promise<SendResult> {
     const { clock, keys, store } = this.#o
     // First, so that a body that cannot ask is refused at once, never kept waiting for a recipient.
     const body = input.receipt === true ? askingReceipt(input.body) : input.body
@@ -245,11 +254,46 @@ export class Sender {
     )
     this.#plans.set(envelope.id, shares)
     await Promise.all(store.outboxTargets(envelope.id).map((t) => this.#try(t, bytes)))
+    // Every target given up (failed or retired: none is tried again) with a reason a recipient's stale cached record
+    // gives, such as a recipient that moved relays or published its first accept-from elsewhere: the resolver forgets
+    // the recipients' cached records and reads them again, and when a recipient's relays changed the send goes once
+    // more. Relays that did not change are not tried again (a recipient with no accept-from yet stays not-hosted
+    // there). Once per send.
+    const tried = store.outboxTargets(envelope.id)
+    const givenUp = (t: OutboxTarget) =>
+      (t.state === 'failed' || t.state === 'retired') && t.reason !== null && STALE_ROUTE.has(t.reason)
+    if (!again && tried.length > 0 && tried.every(givenUp) && (await this.#moved(recipients, input))) {
+      this.#plans.delete(envelope.id)
+      return this.#send(input, undefined, true)
+    }
     // A retired target was replaced by the relay promoted for it, which the result names instead.
     return {
       id: envelope.id,
       thread,
       targets: store.outboxTargets(envelope.id).filter((t) => t.state !== 'retired'),
+    }
+  }
+
+  /**
+   * Whether a recipient read again from the relays, after its cached records are forgotten, lists other relays than
+   * the send used: false when nothing was cached, when every recipient's relays are the same, or when reading again
+   * fails (the send's own failure stands).
+   */
+  async #moved(
+    recipients: readonly { address: string; relays: readonly string[] }[],
+    input: SendInput,
+  ): Promise<boolean> {
+    if (!recipients.map((r) => this.#o.resolver.forget(r.address)).some(Boolean)) return false
+    const key = (relays: readonly string[]) => [...new Set(relays)].sort().join(' ')
+    try {
+      const fresh = await Promise.all(
+        recipients.map((r) => this.#o.resolver.recipient(r.address, input.relays)),
+      )
+      return fresh.some(
+        (f, i) => key(f.relays) !== key((recipients[i] as { relays: readonly string[] }).relays),
+      )
+    } catch {
+      return false
     }
   }
 

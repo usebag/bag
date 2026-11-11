@@ -2,13 +2,18 @@ import {
   closeSync,
   constants,
   futimesSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { codingEvaluator, type Hop, type SigningKey, toHex, verifyChain } from '@usebag/core'
 import {
   type Clock,
@@ -22,11 +27,13 @@ import {
   KeyEpochStore,
   KeyRecordAdmin,
   type PairOpen,
+  processStart,
   publishedKeyRecord,
   type RecordSource,
   type RelayClient,
   type Rng,
   SqliteStore,
+  START_TOLERANCE,
   type Subscription,
   type SubscriptionLink,
 } from '@usebag/edge'
@@ -153,54 +160,164 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
-function lockPid(path: string): number | null {
+/** What the lock file says of its holder; every field but the pid is absent from a lock an older server wrote. */
+export interface LockInfo {
+  readonly pid: number
+  readonly startedAt?: string
+  readonly cwd?: string
+  readonly host?: string
+}
+
+/** The lock's holder, or null when the file is missing or does not name a pid. */
+export function readLock(path: string): LockInfo | null {
   try {
-    const pid = (JSON.parse(readFileSync(path, 'utf8')) as { pid?: unknown }).pid
-    return Number.isSafeInteger(pid) ? (pid as number) : null
+    const v = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+    if (!Number.isSafeInteger(v.pid)) return null
+    const text = (x: unknown): string | undefined => (typeof x === 'string' ? x : undefined)
+    const [startedAt, cwd, host] = [text(v.started_at), text(v.cwd), text(v.host)]
+    return {
+      pid: v.pid as number,
+      ...(startedAt === undefined ? {} : { startedAt }),
+      ...(cwd === undefined ? {} : { cwd }),
+      ...(host === undefined ? {} : { host }),
+    }
   } catch {
     return null
   }
 }
 
+function lockPid(path: string): number | null {
+  return readLock(path)?.pid ?? null
+}
+
+/** The identity's lock is held by a live process: carries who, for the held-by answer of every tool. */
+export class HeldError extends ConfigError {
+  readonly holder: LockInfo
+  readonly path: string
+
+  constructor(name: string, holder: LockInfo, path: string) {
+    const when = holder.startedAt === undefined ? '' : `, started ${holder.startedAt}`
+    const host = holder.host === undefined ? '' : `, ${holder.host}`
+    const where = holder.cwd === undefined ? '' : ` in ${holder.cwd}`
+    super(
+      'busy',
+      `bag: the identity ${name} is held by another session (pid ${holder.pid}${when}${host})${where}; ` +
+        'close that session or run bag in its own folder',
+    )
+    this.name = 'HeldError'
+    this.holder = holder
+    this.path = path
+  }
+}
+
+/** What the lock records beside the pid, so a refused second session can name the holder. */
+export interface LockMeta {
+  readonly cwd?: string
+  readonly ppid?: number
+  readonly startedAt?: string
+}
+
 /**
- * Takes <state>/mcp.lock for this pid, or refuses with `busy` while a live process holds it; a lock left by a process
- * that is gone is taken over (a server that takes it in between makes the second open fail with EEXIST). The refusal
- * names the holder, another session's server, and both ways out: the host shows only that the server closed, so this
- * line in its MCP log is where the person finds why. Returns the
- * release, which removes the file only while it still names this pid. `keepAlive` is written beside the pid: a server
- * keeping its records alive, for which a background `ac record keep` stands aside (lockPid reads the pid alone).
+ * Whether the lock's holder is a live process of that lock: its pid answers, and the process did not start after the
+ * lock was written (a pid used again by an unrelated process). The reference time is started_at, else the file's mtime.
+ */
+function holderLives(path: string, holder: LockInfo, alive: (pid: number) => boolean): boolean {
+  if (!alive(holder.pid)) return false
+  try {
+    const wrote = holder.startedAt === undefined ? Number.NaN : Date.parse(holder.startedAt) / 1000
+    const at = Number.isFinite(wrote) ? wrote : statSync(path).mtimeMs / 1000
+    const began = processStart(holder.pid)
+    return began === null || began <= at + START_TOLERANCE
+  } catch {
+    return true
+  }
+}
+
+/** Publishes `body` at `path` whole or not at all: a temp file linked into place, EEXIST while the path exists. */
+function publish(path: string, body: string): void {
+  const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+  const fd = openSync(tmp, 'wx', 0o600)
+  try {
+    try {
+      writeSync(fd, body)
+    } finally {
+      closeSync(fd)
+    }
+    linkSync(tmp, path)
+  } finally {
+    rmSync(tmp, { force: true })
+  }
+}
+
+/**
+ * Takes <state>/mcp.lock for this pid, or refuses with `busy` (a HeldError naming the holder) while a live process
+ * holds it. The file appears whole (a temp file linked into place), so a reader never sees it empty. A lock left by a
+ * process that is gone, or whose pid another process now has, is taken over by moving it aside and checking that it
+ * still names the dead holder; a server that wins the race in between makes this one refuse as held by it. Returns the
+ * release, which removes the file only while it still names this pid. `keepAlive` is written beside the pid: a
+ * server keeping its records alive, for which a background `ac record keep` stands aside. The file is {pid,
+ * keep_alive?, started_at, cwd, ppid, host?}: readers that want the pid alone (lockPid, the wake-hook) still get it.
  */
 export function acquireLock(
   path: string,
   pid: number,
   alive: (pid: number) => boolean,
   keepAlive?: boolean,
+  meta: LockMeta = {},
 ): () => void {
-  let fd: number
-  try {
-    fd = openSync(path, 'wx', 0o600)
-  } catch (e) {
-    if ((e as { code?: unknown }).code !== 'EEXIST') throw e
-    const holder = lockPid(path)
-    if (holder !== null && alive(holder)) {
-      throw new ConfigError(
-        'busy',
-        `the MCP server with pid ${holder} holds this identity (${path}): another session ` +
-          '(Claude Code, Codex) runs it, one server per fixed name; close that session, ' +
-          'or give this one its own identity: --session auto or a second --as',
-      )
+  const body = JSON.stringify({
+    pid,
+    ...(keepAlive === undefined ? {} : { keep_alive: keepAlive }),
+    started_at: meta.startedAt ?? new Date().toISOString(),
+    cwd: meta.cwd ?? process.cwd(),
+    ppid: meta.ppid ?? process.ppid,
+  })
+  const name = basename(dirname(path))
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      publish(path, body)
+      break
+    } catch (e) {
+      if ((e as { code?: unknown }).code !== 'EEXIST') throw e
     }
-    unlinkSync(path)
-    fd = openSync(path, 'wx', 0o600)
-  }
-  try {
-    writeSync(fd, JSON.stringify(keepAlive === undefined ? { pid } : { pid, keep_alive: keepAlive }))
-  } finally {
-    closeSync(fd)
+    const holder = readLock(path)
+    if (holder !== null && holderLives(path, holder, alive)) throw new HeldError(name, holder, path)
+    // Stale (or unreadable): move it aside, then look at what was moved. A live lock that was swapped in meanwhile goes back.
+    const aside = `${path}.stale.${pid}`
+    try {
+      renameSync(path, aside)
+    } catch (e) {
+      if ((e as { code?: unknown }).code === 'ENOENT') continue // another server took it over and released: try again
+      throw e
+    }
+    const moved = readLock(aside)
+    if (moved !== null && moved.pid !== holder?.pid && holderLives(aside, moved, alive)) {
+      try {
+        linkSync(aside, path)
+      } catch {}
+      rmSync(aside, { force: true })
+      throw new HeldError(name, moved, path)
+    }
+    rmSync(aside, { force: true })
+    if (attempt === 3)
+      throw new ConfigError('busy', `${path} keeps changing hands: another server is starting`)
   }
   return () => {
-    if (lockPid(path) === pid) unlinkSync(path)
+    try {
+      if (lockPid(path) === pid) unlinkSync(path)
+    } catch {}
   }
+}
+
+/** Adds the MCP host's kind to the lock this pid holds (known only after initialize); a lock that moved on is left. */
+export function noteLockHost(path: string, pid: number, host: string): void {
+  try {
+    const v = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+    if (v.pid !== pid) return
+    const tmp = `${path}.${pid}.host`
+    writeFileSync(tmp, JSON.stringify({ ...v, host }), { mode: 0o600 })
+    renameSync(tmp, path)
+  } catch {}
 }
 
 /** What the relay client's wrapper reports. */
