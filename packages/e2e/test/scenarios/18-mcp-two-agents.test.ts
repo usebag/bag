@@ -113,6 +113,7 @@ describe('e2e scenario 18: two MCP servers, two agents, one real relay', () => {
         'inbox',
         'lookup',
         'pair_accept',
+        'pair_cancel',
         'pair_invite',
         'receipts',
         'send',

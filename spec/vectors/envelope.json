@@ -388,15 +388,15 @@
       "result": "ok"
     },
     {
-      "name": "padded with spaces to exactly 65,536 bytes",
+      "name": "padded with spaces to exactly 196,608 bytes",
       "bytes": "{\"v\":1,\"id\":\"fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53\",\"to\":[\"ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c\"],\"from\":\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"auth\":[],\"suite\":1,\"ts\":1800000000,\"sealed\":{\"wraps\":[{\"to\":\"ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c\",\"enc\":\"8bab5e5b607f62b0cf529dc9161e007a418ddb75498afcde2c7fea4ff89f0948\",\"ct\":\"0c42e3cc5d1ae786085373b5452d51915c31ed6d548d546cc52f6e3f9e9d8f3df0415853c51741ed2fa5a8b82e1b1a0b\"}],\"nonce\":\"a3ecf19f41655cea384d64a6\",\"ct\":\"ed47123575bd7d3f86b7b26cd89650c869d31b046ccc8a384948318ff342e7255ec0d8ba1eeec69025ca2623f0683271b862bbf9c1504eca1c9d5ff70d767b170c2582fcd2e4c0892a7c1b9e54b6f72446b4c2656e3a6a01ac29878406bab31d25b5341a1633b5f906b94e67df1eacb2de8e8b036936e7661c1697a12fd2d48d69275aa9b37234ae20e5b48a0e861f55ea2c0a7ed5e6983b7cd63f0b2c8acdeb578c0e6006fc89bd426bbe81556f6204fd75b753d99fa6392e56f63a2b602861c6ad01ec49cf1b27bc73df63bf2e14332c1e3f47f3cd\"},\"sig\":\"f9403d3da5367a034bd6261e6e1df1e216b75fe35c716cf34bf5abb51b66c6e201ef7509143f49341c92dc11000763add119cd98cb26e359fe8ab80c5968a401\"}",
-      "pad_with_spaces": 64369,
+      "pad_with_spaces": 195441,
       "result": "ok"
     },
     {
-      "name": "padded with spaces to 65,537 bytes, one over the cap",
+      "name": "padded with spaces to 196,609 bytes, one over the cap",
       "bytes": "{\"v\":1,\"id\":\"fb8de01ec83f07ff651609a3366c75a33a950c456be7de1ec158baf69ce58c53\",\"to\":[\"ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c\"],\"from\":\"ed25519:8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394\",\"auth\":[],\"suite\":1,\"ts\":1800000000,\"sealed\":{\"wraps\":[{\"to\":\"ed25519:ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c\",\"enc\":\"8bab5e5b607f62b0cf529dc9161e007a418ddb75498afcde2c7fea4ff89f0948\",\"ct\":\"0c42e3cc5d1ae786085373b5452d51915c31ed6d548d546cc52f6e3f9e9d8f3df0415853c51741ed2fa5a8b82e1b1a0b\"}],\"nonce\":\"a3ecf19f41655cea384d64a6\",\"ct\":\"ed47123575bd7d3f86b7b26cd89650c869d31b046ccc8a384948318ff342e7255ec0d8ba1eeec69025ca2623f0683271b862bbf9c1504eca1c9d5ff70d767b170c2582fcd2e4c0892a7c1b9e54b6f72446b4c2656e3a6a01ac29878406bab31d25b5341a1633b5f906b94e67df1eacb2de8e8b036936e7661c1697a12fd2d48d69275aa9b37234ae20e5b48a0e861f55ea2c0a7ed5e6983b7cd63f0b2c8acdeb578c0e6006fc89bd426bbe81556f6204fd75b753d99fa6392e56f63a2b602861c6ad01ec49cf1b27bc73df63bf2e14332c1e3f47f3cd\"},\"sig\":\"f9403d3da5367a034bd6261e6e1df1e216b75fe35c716cf34bf5abb51b66c6e201ef7509143f49341c92dc11000763add119cd98cb26e359fe8ab80c5968a401\"}",
-      "pad_with_spaces": 64370,
+      "pad_with_spaces": 195442,
       "result": "envelope-too-large"
     },
     {

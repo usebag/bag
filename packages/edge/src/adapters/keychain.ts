@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process'
-import { mkdirSync, readFileSync, unlinkSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { AcError, isAddress, SUITE, toHex, utf8 } from '@usebag/core'
 import { checkName, errno, keysOf, keyText, names, strict, writeNew, writtenAt } from '../custody/files.ts'
@@ -68,6 +68,63 @@ export function createSecurityRunner(
 /** The default runner: /usr/bin/security, 300 s. */
 export const runSecurity: SecurityRunner = createSecurityRunner()
 
+/** Runs /usr/bin/security as `SecurityRunner` does, without blocking the event loop while it waits (on a dialog). */
+export type AsyncSecurityRunner = (args: readonly string[], input?: Uint8Array) => Promise<SecurityResult>
+
+/**
+ * The asynchronous runner: the same program, arguments, securityEnv, timeout (ETIMEDOUT, the child killed) and output
+ * cap (ENOBUFS) as createSecurityRunner, by spawn. Each chunk of output is zeroed once copied into the result, so the
+ * only copy left is the one the caller zeroes after parsing it. A long wait (a dialog) holds only this promise.
+ */
+export function createAsyncSecurityRunner(
+  o: { readonly path?: string; readonly timeoutMs?: number } = {},
+): AsyncSecurityRunner {
+  return (args, input) =>
+    new Promise((resolve) => {
+      const out: Buffer[] = []
+      const err: Buffer[] = []
+      let size = 0
+      let error: string | undefined
+      let done = false
+      const child = spawn(o.path ?? SECURITY_PATH, [...args], {
+        env: securityEnv(process.env),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      const stop = (code: string): void => {
+        error ??= code
+        child.kill('SIGKILL')
+      }
+      const timer = setTimeout(() => stop('ETIMEDOUT'), o.timeoutMs ?? SECURITY_TIMEOUT_MS)
+      const take = (into: Buffer[]) => (b: Buffer) => {
+        size += b.length
+        if (size > 1 << 20) stop('ENOBUFS')
+        else into.push(b)
+      }
+      child.stdout.on('data', take(out))
+      child.stderr.on('data', take(err))
+      child.stdin.on('error', () => {}) // a child that exits before reading its stdin
+      const finish = (status: number | null): void => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        const stdout = new Uint8Array(Buffer.concat(out))
+        const stderr = new Uint8Array(Buffer.concat(err))
+        for (const b of [...out, ...err]) b.fill(0)
+        resolve(error === undefined ? { status, stdout, stderr } : { status, stdout, stderr, error })
+      }
+      child.on('error', (e: NodeJS.ErrnoException) => {
+        error ??= e.code ?? 'EIO'
+        finish(null)
+      })
+      child.on('close', (code) => finish(code))
+      if (input === undefined) child.stdin.end()
+      else child.stdin.end(Buffer.from(input.buffer, input.byteOffset, input.byteLength))
+    })
+}
+
+/** The default asynchronous runner: /usr/bin/security, 300 s. */
+export const runSecurityAsync: AsyncSecurityRunner = createAsyncSecurityRunner()
+
 export interface KeychainCustodyOptions {
   /** The directory of the pointers, `<dir>/<name>.json` (the CLI's `<home>/keychain`). */
   readonly dir: string
@@ -77,6 +134,11 @@ export interface KeychainCustodyOptions {
   readonly access?: KeychainAccess
   /** How /usr/bin/security runs; runSecurity by default. */
   readonly run?: SecurityRunner
+  /**
+   * How readKeys runs it without blocking: runSecurityAsync when neither runner is given. When only `run` is given
+   * (a test's fake), readKeys calls `run` as it is, which blocks while it runs: a service passes no `run`, or both.
+   */
+  readonly runAsync?: AsyncSecurityRunner
 }
 
 interface Pointer {
@@ -105,6 +167,23 @@ export function failure(what: string, r: SecurityResult): Error {
     )
   }
   return new Error(`keychain: ${what}: security exited ${s ?? r.error ?? 'without a status'}`)
+}
+
+/**
+ * The user's default keychain file, from `security default-keychain` (reads no item, raises no dialog), when it
+ * answers 0 with one quoted path that exists; else null: no /usr/bin/security (not macOS), no default keychain (a
+ * fresh account, a daemon's user), or a path that is not there. keygen's default custody on macOS turns on it.
+ */
+export function defaultKeychain(run: SecurityRunner): string | null {
+  let r: SecurityResult
+  try {
+    r = run(['default-keychain'])
+  } catch {
+    return null
+  }
+  if (r.status !== 0 || r.error !== undefined) return null
+  const m = /^\s*"([^"\n]+)"\s*$/.exec(new TextDecoder().decode(r.stdout))
+  return m?.[1] !== undefined && existsSync(m[1]) ? m[1] : null
 }
 
 /** The macOS Keychain custody: one item per identity, one pointer per identity in `dir`. */
@@ -182,18 +261,41 @@ export class KeychainCustody implements KeyCustody {
   #keys(address: string): EdgeKeys {
     const known = this.#read.get(address)
     if (known !== undefined) return known
+    const { name, args } = this.#find(address)
+    return this.#parse(name, address, this.#run(args))
+  }
+
+  /**
+   * The keys of `address`, as signer and opener give them, read without blocking the event loop: a dialog (or a locked
+   * keychain) holds only this promise, never the process. Read before: from memory. The error codes are #keys's.
+   */
+  async readKeys(address: string): Promise<EdgeKeys> {
+    const known = this.#read.get(address)
+    if (known !== undefined) return known
+    const { name, args } = this.#find(address)
+    const run = this.#o.runAsync ?? (this.#o.run === undefined ? runSecurityAsync : undefined)
+    const r = run === undefined ? (this.#o.run as SecurityRunner)(args) : await run(args)
+    return this.#parse(name, address, r)
+  }
+
+  /** The pointer of `address` and the find-generic-password arguments of its item. */
+  #find(address: string): { name: string; args: string[] } {
     const e = this.list().find((x) => x.address === address)
     if (e === undefined) throw errno('ENOENT', `keychain: no pointer in ${this.#o.dir} is ${address}'s`)
     const p = this.#pointer(e.name)
     const args = ['find-generic-password', '-s', service(e.name), '-a', address, '-w']
-    const r = this.#run(p.keychain === null ? args : [...args, p.keychain])
+    return { name: e.name, args: p.keychain === null ? args : [...args, p.keychain] }
+  }
+
+  /** The keys in one read's output, checked against `address`, kept; the output is zeroed in every case. */
+  #parse(name: string, address: string, r: SecurityResult): EdgeKeys {
     try {
-      if (r.status !== 0) throw failure(`reading the item of ${e.name}`, r)
+      if (r.status !== 0) throw failure(`reading the item of ${name}`, r)
       const keys = keysOf(() => new TextDecoder().decode(r.stdout).replace(/\n$/, ''))
       if (typeof keys === 'string')
-        throw new Error(`keychain: the item of ${e.name} is not a suite ${SUITE} key`)
+        throw new Error(`keychain: the item of ${name} is not a suite ${SUITE} key`)
       if (keys.signing.address !== address) {
-        throw new AcError('bad-key', `keychain: the item of ${e.name} holds another key than ${address}`)
+        throw new AcError('bad-key', `keychain: the item of ${name} holds another key than ${address}`)
       }
       this.#read.set(address, keys)
       return keys

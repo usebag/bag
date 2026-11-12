@@ -23,6 +23,7 @@ import { addressRecords, newestOf, rotateEpoch } from '../epochs.ts'
 import { cliAudit, homeCustody, homeDir } from '../home.ts'
 import type { Io } from '../io.ts'
 import { confirmed, needTty } from '../policy.ts'
+import { addToServiceHome, refuseReserved } from '../service-home.ts'
 import { target } from './keygen.ts'
 
 // ac init and ac restore: a person's identity with its second copy, and the
@@ -49,6 +50,7 @@ function begin(
   const options = { relay: S, custody: S, keychain: S, 'keychain-access': S, dir: S, ...more }
   const p = parse(args, { positionals: ['name'], options, required: need })
   const name = p.positionals[0] as string
+  refuseReserved(name)
   if (!KEY_NAME.test(`${name}.rotation`)) {
     throw new UsageError(
       `${JSON.stringify(name)} is not a key name of at most 55 of [a-z0-9._-] (${KEY_NAME.source})`,
@@ -128,6 +130,8 @@ export async function init(args: readonly string[], io: Io): Promise<number> {
       copy: async () => copy,
     })
     io.out(loss ? 'recovery: none (accepted at ac init)' : 'recovery: printed sheet confirmed')
+    const added = addToServiceHome(home, name, [relay])
+    if (added !== null) io.err(added)
     return 0
   } finally {
     zeroSeeds(seeds)
@@ -216,6 +220,8 @@ export async function restore(args: readonly string[], io: Io): Promise<number> 
     const kept = await keep(io, { home, name, where, seeds, relays, held, revoked, event: 'restore', copy })
     io.out(`restored ${name}${held === null ? ' (no record was held: published anew)' : ''}`)
     io.out(`recovery: ${kept === 'sheet' ? 'printed sheet confirmed' : 'single-copy'}`)
+    const added = addToServiceHome(home, name, relays)
+    if (added !== null) io.err(added)
     // A restore makes a file or keychain identity, which ac login refuses (login.ts, agentAddress): the agent holds
     // an agent identity, a pointer made first.
     const login = `ac login --as ${name}-agent ${relays.map((r) => `--relay ${r}`).join(' ')}`

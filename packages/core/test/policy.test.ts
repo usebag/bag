@@ -152,7 +152,7 @@ const SERVED: readonly Case[] = [
   no('a type pattern with an empty prefix', sm(scope(0, 'accept_types', ['.*']))),
   no('a type pattern listed twice', sm(scope(0, 'accept_types', ['chat.*', 'chat.*']))),
   no('max_bytes zero', sm(scope(0, 'max_bytes', 0))),
-  no('max_bytes over 65,536', sm(scope(0, 'max_bytes', 65_537))),
+  no('max_bytes over 196,608', sm(scope(0, 'max_bytes', 196_609))),
   no('external is not an object', sm(at('external', []))),
   no('a required caveat that is the bare wildcard', sm(at('external.required_caveats', ['*']))),
   no('max_hop_lifetime zero', sm(at('external.max_hop_lifetime', 0))),

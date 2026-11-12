@@ -40,6 +40,7 @@
 use crate::auth::Subscriber;
 use crate::metrics::{METRICS, SUBSCRIPTIONS_OPEN};
 use crate::relay::Relay;
+use crate::store::MailboxEntry;
 use ac_core::{Code, json};
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use std::collections::VecDeque;
@@ -378,31 +379,51 @@ impl Session<'_> {
         if std::mem::take(&mut self.notified) {
             self.check_revoked()?;
         }
-        let room = self.relay.config.max_unacked.saturating_sub(self.sent.len());
-        if room == 0 {
-            return Ok(());
-        }
-        let rows = self
-            .relay
-            .store
-            .mailbox_after(self.sub.mailbox.as_str(), self.last_sent, room, self.relay.now())
-            .map_err(store_error)?;
-        for row in rows {
-            // Before each frame, not each batch: the next frame may leave long after this batch was read.
-            if self.expired() {
-                return Err(Failure::Expired);
+        let mut room = self.relay.config.max_unacked.saturating_sub(self.sent.len());
+        // A byte budget on top of the window: rows are read a budget's worth of full-size envelopes at a time, and the
+        // batch stops before the row that would pass the budget, except its first row, so that a large row still goes.
+        let budget = self.relay.config.batch_bytes;
+        let chunk = (budget / self.relay.config.max_envelope_bytes.max(1)).max(1);
+        let mut batch = 0usize;
+        while room > 0 {
+            let asked = room.min(chunk);
+            let rows = self
+                .relay
+                .store
+                .mailbox_after(self.sub.mailbox.as_str(), self.last_sent, asked, self.relay.now())
+                .map_err(store_error)?;
+            let got = rows.len();
+            for row in rows {
+                if batch > 0 && batch.saturating_add(row.bytes.len()) > budget {
+                    return Ok(());
+                }
+                batch = batch.saturating_add(row.bytes.len());
+                self.push(socket, row).await?;
+                room -= 1;
             }
-            self.check_revoked()?;
-            // The stored bytes were read as UTF-8 JSON at publish, so the string holds them exactly.
-            let envelope = serde_json::Value::String(String::from_utf8_lossy(&row.bytes).into_owned());
-            let frame = format!(
-                r#"{{"t":"env","cursor":{},"received_at":{},"envelope":{envelope}}}"#,
-                row.cursor, row.received_at
-            );
-            self.send_frame(socket, frame).await?;
-            self.sent.push_back(row.cursor);
-            self.last_sent = row.cursor;
+            if got < asked {
+                break;
+            }
         }
+        Ok(())
+    }
+
+    /// Sends one row as an `env` frame, after the chain's end and the revoked list are looked at again.
+    async fn push(&mut self, socket: &mut WebSocket, row: MailboxEntry) -> Result<(), Failure> {
+        // Before each frame, not each batch: the next frame may leave long after this batch was read.
+        if self.expired() {
+            return Err(Failure::Expired);
+        }
+        self.check_revoked()?;
+        // The stored bytes were read as UTF-8 JSON at publish, so the string holds them exactly.
+        let envelope = serde_json::Value::String(String::from_utf8_lossy(&row.bytes).into_owned());
+        let frame = format!(
+            r#"{{"t":"env","cursor":{},"received_at":{},"envelope":{envelope}}}"#,
+            row.cursor, row.received_at
+        );
+        self.send_frame(socket, frame).await?;
+        self.sent.push_back(row.cursor);
+        self.last_sent = row.cursor;
         Ok(())
     }
 

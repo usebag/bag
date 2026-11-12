@@ -1,16 +1,28 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { type CustodyTarget, generateEdgeKeys } from '@usebag/edge'
+import { type CustodyTarget, defaultKeychain, generateEdgeKeys } from '@usebag/edge'
 import { CliError, type Parsed, parse, str, UsageError } from '../args.ts'
 import { homeCustody, homeDir, loadKeys } from '../home.ts'
 import type { Io } from '../io.ts'
+import { addToServiceHome, refuseReserved } from '../service-home.ts'
 
 /** keygen's one stderr line: its identity has no second copy. */
 export const NO_RECOVERY = 'keygen: no recovery copy; for sessions and tests (people: ac init)'
 
-/** The custody a new identity goes to: --custody file (the default) or keychain, with its keychain and access. */
-export function target(p: Parsed): CustodyTarget {
-  const custody = str(p, 'custody') ?? 'file'
+/**
+ * keygen's custody when --custody is not given: the keychain on macOS (io.platform darwin) for a person at a terminal
+ * (io.isTty: never a script, onboard's own keygen, SSH without a terminal, CI or rehearse) when `security
+ * default-keychain` names a keychain file that exists, else a key file (Linux, a Mac account with no default
+ * keychain, the unit tests' io). The item's access is then the prompt default: no application reads it without a dialog.
+ */
+export function defaultCustody(io: Pick<Io, 'platform' | 'security' | 'isTty'>): 'file' | 'keychain' {
+  if (!io.isTty || io.platform !== 'darwin' || io.security === undefined) return 'file'
+  return defaultKeychain(io.security) === null ? 'file' : 'keychain'
+}
+
+/** The custody a new identity goes to: --custody file or keychain (else `fallback`), with its keychain and access. */
+export function target(p: Parsed, fallback: 'file' | 'keychain' = 'file'): CustodyTarget {
+  const custody = str(p, 'custody') ?? fallback
   const keychain = str(p, 'keychain')
   const access = str(p, 'keychain-access')
   if (custody === 'file') {
@@ -63,7 +75,9 @@ function agentPointer(p: Parsed, io: Io, home: string, name: string): number {
  * signing key and a separate sealing key from the CSPRNG, kept by the custody chosen: a key file of the
  * edge's key store (0600 in 0700, never over an existing file), the default; or one macOS keychain item, in the
  * default keychain or --keychain, that no application may read without a dialog (--keychain-access prompt, the
- * default) or that /usr/bin/security reads while the keychain is unlocked (security). A name either custody holds is
+ * default) or that /usr/bin/security reads while the keychain is unlocked (security). With no --custody the custody
+ * is defaultCustody's: the keychain on macOS with a default keychain (one stderr line says so), else a key file; a
+ * defaulted keychain that refuses (locked, no one at the dialog) says --custody file. A name either custody holds is
  * refused. Prints the address only, never key material.
  */
 export function keygen(args: readonly string[], io: Io): number {
@@ -79,14 +93,28 @@ export function keygen(args: readonly string[], io: Io): number {
     },
   })
   const [home, name] = [homeDir(io, str(p, 'dir')), p.positionals[0] as string]
+  refuseReserved(name)
   if (str(p, 'custody') === 'agent') return agentPointer(p, io, home, name)
   if (str(p, 'principal') !== undefined || str(p, 'recovery') !== undefined) {
     throw new UsageError('--principal and --recovery go with --custody agent')
   }
-  const into = target(p)
+  const defaulted = str(p, 'custody') === undefined
+  const into = target(p, defaulted ? defaultCustody(io) : 'file')
   const keys = generateEdgeKeys(io.rng)
-  homeCustody(io, home).create(name, keys, into)
+  try {
+    homeCustody(io, home).create(name, keys, into)
+  } catch (e) {
+    const code = (e as { code?: unknown }).code
+    if (!defaulted || into.custody !== 'keychain' || (code !== 'EACCES' && code !== 'ETIMEDOUT')) throw e
+    const hint = 'on a host no one watches, run keygen again with --custody file'
+    throw new CliError(code, `${(e as Error).message}; ${hint}`)
+  }
+  if (defaulted && into.custody === 'keychain')
+    io.err(`keygen: ${name} is kept in the macOS keychain (bag:${name})`)
   if (io.isTty) io.err(NO_RECOVERY) // said to a person at a terminal; a script, or onboard's own keygen, is not one
+  // The bag service serves <home>/identities.json: the new identity goes in it (service-home.ts); stdout stays the address.
+  const added = addToServiceHome(home, name)
+  if (added !== null) io.err(added)
   io.out(keys.signing.address)
   return 0
 }

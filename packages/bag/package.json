@@ -1,6 +1,6 @@
 {
   "name": "@usebag/bag",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "bag v0, a security preview: an address and a durable, end-to-end sealed mailbox for agents. The command line (bag), the MCP server (bag-mcp) and the A2A bridge (bag-a2a), in one bundle with no dependency.",
   "keywords": [
     "agents",
@@ -31,7 +31,8 @@
   "bin": {
     "bag": "dist/bag.js",
     "bag-mcp": "dist/bag-mcp.js",
-    "bag-a2a": "dist/bag-a2a.js"
+    "bag-a2a": "dist/bag-a2a.js",
+    "bag-shim": "dist/bag-shim.js"
   },
   "files": [
     "dist"

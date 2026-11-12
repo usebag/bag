@@ -19,6 +19,7 @@ import {
   type Clock,
   createRecordSource,
   Edge,
+  type EdgeKeys,
   EpochOpener,
   FsAuditSink,
   HomeCustody,
@@ -86,6 +87,8 @@ export interface OpenDeps {
   readonly doorbell?: () => void
   /** The edge's wait before resubscription attempt n (default the edge's: 250 ms × 2^n, at most 30 s). */
   readonly resubscribeDelayMs?: (attempt: number) => number
+  /** The keys, already read (the bag service reads them first, so a Keychain dialog never stalls another identity). */
+  readonly keys?: EdgeKeys
   /** The chain, already read (from --chain-cmd); without it, --auth's file is read here. */
   readonly auth?: readonly Hop[]
   /** This process's pid, written into the lock file. */
@@ -221,7 +224,7 @@ export interface LockMeta {
  * Whether the lock's holder is a live process of that lock: its pid answers, and the process did not start after the
  * lock was written (a pid used again by an unrelated process). The reference time is started_at, else the file's mtime.
  */
-function holderLives(path: string, holder: LockInfo, alive: (pid: number) => boolean): boolean {
+export function holderLives(path: string, holder: LockInfo, alive: (pid: number) => boolean): boolean {
   if (!alive(holder.pid)) return false
   try {
     const wrote = holder.startedAt === undefined ? Number.NaN : Date.parse(holder.startedAt) / 1000
@@ -405,7 +408,7 @@ export function openIdentity(config: Config, deps: OpenDeps): Opened {
   // The keys first: the custody refuses a name that could leave its directory before any path is made from it.
   let agent: SessionAgent | null = null
   const custody = new HomeCustody(config.home, { client: () => (agent as SessionAgent).client() })
-  const own = custody.keys(config.as)
+  const own = deps.keys ?? custody.keys(config.as)
   if (deps.auth === undefined && config.chainCmd !== null) {
     throw new ConfigError('usage', "a --chain-cmd session's chain is read before its identity is opened")
   }

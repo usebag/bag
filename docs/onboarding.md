@@ -48,7 +48,7 @@ Optional flags, with their defaults:
 | `--origin apex\|bag` | `apex` | serve at `https://<domain>/` or at `https://bag.<domain>/` |
 | `--ttl <seconds>` | 86400 | the life of the org, handle and agent address records; at most 86400 |
 | `--chain-exp <seconds>` | 604800 (7 days) | the life of the chain from the org key to the agent; at most 2592000 |
-| `--max-bytes <n>` | the held record's, else 65536 | the largest envelope the agent's accept-from record takes |
+| `--max-bytes <n>` | the held record's (65536, the old default, becomes 196608), else 196608 | the largest envelope the agent's accept-from record takes |
 | `--retention <seconds>` | the held record's, else 604800 | the accept-from record's retention |
 | `--allow-private-relays` | off | lets the self-check's lookups use a relay on a private or loopback address |
 
@@ -276,8 +276,15 @@ peer paired since the last run. Its roots, without duplicates, in this order:
 
 A `kept <root>` line names each root of the union that you did not type, before the `published` lines. `trust.json`
 still gains only the roots you typed. The size and retention are the typed `--max-bytes` and `--retention`, else those
-of the held record, else 65536 and 604800. A typed `*` publishes `*` alone: it admits every sender, and the roots in
+of the held record, else 196608, the envelope cap, and 604800. A held `max_bytes` of exactly 65536, the default up to
+v0.3.0, is written as 196608; any other is kept, and a typed `--max-bytes 65536` is written as typed. A typed `*` publishes `*` alone: it admits every sender, and the roots in
 `trust.json` come back in the list when a later run types roots instead of `*`.
+
+**The larger envelope cap.** After v0.3.0 the envelope cap rose from 65,536 to 196,608 bytes (`message-size.md`). The
+order: the relay flag first (the relay operator's deploy, `--max-envelope-bytes 196608`), then the readers (every
+`bag` and `bag-mcp` on the new version), then the lift, which is automatic (this daily refresh, `record keep` and every
+other re-sign write 196608 in place of a held 65536, so within about 11 hours), and only once every reader runs the
+new version a policy file with a scope `max_bytes` over 65,536.
 
 **After a lapse.** If no run came for longer than the ttl, the relays swept the agent's address record, but not its
 accept-from record. The next run still reads the accept-from record and keeps its roots. The rotation key and revoked

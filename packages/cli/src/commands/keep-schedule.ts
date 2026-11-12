@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto'
 import { shq } from '../args.ts'
 import { CLI_MAIN } from '../entries.ts'
+import { stableNode } from '../packaged.ts'
 
 // A person's own background `record keep` (the last-mile rulings, section 1): the text of a launchd job or a crontab
 // line, on stdout. Nothing here writes a job, and nothing touches launchd or cron: the person's one line does.
@@ -21,8 +22,9 @@ export function launchdJob(
   log: string,
   main = CLI_MAIN,
   hours = HOURS,
+  node = stableNode(),
 ): string {
-  const argv = [process.execPath, main, ...args].map((a) => `    <string>${xml(a)}</string>`)
+  const argv = [node, main, ...args].map((a) => `    <string>${xml(a)}</string>`)
   const at = (h: number | null) => (h === null ? '' : `<key>Hour</key><integer>${h}</integer>`)
   const when = (hours ?? [null]).map(
     (h) => `    <dict>${at(h)}<key>Minute</key><integer>${MINUTE}</integer></dict>`,
@@ -50,10 +52,17 @@ export function launchdJob(
 }
 
 /**
- * The crontab line that runs `args` of the CLI at `main` at HOURS. A run the machine sleeps through is skipped: cron
+ * The crontab line that runs `args` of the CLI at `main` at HOURS, with `node` (Homebrew's link when it is the running
+ * node, packaged.ts's stableNode, so a brew upgrade does not remove it; the launchd job the same). A run the machine sleeps through is skipped: cron
  * does not catch up.
  */
-export function crontabLine(args: readonly string[], log: string, main = CLI_MAIN, hours = HOURS): string {
-  const argv = [process.execPath, main, ...args].map(shq).join(' ')
+export function crontabLine(
+  args: readonly string[],
+  log: string,
+  main = CLI_MAIN,
+  hours = HOURS,
+  node = stableNode(),
+): string {
+  const argv = [node, main, ...args].map(shq).join(' ')
   return `${MINUTE} ${hours?.join(',') ?? '*'} * * * ${argv} >> ${shq(log)} 2>&1`.replaceAll('%', '\\%')
 }

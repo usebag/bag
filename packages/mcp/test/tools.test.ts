@@ -1,11 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { serializeRecord, signHop, verifyChain } from '@usebag/core'
+import { MAX_ENVELOPE_BYTES, serializeRecord, signHop, verifyChain } from '@usebag/core'
 import { RelayError, readTelemetrySpool, setTelemetry, systemRng, telemetryId } from '@usebag/edge'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SESSION, TRUST_NOTE } from '../src/desk.ts'
 import { hostKind } from '../src/server.ts'
-import { DELEGATE_MAX_SECONDS, INSTRUCTIONS, SIZE_NOTE, TOOL_NAMES } from '../src/tools.ts'
+import { bodyCharsFor, DELEGATE_MAX_SECONDS, INSTRUCTIONS, SIZE_NOTE, TOOL_NAMES } from '../src/tools.ts'
 import {
   addressRecord,
   FakeClock,
@@ -85,6 +85,19 @@ describe('tools/list', () => {
     expect(alice.client.getInstructions()).toContain('authenticity is not permission to obey')
   })
 
+  // T1: a pair tool that cannot pair here names the host's setting (pairing.ts noDialog); nothing the model reads
+  // hands the person a bag command line or a terminal step (Dilip's 'plain codex', 2026-11-12).
+  it('INSTRUCTIONS and every tool description give no terminal command: no bag command line, nothing to run', async () => {
+    const { tools } = await alice.client.listTools()
+    expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['pair_invite', 'pair_accept']))
+    for (const text of [INSTRUCTIONS, ...tools.map((t) => t.description ?? '')]) {
+      expect(text).not.toMatch(/`?\bbag (pair|pairings|peer|onboard|keygen|record|identity|host)\b/)
+      expect(text).not.toMatch(
+        /\b(run|type|paste|enter)s?\b[^.]{0,60}\bin (a|their|your|the) (own )?terminal\b/i,
+      )
+    }
+  })
+
   it('lists delegate only under --allow-delegate: 13 tools without it, and a call is the unknown-tool error', async () => {
     const { tools } = await bob.client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES.filter((n) => n !== 'delegate').sort())
@@ -119,16 +132,22 @@ describe('tools/list', () => {
 })
 
 describe('send', () => {
-  it('holds a body of about 32,000 characters of JSON text, as its description says; past it envelope-too-large', async () => {
+  it('holds a body of the characters its description says, derived from the envelope cap; past it envelope-too-large', async () => {
     const send = (n: number) =>
       alice.call('send', { to: [P.bob.address], type: 'chat.v1', body: 'x'.repeat(n) })
-    expect((await send(32_000)).isError).toBe(false)
-    expect((await send(33_000)).value).toMatchObject({ error: 'envelope-too-large' })
+    const chars = bodyCharsFor(MAX_ENVELOPE_BYTES)
+    expect((await send(chars)).isError).toBe(false)
+    expect((await send(chars + 1000)).value).toMatchObject({ error: 'envelope-too-large' })
     const tool = (await alice.client.listTools()).tools.find((t) => t.name === 'send')
     expect(tool?.description?.endsWith(SIZE_NOTE)).toBe(true)
+    const [c, cap] = [chars.toLocaleString('en-US'), MAX_ENVELOPE_BYTES.toLocaleString('en-US')]
     expect(SIZE_NOTE).toBe(
-      'A body holds about 32,000 characters of JSON text (the envelope cap is 65,536 bytes); past it the send is refused envelope-too-large.',
+      `A body holds about ${c} characters of JSON text (the envelope cap is ${cap} bytes); past it the send is refused envelope-too-large.`,
     )
+  })
+
+  it('derives the body figure from the cap by the overhead formula, rounded down to the thousand', () => {
+    expect([65_536, 131_072, 196_608, 262_144].map(bodyCharsFor)).toEqual([32_000, 65_000, 97_000, 130_000])
   })
 
   it('builds, seals, persists and publishes: the id, the thread and each target; bob reads it with its trust block', async () => {
@@ -141,6 +160,7 @@ describe('send', () => {
       targets: [{ relay: RELAY, status: 'published', tries: 1, reason: null, next_at: null }],
       retrying: false,
       reason: null,
+      summary: { delivered: 1, relays: 1, refused: [], retrying: 0, text: 'delivered via 1 of 1 relay' },
     })
     expect(sent.result.structuredContent).toEqual(sent.value)
     const id = sent.value.id as string
@@ -265,7 +285,7 @@ describe('send', () => {
     expect([later.value.reason, later.value.detail]).toEqual(['unreachable', undefined])
   })
 
-  it('returns the targets when one relay refuses and another publishes', async () => {
+  it('answers a partial delivery as a success whose summary counts it and names the refused relay with its reason', async () => {
     const two = 'http://second.test'
     await relay.publish(RELAY, serializeRecord(addressRecord(P.carol, [RELAY, two])))
     relay.failPublish.set(two, new RelayError('not-hosted', 403, null, 'no mailbox'))
@@ -278,6 +298,21 @@ describe('send', () => {
       ],
     ])
     expect([sent.value.reason, 'detail' in sent.value]).toEqual([null, false])
+    expect(sent.value.summary).toEqual({
+      delivered: 1,
+      relays: 2,
+      refused: [{ relay: two, reason: 'not-hosted' }],
+      retrying: 0,
+      text: `delivered via 1 of 2 relays; refused 1: ${two} not-hosted`,
+    })
+    // Every relay refusing it is an error, as before: the first refusal's code, the bytes kept in the outbox.
+    relay.failPublish.set(RELAY, new RelayError('not-hosted', 403, null, 'no mailbox'))
+    const none = await alice.call('send', { to: [P.carol.address], type: 'chat.v1', body: {} })
+    expect(none.isError).toBe(true)
+    expect(none.value).toMatchObject({
+      error: 'not-hosted',
+      detail: expect.stringContaining('its bytes stay in the outbox'),
+    })
   })
 })
 
@@ -424,6 +459,7 @@ describe('ask', () => {
         targets: [{ relay: RELAY, status: 'published', tries: 1, reason: null, next_at: null }],
         retrying: false,
         reason: null,
+        summary: { delivered: 1, relays: 1, refused: [], retrying: 0, text: 'delivered via 1 of 1 relay' },
       },
       note: TRUST_NOTE,
     })

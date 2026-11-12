@@ -1,5 +1,6 @@
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
+import { join, relative } from 'node:path'
 import {
   type Hop,
   parseRecord,
@@ -285,6 +286,62 @@ describe('ac login', () => {
     expect((await login()).err[0]).toMatch(/^bag: bad-record: /)
     publishRecord(relay, h, { rotated_from: other.address }, other.keys.signing)
     expect((await login()).err[0]).toBe('bag: rotation: logout re-signs no rotation record')
+  })
+})
+
+/** Every file under `root` (relative path to a content hash; a socket as "socket"). */
+function filesOf(root: string): Map<string, string> {
+  const m = new Map<string, string>()
+  const walk = (d: string): void => {
+    for (const e of readdirSync(d)) {
+      const p = join(d, e)
+      const st = lstatSync(p)
+      if (st.isDirectory()) walk(p)
+      else
+        m.set(
+          relative(root, p),
+          st.isSocket() ? 'socket' : createHash('sha256').update(readFileSync(p)).digest('hex'),
+        )
+    }
+  }
+  walk(root)
+  return m
+}
+
+// The ruling of 2026-11-12 16:04 UTC: ac login does not lend an identity the bag service serves, because the two never
+// write the same file. login writes only the principal's own paths; the service's agent unit for that identity writes
+// only under <name>.service (state/<name>.service/ and keys/<name>.service.json, mcp session-agent-open.test.ts pins
+// that half). A login write under <name>.service, or outside the principal's paths, breaks the ruling.
+describe('ac login: the paths it writes, beside the bag service agent unit', () => {
+  it('writes only the principal paths through a window, a grant and a logout, and nothing under <name>.service', async () => {
+    const relay = new MemoryRelay()
+    const h = agentHome(dir())
+    publishRecord(relay, h)
+    const before = filesOf(h.dir)
+    const login = await loggedIn(relay, h)
+    login.io.lines.push('y')
+    const io = testIo(relay)
+    const args = ['--session', sessionAddress(), '--caveat', CAVEAT, '--exp', '+600', '--dir', h.dir]
+    expect((await cli(io, 'grant', '--as', 'jane', ...args)).code).toBe(0)
+    expect((await cli(io, 'logout', '--as', 'jane', '--dir', h.dir)).code).toBe(0)
+    expect((await login.ran).code).toBe(0)
+    const after = filesOf(h.dir)
+    const written = [...after].filter(([p, v]) => before.get(p) !== v).map(([p]) => p)
+    const hex = h.address.slice('ed25519:'.length)
+    // jane is the agent pointer (agent/jane.json), jane-keys the principal's key file: its state, its records, the
+    // agent's audit and its revocation note, the key records of its epochs.
+    const principal = [
+      /^state\/jane-keys\//,
+      /^records\/jane(-keys)?\.address\.json$/,
+      /^agent-audit\.jsonl$/,
+      new RegExp(`^agent-revoked-exp\\.ed25519:${hex}\\.json$`),
+      new RegExp(`^key-records/${hex}/`),
+    ]
+    expect(written.length).toBeGreaterThan(0)
+    expect(written.filter((p) => !principal.some((r) => r.test(p)))).toEqual([])
+    expect([...after.keys()].filter((p) => /(^|\/)jane\.service(\/|\.json$)/.test(p))).toEqual([])
+    // and it removed nothing it found (the agent pointer and the key file stay)
+    expect([...before.keys()].filter((p) => !after.has(p))).toEqual([])
   })
 })
 

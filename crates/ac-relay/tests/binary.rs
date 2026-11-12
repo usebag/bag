@@ -128,6 +128,7 @@ async fn prints_one_url_line_serves_the_api_and_stops_on_sigterm() {
     assert_eq!(health.status, 200);
     let t = now();
     assert!(health.json()["now"].as_u64().unwrap().abs_diff(t) <= 2);
+    assert_eq!(health.json()["max_envelope_bytes"], 196_608, "the default --max-envelope-bytes");
     let accepted = request(
         relay.addr,
         "POST",

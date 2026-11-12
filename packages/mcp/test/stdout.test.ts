@@ -86,7 +86,7 @@ describe('stdout carries MCP frames and nothing else', () => {
       ['facts', {}],
     ]
     const results = []
-    expect((await client.listTools()).tools).toHaveLength(15)
+    expect((await client.listTools()).tools).toHaveLength(16)
     for (const [name, args] of calls) results.push(await client.callTool({ name, arguments: args }))
     expect(results.map((r) => r.isError === true)).toEqual([
       false,

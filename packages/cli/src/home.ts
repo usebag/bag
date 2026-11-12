@@ -201,10 +201,13 @@ export function changeover(store: KeyEpochStore, address: string): boolean {
   return held.length === 0 || held.includes(1)
 }
 
-/** The keys of an identity, from its custody (name and modes checked); the agent's are not-authorized. */
+/**
+ * The keys of an identity, from its custody (name and modes checked); the agent's are not-authorized. The class is
+ * the edge's custodyOf, the one a bag service checks per call (custodyClass), so both refuse the same identities.
+ */
 export function loadKeys(io: Io, home: string, name: string): EdgeKeys {
   const custody = homeCustody(io, home)
-  if (custody.entry(name).custody === 'agent') {
+  if (custody.custodyOf(name) === 'agent') {
     throw new AcError('not-authorized', `${name} is held by the agent, which signs a session's hops only`)
   }
   return custody.keys(name)

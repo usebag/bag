@@ -29,12 +29,16 @@ export const USAGE = `bag MCP server (pre-release): an address and a durable mai
 
 usage: ${MAIN} --as <key name> --relay <url>... [options]
        ${MAIN} --identities <file> [options]
+       ${MAIN} --service --dir <home> --identities <file> [options]
 
   --as <name>                   the signing key: a key file, <home>/keys/<name>.json, or a keychain identity,
                                 <home>/keychain/<name>.json (a self-rooted principal, or a session)
   --relay <url>                 a relay to subscribe to and look records up at; repeatable, at least one
   --rendezvous <url>            the relay that hosts pairing codes for pair_invite and pair_accept, shared by both
                                 peers when their relays differ (default the first --relay)
+  --service                     the bag service (docs/bag-service.md): one per home, on <home>/run/service.sock
+                                in place of stdio, with --dir <home>; its identities are --identities <file>,
+                                default <home>/identities.json, every identity of the file in that home
   --identities <file>           several unlinked identities in one server: an absolute path to a 0600 JSON file
                                 that gives each its label, key, home, relays and trust; beside it only
                                 --max-tool-seconds, --progress-seconds, --push, --allow-private-relays and
@@ -161,6 +165,8 @@ export interface Config {
   readonly policy: string | null
   /** The org's members record file (--members), or null; 0600, read and verified at start (policy.ts). */
   readonly members: string | null
+  /** An agent identity's grant caveats in the bag service (the identities file's grant_caveats); absent: none. */
+  readonly grantCaveats?: readonly string[]
   /** What the server pushes to the host on a delivered message (--push); [] by default. */
   readonly push: readonly (typeof PUSH_KINDS)[number][]
 }
@@ -172,6 +178,8 @@ export interface ServerConfig {
   readonly defaultLabel: string
   /** Whether the identities came from --identities (then every act names `as`). */
   readonly multi: boolean
+  /** --service: the home the bag service holds (docs/bag-service.md), every identity in it; absent for stdio. */
+  readonly service?: string
   readonly maxToolSeconds: number
   readonly progressSeconds: number
   readonly push: Config['push']
@@ -189,8 +197,13 @@ export type ServerWide = Pick<
 const SERVER_WIDE =
   'identities max-tool-seconds progress-seconds push allow-private-relays default-handler'.split(' ')
 
+/** The flags --service takes: its home, its identities and the server-wide timings (no --push: no host to push to). */
+const SERVICE_FLAGS =
+  'service dir identities max-tool-seconds progress-seconds allow-private-relays default-handler'.split(' ')
+
 const OPTIONS = {
   identities: { type: 'string' },
+  service: { type: 'boolean' },
   as: { type: 'string' },
   relay: { type: 'string', multiple: true },
   rendezvous: { type: 'string' },
@@ -353,6 +366,16 @@ export function parseServerConfig(argv: readonly string[], env: Env): ServerConf
   const values = flagsOf(argv)
   if (values.help === true) return 'help'
   const file = values.identities as string | undefined
+  if (values.service === true) {
+    if (values.dir === undefined)
+      throw usage('--service takes --dir <home> (and --identities <file>, default <home>/identities.json)')
+    for (const f of Object.keys(values))
+      if (!SERVICE_FLAGS.includes(f)) throw usage(`--${f} does not go with --service`)
+    const wide = serverWideOf(values)
+    const home = values.dir as string
+    const list = file ?? `${home.replace(/\/+$/, '')}/identities.json`
+    return { ...readIdentities(list, wide, process.platform, home), multi: true, service: home, ...wide }
+  }
   if (file === undefined) {
     const one = configOf(values, env)
     return { identities: [one], defaultLabel: one.label, multi: false, ...serverWideOf(values) }

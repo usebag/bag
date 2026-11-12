@@ -10,6 +10,7 @@ import {
   generateSealingKey,
   type Hop,
   type KeyRecord,
+  MAX_ENVELOPE_BYTES,
   parseRecord,
   serializeRecord,
   signHop,
@@ -330,7 +331,14 @@ describe('e2e scenario 23-mcp: host-safe waits, chain renewal and record keep-al
         expect({ ...next, iat: 0, sig: '' }).toEqual({ ...carolRecord, iat: 0, sig: '' })
         const accept = await relayRecord(w.url, C, 'accept-from')
         expect((accept.iat as number) > carolAccept.iat).toBe(true)
-        expect({ ...accept, iat: 0, sig: '' }).toEqual({ ...carolAccept, iat: 0, sig: '' })
+        // The keep-alive's re-sign lifts the old default max_bytes (65,536, as published) to the envelope cap (W9).
+        expect(carolAccept.max_bytes).toBe(65_536)
+        expect({ ...accept, iat: 0, sig: '' }).toEqual({
+          ...carolAccept,
+          iat: 0,
+          sig: '',
+          max_bytes: MAX_ENVELOPE_BYTES,
+        })
         expect((await carol.call('status')).value.keep_alive).toMatchObject({
           address_iat: next.iat,
           last: { outcome: 're-signed', published: 2, failed: 0 },

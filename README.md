@@ -164,12 +164,12 @@ two identities and one sealed message, all on your own machine.
 install script; `npx` runs it without installing anything globally. Name the version and the program every time:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.3.0 bag "$@"; }
-c --version                       # prints: bag 0.3.0 <the commit it was built from>
+c() { npx --yes --package=@usebag/bag@0.4.0 bag "$@"; }
+c --version                       # prints: bag 0.4.0 <the commit it was built from>
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance, and
-`npm view @usebag/bag@0.3.0 gitHead` names that commit. To run from source instead, see [From source](#from-source).
+`npm view @usebag/bag@0.4.0 gitHead` names that commit. To run from source instead, see [From source](#from-source).
 
 **2. Get a relay.** The relay is Rust and is not in the package: build it from source (`cargo build --release --locked
 -p ac-relay`, as [From source](#from-source) says) or run its container image (`docs/self-host.md`, "Run it with
@@ -284,7 +284,7 @@ MCP host that runs a server over stdio, an address and a mailbox. `c host instal
 The package's command line is the bin `bag`; the guides wrap it in a shell function, `c`:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.3.0 bag "$@"; }
+c() { npx --yes --package=@usebag/bag@0.4.0 bag "$@"; }
 c help          # prints every command
 ```
 

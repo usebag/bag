@@ -1,4 +1,4 @@
-import { utf8 } from '@usebag/core'
+import { MAX_ENVELOPE_BYTES, utf8 } from '@usebag/core'
 import { describe, expect, it } from 'vitest'
 import {
   acceptFrom,
@@ -55,7 +55,9 @@ describe('H1 to H3, H9, H10: the publish order, dedup and tombstones', () => {
     const alice = party('alice')
     const bob = await mailbox(relay, 'bob', [alice])
     const garbage = utf8('{"v":1,"to":')
-    const tooLarge = new Uint8Array(65_537).fill(0x20)
+    // One byte over the envelope cap (still under the request body cap), so the relay's size check (before the parse)
+    // refuses it envelope-too-large.
+    const tooLarge = new Uint8Array(MAX_ENVELOPE_BYTES + 1).fill(0x20)
     // Everything the burst posts is built (signed and sealed) before the window opens, so the window holds only the
     // POSTs: a stall in building cannot carry the burst over the window's end and reset the counter.
     const e1 = envelope(alice, [bob])
@@ -77,7 +79,12 @@ describe('H1 to H3, H9, H10: the publish order, dedup and tombstones', () => {
     const refusedEarly = [
       { status: 400, body: { error: 'bad-json' }, retryAfter: null },
       { status: 422, body: { error: 'bad-id' }, retryAfter: null },
-      { status: 413, body: { error: 'envelope-too-large' }, retryAfter: null },
+      // The refusal names the relay's cap, an additive field (W9).
+      {
+        status: 413,
+        body: { error: 'envelope-too-large', max_envelope_bytes: MAX_ENVELOPE_BYTES },
+        retryAfter: null,
+      },
     ]
     expect(await early()).toEqual(refusedEarly)
     // Unsigned (zero sig, valid id): reach step 3a, charged 2 to 4, then 422 bad-sig at step 4.

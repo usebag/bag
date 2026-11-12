@@ -1,0 +1,17 @@
+{
+  "name": "@usebag/shim",
+  "version": "0.0.0",
+  "private": true,
+  "description": "bag shim: the thin stdio MCP server a host starts; it forwards every message to the bag service over its unix socket and holds no key, store or token.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run --coverage"
+  }
+}

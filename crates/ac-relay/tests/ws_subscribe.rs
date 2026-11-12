@@ -4,11 +4,12 @@
 mod common;
 
 use ac_core::chain::Hop;
+use ac_core::envelope::Envelope;
 use ac_core::records::Roots;
 use ac_relay::Config;
 use common::{
-    NOW, RawWs, Server, addr, auth_frame, bytes, envelope, key, subscribe, ws_close_code, ws_connect, ws_env,
-    ws_json, ws_send,
+    NOW, RawWs, Server, addr, auth_frame, bytes, envelope, key, sealed, subscribe, ws_close_code, ws_connect,
+    ws_env, ws_json, ws_send,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
 use std::time::Duration;
@@ -259,5 +260,51 @@ async fn two_recipients_of_one_envelope_each_get_it_with_their_own_cursor() {
     assert_eq!(s.publish(&bytes(&env)).await.json()["delivered"], 2);
     assert_eq!(ws_env(&mut two).await, (2, env.id_hex()));
     assert_eq!(ws_env(&mut three).await, (1, env.id_hex()));
+    s.stop().await;
+}
+
+/// No frame within 300 ms: the batch has stopped and waits for an ack.
+async fn quiet(ws: &mut common::Ws) {
+    let next = tokio::time::timeout(Duration::from_millis(300), ws.next()).await;
+    assert!(next.is_err(), "no frame until an ack: {next:?}");
+}
+
+#[tokio::test]
+async fn a_batch_stops_at_one_mib_of_envelopes_and_the_ack_sends_the_rest() {
+    let s = Server::start(Config::default()).await;
+    s.host(2, Roots::Any, 196_608, 3_600, NOW).await;
+    let mut ids = Vec::new();
+    for i in 0..7 {
+        let env =
+            Envelope::sign(&key(1), vec![addr(2)], vec![], NOW - i, sealed(&[addr(2)], 94_000)).unwrap();
+        let size = bytes(&env).len();
+        assert!((188_000..196_608).contains(&size), "{size} bytes");
+        let r = s.publish(&bytes(&env)).await;
+        assert_eq!(r.status, 200, "{}", r.text());
+        ids.push(env.id_hex());
+    }
+    let (mut ws, _) = subscribe(&s, &key(2), &addr(2), &[], None).await;
+    // Five rows are about 0.95 MiB; a sixth would pass 1 MiB, though the window of 32 has room.
+    for (i, id) in ids.iter().take(5).enumerate() {
+        assert_eq!(ws_env(&mut ws).await, (u64::try_from(i).unwrap() + 1, id.clone()));
+    }
+    quiet(&mut ws).await;
+    ws_send(&mut ws, &serde_json::json!({"t": "ack", "cursor": 5})).await;
+    assert_eq!(ws_env(&mut ws).await, (6, ids[5].clone()));
+    assert_eq!(ws_env(&mut ws).await, (7, ids[6].clone()));
+    s.stop().await;
+}
+
+#[tokio::test]
+async fn a_row_over_the_batch_budget_is_still_sent_one_a_batch() {
+    let s = hosted(Config { batch_bytes: 100, ..Config::default() }).await;
+    let ids = publish_n(&s, 3).await;
+    let (mut ws, _) = subscribe(&s, &key(2), &addr(2), &[], None).await;
+    for (i, id) in ids.iter().enumerate() {
+        let cursor = u64::try_from(i).unwrap() + 1;
+        assert_eq!(ws_env(&mut ws).await, (cursor, id.clone()));
+        quiet(&mut ws).await;
+        ws_send(&mut ws, &serde_json::json!({"t": "ack", "cursor": cursor})).await;
+    }
     s.stop().await;
 }

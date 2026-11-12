@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { auditHash } from '@usebag/core'
-import { Audit, FsAuditSink, SqliteStore } from '@usebag/edge'
+import { Audit, FsAuditSink, SqliteStore, withConnection } from '@usebag/edge'
 import { afterAll, describe, expect, it } from 'vitest'
 import { tempDir, testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
@@ -24,6 +24,25 @@ describe('audit verify: the edge chain verifier over an audit log file', () => {
     expect(await cli(io, 'audit', 'verify', edited)).toEqual({
       code: 1,
       out: ['bad line 2: the hash does not recompute'],
+      err: [],
+    })
+  })
+
+  it('counts the connection member on a log the bag service continued, and prints nothing more for an older log', async () => {
+    const file = join(tmp.dir, 'served.jsonl')
+    new Audit(new FsAuditSink(file), { now: () => 1_800_000_000 }).record({
+      event: 'verify',
+      decision: 'accept',
+    })
+    const io = testIo(new MemoryRelay())
+    expect((await cli(io, 'audit', 'verify', file)).out).toEqual(['ok 1 lines'])
+    const service = new Audit(new FsAuditSink(file), { now: () => 1_800_000_001 })
+    service.attribute(() => null)
+    withConnection('c-1f3a', () => service.record({ event: 'publish', decision: 'accept' }))
+    service.record({ event: 'subscribe', decision: 'retry' })
+    expect(await cli(io, 'audit', 'verify', file)).toEqual({
+      code: 0,
+      out: ['ok 3 lines', 'connections: 1 name one, 1 name none, 1 before the service'],
       err: [],
     })
   })

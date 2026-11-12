@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   type AddressRecord,
   countersignRotation,
@@ -109,6 +109,14 @@ describe('ac init', () => {
       confirmed_at: T0,
       stale_since: null,
     })
+    // The bag service serves <home>/identities.json: init puts the new identity there, with its relay.
+    const ids = JSON.parse(readFileSync(join(dir, 'identities.json'), 'utf8')) as { identities: unknown[] }
+    expect(ids.identities).toEqual([
+      { label: 'alice', key: 'alice', home: resolve(dir), relays: [R], keep_alive_records: true },
+    ])
+    expect(io.stderr).toContain(
+      `added alice to ${join(resolve(dir), 'identities.json')} for the bag service (relays ${R})`,
+    )
     const r = held(net, address)
     // The address record names no sealing key; epoch 1's key record does, for a day, and its private key is kept.
     expect([r.sealing_key, r.rotation_key, r.relays, r.ttl]).toEqual([
@@ -389,6 +397,7 @@ describe('ac restore', () => {
     const io = later(term(net, ...sheet, sheet[3] as string))
     io.answers.push(true) // the confirm before any republish
     expect(await restore(['alice', '--dir', dir], io)).toBe(0)
+    expect(existsSync(join(dir, 'identities.json'))).toBe(true)
     expect(io.asked).toEqual(['publish the address record anyway?'])
     expect(io.stderr).toContainEqual(
       'publishing replaces it: confirming may UN-REVOKE a key you revoked before',

@@ -271,8 +271,10 @@ significant to it, but an outbox keeps and resends the exact bytes (§9).
 | `sealed` | `{"wraps", "nonce", "ct"}` (§4.3) |
 | `sig` | 128 hex: `from`'s signature over the 32 bytes of `id` |
 
-Relays see these members only; `type`, `thread` and `body` are sealed. An envelope is at most 65,536 bytes as
-serialized, counted as the bytes received.
+Relays see these members only; `type`, `thread` and `body` are sealed. An envelope is at most 196,608 bytes as
+serialized, counted as the bytes received. (Changed 2026-11-11, W9: from 65,536, so that a body of 64 KiB fits. The
+sealed content is hex, so one recipient's largest ASCII body is about 97,800 characters; the request body cap of
+262,144 leaves room for a subscription frame, Appendix B 27.)
 
 **5.2 The sealed content.**
 - `type`: a non-empty string that contains no Unicode control character (General_Category `Cc`: U+0000 to U+001F,
@@ -300,7 +302,7 @@ of ids they have seen.
 
 **5.4 Parsing.** A reader of envelope bytes MUST apply these checks in this order, and fail with the code of the first
 check that fails (the order of steps 4 to 13 is an implementation default; the vectors pin it):
-1. at most 65,536 bytes (`envelope-too-large`);
+1. at most 196,608 bytes (`envelope-too-large`; changed 2026-11-11 from 65,536);
 2. UTF-8 JSON text (§2.5; `bad-json`);
 3. a JSON object (`bad-shape`);
 4. `v` is a number (`bad-shape`) and is 1 (`bad-version`): before any other member, so that an envelope of a later
@@ -493,7 +495,9 @@ relay's claim-only publish path is a store gate, not a trust statement.
 **7.4 Accept-from record and key record.** An accept-from record (`kind` `"accept-from"`) has: `owner`, the
 mailbox address, which signs it; `roots`, a list of 1 to 1,024 distinct entries (the cap: changed 2026-10-25), each an address or a domain root, or exactly `["*"]`, the wildcard (that `"*"` stands alone is an
 implementation default); `max_bytes`, a positive
-integer, the largest envelope the mailbox accepts; `ttl`, a positive integer, the seconds the relay keeps an envelope in
+integer, the largest envelope the mailbox accepts (implementation default: the envelope cap; a re-sign that finds a
+held `max_bytes` of exactly 65,536, the old cap and default, writes the envelope cap in its place and keeps any other
+value, changed 2026-11-11); `ttl`, a positive integer, the seconds the relay keeps an envelope in
 the mailbox, capped by the relay's own TTL; `iat`; and `sig`. It does not expire; a newer `iat`
 replaces it (implementation default: its `ttl` is retention, not validity, and so has no 24-hour ceiling). A relay
 without an accept-from record for any recipient of an envelope rejects the envelope. The ceiling of 86,400
@@ -553,8 +557,8 @@ policy that a mailbox's owner signed. It has three calls a relay must offer — 
 (implementation default). (Changed 2026-10-25: `internal` is now
 a code of Appendix A, relay group, status 500, so a client reads it as a code and still treats it as a failed try.) A domain root that does not resolve at publish is 503
 `resolve-failed` with `Retry-After` (§8.8), which a client also treats as a try to repeat. Defaults: TTL 604,800 s,
-skew 300 s, envelope cap 65,536 bytes, request body cap 262,144 bytes, record cap 131,072 bytes (added
-2026-10-25). The reference relay prints the line
+skew 300 s, envelope cap 196,608 bytes (changed 2026-11-11 from 65,536), request body cap 262,144 bytes, record cap
+131,072 bytes (added 2026-10-25). The reference relay prints the line
 `AC_RELAY_URL=http://127.0.0.1:<port>` when it is listening, so a harness can start it on port 0 and read its URL
 (Changed 2026-10-25: with `--advertise` it prints that URL, a port written in it
 kept, else none for `https` and the listening port for `http`, and health answers the same URL, §8.6 and §8.9.)
@@ -600,7 +604,7 @@ the response (changed 2026-10-25: steps 3a and 6a are new, the
 client address's limit moved from step 8 to 3a and dedup from step 9 to 6a, the store is step 9, and the other steps
 keep their numbers):
 1. size: a body over 262,144 bytes is `body-too-large`; a record (§7) over 131,072 bytes is `body-too-large`; an envelope
-   over 65,536 bytes is `envelope-too-large`; all 413 (implementation default for the second and third statuses);
+   over 196,608 bytes (changed 2026-11-11 from 65,536) is `envelope-too-large`; all 413 (implementation default for the second and third statuses);
 2. parse and caps: §5.4;
 3. the id recomputes (`bad-id`): §5.5 step 2;
 3a. the client address's limit: 600 publishes in a fixed 60-second window per client address. Every publish that reaches
@@ -1194,6 +1198,8 @@ edge MUST:
    (a person's `ac init` and `ac restore`, in the identity's own log), and `pair`
    (each step of a pairing the MCP server's pair tools drive; §13.11).
    `decision` stays the five values above and `reason` a code or `"ok"`.)
+   (Added 2026-11-12: a line the bag service writes carries a twelfth member, `connection`, inside its preimage; section
+   9.1 item 3. A verifier accepts both forms.)
 9. **Guard its keys.** Private keys are files of mode 0600 in a directory of mode 0700, never logged; the CLI prints
    addresses only.
 10. **Subscribe at its configured relays, and subscribe again (normative since 2026-10-25).** An edge subscribes,
@@ -1234,6 +1240,47 @@ edge MUST:
 (Items 1, 3 and 10 supersede Appendix B items 33 (the 20th failure), 34 (stated here as normative) and 42 (an error
 frame was fatal), which Appendix B keeps as written, for history; the clean-up of 2026-10-30 adds Appendix B items 89
 and 90 for the pairing rendezvous and the sender fan-out.)
+
+### 9.1 The bag service: one process as the owner of many mailboxes (added 2026-11-12, bag 0.4.0)
+
+This section is local, outside the frozen core: no wire format, preimage or relay call changes, and no vector moves. It
+says what an edge that holds many identities in one long-lived process, the reference's bag service, keeps of items 1
+to 12. The service's own socket, launch token and methods are the reference's local contract (`docs/bag-service.md` of
+the source repository, contract 1), not part of this specification.
+
+1. **One owner per mailbox, unchanged.** Exactly one live process fetches, acknowledges and advances the cursor of a
+   given identity's mailbox at a time, as items 2 and 10 require of an edge. The service is that process for every
+   identity it holds: it takes each identity's own state lock (the lock item 8 names) for as long as it owns the
+   identity, so a per-identity server or a tool of the same home never owns one mailbox together with it. An identity
+   another process holds is not owned by the service until that process releases it. One service runs per home; a
+   second exits without opening any identity.
+2. **Many readers, one cursor.** Several local connections (host sessions) may use one identity through the service.
+   They share that identity's one inbox and its one subscription per relay: the service subscribes, acknowledges
+   (section 8.5 step 5, `{"t": "ack", "cursor": n}`, cumulative) and deduplicates (item 3) once per identity, however
+   many connections use it. An envelope is acknowledged once, after it is durable at the edge (item 2), and the at-least-once delivery of section 8.2 and the id
+   dedup of item 3 are unchanged; acknowledgements are serialised per identity, so no two connections race one ack.
+   Which connection a message is shown to is local behaviour (the reference returns it once, to the first connection
+   that reads it), not a delivery rule.
+3. **The audit line's connection (normative for the service's own lines).** A line the service writes in an
+   identity's log for an act that arrived on a local connection carries a twelfth member, `connection`: an opaque
+   local id of that connection (1 to 64 of `A-Za-z0-9._:-`), or `null` for an act no connection started (a delivery,
+   a keep-alive republish). It names, and never authorises: it is not a key, a token or a capability, and nothing is
+   looked up by it. The preimage of such a line is item 8's ten fields with `connection` appended,
+   `[seq, prev, ts, event, decision, reason, id or null, from or null, root or null, detail or null, connection or
+   null]`, so the connection is covered by the line's `hash` and by the chain. A line with no `connection` member keeps
+   item 8's ten-field preimage. A verifier MUST accept both forms in one log, MUST compute each line's preimage by its
+   own form, and MUST refuse a line whose `connection` member is present but neither `null` nor a string of that form.
+   A per-identity server over stdio writes the ten-field form, as before. (Implementation default: the member's name
+   and the id's form.)
+4. **Keys stay in the edge.** The service reads each identity's keys from its custody (a key file of item 9, or a
+   platform keychain item) when it opens the identity, holds them in that identity's edge, and never sends them to a
+   connection; a restart reads them again from custody and never receives them from the process before it. Item 9's
+   file modes hold for any key that is a file.
+5. **Handover.** A service that stops for an upgrade first refuses new work, ends every pairing in progress (section 8.10:
+   the invitation secret and the check digits die with it, never persisted), flushes each identity's store, cursor
+   and acknowledgements, then releases each identity's lock before the next process can take it. There is no moment
+   with two owners. A fetched envelope that was not yet acknowledged stays durable and is acknowledged by the next
+   owner, which item 3's dedup makes safe.
 
 ## 10. Security considerations
 
@@ -1738,7 +1785,8 @@ local: it is never on the wire, and the table is §13's own, not a row of §2.4.
 - **`argsHash`**: `sha256hex(utf8(canonical(args)))` (§2.3) of the operation's canonical argument list. For `sign`,
   `args` is `[sub, caveats, exp]`; for `open`, `[mailbox, id]`, with the exact envelope bytes sent beside the request;
   for `register`, `[thread]`. The byte framing of a request is an implementation default (Appendix B 83). The agent
-  bounds the envelope bytes of an `open` at parse to 65,536 UTF-8 bytes (`envelope-too-large`, Appendix A).
+  bounds the envelope bytes of an `open` at parse to the envelope cap, 196,608 UTF-8 bytes (`envelope-too-large`,
+  Appendix A; changed 2026-11-11 from 65,536).
 
 **`device-grant`.** A uid-only op that signs the **device hop** `["ac/hop/1", principal, D, caveats, exp]` (§6.1)
 under the principal key, for another machine's key D, after one `y` typed at the agent's terminal (the prompt of
@@ -2168,7 +2216,7 @@ The agent seat's two local codes, `agent-locked` and `not-in-grant`, are §13's;
 | `bad-shape` | core | a member missing, extra or of the wrong type (§5.4) | 400 |
 | `bad-version` | core | `v` is not 1 | 400 |
 | `bad-suite` | core | `suite` is not 1 | 400 |
-| `envelope-too-large` | core | an envelope over 65,536 bytes | 413 |
+| `envelope-too-large` | core | an envelope over 196,608 bytes (65,536 before 2026-11-11) | 413 |
 | `too-many-recipients` | core | over 16 recipients | 422 |
 | `bad-id` | core | the id does not recompute | 422 |
 | `bad-sig` | core | the outer signature does not verify | 422 |
@@ -2258,7 +2306,7 @@ is marked where it appears.
 15. An accept-from record does not expire, and its `ttl` (retention) has no 24-hour ceiling; `"*"` stands alone in
     `roots`; `max_bytes` and `ttl` are positive (§7.4). Changed 2026-10-25: `roots` holds at most 1,024
     entries.
-16. Publish dispatches records by a top-level `kind` member; an envelope over 65,536 bytes is 413; success bodies as in
+16. Publish dispatches records by a top-level `kind` member; an envelope over 196,608 bytes (65,536 before 2026-11-11) is 413; success bodies as in
     §8.2; delivery to the recipients that admit the envelope, 403 only when none does; a rotation is checked when the
     relay holds the previous record (§8.2). Changed 2026-10-25: when it holds none, its claim is
     checked alone, under `rotated_from` (§7.3), so a bare or wrongly countersigned rotation is 422 `bad-rotation`
@@ -2595,7 +2643,7 @@ main first.
     session chain's earliest `exp`; a silent renewal is bounded by the window's end instead (§13.4, §13.5). `ac grant
     --exp` bounds the first hop only.
 79. Caveats per derived hop: at least 1 and at most 32, each at most 256 UTF-8 bytes (§6.2); hops per chain at most 8;
-    envelope on `open` at most 65,536 UTF-8 bytes, checked at parse (`envelope-too-large`); the request frame at most
+    envelope on `open` at most 196,608 UTF-8 bytes (65,536 before 2026-11-11), checked at parse (`envelope-too-large`); the request frame at most
     1 MiB (§13.1).
 80. `resign`: for a record with a `ttl`, at most once per half its `ttl`; for a key record, which has none, at most once
     per half its lifetime (`exp - iat`); per kind, only inside an open window (§13.7).
@@ -2655,8 +2703,8 @@ places the text did not settle for a relay; each is settled below, in that build
 open or a rule changes behaviour (items 98, 103, 104).
 91. A request body over the envelope cap that is not a record is `envelope-too-large` (413), not `bad-json`. The relay
     parses the body as JSON, then if the value is an object with a `kind` member it is a record and the record body cap
-    (131,072) applies, else it checks the envelope cap (65,536) before the structured envelope parse. So a non-record
-    over 65,536 — a body that names a member twice among them, since the strict reader (§2.5) refuses it as a record —
+    (131,072) applies, else it checks the envelope cap (196,608; 65,536 before 2026-11-11) before the structured envelope
+    parse. So a non-record over the envelope cap — a body that names a member twice among them, since the strict reader (§2.5) refuses it as a record —
     is `envelope-too-large`, decided before the parse error surfaces (§8.2 step 1; `crates/ac-relay/src/policy.rs:182`-
     `199`).
 92. A record publish's checks run in this order: §7.5 (`record.verify`), then the rotation check (`bad-rotation`, 422),

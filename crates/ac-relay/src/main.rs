@@ -3,7 +3,7 @@
 //! ```text
 //! ac-relay --port 0 --db /tmp/relay.sqlite [--bind 127.0.0.1] [--advertise http://<host>] [--accept-base <url>]...
 //!          [--ttl 604800]
-//!          [--skew 300] [--max-envelope-bytes 65536] [--well-known-timeout 10] [--well-known-cache-max 86400]
+//!          [--skew 300] [--max-envelope-bytes 196608] [--well-known-timeout 10] [--well-known-cache-max 86400]
 //!          [--well-known-insecure-http] [--well-known-resolve <host>=<ip>:<port>]... [--dns-resolve <name>=<txt>]...
 //!          [--header-timeout 10] [--body-timeout 30] [--connections-per-ip 79]
 //!          [--connection-reserve-permille 125] [--rate-window 60]

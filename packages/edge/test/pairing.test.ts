@@ -7,6 +7,7 @@ import {
   canonical,
   fromHex,
   type KeyRecord,
+  MAX_ENVELOPE_BYTES,
   newThread,
   parseEnvelope,
   parseRecord,
@@ -18,6 +19,7 @@ import {
 import { describe, expect, it } from 'vitest'
 import { systemRng } from '../src/adapters/system-clock.ts'
 import { generateEdgeKeys } from '../src/edge.ts'
+import { OLD_DEFAULT_MAX_BYTES } from '../src/max-bytes.ts'
 import { RelayGuard } from '../src/net.ts'
 import type { Lagging } from '../src/offer.ts'
 import { type Code, codeSecret, formatCode, parseCode, WORDS } from '../src/pair-code.ts'
@@ -299,7 +301,11 @@ describe('invitePeer and acceptPeer', () => {
     expect(b.log).toEqual([`ask ${q.code}`, 'sent', 'write'])
     expect(relay.record<AcceptFromRecord>(R1, a.address, 'accept-from')?.roots).toEqual([b.address])
     const theirs = relay.record<AcceptFromRecord>(R2, b.address, 'accept-from')
-    expect([theirs?.roots, theirs?.max_bytes, theirs?.ttl]).toEqual([[a.address], 65_536, 604_800])
+    expect([theirs?.roots, theirs?.max_bytes, theirs?.ttl]).toEqual([
+      [a.address],
+      MAX_ENVELOPE_BYTES,
+      604_800,
+    ])
     expect(relay.record<AcceptFromRecord>(R1, i, 'accept-from')?.roots).toEqual(['*'])
     expect(relay.record<AddressRecord>(R1, i, 'address')?.ttl).toBe(600)
     expect(relay.record(R1, b.address, 'address')).not.toBeNull()
@@ -339,6 +345,30 @@ describe('invitePeer and acceptPeer', () => {
     expect(relay.record<AddressRecord>(R1, b.address, 'address')?.iat).toBe(T0 + 100)
     const kept = relay.record<AcceptFromRecord>(R2, b.address, 'accept-from')
     expect([kept?.roots, kept?.max_bytes]).toEqual([['*'], 9000])
+  })
+
+  it('lifts a held max_bytes of exactly 65,536, the old default, to the envelope cap on admit, and keeps 32,768', async () => {
+    for (const [held, signed] of [
+      [OLD_DEFAULT_MAX_BYTES, MAX_ENVELOPE_BYTES],
+      [32_768, 32_768],
+    ]) {
+      const relay = new Relay()
+      const [a, b] = [side(relay), side(relay)]
+      const old = { kind: 'accept-from', owner: b.address, roots: [b.address], ttl: 3600, iat: T0 } as const
+      await relay.publish(
+        R2,
+        serializeRecord(signRecord(b.keys.signing, { ...old, max_bytes: held as number })),
+      )
+      const inviting = invite(a, R1)
+      await accept(b, R2, await opened(a))
+      await inviting
+      const kept = relay.record<AcceptFromRecord>(R2, b.address, 'accept-from')
+      expect([kept?.roots, kept?.max_bytes, kept?.ttl], `${held}`).toEqual([
+        [b.address, a.address],
+        signed,
+        3600,
+      ])
+    }
   })
 
   it('reads the newest record across relays, of the signer and kind asked, and re-signs an expired null one as null', async () => {
@@ -905,6 +935,95 @@ describe('invitePeer and acceptPeer', () => {
     expect(relay.record(R2, a.address, 'address')).toBeNull()
   })
 })
+
+// The person's cancel (pair_cancel, 2026-11-12): an aborted signal ends either side cancelled, nothing written. An
+// invitation that no request has reached is withdrawn: I's address record re-signed, newer, with no sealing key, so
+// its code meets invite-expired. Once a request was checked, I is left as it was (no word to its sender before the end).
+describe('a cancel (the signal)', () => {
+  it('withdraws I while it waits for a request: the code meets invite-expired, and no request is sent', async () => {
+    const relay = new Relay()
+    const [a, b] = [side(relay), side(relay)]
+    const stop = new AbortController()
+    const inviting = invite(a, R1, { signal: stop.signal })
+    const text = await opened(a)
+    const { i, inviter } = readInvite(text)
+    // I is the invitation's own one-time key, not the inviter's: the inviter's address record is never touched.
+    expect([inviter, i === a.address]).toEqual([a.address, false])
+    const own = relay.records.get(`${R1} ${a.address} address`)
+    expect(relay.record<AddressRecord>(R1, a.address, 'address')?.sealing_key).toBe(sealingOf(a))
+    stop.abort()
+    expect(await fail(inviting)).toBe('cancelled')
+    expect(relay.records.get(`${R1} ${a.address} address`)).toEqual(own)
+    const withdrawn = relay.record<AddressRecord>(R1, i, 'address')
+    expect([withdrawn?.sealing_key, withdrawn?.iat, withdrawn?.ttl]).toEqual([null, T0 + 1, 599])
+    expect(relay.record<AcceptFromRecord>(R1, i, 'accept-from')?.roots).toEqual(['*'])
+    expect(await fail(accept(b, R2, text))).toBe('invite-expired')
+    expect([a.log, b.log, relay.box(R1, i)]).toEqual([[], [], []])
+    expect(relay.record(R1, a.address, 'accept-from')).toBeNull()
+  })
+
+  it('a relay that does not take the withdrawal ends nothing else: still cancelled, I as it was', async () => {
+    const relay = new Relay()
+    const b = side(relay)
+    const stop = new AbortController()
+    const inviting = invite(b, R1, { signal: stop.signal })
+    const j = readInvite(await opened(b)).i
+    relay.failing.set(R1, new RelayError(null, 503, null, 'busy'))
+    stop.abort()
+    expect(await fail(inviting)).toBe('cancelled')
+    relay.failing.delete(R1)
+    expect(relay.record<AddressRecord>(R1, j, 'address')?.sealing_key).not.toBeNull()
+  })
+
+  it('after a request was checked, puts the roots back and leaves I as it was: cancelled at the admit wait', async () => {
+    const relay = new Relay()
+    const [a, b] = [side(relay), side(relay)]
+    const stop = new AbortController()
+    const inviting = invite(a, R1, {
+      signal: stop.signal,
+      ask: async () => {
+        relay.failingRecords.set(R2, new RelayError('body-too-large', 413, null, 'no'))
+        return true
+      },
+    })
+    const text = await opened(a)
+    expect(await fail(accept(b, R2, text))).toBe('body-too-large')
+    await until(
+      () => relay.record<AcceptFromRecord>(R1, a.address, 'accept-from')?.roots.includes(b.address) === true,
+    )
+    stop.abort()
+    expect(await fail(inviting)).toBe('cancelled')
+    expect(relay.record<AcceptFromRecord>(R1, a.address, 'accept-from')?.roots).toEqual([a.address])
+    expect(relay.record<AddressRecord>(R1, readInvite(text).i, 'address')?.sealing_key).not.toBeNull()
+  })
+
+  it('ends an acceptor waiting for the admit cancelled, and one aborted before it starts publishes nothing', async () => {
+    const relay = new Relay()
+    const [a, b] = [side(relay), side(relay)]
+    const inviting = invite(a, R1, { ask: () => new Promise<boolean>(() => {}) })
+    const stop = new AbortController()
+    const hooks = { ask: async () => {}, sent: () => b.log.push('sent'), write: () => b.log.push('write') }
+    const text = await opened(a)
+    const accepting = acceptPeer(b.p, b.keys, R2, readInvite(text), { ...hooks, signal: stop.signal })
+    await until(() => b.log.includes('sent'))
+    stop.abort()
+    expect(await fail(accepting)).toBe('cancelled')
+    expect([b.log, relay.record(R2, b.address, 'accept-from')]).toEqual([['sent'], null])
+    a.clock.t = END
+    void inviting.catch(() => {})
+    const fresh = new Relay()
+    const c = side(fresh)
+    expect(await fail(invitePeer(c.p, { relay: R1, keys: c.keys, ttl: 600, ...hooksFor(stop.signal) }))).toBe(
+      'cancelled',
+    )
+    const v = readInvite(text)
+    expect(await fail(acceptPeer(c.p, c.keys, R2, v, { ...hooks, signal: stop.signal }))).toBe('cancelled')
+    expect(fresh.records.size).toBe(0)
+  })
+})
+
+/** The inviter's steps that do nothing, under `signal`. */
+const hooksFor = (signal: AbortSignal) => ({ ...hooks, signal })
 
 describe('one listed relay down (spec/SPEC.md Appendix B 110)', () => {
   const DOWN = new RelayError(null, 0, null, 'no answer')

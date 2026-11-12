@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { type Clock, generateEdgeKeys, HomeCustody, type Rng } from '@usebag/edge'
+import { type Clock, type EdgeKeys, generateEdgeKeys, HomeCustody, type Rng } from '@usebag/edge'
 import {
   AgentClient,
   codexSessionId,
   codexSessionName,
+  type GrantReply,
   readSessionFile,
   requestGrant,
   resolveSessionName,
@@ -77,6 +78,33 @@ export interface SessionStart {
   bind(meta: unknown): void
 }
 
+/**
+ * The mark of a session key the bag service made (openAgentUnit): a crash-left keys/<label>.service.json is proven the
+ * service's own by it, so the service's start-up sweep never takes a real identity that happens to have that name.
+ * Key readers (edge keysOf) read only suite, sign_seed and seal_priv, so the extra fields change nothing for them.
+ */
+export interface SessionKeyMark {
+  readonly kind: 'session-key'
+  /** The principal's key name: the agent-custody identity this session key acts under. */
+  readonly principal: string
+}
+
+/** Adds `mark`'s fields to the key file this server just made, by a 0600 temporary file and a rename. */
+function markKey(file: string, mark: SessionKeyMark): void {
+  const key = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+  writeAtomic(file, JSON.stringify({ ...key, kind: mark.kind, principal: mark.principal }))
+}
+
+/** Whether the key file carries `mark` (kind session-key and this principal); false for a file that cannot be read. */
+function carriesMark(file: string, mark: SessionKeyMark): boolean {
+  try {
+    const key = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    return key.kind === mark.kind && key.principal === mark.principal
+  } catch {
+    return false
+  }
+}
+
 /** The name and anchor of the Claude Code session this server runs in; no-session when there is none. */
 function autoName(principal: string, names: SessionNameOptions | undefined) {
   try {
@@ -124,16 +152,16 @@ function codexIdOf(meta: unknown): string | null {
   }
 }
 
-export function startSession(given: Config, deps: SessionDeps): SessionStart {
+export function startSession(given: Config, deps: SessionDeps, mark?: SessionKeyMark): SessionStart {
   const s = given.session as NonNullable<Config['session']>
   const custody = new HomeCustody(given.home)
   const mailbox = custody.agent.entry(s.principal).address
   if (s.name === CODEX_SESSION)
     return codexSession(given, (id) =>
-      named(given, deps, custody, mailbox, codexSessionName(mailbox, id), null),
+      named(given, deps, custody, mailbox, codexSessionName(mailbox, id), null, mark),
     )
   const { name, anchor } = s.name === 'auto' ? autoName(mailbox, deps.names) : { name: s.name, anchor: null }
-  return named(given, deps, custody, mailbox, name, anchor)
+  return named(given, deps, custody, mailbox, name, anchor, mark)
 }
 
 /** An auto:codex session: unbound until a tool call's _meta names it, then the session `start` makes for its id. */
@@ -194,6 +222,7 @@ function named(
   mailbox: string,
   name: string,
   anchor: SessionName['anchor'] | null,
+  mark?: SessionKeyMark,
 ): SessionStart {
   const s = given.session as NonNullable<Config['session']>
   const state = join(given.home, 'state', name)
@@ -211,8 +240,18 @@ function named(
   let ours = false
   let address: string
   try {
+    // The service's opening (a mark given) adopts only its own session key for this principal: a key file there that
+    // lacks the mark (a real identity someone named <x>.service) is refused before the agent is asked, or the agent's
+    // y would hand the principal's hop to another identity's key. The --session form (no mark) adopts as before.
+    if (mark !== undefined && existsSync(keyFile) && !carriesMark(keyFile, mark))
+      throw new ConfigError(
+        'exists',
+        `keys/${name}.json exists and is not the bag service's session key for ${mark.principal}: ` +
+          'it is left as it is; rename that identity, or remove the file if it is a stale key',
+      )
     if (!existsSync(keyFile)) {
       custody.create(name, generateEdgeKeys(deps.rng), { custody: 'file' })
+      if (mark !== undefined) markKey(keyFile, mark)
       ours = true
     }
     address = custody.entry(name).address
@@ -235,6 +274,7 @@ function named(
     }
     forget(keyFile)
     address = custody.create(name, generateEdgeKeys(deps.rng), { custody: 'file' }).address
+    if (mark !== undefined) markKey(keyFile, mark)
   }
   const grant = async (rekeyed: boolean): Promise<void> => {
     let fresh = rekeyed
@@ -312,4 +352,77 @@ function named(
     },
     bind: () => {},
   }
+}
+
+/**
+ * The bag service's opening of the agent-custody identity `label` (svc-core's unit open, decision 92): the --session
+ * form for the service, so a window bound to it can act. A session key of its own under the agent's hop, opening at
+ * the principal's mailbox, with the same lock, key file, grant request, regrant and close as --session; the session is
+ * named `<label>.service`. `caveats` is the principal's configured list, never empty (the red team's MEDIUM on
+ * connectionGrant). A label that is not an agent-custody identity is refused as startSession refuses it.
+ */
+export function openAgentUnit(
+  given: Config,
+  label: string,
+  o: { readonly caveats: readonly string[]; readonly exp?: string | null },
+  deps: SessionDeps,
+): SessionStart {
+  if (o.caveats.length === 0)
+    throw new ConfigError(
+      'usage',
+      `${label}: an agent-custody identity needs the principal's caveat list: none is configured`,
+    )
+  return startSession(
+    {
+      ...given,
+      session: { name: `${label}.service`, principal: label, caveats: o.caveats, exp: o.exp ?? null },
+    },
+    deps,
+    { kind: 'session-key', principal: label },
+  )
+}
+
+/** An agent-class binding's own grant (binding.ts): a fresh session key held in memory, and the agent's hop to it. */
+export interface ConnectionGrant {
+  readonly keys: EdgeKeys
+  readonly hop: Extract<GrantReply, { ok: true }>['hop']
+}
+
+/**
+ * The grant of one bag service connection bound to an agent-class identity (red team M3): a fresh key made for this
+ * connection alone, never written to a file, and the agent's first grant to it through requestGrant, one y at the
+ * agent's terminal per connection, so one connection's grant never serves another. A refusal throws its code.
+ */
+export async function connectionGrant(
+  home: string,
+  o: {
+    readonly rng: Rng
+    readonly clock: Clock
+    readonly caveats?: readonly string[]
+    readonly exp?: string | null
+    readonly connect?: () => Pick<AgentClient, 'grant' | 'close'>
+    readonly onCode?: (code: string) => void
+  },
+): Promise<ConnectionGrant> {
+  // The principal's configured caveat list, the same for every connection (svc-core passes it): never none, for a grant
+  // with no caveat would give a window the principal's whole authority (the red team's MEDIUM).
+  if ((o.caveats ?? []).length === 0)
+    throw new ConfigError(
+      'usage',
+      "an agent-class window needs the principal's caveat list: none is configured",
+    )
+  const keys = generateEdgeKeys(o.rng)
+  const connect = o.connect ?? (() => new AgentClient(join(home, 'agent.sock')))
+  const r = await requestGrant(
+    connect,
+    keys.signing.address,
+    o.caveats ?? [],
+    o.exp ?? null,
+    o.clock,
+    o.onCode ?? (() => {}),
+  )
+  if (r === null)
+    throw new ConfigError('agent-locked', 'no agent answers: the person runs ac login, then binds again')
+  if (!r.ok) throw new ConfigError(r.code, 'the agent did not grant this window')
+  return { keys, hop: r.hop }
 }

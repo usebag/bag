@@ -1,6 +1,6 @@
 import { readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { serializeRecord, signRecord } from '@usebag/core'
+import { MAX_ENVELOPE_BYTES, serializeRecord, signRecord } from '@usebag/core'
 import { connectCodeOf, readSession } from '@usebag/enterprise-client'
 import { FakeInstance } from '@usebag/enterprise-client/testing'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -143,9 +143,11 @@ describe('send and inbox with the defaults of a live enterprise session', () => 
     // Over the cap, on stdin or in a file; a symbolic link; text that is not JSON.
     Object.assign(w.io, { readAll: async () => null })
     const big = await cli(w.io, 'send', '--to', agent, '--body', '@-', '--dir', w.dir)
-    expect(big.err[0]).toBe('bag: body-too-large: --body @-: over 65536 bytes, the envelope cap')
+    expect(big.err[0]).toBe(
+      `bag: body-too-large: --body @-: over ${MAX_ENVELOPE_BYTES} bytes, the envelope cap`,
+    )
     const large = join(w.dir, 'large.json')
-    writeFileSync(large, JSON.stringify({ t: 'x'.repeat(65_536) }))
+    writeFileSync(large, JSON.stringify({ t: 'x'.repeat(MAX_ENVELOPE_BYTES) }))
     expect((await cli(w.io, 'send', '--to', agent, '--body', `@${large}`, '--dir', w.dir)).err[0]).toMatch(
       /^bag: body-too-large: /,
     )

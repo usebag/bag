@@ -1,6 +1,13 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs'
 import { checkThread, isAddress, isHandle, MAX_ENVELOPE_BYTES } from '@usebag/core'
-import { type Edge, membershipHop, type OutboxTarget, SendHeld, type SendResult } from '@usebag/edge'
+import {
+  deliveryOf,
+  type Edge,
+  membershipHop,
+  type OutboxTarget,
+  SendHeld,
+  type SendResult,
+} from '@usebag/edge'
 import { resolveHandle, withSession } from '@usebag/enterprise-client'
 import { CliError, flag, list, type Parsed, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { readChain } from '../chain.ts'
@@ -47,9 +54,12 @@ export function targetLine(t: OutboxTarget): string {
 }
 
 /**
- * Prints a send's id and one line per target; fails with the reason of a target that was not published (its bytes
- * stay in the outbox, and resend sends them), naming the next step for root-not-accepted: `note`'s when it has one and
- * the envelope is signed under this identity's own root (a pairing says nothing of a chain's), else rootHint.
+ * Prints a send's id and one line per target. Delivered via one relay or more is a success (exit 0), as the MCP send
+ * tool answers it (deliveryOf, the same count), with one warning line on stderr when a relay did not take it:
+ * `warning: delivered via n of m relays; refused k: <relay> <reason>, ...; retrying j`, then the resend hint. No relay
+ * delivered is the error of a target that was not published (its bytes stay in the outbox, and resend sends them),
+ * naming the next step for root-not-accepted: `note`'s when it has one and the envelope is signed under this
+ * identity's own root (a pairing says nothing of a chain's), else rootHint.
  */
 export function reportSent(
   io: Io,
@@ -60,17 +70,18 @@ export function reportSent(
   io.out(result.id)
   for (const t of result.targets) io.out(targetLine(t))
   const unsent = result.targets.find((t) => t.state !== 'published')
-  // A target that was not published is in retry or failed, and both carry the relay's code or publish-failed.
-  if (unsent !== undefined) {
-    // A 403 root-not-accepted: the recipient's accept-from record does not list this identity's root.
-    const root = unsent.reason === 'root-not-accepted' ? (edge.auth[0]?.iss ?? edge.address) : null
-    const next = root === null ? '' : `; ${(edge.auth.length === 0 ? note() : null) ?? rootHint(root)}`
-    throw new CliError(
-      `${unsent.reason}`,
-      `${unsent.relay} ${unsent.state}; the bytes stay in the outbox, and resend --id ${result.id} sends them${next}`,
-    )
+  if (unsent === undefined) return 0
+  const kept = `the bytes stay in the outbox, and resend --id ${result.id} sends them`
+  const d = deliveryOf(result.targets)
+  if (d.delivered > 0) {
+    io.err(`warning: ${d.line}; ${kept}`)
+    return 0
   }
-  return 0
+  // A target that was not published is in retry or failed, and both carry the relay's code or publish-failed.
+  // A 403 root-not-accepted: the recipient's accept-from record does not list this identity's root.
+  const root = unsent.reason === 'root-not-accepted' ? (edge.auth[0]?.iss ?? edge.address) : null
+  const next = root === null ? '' : `; ${(edge.auth.length === 0 ? note() : null) ?? rootHint(root)}`
+  throw new CliError(`${unsent.reason}`, `${unsent.relay} ${unsent.state}; ${kept}${next}`)
 }
 
 /**
@@ -105,7 +116,8 @@ const unnamed = (t: string): boolean => isAddress(t) || isHandle(t)
  * root the recipient trusts. The chain is the relay's and the recipient's to judge: an expired hop is the
  * relay's hop-expired. A recipient relay on a private, loopback or link-local address other than --relay is refused
  * resolve-failed (the edge's guard) unless --allow-private-relays turns the guard off. Prints the id, then one
- * line per target; fails with the reason of a target that was not published (its bytes stay in the outbox). A --to
+ * line per target; delivered via one relay or more exits 0, with a warning line naming each relay that did not take
+ * it; with none it fails with the reason of a target that was not published (its bytes stay in the outbox). A --to
  * that is neither an address nor a handle is resolved through the home's name book (names.ts): name-unknown when the
  * book lacks it. A handle, `jane@acme.example`, is resolved by the edge (spec/SPEC.md §12.4 item 4: the domain's TXT
  * record, its org record, the handle record under the org's pinned key, checked against the org's revoked list at

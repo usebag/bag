@@ -18,13 +18,18 @@ export {
   createRelayClient,
   type HttpRelayOptions,
   MAX_RESPONSE_BYTES,
+  timeoutFor,
 } from './adapters/http-relay.ts'
 export {
+  type AsyncSecurityRunner,
+  createAsyncSecurityRunner,
   createSecurityRunner,
+  defaultKeychain,
   type KeychainAccess,
   KeychainCustody,
   type KeychainCustodyOptions,
   runSecurity,
+  runSecurityAsync,
   SECURITY_PATH,
   SECURITY_TIMEOUT_MS,
   type SecurityResult,
@@ -70,13 +75,25 @@ export {
   type AuditLine,
   type AuditValue,
   type AuditVerdict,
+  CONNECTION_ID,
   checkAuditAnchor,
+  connectionOf,
   parseAuditLine,
   verifyAuditLog,
+  withConnection,
 } from './audit.ts'
 export { BUILD_INFO, type BuildInfo } from './build-info.ts'
 export { checkName } from './custody/files.ts'
-export { type CustodyTarget, HomeCustody, type HomeCustodyOptions } from './custody/home.ts'
+export {
+  type CustodyTarget,
+  custodyClass,
+  HomeCustody,
+  type HomeCustodyOptions,
+  type OpenedKeys,
+  openIdentityKeys,
+  type ServiceCustody,
+  serviceCustody,
+} from './custody/home.ts'
 export {
   acceptCopy,
   addressCopy,
@@ -101,6 +118,8 @@ export {
   writeRecoveryState,
   zeroSeeds,
 } from './custody/recovery.ts'
+// One send's delivery, counted alike by the CLI's send and the MCP send tool: delivered n of m, refused with reasons.
+export { type Delivery, deliveryOf, type RelayRefusal } from './delivery.ts'
 export {
   Edge,
   type EdgeOptions,
@@ -112,6 +131,16 @@ export {
 } from './edge.ts'
 export * from './groups/index.ts'
 export { isInboxTransition, isWaiting, TRANSIENT_CODES } from './inbox.ts'
+export {
+  KEEP_ALIVE_LOCK_STALE_MS,
+  KEEP_ALIVE_LOCK_WAIT_MS,
+  type KeepAliveChoice,
+  keepAliveChoice,
+  markUsed,
+  setKeepAlive,
+  type TableHooks,
+  updateKeepAlive,
+} from './keep-alive-table.ts'
 export {
   EpochOpener,
   epochOpener,
@@ -239,6 +268,8 @@ export function packageName(): string {
   return '@usebag/edge'
 }
 
+// The accept-from max_bytes lift on every re-sign: exactly the old default 65,536 becomes core's MAX_ENVELOPE_BYTES.
+export { liftMaxBytes, OLD_DEFAULT_MAX_BYTES } from './max-bytes.ts'
 // The org policy at the edge: appended last, a registration of its own.
 export {
   DEFAULT_BREAKERS,

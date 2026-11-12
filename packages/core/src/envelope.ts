@@ -21,8 +21,8 @@ export { ENVELOPE_VERSION } from './seal.ts'
 
 /** The crypto suite of v0. */
 export const SUITE = SUITE_1.id
-/** The envelope cap: 64 KiB of serialized envelope. */
-export const MAX_ENVELOPE_BYTES = 65_536
+/** The envelope cap: 192 KiB of serialized envelope. */
+export const MAX_ENVELOPE_BYTES = 196_608
 /** The relay TTL, 7 days, and the clock skew allowance. */
 export const DEFAULT_TTL = 604_800
 export const DEFAULT_SKEW = 300
@@ -171,7 +171,7 @@ export function serializeEnvelope(e: Envelope): Uint8Array {
 }
 
 /**
- * Parses envelope bytes (spec/SPEC.md §5): envelope-too-large over 65,536 bytes, bad-json for anything that is not
+ * Parses envelope bytes (spec/SPEC.md §5): envelope-too-large over 196,608 bytes, bad-json for anything that is not
  * UTF-8 JSON, then checkEnvelope's checks. It verifies nothing cryptographic: that is verifyOuter and verifyChain.
  */
 export function parseEnvelope(input: Uint8Array | string): Envelope {

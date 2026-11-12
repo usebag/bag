@@ -5,7 +5,7 @@ use std::time::Duration;
 #[test]
 fn the_defaults_are_the_plan_s() {
     let c = Config::default();
-    assert_eq!((c.ttl, c.skew, c.max_envelope_bytes, c.body_limit), (604_800, 300, 65_536, 262_144));
+    assert_eq!((c.ttl, c.skew, c.max_envelope_bytes, c.body_limit), (604_800, 300, 196_608, 262_144));
     assert_eq!(c.record_limit, 131_072);
     assert_eq!(
         c.rate,

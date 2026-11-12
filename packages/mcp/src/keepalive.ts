@@ -17,9 +17,11 @@ import {
   heldAccept,
   INCOMPLETE_REVOCATION,
   jitterOf,
+  type KeepAliveChoice,
   keepAcceptCopy,
   keepAddressCopy,
   type Lagging,
+  liftMaxBytes,
   type Offered,
   offerRecord,
   type RelayClient,
@@ -27,6 +29,9 @@ import {
   readRecoveryState,
 } from '@usebag/edge'
 import type { Timers } from './desk.ts'
+
+export { type KeepAliveChoice, keepAliveChoice, markUsed, setKeepAlive } from '@usebag/edge'
+
 import type { Logger } from './log.ts'
 import { codeOf } from './tools.ts'
 
@@ -56,6 +61,34 @@ import { codeOf } from './tools.ts'
 /** The first wait after a cycle that re-signed nothing, in seconds; it doubles up to an hour. */
 export const KEEP_ALIVE_RETRY_S = 60
 export const KEEP_ALIVE_RETRY_MAX_S = 3600
+
+// Inside the bag service (RecordKeeperOptions.service), keep-alive is an opt-in per identity (the design note, section
+// 14), and two more rules hold. The choices live in the service's own table, <home>/run/keep-alive.json (0600, in the
+// 0700 run directory), {"v":1,"identities":{"<name>":{"keep":true|false|null,"used_at":<s>|null}}}. `keep` is the
+// person's word (the CLI writes it; setKeepAlive) and wins either way. With no word (null) the default is the lapse
+// semantics of a per-folder server: kept alive while a connection is bound to the identity, and until 24 hours after
+// its last connection closed (`used_at`, which markUsed writes at each close and unbind), then let lapse. A used_at
+// in the future counts as none, so a planted or skewed file never keeps an identity alive. The rule is read at every
+// cycle; an identity it rules off publishes nothing and is checked again each KEEP_ALIVE_OFF_CHECK_S. Second, each
+// cycle is due at an absolute wall-clock second, and the timer that waits for it is never longer than `tick_s`, so a
+// machine that slept past the second runs the cycle at the first tick after it wakes, not a whole timer later (a
+// monotonic timer does not count sleep). Third, every wait is jittered per identity (the re-sign by up to a tenth of
+// the ttl, as an --identities server does, and the retry waits by up to a quarter), so a home's identities never
+// publish in lockstep.
+
+/** How long an identity with no word stays kept alive after its last connection closed, in seconds: 24 hours. */
+export const KEEP_ALIVE_LAPSE_S = 86_400
+/** How often an identity whose keep-alive is off is checked again, in seconds. */
+export const KEEP_ALIVE_OFF_CHECK_S = 3600
+
+/**
+ * Whether `c` keeps an identity alive at `now`, `bound` true while a connection is bound to it: the person's word,
+ * else bound, else a last close at most 24 hours ago and not in the future.
+ */
+export function keepAliveOn(c: KeepAliveChoice, now: number, bound: boolean): boolean {
+  if (c.keep !== null) return c.keep
+  return bound || (c.used_at !== null && c.used_at <= now && c.used_at >= now - KEEP_ALIVE_LAPSE_S)
+}
 
 const noop = (): void => {}
 const iso = (seconds: number): string => new Date(seconds * 1000).toISOString()
@@ -131,6 +164,11 @@ export interface RecordKeeperOptions {
    * time, so that identities whose records were made together do not re-sign together. Without it, at half the ttl.
    */
   readonly rng?: Rng
+  /**
+   * The bag service's keep-alive (the rules above): whether the identity is kept alive now (keepAliveOn of its choice),
+   * and the longest timer, in seconds. Its retry waits are jittered with `rng`, which the service always gives.
+   */
+  readonly service?: { readonly enabled: () => boolean; readonly tick_s: number }
 }
 
 /**
@@ -203,6 +241,13 @@ export class RecordKeeper {
 
   async #cycle(): Promise<void> {
     const { clock, epochs, log, signer } = this.#o
+    if (this.#o.service?.enabled() === false) {
+      const now = clock.now()
+      this.#last = { at: iso(now), outcome: 'off', published: 0, failed: 0, code: null }
+      log.log('info', 'keep-alive', { outcome: 'off', next_at: iso(now + KEEP_ALIVE_OFF_CHECK_S) })
+      if (!this.#stopped) this.#schedule(now + KEEP_ALIVE_OFF_CHECK_S)
+      return
+    }
     const refused = await this.#refresh()
     let outcome: string
     let next: number | null = null
@@ -243,7 +288,8 @@ export class RecordKeeper {
     const epochAt = !epochs ? null : retry ? now + KEEP_ALIVE_RETRY_S : epochs.dueAt()
     if (next !== null && epochAt !== null && epochAt > now) next = Math.min(next, epochAt)
     if (next === null || lagging.length > 0) {
-      const wait = now + Math.min(KEEP_ALIVE_RETRY_S * 2 ** this.#misses, KEEP_ALIVE_RETRY_MAX_S)
+      const base = Math.min(KEEP_ALIVE_RETRY_S * 2 ** this.#misses, KEEP_ALIVE_RETRY_MAX_S)
+      const wait = now + base + this.#retryJitter(base)
       next = next === null ? wait : Math.min(next, wait)
       this.#misses++
     } else {
@@ -277,6 +323,23 @@ export class RecordKeeper {
   /** The keep-alive offset of a re-sign at half `ttl`, in whole seconds: u × ttl / 10 with an rng, 0 without. */
   #offset(ttl: number): number {
     return this.#o.rng === undefined ? 0 : Math.floor((jitterOf(this.#o.rng.bytes(4)) * ttl) / 10)
+  }
+
+  /** The service's jitter of a retry wait of `base` seconds: up to a quarter of it; 0 outside the service. */
+  #retryJitter(base: number): number {
+    const rng = this.#o.rng
+    return this.#o.service === undefined || rng === undefined
+      ? 0
+      : Math.floor((jitterOf(rng.bytes(4)) * base) / 4)
+  }
+
+  /** Runs the cycle now if its second has passed (the service calls it on any sign of a wake); else nothing. */
+  poke(): void {
+    if (this.#next !== null && this.#o.clock.now() >= this.#next && !this.#stopped) {
+      this.#cancel()
+      this.#next = null
+      void this.#run()
+    }
   }
 
   /** Whether a record is one the keep-alive keeps: its own sealing key or none, and no rotation. */
@@ -462,7 +525,7 @@ export class RecordKeeper {
             kind: 'accept-from',
             owner: accept.owner,
             roots: accept.roots,
-            max_bytes: accept.max_bytes,
+            max_bytes: liftMaxBytes(accept.max_bytes),
             ttl: accept.ttl,
             iat,
           })
@@ -476,10 +539,15 @@ export class RecordKeeper {
     return { offers, renewed: next }
   }
 
+  /** Waits for the absolute second `at`; in the service, in ticks of at most tick_s, each comparing the wall clock. */
   #schedule(at: number): void {
     this.#cancel()
     this.#next = at
-    this.#cancel = this.#o.timers.after(Math.max(0, (at - this.#o.clock.now()) * 1000), () => {
+    const left = Math.max(0, at - this.#o.clock.now())
+    const tick = this.#o.service?.tick_s
+    const wait = tick === undefined ? left : Math.min(left, tick)
+    this.#cancel = this.#o.timers.after(wait * 1000, () => {
+      if (tick !== undefined && this.#o.clock.now() < at) return this.#schedule(at)
       this.#next = null
       void this.#run()
     })

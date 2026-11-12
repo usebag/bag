@@ -1,13 +1,13 @@
 // The published package @usebag/bag: one bundle of the CLI, the MCP server and the A2A bridge, made with rolldown
 // (already in the lock as vitest's bundler, so no new package), into dist/. Each process entry becomes a bin with a
-// shebang (dist/bag.js, dist/bag-mcp.js, dist/bag-a2a.js); the code they share sits beside them in chunks. The
+// shebang (dist/bag.js, dist/bag-mcp.js, dist/bag-a2a.js, dist/bag-shim.js); the code they share sits beside them in chunks. The
 // workspace packages are bundled in from their TypeScript source (Node refuses type stripping under node_modules, so a
 // package cannot ship the .ts files), and so are @modelcontextprotocol/sdk and zod with the parts of their own
 // dependencies the server reaches, at the lock's versions: the package has no dependency, npx fetches one tarball and
 // runs no install script, nothing floats, and dist/ alone runs from any directory (the CLI's packaged.ts copies it to
 // a stable place). Every import left in the bundle is a Node built-in. The bundled packages' licences are appended to
-// dist/THIRD-PARTY.md. Two source modules are replaced as they load: the edge's build-info.ts with the version and the
-// commit, and the CLI's entries.ts with the bins' paths.
+// dist/THIRD-PARTY.md. Three source modules are replaced as they load: the edge's build-info.ts with the version and the
+// commit, the shim's version.ts with the version, and the CLI's entries.ts with the bins' paths.
 import { execFileSync } from 'node:child_process'
 import {
   appendFileSync,
@@ -37,6 +37,8 @@ export const ENTRIES: Readonly<Record<string, string>> = {
   // The omp wake extension: `bag host install omp` links projects to <home>/package/bag-omp-wake.js, so the name is
   // stable. The published package carries only what ENTRIES lists.
   'bag-omp-wake': 'packages/cli/src/omp-wake.ts',
+  // The bag service's shim (decision 92): the stdio MCP server each host session starts; Node built-ins only.
+  'bag-shim': 'packages/shim/src/main.ts',
 }
 
 /** The package's version, from its package.json. */
@@ -118,6 +120,10 @@ export async function build(out = join(PACKAGE, 'dist'), commit = sourceCommit()
     [
       realpathSync(join(ROOT, 'packages/edge/src/build-info.ts')),
       `export const BUILD_INFO = ${JSON.stringify({ version, commit })}\n`,
+    ],
+    [
+      realpathSync(join(ROOT, 'packages/shim/src/version.ts')),
+      `export const SHIM_VERSION = ${JSON.stringify(version)}\n`,
     ],
     [
       realpathSync(join(ROOT, 'packages/cli/src/entries.ts')),

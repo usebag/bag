@@ -11,6 +11,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   discover,
+  MAX_ENVELOPE_BYTES,
   openSealed,
   parseHandleRecord,
   parseRecord,
@@ -24,6 +25,7 @@ import { HomeCustody, RelayError } from '@usebag/edge'
 import { afterAll, describe, expect, it } from 'vitest'
 import { USAGE } from '../src/cli.ts'
 import { epochStore } from '../src/home.ts'
+import { stableNode } from '../src/packaged.ts'
 import { addTrust, readTrust } from '../src/trust.ts'
 import { T0, type TestIo, tempDir, testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
@@ -41,7 +43,7 @@ const RELAY = 'http://203.0.113.9'
 const DOMAIN = 'acme.test'
 const HANDLE = `jane@${DOMAIN}`
 const ORG = `org-${DOMAIN}`
-const AC = `${process.execPath} ${fileURLToPath(new URL('../src/main.ts', import.meta.url))}`
+const AC = `${stableNode()} ${fileURLToPath(new URL('../src/main.ts', import.meta.url))}`
 let n = 0
 
 /** A fresh home and relay, an inviter's address, and onboard's arguments for jane at acme.test. */
@@ -187,7 +189,7 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
     const accept = parseRecord(w.relay.records.get(`${jane} accept-from`) as Uint8Array)
     expect(accept).toMatchObject({
       roots: [w.inviter, 'domain:usuals.test'],
-      max_bytes: 65_536,
+      max_bytes: MAX_ENVELOPE_BYTES,
       ttl: 604_800,
     })
     // Forward secrecy: the agent's address record names no sealing key; its key record, epoch 1, does.
@@ -372,7 +374,7 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
     expect(again.code).toBe(3)
     expect(acceptAt(w, jane)).toMatchObject({
       roots: [w.inviter, 'domain:usuals.test', carol, 'domain:by-hand.test'],
-      max_bytes: 65_536,
+      max_bytes: MAX_ENVELOPE_BYTES,
       ttl: 604_800,
       iat: w.io.time.now,
     })
@@ -395,6 +397,26 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
     expect(acceptAt(w, jane)).toMatchObject({ roots: all, iat: w.io.time.now })
     const address = parseRecord(w.relay.records.get(`${jane} address`) as Uint8Array)
     expect(address).toMatchObject({ key: jane, iat: w.io.time.now })
+  })
+
+  it('lifts a held max_bytes of exactly 65,536 to the envelope cap, keeps 32,768, and writes a typed 65,536', async () => {
+    const w = await world()
+    const first = await cli(w.io, 'onboard', ...w.args)
+    const jane = (first.out[1] as string).split(' ')[2] as string
+    const roots = [w.inviter, 'domain:usuals.test']
+    for (const [held, signed] of [
+      [65_536, MAX_ENVELOPE_BYTES],
+      [32_768, 32_768],
+    ] as const) {
+      await hold(w, roots, held, 3600)
+      w.io.time.now += 60
+      expect((await cli(w.io, 'onboard', ...w.args)).code).toBe(3)
+      expect(acceptAt(w, jane), `${held}`).toMatchObject({ roots, max_bytes: signed, ttl: 3600 })
+    }
+    // A typed --max-bytes is written as typed, 65,536 too: the lift is of a held value, never of a flag.
+    w.io.time.now += 60
+    expect((await cli(w.io, 'onboard', ...w.args, '--max-bytes', '65536')).code).toBe(3)
+    expect(acceptAt(w, jane)).toMatchObject({ roots, max_bytes: 65_536 })
   })
 
   it('a typed root the held accept-from has is not repeated; a new one follows; sizes stay', async () => {

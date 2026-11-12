@@ -75,7 +75,7 @@ codes! {
     BadVersion => "bad-version" (core),
     /// `suite` is not 1.
     BadSuite => "bad-suite" (core),
-    /// An envelope over 65,536 bytes.
+    /// An envelope over 196,608 bytes.
     EnvelopeTooLarge => "envelope-too-large" (core),
     /// Over 16 recipients.
     TooManyRecipients => "too-many-recipients" (core),

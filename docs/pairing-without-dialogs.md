@@ -5,8 +5,8 @@ your host shows you. Some hosts cannot show them: a client with no elicitation s
 `no-elicitation`, and at least one editor extension answers every dialog as "declined". There are two paths for those
 hosts. If the host runs a bag extension that bridges pairing into the session (section 5), you pair in the session, the
 extension asking you to paste the code, read the digits and press Yes, with no terminal. Otherwise the model cannot
-pair, and it hands you the exact terminal command to run instead: this guide's `pair`, one guided step you run once per
-peer, in your own terminal.
+pair, and it tells you what to change in your host so that it can (section 3); or you run this guide's `pair`, one
+guided step once per peer, in your own terminal.
 
 Commands are written for a Unix shell with `bash`. The CLI has no `bin` entry, so define a short function and read
 `bag` below as that function:
@@ -76,15 +76,19 @@ digits out; do not send them the same way you sent the code.
 ## 3. What the model tells you when it cannot pair
 
 When your host cannot show the pairing dialog, the `pair_invite` and `pair_accept` tools do not fail silently. They
-return `no-elicitation` with the exact `pair` line for this identity and relay, for example:
+return `no-elicitation` with what to change in your host, never a terminal command (since 2026-11-12; before, they
+named a `pair` line). The same answer comes when the host answers the first dialog in under 250 ms, sooner than a
+person can (`codex exec` declines every dialog at once), and from a Codex older than 0.113.0. For Codex it names the
+interactive `codex` TUI rather than `codex exec`, Codex 0.113.0 or later, and an approval policy that lets MCP servers
+ask (`on-request`, the default, is enough); for omp, its interactive session with bag's extension; for another host,
+its interactive form and the setting that lets MCP servers ask you. The model should tell you which to change and wait;
+it cannot pair for you. If a dialog did appear and you closed it, ask it to try again. Where your host cannot show
+dialogs at all, run `pair` yourself as section 2 describes.
 
-```
-this host cannot show your user the pairing dialog, so a tool cannot pair here. Give your user this exact line to run
-in their own terminal ... : bag pair --as alice --relay https://relay.example.org --name bob --dir /home/you/.bag
-```
-
-Run that line as section 2 describes: with no code it prints a code to send; add your peer's code as a final argument to
-accept theirs. The model should hand you the line and wait; it cannot pair for you.
+One pairing runs at a time. To start over (an invite for another address, say), tell the model to cancel: its
+`pair_cancel` tool ends the running invite or accept and writes nothing, and an invite no one has used yet is withdrawn,
+so its code then answers `invite-expired`. A second `pair_invite` or `pair_accept` before that is refused `busy`. The
+model cancels only on your word. In a terminal, Ctrl-C ends a `pair` or `peer invite` run.
 
 ## 4. When a peer unpairs you
 

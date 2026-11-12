@@ -76,7 +76,9 @@ describe('HomeCustody: an identity in one custody, found by name', () => {
     )
     expect(fake.calls).toHaveLength(1)
     custody.files.save('bob', P.carol.keys)
-    expect(failure(() => custody.keys('bob'))).toBe('EEXIST bob has both a key file and a keychain pointer')
+    expect(failure(() => custody.keys('bob'))).toBe(
+      'EEXIST bob has both a key file and a keychain pointer: an identity custody move stopped; run bag identity custody bob --to keychain (or --to file) to finish',
+    )
     expect(failure(() => custody.holder('../keys/jane'))).toBe(
       'no code fs-keys: a key name is 1 to 64 of [a-z0-9._-], not "../keys/jane"',
     )

@@ -296,7 +296,7 @@ Its log goes to stderr, one JSON object a line. The first line, `listening`, nam
 
 ```
 {"timestamp":"2026-11-03T00:53:22.884141Z","level":"INFO","fields":{"event":"listening","bind":"127.0.0.1","port":7777,
-"url":"http://127.0.0.1:7777","accept_bases":"","db":"...","ttl":604800,"skew":300,"max_envelope_bytes":65536,...,
+"url":"http://127.0.0.1:7777","accept_bases":"","db":"...","ttl":604800,"skew":300,"max_envelope_bytes":196608,...,
 "connections_per_ip":79,"subscriptions_per_ip":69,...,"log_ip":"prefix","domain_publishes_per_day":10000,
 "max_store_bytes":0,...,"txt":"dns"},"target":"ac_relay"}
 ```
@@ -559,7 +559,7 @@ client's WebSockets are. Counters live in memory and start empty at every start.
 | `--connections-per-ip` | 79 | connections one client may hold open at once |
 | `--connection-reserve-permille` | 125 | the share of that cap a direct client's subscriptions may not take, kept for its calls (69 subscriptions at the defaults) |
 | `--max-store-bytes` | 0 (no bound) | the live bytes of the store from which a new envelope, or a record of a signer the relay holds none of, is refused |
-| `--max-envelope-bytes` | 65,536 | the largest envelope, at most 262,144 |
+| `--max-envelope-bytes` | 196,608 (65,536 up to v0.3.0) | the largest envelope, at most 262,144 |
 
 Past a rate or a quota the relay answers 429 `rate-limited` with `Retry-After`, and logs `rate-limited` with the
 `limit` it hit: `from`, `root`, `ip`, `fetch`, `fetch-global`, `record-signers`, `bytes`, `domain` or `pairing`. With
@@ -950,6 +950,28 @@ newer (section 6). So to roll back across a schema change, start the old binary 
 upgraded file. A restart drops subscribers for a moment (they reconnect), resets the counters, and drops open pairing
 codes.
 
+### The larger envelope cap (after v0.3.0)
+
+The envelope cap rose from 65,536 to 196,608 bytes after v0.3.0 (`message-size.md`). Roll it out in this order:
+
+1. the relay flag first, the operator's deploy: `--max-envelope-bytes 196608` at every relay (a relay of 0.2.3 or
+   later takes it with no new binary);
+2. then the readers: every edge (`bag`, `bag-mcp`) on the new version, since an older one refuses a larger envelope
+   when it reads it;
+3. then the lift, which is automatic: each re-sign writes `max_bytes` 196,608 in place of exactly 65,536, the old
+   default, and keeps any other value, so an identity on the new version takes it within about 11 hours through
+   `record keep`;
+4. then policies: no policy file sets a scope `max_bytes` over 65,536 until every reader runs the new version (v0.3.0
+   and before refuse such a file at start, `bad-record`).
+
+A relay still at 65,536 refuses a larger envelope `envelope-too-large` while the sender's other relays take it; the
+sender reads that as a partial delivery, with a warning naming your relay.
+
+A relay of the release after v0.3.0 states its cap: `GET /v0/health` answers `max_envelope_bytes` beside `ok`, `now`,
+`url` and `version`, and the 413 refusal reads `{"error":"envelope-too-large","max_envelope_bytes":196608}`. Both
+fields are additive. To check step 1 at a relay, `curl -s <relay>/v0/health` and read `max_envelope_bytes`; a relay of
+v0.3.0 or before answers without the field, and its cap is its `--max-envelope-bytes` (65,536 by default).
+
 ## 13. Hardening
 
 - Bind to `127.0.0.1` behind a front on the same host, or to the one interface the front uses (section 5). Trust
@@ -1000,7 +1022,7 @@ Storage and time:
 | `--skew <seconds>` | 300 | the clock skew allowed |
 | `--sweep-interval <seconds>` | 60 | how often expired rows, envelopes, tombstones and records are swept |
 | `--max-store-bytes <bytes>` | 0 | the store bound of section 7; 0 is none |
-| `--max-envelope-bytes <bytes>` | 65,536 | the envelope cap, at most 262,144 |
+| `--max-envelope-bytes <bytes>` | 196,608 (65,536 up to v0.3.0) | the envelope cap, at most 262,144 |
 
 Rates and quotas: the eleven flags of section 7's table, from `--rate-window` to `--connection-reserve-permille`.
 

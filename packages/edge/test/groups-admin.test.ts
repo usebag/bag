@@ -3,6 +3,7 @@ import {
   codingEvaluator,
   GROUP_KEY_TYPE,
   groupEvaluator,
+  MAX_ENVELOPE_BYTES,
   openGroupKey,
   parseEnvelope,
   parseRecord,
@@ -189,7 +190,7 @@ describe('GroupAdmin', () => {
     expect(accept).toMatchObject({
       owner: group.address,
       roots: [group.address, alice.address],
-      max_bytes: 65_536,
+      max_bytes: MAX_ENVELOPE_BYTES,
       ttl: 604_800,
     })
     expect(w.relay.records.get(`${HOME} ${group.address} address`)).toBeDefined()

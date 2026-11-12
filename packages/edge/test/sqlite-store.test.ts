@@ -57,7 +57,7 @@ describe('SqliteStore on node:sqlite, with real files', () => {
     const tables = db.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     )
-    // The org policy's five tables, the fs_known marker and the waiting sends beside the eight stores.
+    // The org policy's five tables, the fs_known marker, the waiting sends and the returned marks beside the eight stores.
     expect(tables.all().map((t) => t.name)).toEqual([
       'audit_anchor',
       'contacts',
@@ -71,6 +71,7 @@ describe('SqliteStore on node:sqlite, with real files', () => {
       'policy_counts',
       'receipts',
       'record_cache',
+      'returned',
       'seen',
       'sends',
       'threads',

@@ -11,6 +11,7 @@ import {
   isAddress,
   isHandle,
   MAX_ADDRESS_TTL,
+  MAX_ENVELOPE_BYTES,
   MAX_RELAYS,
   MAX_ROOTS,
   parseHandleRecord,
@@ -26,12 +27,20 @@ import {
   WELL_KNOWN_RECORD_PATH,
   WILDCARD_ROOT,
 } from '@usebag/core'
-import { classifyAddress, continueFrom, domainRootRefusal, hostOf, RelayError } from '@usebag/edge'
+import {
+  classifyAddress,
+  continueFrom,
+  domainRootRefusal,
+  hostOf,
+  liftMaxBytes,
+  RelayError,
+} from '@usebag/edge'
 import { CliError, flag, int, list, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { currentKey, epochDue, laggingLines, rotateEpoch } from '../epochs.ts'
 import { checkNoWindow, homeCustody, homeDir, loadKeys } from '../home.ts'
 import type { Io } from '../io.ts'
-import { stableMains } from '../packaged.ts'
+import { stableMains, stableNode } from '../packaged.ts'
+import { refuseReserved } from '../service-home.ts'
 import { addTrust, readTrust } from '../trust.ts'
 import { delegate } from './delegate.ts'
 import { keygen } from './keygen.ts'
@@ -50,8 +59,8 @@ import { failed } from './unpair.ts'
 /** A delegation chain's life without --chain-exp, 7 days, and its most, §6.1's 30 days. */
 const CHAIN_EXP = 604_800
 const MAX_CHAIN_EXP = 2_592_000
-/** The accept-from record's largest envelope and retention by default, the values of cut/docs/partner-install.md. */
-const MAX_BYTES = 65_536
+/** The accept-from record's largest envelope (the envelope cap) and retention by default (cut/docs/partner-install.md). */
+const MAX_BYTES = MAX_ENVELOPE_BYTES
 const RETENTION = 604_800
 /** The exit when everything is written and published but the handle does not resolve yet. */
 const PENDING = 3
@@ -63,9 +72,10 @@ const PENDING = 3
 const EARLY = 3600
 /**
  * The command line of this CLI for the home `home`, for the commands onboard prints: absolute paths (cron's PATH has no
- * node in it), the package's stable copy when run from the package (packaged.ts).
+ * node in it; Homebrew's node link when it is the running node), the package's stable copy when run from the package
+ * (packaged.ts).
  */
-const acOf = (home: string): string => `${sh(process.execPath)} ${sh(stableMains(home).cli)}`
+const acOf = (home: string): string => `${sh(stableNode())} ${sh(stableMains(home).cli)}`
 
 /**
  * onboard <name> --domain <host> --relay <url>... --accept <root>... (cli.ts's USAGE names every option): each
@@ -95,6 +105,7 @@ export async function onboard(args: readonly string[], io: Io): Promise<number> 
     required: ['domain', 'relay', 'accept'],
   })
   const name = p.positionals[0] as string
+  refuseReserved(name)
   const domain = req(p, 'domain')
   const refusal = domainRootRefusal(domain)
   if (refusal !== null) throw new UsageError(`--domain: ${refusal}`)
@@ -208,8 +219,9 @@ export async function onboard(args: readonly string[], io: Io): Promise<number> 
     rotated_from: null,
   })
   writeFileSync(file('address'), `${new TextDecoder().decode(serializeRecord(mine))}\n`)
-  // The held record's max_bytes and retention are kept when no flag names them, as peer's admit keeps them.
-  const size = maxBytes ?? held?.max_bytes ?? MAX_BYTES
+  // The held record's max_bytes and retention are kept when no flag names them, as peer's admit keeps them; a held
+  // max_bytes of exactly the old default 65,536 takes the new default (liftMaxBytes), and a flag is always written.
+  const size = maxBytes ?? (held === null ? MAX_BYTES : liftMaxBytes(held.max_bytes))
   const keep = retention ?? held?.ttl ?? RETENTION
   const rootArgs = accepted.flatMap((r) => ['--root', r])
   const acceptArgs = ['--max-bytes', `${size}`, '--ttl', `${keep}`, '--dir', home]

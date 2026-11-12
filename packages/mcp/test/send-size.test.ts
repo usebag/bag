@@ -5,6 +5,7 @@ import { MAX_ENVELOPE_BYTES } from '@usebag/core'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { realTimers } from '../src/desk.ts'
 import { type ProcessIo, rawTerminal, serve, TERMINAL_LINE_BYTES } from '../src/server.ts'
+import { bodyCharsFor } from '../src/tools.ts'
 import {
   FakeClock,
   fakeRecords,
@@ -99,15 +100,16 @@ function answer(result: unknown): Record<string, unknown> {
 
 const KIB = 1024
 
-describe('send by size: 1 KiB, 8 KiB and a body that fills the 64 KiB envelope, on a terminal stdin', () => {
+describe('send by size: 1 KiB, 8 KiB and a body that fills the envelope cap, on a terminal stdin', () => {
   it('publishes each in one try with its real bytes at the relay, every frame whole, and refuses one past the cap', async () => {
     const r = run(new FakeTerminal())
     const client = new Client({ name: 'in-process', version: '0.0.0' })
     await client.connect(new StreamClientTransport(r.stdin, r.stdout))
     const send = (text: string) =>
       client.callTool({ name: 'send', arguments: { to: [P.bob.address], type: 'chat.v1', body: { text } } })
-    // A body of n characters seals to about 2n bytes of envelope (the sealed part is hex), so 32,000 is near the top.
-    for (const n of [KIB, 8 * KIB, 32_000]) {
+    // A body of n characters seals to about 2n bytes of envelope (the sealed part is hex), so the figure send's
+    // description gives (bodyCharsFor the cap) is near the top.
+    for (const n of [KIB, 8 * KIB, bodyCharsFor(MAX_ENVELOPE_BYTES)]) {
       const before = relay.envelopes.size
       const sent = await send('z'.repeat(n))
       expect(sent.isError).not.toBe(true)
@@ -120,9 +122,10 @@ describe('send by size: 1 KiB, 8 KiB and a body that fills the 64 KiB envelope, 
       // Each request line is longer than a canonical terminal passes on: raw mode is what lets it arrive.
       expect(n + 100).toBeGreaterThan(TERMINAL_LINE_BYTES)
     }
-    // Past the cap: refused at once with its code, nothing published, the server still answering.
+    // Past the cap (a body of half the cap seals to more than the cap): refused at once with its code, nothing
+    // published, the server still answering.
     const before = relay.envelopes.size
-    const big = await send('z'.repeat(64 * KIB))
+    const big = await send('z'.repeat(MAX_ENVELOPE_BYTES / 2))
     expect(big.isError).toBe(true)
     expect(JSON.stringify(big.content)).toContain('envelope-too-large')
     expect(relay.envelopes.size).toBe(before)

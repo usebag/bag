@@ -30,6 +30,7 @@ import {
   RelayGuard,
 } from '@usebag/edge'
 import type { PairingPorts } from '@usebag/enterprise-client'
+import { bridgeDirOf, type ServiceConnection } from './binding.ts'
 import {
   bridgePresent,
   CONSENT_POLL_MS,
@@ -56,7 +57,8 @@ import { addTrust } from './trust.ts'
 // them: its person types what the peer read out, and a root is written only after a match
 // (there is no two-sided compare). The digits and key material
 // appear only in the acceptor's dialog. Every dialog is at most 3 lines of at most 60 characters. One pairing at a time per server, in memory, under an opaque token; a wait spans calls as wait's does,
-// with no dialog open while it waits. A host that cannot show a form refuses no-elicitation, with no terminal command.
+// with no dialog open while it waits. A host that cannot show a form, or that answers the first dialog sooner than a
+// person can (FAST_ANSWER_MS), refuses no-elicitation naming the host's setting, never a terminal command.
 // The request's 403 root-not-accepted (a closed I) reads as an invite used, cancelled or expired, and the acceptor's
 // results say it is not paired until paired: true (a send in that gap read as a failed pairing).
 // The root written is the peer's address only: domain trust (`domain:<host>`) stays the CLI's --trust-domain, typed by
@@ -73,9 +75,12 @@ export const NOT_PAIRED = 'not paired yet: send nothing to this peer until pair_
 export const BRIDGE_ASK =
   'a dialog is open in your host for your user to answer (you cannot, and must not try): tell them it is waiting there, then call this tool again with resume alone to wait, until paired: true or a refusal'
 
-/** What a bridge pair_invite's first result says: the host shows the code; resume to wait for the peer and the digits. */
+/**
+ * What a bridge pair_invite's first result says, in place of the code: the host shows the code in its own dialog, so
+ * the result never carries it (the omp pty proof, 2026-11-12: with the code in the result the model printed it anyway).
+ */
 export const BRIDGE_SHOW =
-  'your host is showing your user the code to hand to the peer out of band, so you need not print it; once your user says the peer has it, call this tool again with resume alone to wait. When the peer requests, your host asks your user to type the six digits the peer reads them; only your user answers.'
+  "the code is shown in your host's dialog, for your user to hand to the peer out of band; this result does not carry it, so there is nothing for you to print or pass on. Once your user says the peer has it, call this tool again with resume alone to wait. When the peer requests, your host asks your user to type the six digits the peer reads them; only your user answers."
 
 /**
  * What pair_invite's first result adds: the description already asked for the code in a code block, yet in two real
@@ -123,8 +128,68 @@ function usedInvite(e: unknown): unknown {
   return new ToolError('invite-expired', 'invite used, cancelled or expired: ask your peer for a new one')
 }
 
+/** A connection's checked bridge directory (binding.ts bridgeOf) holds a live .bridge. */
+const bridgeAt = (dir: string | undefined, now: number): boolean =>
+  dir !== undefined && bridgePresent(dir, null, now, pidAlive)
+
+/** The window a service pairing runs in, as busy and a refused cancel name it: host kind and cwd, never the handle. */
+const windowOf = (c: ServiceConnection): string => `the ${c.host} window at ${c.cwd}`
+
+/** What pair_invite and pair_accept answer while a pairing of this server runs: one runs at a time. */
+export const BUSY =
+  'a pairing is running: resume it, wait for it to end, or cancel it with pair_cancel if your person asks'
+
+/** How long pair_cancel waits for the edge to end the pairing it aborted (a withdrawal or a rollback), in seconds. */
+export const CANCEL_WAIT_S = 30
+
 /** How often the edge's pairing loops poll the relay, in ms: the CLI's idleMs. */
 export const PAIR_POLL_MS = 1000
+
+/**
+ * A first dialog declined, cancelled or failed sooner than this (ms, on the monotonic `mono`) was never seen by a
+ * person: no-elicitation, not declined. codex exec declines a form in 0.5 to 0.6 ms, content and _meta null (measured
+ * 2026-11-12); a person must see the form, read it and press a key.
+ */
+export const FAST_ANSWER_MS = 250
+
+/** The first Codex release with the form renderer the pair dialogs need (PR #13621), as major.minor.patch. */
+export const CODEX_FLOOR = [0, 113, 0] as const
+
+/** The numeric major.minor.patch core of a version, any prerelease tag ignored; null when unparsable or 0.0.0. */
+export function versionCore(version: string): number[] | null {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version)
+  const core = m === null ? null : m.slice(1, 4).map(Number)
+  return core === null || core.every((n) => n === 0) ? null : core
+}
+
+/** Why a pair tool answers no-elicitation: no form capability, a first dialog answered at once, a Codex too old. */
+type NoDialog = 'none' | 'fast' | 'version'
+
+/**
+ * The no-elicitation detail: what to change in this host, by its own setting, never a terminal command, a flag or a
+ * path (Dilip's 'plain codex', 2026-11-12, replacing deliverable 6's bag pair line). `codex --version` is the person's
+ * own host's version check, not a way to pair.
+ */
+export function noDialog(kind: string, why: NoDialog, version = ''): string {
+  const again =
+    ' Tell your user which of these to change. Do not call a pair tool again until they say it is changed.' +
+    (why === 'fast' ? ' If a pairing dialog did appear and was closed, call the tool again.' : '')
+  if (kind === 'codex') {
+    const head = {
+      none: 'Codex did not offer the pairing dialog, so nothing was written.',
+      fast: 'Codex did not show the pairing dialog to your user (it answered at once), so nothing was written.',
+      version: `This Codex is ${version}; bag's pairing dialogs need 0.113.0 or later, so nothing was written.`,
+    }[why]
+    return `${head} A pair tool needs the interactive codex TUI, not codex exec; Codex 0.113.0 or later (your user can check with codex --version); and an approval policy that lets MCP servers ask: on-request, the default, is enough (or a granular policy with mcp_elicitations allowed): your user changes it with /permissions in the TUI or approval_policy in their Codex config.${again}`
+  }
+  if (kind === 'omp')
+    return `omp shows pairing dialogs only in its interactive session with bag's extension running, not in its print, rpc or json modes, so nothing was written. Your user pairs in an interactive omp session.${again}`
+  const head =
+    why === 'fast'
+      ? 'This host answered the pairing dialog at once, without showing it to your user, so nothing was written.'
+      : 'This host cannot show your user the pairing dialog, so nothing was written.'
+  return `${head} Pairing needs a host that shows dialogs: this host's interactive form, with its setting that lets MCP servers ask your user, or Claude Code, or the interactive codex TUI.${again}`
+}
 
 /** A tool call's handler extra, as a pair tool uses it: progress, the request id a dialog relates to, and the abort. */
 export type PairExtra = ProgressExtra & { readonly requestId: string | number; readonly signal: AbortSignal }
@@ -172,8 +237,19 @@ class Live {
   /** The consent request now open (one at a time), and the stop for its background poll timer. */
   consent: Consent | null = null
   consentStop: () => void = () => {}
+  /** Settles the open consent's wait as cancelled, when the pairing ends under it (#cancelConsent). */
+  consentEnd: () => void = () => {}
+  /** Aborted by pair_cancel, on the person's word: the edge ends the pairing cancelled (edge pairing.ts). */
+  readonly stop = new AbortController()
+  /** True once the edge's run is under way (#settle): before it, a first call's own step ends on the aborted signal. */
+  running = false
   /** The relays that did not take a record of this identity's, one entry for each relay and kind. */
   readonly lagging: Lagging[] = []
+  /**
+   * The service connection that started it (its dialogs, bridge, cancel and resume are that one's); null in stdio. Its
+   * close or unbind ends the pairing through the binding table (binding.ts servicePairings, endFor).
+   */
+  conn: ServiceConnection | null = null
   #waiters: (() => void)[] = []
 
   constructor(tool: string, token: string, name: string, write: (peer: string) => void) {
@@ -216,10 +292,11 @@ export class Pairings {
       resume?: Opt<string>
     },
     extra: PairExtra,
+    conn?: ServiceConnection,
   ): Promise<Json> {
     const { resume, ...rest } = a
-    if (resume !== undefined) return this.#resume('pair_invite', resume, rest, extra)
-    const live = this.#start('pair_invite', a.name, a.for)
+    if (resume !== undefined) return this.#resume('pair_invite', resume, rest, extra, conn)
+    const live = this.#start('pair_invite', a.name, a.for, conn)
     if (live.bridge) return this.#bridgeInvite(live, a.for, a.ttl)
     const only = a.for ?? (await this.#first(live, this.#boundPeer(live, extra), true))
     const { keys, relay, key } = await this.#first(live, this.#keys(live))
@@ -241,6 +318,7 @@ export class Pairings {
       leaked: (from) => this.#audit('reject', 'request', from, { code: 'leaked' }),
       ask: (q) => this.#held(live, q),
       write: (q) => live.write(q.from),
+      signal: live.stop.signal,
     })
     this.#settle(live, 'refuse', run, (q) => this.#paired(live, q.from))
     const { text, exp } = await this.#first(
@@ -257,10 +335,11 @@ export class Pairings {
   async accept(
     a: { name?: Opt<string>; for?: Opt<string>; resume?: Opt<string> },
     extra: PairExtra,
+    conn?: ServiceConnection,
   ): Promise<Json> {
     const { resume, ...rest } = a
-    if (resume !== undefined) return this.#resume('pair_accept', resume, rest, extra)
-    const live = this.#start('pair_accept', a.name, a.for)
+    if (resume !== undefined) return this.#resume('pair_accept', resume, rest, extra, conn)
+    const live = this.#start('pair_accept', a.name, a.for, conn)
     if (live.bridge) {
       const run = this.#bridgeAccept(live, a.for)
       this.#settle(live, 'decline', run, (peer) => this.#paired(live, peer))
@@ -275,6 +354,7 @@ export class Pairings {
           `${this.#line('Paste the code or invite string your peer sent.', (l) => `As ${l}: paste your peer's code.`)}\nSpaces, hyphens and line breaks are fine.\nThey will be named ${live.name} here.`,
           { invite: { type: 'string', title: 'the code or invite string' }, ...ADDRESS },
           ['invite'],
+          true,
         )
         const only = a.for ?? addressIn(form)
         // The raw paste: the edge normalises a code (case, spaces, hyphens; claimed at --rendezvous, or at the host of
@@ -321,6 +401,7 @@ export class Pairings {
         sent.resolve(exp)
       },
       write: () => live.write(v.inviter),
+      signal: live.stop.signal,
     }).catch((e: unknown) => {
       throw usedInvite(e)
     })
@@ -329,8 +410,84 @@ export class Pairings {
     return { requested: true, expires_at: iso(exp), resume: live.token, note: NOT_PAIRED }
   }
 
-  /** True while a pairing of this server has not ended: one runs at a time across its identities. */
-  busy(): boolean {
+  /**
+   * pair_cancel, on the person's word: ends the pairing running on this server (across its identities, as busy counts
+   * them), an invite this side opened or an accept it waits on. `resume`, when given, must name it, else usage. The
+   * edge ends it cancelled: an invitation still waiting for a request is withdrawn at the rendezvous (I's address record, the one-time invitation identity's and never the
+   * inviter's own, re-signed with no sealing key: its code then meets
+   * invite-expired), a held request is answered no, a wait for the peer's admit stops and the roots go back; a consent
+   * request's files are removed. Nothing is written. It waits for the edge to end (at most CANCEL_WAIT_S), and answers
+   * {cancelled: true, was}; with nothing running, {cancelled: false}: the person's word holds already, and a refusal
+   * would read as a failure to cancel. A pairing that finished first answers {cancelled: false} and its end.
+   */
+  async cancel(a: { resume?: Opt<string> }, conn?: ServiceConnection): Promise<Json> {
+    // On a service connection only this identity's pairing counts, and only the window that started it cancels it.
+    const owner = conn === undefined ? this.#all.find((p) => p.#live !== null && p.#live.end === null) : this
+    const live = owner === undefined ? null : owner.#live
+    if (owner === undefined || live === null || live.end !== null) return { cancelled: false }
+    if (live.conn !== null && live.conn !== conn)
+      throw new ToolError('not-authorized', `this pairing runs in ${windowOf(live.conn)}: cancel it there`)
+    if (a.resume !== undefined && a.resume !== live.token)
+      throw new ToolError(
+        'usage',
+        'resume names no running pairing: pass the resume of the running one, or none',
+      )
+    return owner.#stop(live)
+  }
+
+  /**
+   * Ends the running pairing of `conn`, and only that connection's, as pair_cancel does: the service calls it for a
+   * connection's close or an unbind (never without a connection: one window's close never ends another's pairing).
+   * Its codes and digits die with it.
+   */
+  endFor(conn: ServiceConnection): void {
+    const live = this.#live
+    if (live === null || live.end !== null || live.conn !== conn) return
+    void this.#stop(live).catch((e: unknown) =>
+      this.#ctx.log.log('warn', 'pair-ended', { tool: live.tool, code: codeOf(e) }),
+    )
+  }
+
+  /** pair_cancel's work on `live`: refused, aborted, its consent dropped, waited on at most CANCEL_WAIT_S, audited. */
+  async #stop(live: Live): Promise<Json> {
+    const was = live.tool === 'pair_accept' ? 'accept' : 'invite'
+    live.refusal = new ToolError(
+      'cancelled',
+      'your user cancelled this pairing (pair_cancel): nothing was written',
+    )
+    live.over = true
+    live.stop.abort()
+    live.answer(false)
+    this.#cancelConsent(live)
+    const { timers } = this.#ctx
+    let due = false
+    const stop = timers.after(CANCEL_WAIT_S * 1000, () => {
+      due = true
+      live.poke()
+    })
+    try {
+      while (live.running && live.end === null && !due) await live.changed()
+    } finally {
+      stop()
+    }
+    const end = live.end as { readonly value?: Json } | null
+    if (end?.value !== undefined) {
+      this.#drop(live)
+      return { cancelled: false, ...end.value }
+    }
+    this.#audit('reject', live.tool === 'pair_accept' ? 'decline' : 'refuse', live.from, {
+      code: 'cancelled',
+    })
+    this.#drop(live)
+    return { cancelled: true, was }
+  }
+
+  /**
+   * True while a pairing of this server has not ended: one runs at a time across its identities. In the service
+   * (`service`) busy is per identity: two identities pair at once from two windows.
+   */
+  busy(service = false): boolean {
+    if (service) return this.#live !== null && this.#live.end === null
     return this.#all.some((p) => p.#live !== null && p.#live.end === null)
   }
 
@@ -367,6 +524,7 @@ export class Pairings {
           return o.ask(q)
         },
         write: () => {},
+        signal: live.stop.signal,
       })
       this.#audit('accept', 'admit', got.from, { name: live.name })
       return got.from
@@ -392,22 +550,43 @@ export class Pairings {
       (l) => `As ${l}: make a code for a peer.`,
     )
     const message = `${head}\nTheir address, if known: only it can answer. Else empty.\nThey will be named ${live.name} here.`
-    return addressIn(await this.#form(live, extra, message, ADDRESS))
+    return addressIn(await this.#form(live, extra, message, ADDRESS, [], true))
   }
 
   /** The checks before any dialog or network (no-elicitation, name, for, busy, a held name), then the live pairing. */
-  #start(tool: string, name: Opt<string>, only?: Opt<string>): Live {
+  #start(tool: string, name: Opt<string>, only: Opt<string>, conn: Opt<ServiceConnection>): Live {
     const ctx = this.#ctx
+    // A Codex below CODEX_FLOOR shows only a dialog's message. A compatibility gate, never a trust boundary: the
+    // version is the client's own word, so this grants nothing, and a spoofed one still meets the person's dialogs.
+    // A service connection's hello names its host kind and no version, so the gate does not apply there.
+    const client =
+      conn === undefined
+        ? (ctx.client?.() ?? { kind: 'other', version: '' })
+        : { kind: conn.host, version: '' }
+    const core = versionCore(client.version)
+    const old = core?.map((n, i) => n - (CODEX_FLOOR[i] as number)).find((d) => d !== 0) ?? 0
+    if (client.kind === 'codex' && old < 0)
+      throw new ToolError('no-elicitation', noDialog('codex', 'version', (core as number[]).join('.')))
     // This host cannot show a dialog (omp has no elicitation at all). With a live consent bridge (the host's extension
     // writes .bridge in a main TUI session), the person answers through files, below; without one (print, rpc, json),
-    // name the exact terminal command instead, never a silent decline (decision 83i, and deliverable 6 of W5).
-    const bridge = !ctx.canElicit()
-    if (bridge && !bridgePresent(ctx.config.home, ctx.config.as, ctx.clock.now(), pidAlive))
-      throw new ToolError('no-elicitation', this.#pairInstead(name))
+    // name the host's setting, never a silent decline and never a terminal command (Dilip's 'plain codex').
+    // On a service connection both are the connection's: its hello's capability, and the bridge its shim owns.
+    const bridge = conn === undefined ? !ctx.canElicit() : !conn.capabilities.elicitation
+    const present =
+      conn === undefined
+        ? bridgePresent(ctx.config.home, ctx.config.as, ctx.clock.now(), pidAlive)
+        : bridgeAt(bridgeDirOf(conn), ctx.clock.now())
+    if (bridge && !present) throw new ToolError('no-elicitation', noDialog(client.kind, 'none'))
     if (name === undefined || !NAME.test(name))
       throw new ToolError('usage', `name is the peer's petname (${NAME.source})`)
     if (only !== undefined && !isAddress(only)) throw new ToolError('usage', 'for takes an address')
-    if (this.busy()) throw new ToolError('busy', 'a pairing is running: resume it, or wait for it to end')
+    if (this.busy(conn !== undefined)) {
+      const at = this.#live?.conn
+      throw new ToolError(
+        'busy',
+        at === null || at === undefined ? BUSY : `${BUSY} (it runs in ${windowOf(at)})`,
+      )
+    }
     const { home } = ctx.config
     // Before a code goes out or a person is asked, for the peer's address may come only with its request, after the
     // whole ceremony: a held name goes on only under for, its own address. #held and the paste check a name taken since.
@@ -419,30 +598,9 @@ export class Pairings {
     }
     const live = new Live(tool, toHex(ctx.rng.bytes(16)), name, write)
     live.bridge = bridge
+    if (conn !== undefined) live.conn = conn
     this.#live = live
     return live
-  }
-
-  /**
-   * The terminal command a person runs to pair when this host cannot show a dialog, in place of a silent decline
-   * (deliverable 6): `bag pair` on this identity and relay prints a one-use code to send the peer, or takes the peer's
-   * code as a final argument. The petname is named when the tool gave a valid one, else `bag pair` asks for it. The
-   * model relays the line and does not call a pair tool again until the person has run it; it never claims it ran it.
-   */
-  #pairInstead(name: Opt<string>): string {
-    const { home, as, relays, rendezvous } = this.#ctx.config
-    const relay = relays[0] ?? ''
-    const rz = rendezvous !== undefined && rendezvous !== relay ? ` --rendezvous ${rendezvous}` : ''
-    const pet = name !== undefined && NAME.test(name) ? ` --name ${name}` : ''
-    const dir = / /.test(home) ? ` --dir '${home}'` : ` --dir ${home}`
-    const line = `bag pair --as ${as}${relay === '' ? '' : ` --relay ${relay}`}${rz}${pet}${dir}`
-    return (
-      'this host cannot show your user the pairing dialog, so a tool cannot pair here. Give your user this exact ' +
-      'line to run in their own terminal, and say what it does; do not call a pair tool again until they tell you it ' +
-      `is done, and never say you ran it: ${line} . With no code it prints a one-use pairing code to send the peer; ` +
-      "to accept a peer's code instead, they add that code or invite string as a final argument. It asks for the " +
-      "peer's petname when one is not in the line, shows six check digits, and writes the pairing after one y."
-    )
   }
 
   /**
@@ -472,6 +630,7 @@ export class Pairings {
         live.exp = exp
       },
       write: () => live.write(v.inviter),
+      signal: live.stop.signal,
     }).catch((e: unknown) => {
       throw usedInvite(e)
     })
@@ -481,7 +640,7 @@ export class Pairings {
   /**
    * The inviter's bridge flow: the edge opens the invitation, the host shows the code (pair-invite-show, a pure confirm
    * that is not the gate), and when the peer's request comes #bridgeCompare asks the person to type the six digits the
-   * peer reads out. The first result carries the code, as the dialog path's does.
+   * peer reads out. The first result carries no code: the show request is the only place it goes.
    */
   async #bridgeInvite(live: Live, only: Opt<string>, ttl: Opt<number>): Promise<Json> {
     const { keys, relay, key } = await this.#first(live, this.#keys(live))
@@ -503,6 +662,7 @@ export class Pairings {
       leaked: (from) => this.#audit('reject', 'request', from, { code: 'leaked' }),
       ask: (q) => this.#bridgeCompare(live, q),
       write: (q) => live.write(q.from),
+      signal: live.stop.signal,
     })
     this.#settle(live, 'refuse', run, (q) => this.#paired(live, q.from))
     const { text, exp } = await this.#first(
@@ -511,8 +671,7 @@ export class Pairings {
     )
     // Show the code through the host; the compare is the security gate, so a refusal of the show is not read.
     void this.#consentAsk(live, 'pair-invite-show', null, text)
-    const given = text.startsWith(INVITE_PREFIX) ? { invite: text } : { code: text }
-    return { invite_open: true, ...given, expires_at: iso(exp), resume: live.token, note: BRIDGE_SHOW }
+    return { invite_open: true, expires_at: iso(exp), resume: live.token, note: BRIDGE_SHOW }
   }
 
   /** The inviter's compare over the bridge: cancels the show request, asks the person to type the digits, verifies them. */
@@ -548,9 +707,10 @@ export class Pairings {
   ): Promise<ConsentOutcome> {
     const { config, clock, rng, timers } = this.#ctx
     this.#cancelConsent(live)
+    const dir = live.conn === null ? undefined : bridgeDirOf(live.conn)
     const consent = new Consent(
-      config.home,
-      config.as,
+      dir ?? config.home,
+      dir === undefined ? config.as : null,
       toHex(rng.bytes(8)),
       kind,
       peer,
@@ -561,6 +721,7 @@ export class Pairings {
     live.consent = consent
     this.#audit('queue', kind, peer?.address ?? null, { name: live.name })
     return new Promise<ConsentOutcome>((resolve) => {
+      live.consentEnd = () => resolve({ accepted: false, reason: 'cancelled' })
       const tick = (): void => {
         const o = consent.poll(clock.now())
         if (o === 'pending') {
@@ -570,6 +731,7 @@ export class Pairings {
         if (live.consent === consent) {
           live.consent = null
           live.consentStop = () => {}
+          live.consentEnd = () => {}
         }
         resolve(o)
       }
@@ -577,10 +739,13 @@ export class Pairings {
     })
   }
 
-  /** Stops the background poll and removes the open consent's files, if any. */
+  /** Stops the background poll, removes the open consent's files, if any, and settles its wait as cancelled. */
   #cancelConsent(live: Live): void {
     live.consentStop()
     live.consentStop = () => {}
+    const end = live.consentEnd
+    live.consentEnd = () => {}
+    end()
     if (live.consent !== null) {
       live.consent.cancel()
       live.consent = null
@@ -750,6 +915,7 @@ export class Pairings {
 
   /** Records the edge's outcome on the pairing: a refusal audited once (or only logged after #end), then wakes it. */
   #settle<T>(live: Live, step: string, run: Promise<T>, done: (value: T) => Json): void {
+    live.running = true
     run
       .then(
         (value) => {
@@ -786,11 +952,19 @@ export class Pairings {
    * again, for the admit that follows takes a moment and this call must not answer pending for a pairing that just
    * finished: in a real run a model read that as "the peer has not responded".
    */
-  async #resume(tool: string, token: string, rest: Json, extra: PairExtra): Promise<Json> {
+  async #resume(
+    tool: string,
+    token: string,
+    rest: Json,
+    extra: PairExtra,
+    conn: Opt<ServiceConnection>,
+  ): Promise<Json> {
     if (Object.values(rest).some((v) => v !== undefined))
       throw new ToolError('usage', 'resume continues a pairing: pass resume alone')
     const live = this.#live
-    if (live === null || live.token !== token || live.tool !== tool)
+    // Another window's pairing is no live pairing of this one: its dialogs never open here.
+    const other = live !== null && live.conn !== (conn ?? null)
+    if (live === null || other || live.token !== token || live.tool !== tool)
       throw new ToolError('usage', `resume names no live pairing of ${tool}: start a new one`)
     const { config, timers, log, clock } = this.#ctx
     const window = config.maxToolSeconds
@@ -895,22 +1069,44 @@ export class Pairings {
     return (await this.#form(live, extra, message, { [field]: property }, [field]))[field]
   }
 
-  /** One dialog of `properties`, those in `required` required: what the person gave on accept, else as #dialog says. */
+  /**
+   * One dialog of `properties`, those in `required` required: what the person gave on accept, else as #dialog says.
+   * The `first` dialog of a pairing not accepted within FAST_ANSWER_MS (monotonic) is no-elicitation: no person saw it.
+   * Later dialogs keep declined and cancelled at any speed, for a person who saw the first is in the loop.
+   */
   async #form(
     live: Live,
     extra: PairExtra,
     message: string,
     properties: Record<string, Field>,
     required: string[] = [],
+    first = false,
   ): Promise<Json> {
     const requestedSchema = { type: 'object' as const, properties, required }
-    const cancel = { action: 'cancel' as const }
-    const r = await this.#ctx.elicit({ message, requestedSchema }, extra).catch((e: unknown) => {
-      const name = e instanceof Error ? e.name : typeof e
-      this.#ctx.log.log('warn', 'pair-dialog', { tool: live.tool, code: codeOf(e), name })
-      return cancel
+    const [mono, failed] = [this.#ctx.mono ?? (() => performance.now()), [] as unknown[]]
+    const t0 = mono()
+    // A service pairing's dialogs go only to the connection that started it (contract section 5, Dialogs).
+    const dialog = { message, requestedSchema }
+    const asked =
+      live.conn === null
+        ? this.#ctx.elicit(dialog, extra)
+        : live.conn.elicit(dialog, { signal: extra.signal })
+    const r = await asked.catch((e: unknown) => {
+      failed.push(e)
+      return { action: 'cancel' as const }
     })
+    const took = mono() - t0
+    const ms = Math.round(took)
+    for (const e of failed) {
+      const name = e instanceof Error ? e.name : typeof e
+      this.#ctx.log.log('warn', 'pair-dialog', { tool: live.tool, code: codeOf(e), name, ms })
+    }
     if (r.action === 'accept') return r.content ?? {}
+    if (first && took < FAST_ANSWER_MS) {
+      this.#ctx.log.log('info', 'pair-dialog', { tool: live.tool, code: 'no-elicitation', ms })
+      const kind = live.conn?.host ?? this.#ctx.client?.().kind ?? 'other'
+      throw new ToolError('no-elicitation', noDialog(kind, 'fast'))
+    }
     if (r.action === 'decline') throw new ToolError('declined', 'the person declined: nothing was written')
     throw new ToolError('cancelled', 'the dialog was closed before an answer: nothing was written')
   }

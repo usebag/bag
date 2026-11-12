@@ -52,9 +52,12 @@ export type ConsentOutcome =
 
 const bad = (reason: string): ConsentOutcome => ({ accepted: false, reason })
 
-/** The directory an identity's consent files live in: <home>/state/<name>/consent. */
-function consentDir(home: string, name: string): string {
-  return join(home, 'state', name, 'consent')
+/**
+ * The directory an identity's consent files live in: <home>/state/<name>/consent; with name null, `home` is the
+ * directory itself (the bag service's bridge per connection, which the shim of an omp session owns).
+ */
+function consentDir(home: string, name: string | null): string {
+  return name === null ? home : join(home, 'state', name, 'consent')
 }
 
 /** Whether the process `pid` is alive, as the lock's holder check is: a signal of 0 reaches it, EPERM means it lives. */
@@ -75,7 +78,7 @@ const iso = (seconds: number): string => new Date(seconds * 1000).toISOString()
  */
 export function bridgePresent(
   home: string,
-  name: string,
+  name: string | null,
   now: number,
   alive: (pid: number) => boolean,
 ): boolean {
@@ -108,7 +111,7 @@ export class Consent {
 
   constructor(
     home: string,
-    name: string,
+    name: string | null,
     id: string,
     kind: ConsentKind,
     peer: ConsentPeer | null,

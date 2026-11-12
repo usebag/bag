@@ -1,5 +1,5 @@
 import { parseEnvelope, type SealedContent, type Thread, verifyChain } from '@usebag/core'
-import type { Edge, EdgeStore, InboxRow, SessionHandler, VerifiedHandle } from '@usebag/edge'
+import type { Clock, Edge, EdgeStore, InboxRow, SessionHandler, VerifiedHandle } from '@usebag/edge'
 import { MAX_TOOL_SECONDS } from './config.ts'
 
 // The server's mailbox desk, on the edge's store and router. Every row the edge accepts comes here once, from its
@@ -8,6 +8,16 @@ import { MAX_TOOL_SECONDS } from './config.ts'
 // promise, settled by an arrival, its timeout, or a cancelled request. A wait that resumes from a cursor (a resume
 // token's) reads the store after that cursor, so that a message that arrived between two calls is not lost, even
 // across a restart: what this process has returned once, by inbox or wait, it does not return again.
+//
+// The bag service binds several connections (windows) to one identity, and they share its one desk: one edge, so one
+// relay cursor and one acknowledgement per message, and one returned set, so a message is returned once whichever
+// connection asks. Each inbox and wait call names its connection (the service connection's handle; none in the stdio
+// mode). An arrival settles a waiting call of the speaking connection first (`prefer`, the wake router's), else the
+// oldest waiting call; a message returned to one connection is never returned by another's wait, and another's inbox
+// lists it with `returned_to: "another-connection"`. JavaScript runs each of these steps to its end before the next,
+// so marking a message returned and settling a wait are one serialised step: no two connections can both take it.
+// In the service (keepMarks) each mark is written to the store's returned table as it is set, before the call that
+// returns the message answers, so neither a drain nor a crash makes the next service return it again.
 
 /** The session id under which the server binds the threads it opens, waits on or receives (threads table). */
 export const SESSION = 'mcp'
@@ -28,6 +38,8 @@ export interface Trust {
 export interface Message {
   /** Its row in the local inbox: pass it as inbox's `since` to read what came after it. */
   readonly cursor: number
+  /** Only on a call that names a connection: whether inbox or wait returned it before, to this connection or another. */
+  readonly returned_to?: 'this-connection' | 'another-connection' | null
   readonly id: string
   /** The key that signed it (a session, or the principal itself). */
   readonly from: string
@@ -136,11 +148,23 @@ export interface Counts {
 
 interface Waiter {
   readonly thread: string | null
+  readonly connection: string
   settle(message: Message | null): void
 }
 
 const iso = (seconds: number): string => new Date(seconds * 1000).toISOString()
 const noop = (): void => {}
+/** The connection of a call that names none: the stdio mode's one session. */
+const SOLO = ''
+
+/** One connection's share of the desk, as status shows it. */
+export interface ConnectionView {
+  readonly connection: string
+  /** Messages inbox or wait returned to it first. */
+  readonly returned: number
+  /** Its wait calls pending now. */
+  readonly waiting: number
+}
 
 export class Desk {
   /** The server's session: live, so the threads bound to it are routed rather than queued; it acts on nothing. */
@@ -153,10 +177,16 @@ export class Desk {
   readonly #unread: Message[] = []
   /** Pending waits, oldest first (a Set keeps insertion order). */
   readonly #waiters = new Set<Waiter>()
-  /** The inbox rows (by seq) whose messages this process has returned, by inbox or wait. */
-  readonly #returned = new Set<number>()
+  /** The inbox rows (by seq) whose messages this process has returned, by inbox or wait, each to its first connection. */
+  readonly #returned = new Map<number, string>()
   /** The rows (by seq) `take` has taken: the edge fires once per row, and the desk holds to it as well. */
   readonly #taken = new Set<number>()
+  /** The envelope ids taken: a second row of one envelope (a copy a release or a recovery brings) is not delivered. */
+  readonly #ids = new Set<string>()
+  /** The connection whose waits an arrival settles first: the speaking connection of the wake router; none by default. */
+  prefer: () => string | null = () => null
+  /** The clock of the marks written to the store; null until keepMarks, and then the store keeps no marks. */
+  #keep: Clock | null = null
   #closed = false
 
   constructor(edge: Edge, store: EdgeStore, timers: Timers) {
@@ -171,15 +201,18 @@ export class Desk {
     if ((row.state !== 'routed' && row.state !== 'queued') || this.#taken.has(row.seq)) return
     this.#taken.add(row.seq)
     const message = this.message(row)
+    if (this.#ids.has(message.id)) return
+    this.#ids.add(message.id)
     for (const f of this.delivered) f(message)
-    for (const w of this.#waiters) {
-      if (w.thread === null || w.thread === message.thread.id) {
-        this.#returned.add(message.cursor)
-        w.settle(message)
-        return
-      }
+    const fits = [...this.#waiters].filter((w) => w.thread === null || w.thread === message.thread.id)
+    const speaking = this.prefer()
+    const w = fits.find((x) => x.connection === speaking) ?? fits[0]
+    if (w === undefined) {
+      this.#unread.push(message)
+      return
     }
-    this.#unread.push(message)
+    this.#mark(message.cursor, w.connection)
+    w.settle(this.#as(message, w.connection === SOLO ? undefined : w.connection, null))
   }
 
   /**
@@ -218,8 +251,66 @@ export class Desk {
     }
   }
 
-  /** Accepted messages in arrival order, after a cursor or from a time, on one thread when given; marked read. */
-  inbox(q: InboxQuery): InboxPage {
+  /** `m` as a call of `connection` sees it: with returned_to when the call names a connection (`before` the mark). */
+  #as(m: Message, connection: string | undefined, before: string | null | undefined): Message {
+    if (connection === undefined) return m
+    const to =
+      before === undefined || before === null
+        ? null
+        : before === connection
+          ? 'this-connection'
+          : 'another-connection'
+    return { ...m, returned_to: to }
+  }
+
+  /** The connection a message (by cursor) was first returned to: its handle, '' for the stdio mode, null for none yet. */
+  returnedTo(cursor: number): string | null {
+    return this.#returned.get(cursor) ?? null
+  }
+
+  /** Marks a row returned to its first connection; in the service, in the store too, before the call answers. */
+  #mark(cursor: number, connection: string): void {
+    if (this.#returned.has(cursor)) return
+    this.#returned.set(cursor, connection)
+    if (this.#keep !== null) this.#store.returnedPut?.(cursor, connection, this.#keep.now())
+  }
+
+  /**
+   * The bag service's, once its unit opens: the marks the store holds (from before a drain or a crash) are returned
+   * already and leave the unread list, the marks set since this desk began are written, and every later one is
+   * written as it is set. Returns how many marks the store held.
+   */
+  keepMarks(clock: Clock): number {
+    const kept = this.#store.returnedAll?.() ?? []
+    for (const [cursor, connection] of kept)
+      if (!this.#returned.has(cursor)) this.#returned.set(cursor, connection)
+    for (let i = this.#unread.length - 1; i >= 0; i--) {
+      if (this.#returned.has((this.#unread[i] as Message).cursor)) this.#unread.splice(i, 1)
+    }
+    this.#keep = clock
+    for (const [cursor, connection] of this.#returned)
+      this.#store.returnedPut?.(cursor, connection, clock.now())
+    return kept.length
+  }
+
+  /** Each connection that has been returned a message or waits now, by handle (the stdio mode's as ''). */
+  connections(): readonly ConnectionView[] {
+    const views = new Map<string, { returned: number; waiting: number }>()
+    const of = (c: string): { returned: number; waiting: number } => {
+      const v = views.get(c) ?? { returned: 0, waiting: 0 }
+      views.set(c, v)
+      return v
+    }
+    for (const c of this.#returned.values()) of(c).returned++
+    for (const w of this.#waiters) of(w.connection).waiting++
+    return [...views].map(([connection, v]) => ({ connection, ...v }))
+  }
+
+  /**
+   * Accepted messages in arrival order, after a cursor or from a time, on one thread when given; marked read, to
+   * `connection` (a service connection's handle) unless another connection was returned them first.
+   */
+  inbox(q: InboxQuery, connection?: string): InboxPage {
     const rows = this.#edge.inbox()
     const picked: InboxRow[] = []
     const handedOff = q.handedOff ?? 'include'
@@ -245,8 +336,11 @@ export class Desk {
       }
       picked.push(r)
     }
-    const messages = picked.map((r) => this.message(r))
-    for (const m of messages) this.#returned.add(m.cursor)
+    const messages = picked.map((r) => {
+      const before = this.#returned.get(r.seq)
+      this.#mark(r.seq, connection ?? SOLO)
+      return this.#as(this.message(r), connection, before)
+    })
     const read = new Set(messages.map((m) => m.id))
     for (let i = this.#unread.length - 1; i >= 0; i--) {
       if (read.has((this.#unread[i] as Message).id)) this.#unread.splice(i, 1)
@@ -273,14 +367,16 @@ export class Desk {
     ms: number,
     signal?: AbortSignal,
     after?: number,
+    connection?: string,
   ): Promise<Message | null> {
+    const who = connection ?? SOLO
     if (thread !== null && this.#store.threadGet(thread) === null) this.#edge.register(thread, this.handler)
     const early = after === undefined ? this.#firstUnread(thread) : this.#firstAfter(thread, after)
     if (early !== null) {
-      this.#returned.add(early.cursor)
+      this.#mark(early.cursor, who)
       const i = this.#unread.findIndex((m) => m.cursor === early.cursor)
       if (i >= 0) this.#unread.splice(i, 1)
-      return { ...early, handed_off_to: this.handedOffTo(early.thread.id) }
+      return this.#as({ ...early, handed_off_to: this.handedOffTo(early.thread.id) }, connection, null)
     }
     if (this.#closed || signal?.aborted === true || ms <= 0) return null
     return await new Promise<Message | null>((resolve) => {
@@ -288,6 +384,7 @@ export class Desk {
       const onAbort = (): void => waiter.settle(null)
       const waiter: Waiter = {
         thread,
+        connection: who,
         settle: (m) => {
           this.#waiters.delete(waiter)
           cancel()

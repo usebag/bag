@@ -18,6 +18,7 @@ import {
   type AddressRecord,
   checkDiscovered,
   discover,
+  MAX_ENVELOPE_BYTES,
   parseRecord,
   parseTxtPresentation,
   verifyHandleRecord,
@@ -176,7 +177,8 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     // Nothing else changed but the sealing key, which epoch 1 took out of the record.
     expect([content(second), content(secondAccept)]).toEqual([
       { ...content(first), sealing_key: null },
-      content(firstAccept),
+      // record keep lifts the old default max_bytes (65,536, as written above) to the envelope cap (W9).
+      { ...content(firstAccept), max_bytes: MAX_ENVELOPE_BYTES },
     ])
 
     // A running keep, every second: two republishes, then SIGTERM ends it with 0.

@@ -371,12 +371,12 @@ function envelopeFile(): J {
   const b2 = text(E2.bytes)
   const parse = [
     parseCase('a valid envelope', 'ok', b1),
-    parseCase('padded with spaces to exactly 65,536 bytes', 'ok', b1, 65_536 - E1.bytes.length),
+    parseCase('padded with spaces to exactly 196,608 bytes', 'ok', b1, 196_608 - E1.bytes.length),
     parseCase(
-      'padded with spaces to 65,537 bytes, one over the cap',
+      'padded with spaces to 196,609 bytes, one over the cap',
       'envelope-too-large',
       b1,
-      65_537 - E1.bytes.length,
+      196_609 - E1.bytes.length,
     ),
     parseCase('not JSON', 'bad-json', 'not json'),
     parseCaseHex('not UTF-8', 'bad-json', '7bff7d'),

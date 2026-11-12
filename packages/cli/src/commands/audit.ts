@@ -1,6 +1,13 @@
 import { existsSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { checkAuditAnchor, readAuditAnchors, readAuditLines, verifyAuditLog } from '@usebag/edge'
+import {
+  checkAuditAnchor,
+  connectionOf,
+  parseAuditLine,
+  readAuditAnchors,
+  readAuditLines,
+  verifyAuditLog,
+} from '@usebag/edge'
 import { CliError, parse, UsageError } from '../args.ts'
 import type { Io } from '../io.ts'
 
@@ -10,7 +17,9 @@ import type { Io } from '../io.ts'
  * the anchor the store keeps of it. Prints `ok <n> lines`, or `bad line <n>: <problem>` for the first line
  * that was edited, removed or reordered; then `truncated: ...` when the log is shorter than its anchor, `diverged: ...`
  * when the line at the anchor has another hash, or `ahead: ...` when lines follow the anchor (a crash between an
- * append and its anchor leaves one). Exits 1 on a bad line, `truncated` or `diverged`.
+ * append and its anchor leaves one). Exits 1 on a bad line, `truncated` or `diverged`. A log the bag service has
+ * written to (its lines carry `connection`) also prints `connections: <a> name one, <b> name none, <c> before the
+ * service`; a log with no such line prints exactly as before.
  */
 export function audit(args: readonly string[], io: Io): number {
   const [verb, ...rest] = args
@@ -26,6 +35,15 @@ export function audit(args: readonly string[], io: Io): number {
   const broken = check?.state === 'truncated' || check?.state === 'diverged'
   if (!chain.ok) io.out(`bad line ${chain.line}: ${chain.problem}`)
   else if (!broken) io.out(`ok ${chain.lines} lines`)
+  if (chain.ok) {
+    const of = lines.map((l) => connectionOf(parseAuditLine(l)))
+    const named = of.filter((c) => typeof c === 'string').length
+    const none = of.filter((c) => c === null).length
+    if (named + none > 0)
+      io.out(
+        `connections: ${named} name one, ${none} name none, ${of.length - named - none} before the service`,
+      )
+  }
   if (check?.state === 'truncated') {
     io.out(`truncated: the log has ${check.lines} lines; its anchor in ${store} is at line ${check.seq}`)
   } else if (check?.state === 'diverged') {

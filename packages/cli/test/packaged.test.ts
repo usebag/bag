@@ -1,8 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { CLI_MAIN, MCP_MAIN, OMP_WAKE, PACKAGED } from '../src/entries.ts'
-import { stableMains, versionLine } from '../src/packaged.ts'
+import { stableMains, stableNode, versionLine } from '../src/packaged.ts'
 import { tempDir } from './support/io.ts'
 
 // packaged.ts: the version line, and the stable copy of the package's dist/ that the written commands name (from
@@ -30,8 +30,8 @@ describe('versionLine', () => {
   })
 })
 
-describe('stableMains', () => {
-  it('from source: the checkout main.ts files, nothing copied', () => {
+describe('stableMains: the launchers of stage.ts, and nothing else under <home>/package/', () => {
+  it('from source: the checkout main.ts files, nothing written', () => {
     expect(PACKAGED).toBe(false)
     expect(stableMains(join(tmp.dir, 'unused'))).toEqual({
       cli: CLI_MAIN,
@@ -42,86 +42,78 @@ describe('stableMains', () => {
     expect(existsSync(join(tmp.dir, 'unused'))).toBe(false)
   })
 
-  it('from the package: copies dist/ to <home>/package and names the copies, modes kept', () => {
+  it('from the package: stages versions/<version>/ once and names the launchers, which run it', () => {
     const from = dist('v1', 'chunk-a.js')
     const home = join(tmp.dir, 'home')
-    const m = stableMains(
+    const bins = [
+      join(from, 'bag.js'),
+      join(from, 'bag-mcp.js'),
+      true,
+      join(from, 'bag-omp-wake.js'),
+    ] as const
+    const m = stableMains(home, ...bins, '0.4.0')
+    const pkg = join(home, 'package')
+    expect(m).toEqual({
+      cli: join(pkg, 'bag.js'),
+      mcp: join(pkg, 'bag-mcp.js'),
+      omp: join(pkg, 'bag-omp-wake.js'),
+      copied: join(pkg, 'versions', '0.4.0'),
+    })
+    expect(readFileSync(join(pkg, 'versions', '0.4.0', 'chunk-a.js'), 'utf8')).toContain('"v1"')
+    expect(statSync(join(pkg, 'bag.js')).mode & 0o777).toBe(0o755)
+    expect(statSync(pkg).mode & 0o777).toBe(0o700)
+    expect(stableMains(home, ...bins, '0.4.0').copied).toBeNull()
+  })
+
+  it('a keep job installed after a stage leaves only the launchers, current and versions/ under <home>/package/', async () => {
+    const from = join(tmp.dir, 'v1')
+    const home = join(tmp.dir, 'keep-home')
+    stableMains(
       home,
       join(from, 'bag.js'),
       join(from, 'bag-mcp.js'),
       true,
       join(from, 'bag-omp-wake.js'),
+      '0.4.0',
     )
-    const to = join(home, 'package')
-    expect(m).toEqual({
-      cli: join(to, 'bag.js'),
-      mcp: join(to, 'bag-mcp.js'),
-      omp: join(to, 'bag-omp-wake.js'),
-      copied: to,
-    })
-    expect(readFileSync(join(to, 'chunk-a.js'), 'utf8')).toContain('"v1"')
-    expect(existsSync(join(to, 'wordlist.json'))).toBe(true)
-    expect(statSync(join(to, 'bag.js')).mode & 0o777).toBe(0o755)
-    expect(statSync(to).mode & 0o777).toBe(0o700)
-  })
-
-  it('an existing <home>/package with a looser mode is set to 0700', () => {
-    const home = join(tmp.dir, 'loose')
-    mkdirSync(join(home, 'package'), { recursive: true, mode: 0o755 })
-    chmodSync(join(home, 'package'), 0o755)
-    const from = join(tmp.dir, 'v1')
-    stableMains(home, join(from, 'bag.js'), join(from, 'bag-mcp.js'), true, join(from, 'bag-omp-wake.js'))
-    expect(statSync(join(home, 'package')).mode & 0o777).toBe(0o700)
-  })
-
-  it('the same version again: nothing copied, the same paths', () => {
-    const from = join(tmp.dir, 'v1')
-    const m = stableMains(
-      join(tmp.dir, 'home'),
-      join(from, 'bag.js'),
-      join(from, 'bag-mcp.js'),
-      true,
-      join(from, 'bag-omp-wake.js'),
-    )
-    expect(m).toEqual({
-      cli: join(tmp.dir, 'home', 'package', 'bag.js'),
-      mcp: expect.any(String),
-      omp: expect.any(String),
-      copied: null,
-    })
-  })
-
-  it('a later version refreshes the same paths and drops the chunks it lacks', () => {
-    const from = dist('v2', 'chunk-b.js')
-    const home = join(tmp.dir, 'home')
-    const m = stableMains(
+    const before = readdirSync(join(home, 'package')).sort()
+    // What record keep --plist, onboard and the refresher call again: no copy of dist/ beside the launchers.
+    stableMains(
       home,
       join(from, 'bag.js'),
       join(from, 'bag-mcp.js'),
       true,
       join(from, 'bag-omp-wake.js'),
+      '0.4.0',
     )
-    const to = join(home, 'package')
-    expect(m.cli).toBe(join(to, 'bag.js'))
-    expect(readFileSync(join(to, 'chunk-b.js'), 'utf8')).toContain('"v2"')
-    expect(existsSync(join(to, 'chunk-a.js'))).toBe(false)
-    expect(existsSync(join(to, 'wordlist.json'))).toBe(true)
+    const after = readdirSync(join(home, 'package')).sort()
+    expect(after).toEqual(before)
+    expect(after).toEqual(['bag-mcp.js', 'bag-omp-wake.js', 'bag-shim.js', 'bag.js', 'current', 'versions'])
+  })
+})
+
+describe('stableNode', () => {
+  const CELLAR = '/opt/homebrew/Cellar/node/25.8.1_1/bin/node'
+  const LINKS = ['/opt/homebrew/bin/node', '/usr/local/bin/node']
+  const fs = (map: Record<string, string>) => (p: string) => {
+    const r = map[p]
+    if (r === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    return r
+  }
+
+  it("writes Homebrew's link when it resolves to the node running", () => {
+    expect(stableNode(CELLAR, LINKS, fs({ [CELLAR]: CELLAR, [LINKS[0] as string]: CELLAR }))).toBe(LINKS[0])
+    expect(stableNode(CELLAR, LINKS, fs({ [CELLAR]: CELLAR, [LINKS[1] as string]: CELLAR }))).toBe(LINKS[1])
   })
 
-  it('run from the copy itself: nothing copied, the same paths', () => {
-    const to = join(tmp.dir, 'home', 'package')
-    const m = stableMains(
-      join(tmp.dir, 'home'),
-      join(to, 'bag.js'),
-      join(to, 'bag-mcp.js'),
-      true,
-      join(to, 'bag-omp-wake.js'),
-    )
-    expect(m).toEqual({
-      cli: join(to, 'bag.js'),
-      mcp: join(to, 'bag-mcp.js'),
-      omp: join(to, 'bag-omp-wake.js'),
-      copied: null,
-    })
+  it('writes the resolved path when the link is another node, absent, or the node itself does not resolve', () => {
+    const other = '/opt/homebrew/Cellar/node/24.4.1/bin/node'
+    expect(stableNode(other, LINKS, fs({ [other]: other, [LINKS[0] as string]: CELLAR }))).toBe(other)
+    expect(stableNode(CELLAR, LINKS, fs({ [CELLAR]: CELLAR }))).toBe(CELLAR)
+    expect(stableNode(CELLAR, LINKS, fs({}))).toBe(CELLAR)
+  })
+
+  it('by default: the running node, or a link that resolves to it', () => {
+    expect([process.execPath, ...LINKS]).toContain(stableNode())
   })
 })

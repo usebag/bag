@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS sends (id TEXT PRIMARY KEY, at INTEGER NOT NULL) STRI
 CREATE TABLE IF NOT EXISTS contacts (address TEXT PRIMARY KEY, first_at INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS policy_counts (rule TEXT NOT NULL, outcome TEXT NOT NULL, n INTEGER NOT NULL,
   PRIMARY KEY (rule, outcome)) STRICT;
+CREATE TABLE IF NOT EXISTS returned (seq INTEGER PRIMARY KEY REFERENCES inbox (seq), connection TEXT NOT NULL,
+  at INTEGER NOT NULL) STRICT;
 `
 
 const waitingTable = (table: string): string =>
@@ -470,6 +472,19 @@ export class SqliteStore implements EdgeStore {
 
   auditAnchors(): NamedAnchor[] {
     return this.#q('SELECT name, seq, hash FROM audit_anchor ORDER BY name').all() as unknown as NamedAnchor[]
+  }
+
+  returnedPut(seq: number, connection: string, now: number): void {
+    this.#q('INSERT INTO returned (seq, connection, at) VALUES (?, ?, ?) ON CONFLICT (seq) DO NOTHING').run(
+      seq,
+      connection,
+      now,
+    )
+  }
+
+  returnedAll(): [number, string][] {
+    const rows = this.#q('SELECT seq, connection FROM returned ORDER BY seq').all()
+    return rows.map((r) => [r.seq as number, r.connection as string])
   }
 
   inboxGet(seq: number): InboxRow | null {

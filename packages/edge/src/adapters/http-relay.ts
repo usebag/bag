@@ -1,4 +1,4 @@
-import { concatBytes, isAcErrorCode, type RecordKind } from '@usebag/core'
+import { concatBytes, isAcErrorCode, MAX_ENVELOPE_BYTES, type RecordKind } from '@usebag/core'
 import {
   type FetchedBytes,
   type FetchProof,
@@ -22,6 +22,20 @@ import { createWsSubscriber, jsonObject, type WsSubscriberOptions } from './ws-r
 /** The largest response read: the relay's request body cap, 256 KiB. */
 export const MAX_RESPONSE_BYTES = 262_144
 
+/** A request's time with no body to speak of, its wait for a turn included: 10 s. */
+export const BASE_TIMEOUT_MS = 10_000
+/** The longest a request is given: under the relay's 30 s body timeout (crates relay config.rs), so the edge ends first. */
+export const MAX_TIMEOUT_MS = 29_000
+
+/**
+ * The time a request of `bytes` is given: 10 s plus 1 s per whole 16 KiB, at most 29 s. A full envelope at the cap of
+ * 196,608 bytes is given 22 s, so a send at 72 kbit/s still goes out, where a flat 10 s failed it below about 160
+ * kbit/s (W9). A publish counts its body; a fetch by id counts the envelope cap, the most its answer can be.
+ */
+export function timeoutFor(bytes: number): number {
+  return Math.min(BASE_TIMEOUT_MS + Math.floor(bytes / 16_384) * 1000, MAX_TIMEOUT_MS)
+}
+
 /** AC-Received-At as Unix seconds: null when absent, a RelayError unless it is a plain decimal integer (§2.5). */
 function receivedAtOf(res: Response): number | null {
   const header = res.headers.get('ac-received-at')
@@ -36,7 +50,7 @@ function receivedAtOf(res: Response): number | null {
 export interface HttpRelayOptions {
   /** A fetch to use in place of the global one. */
   readonly fetch?: typeof fetch
-  /** Per request, its wait for a turn included, in milliseconds (default 10,000). */
+  /** Per request, its wait for a turn included, in milliseconds: one fixed time (default: timeoutFor its size). */
   readonly timeoutMs?: number
   /** The process's turns at its relays (default: this client's own). */
   readonly turns?: RelayTurns
@@ -67,20 +81,26 @@ async function failure(res: Response): Promise<RelayError> {
 
 const base = (url: string): string => url.replace(/\/+$/, '')
 
-type Call = <T>(url: string, init: RequestInit, read: (res: Response) => Promise<T>) => Promise<T>
+type Call = <T>(
+  url: string,
+  init: RequestInit,
+  read: (res: Response) => Promise<T>,
+  size?: number,
+) => Promise<T>
 
 const noAnswer = (url: string, e: unknown): RelayError =>
   new RelayError(null, 0, null, `${url}: ${e instanceof Error ? e.message : String(e)}`)
 
 /**
- * One request with the options' fetch and timeout, following no redirect: a 3xx is returned as the answer. It runs on a
- * turn, held until `read` has its answer, since the pool's connection is busy until the response has come in. The
- * machine's telemetry, while it is on, counts the call by the relay's name and a failure by its code, never the URL.
+ * One request with the options' fetch and timeout (by default timeoutFor `size`, the bytes it moves), following no
+ * redirect: a 3xx is returned as the answer. It runs on a turn, held until `read` has its answer, since the pool's
+ * connection is busy until the response has come in. The machine's telemetry, while it is on, counts the call by the
+ * relay's name and a failure by its code, never the URL.
  */
 function caller(options: HttpRelayOptions): Call {
   const turns = options.turns ?? new RelayTurns()
-  return async (url, init, read) => {
-    const signal = AbortSignal.timeout(options.timeoutMs ?? 10_000)
+  return async (url, init, read, size = 0) => {
+    const signal = AbortSignal.timeout(options.timeoutMs ?? timeoutFor(size))
     const leave = await turns.wait(url, signal).catch((e: unknown) => {
       throw noAnswer(url, e)
     })
@@ -119,11 +139,12 @@ function stamped(call: Call, url: string, id: string, proof: FetchProof): Promis
   }
   if (proof.auth.length > 0)
     headers['AC-Auth'] = Buffer.from(JSON.stringify(proof.auth)).toString('base64url')
-  return call(`${base(url)}/v0/fetch/${id}`, { headers }, async (res) => {
+  const read = async (res: Response) => {
     const bytes = await body(res)
     const receivedAt = receivedAtOf(res)
     return receivedAt === null ? bytes : Object.defineProperty(bytes, 'receivedAt', { value: receivedAt })
-  })
+  }
+  return call(`${base(url)}/v0/fetch/${id}`, { headers }, read, MAX_ENVELOPE_BYTES)
 }
 
 /** The HTTP half of a RelayClient, and the health probe. */
@@ -134,7 +155,7 @@ export function createHttpRelay(options: HttpRelayOptions = {}): Omit<RelayClien
   return {
     async publish(url: string, bytes: Uint8Array): Promise<PublishResult> {
       const init = { method: 'POST', headers: { 'content-type': 'application/json' }, body: bytes }
-      const r = jsonObject(await call(`${base(url)}/v0/publish`, init, body))
+      const r = jsonObject(await call(`${base(url)}/v0/publish`, init, body, bytes.length))
       // A record (a body with a top-level `kind`, as the relay dispatches it) has no id and fills no mailbox; the
       // relay answers {ok, kind, signer, iat, valid_until} (spec/SPEC.md §8.2, Appendix B 65), returned as
       // `record`; an older relay answers {"ok": true} alone, read as a result with no `record`. Correction

@@ -527,7 +527,7 @@ def check_sealed(s: Any, to: list[str]) -> None:
 
 def parse_envelope(raw: bytes) -> dict[str, Any]:
     """spec/SPEC.md §5.4, in order."""
-    if len(raw) > 65_536:
+    if len(raw) > 196_608:
         raise Rejected("envelope-too-large")
     e = parse_json(raw)
     if not isinstance(e, dict):

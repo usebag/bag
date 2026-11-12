@@ -1,7 +1,14 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
-import { type AcRecord, parseRecord, sealingKeyFromSeed, utf8, verifyRecord } from '@usebag/core'
+import {
+  type AcRecord,
+  MAX_ENVELOPE_BYTES,
+  parseRecord,
+  sealingKeyFromSeed,
+  utf8,
+  verifyRecord,
+} from '@usebag/core'
 import { INCOMPLETE_REVOCATION, RelayError } from '@usebag/edge'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EPOCH_DUE, EPOCH_EARLY } from '../src/epochs.ts'
@@ -55,13 +62,15 @@ async function publish(io: TestIo, dir: string, args: readonly string[]): Promis
   expect((await cli(io, 'publish', RELAY, file)).code).toBe(0)
 }
 const ADDRESS = ['record', 'address', 'bob', '--relay', RELAY, '--sealing-key', '--ttl', '3600']
-const accept = (...roots: string[]) => [
+const accept = (...roots: string[]) => sized(65_536, ...roots)
+/** Bob's accept-from of `roots`, of max_bytes `size`. */
+const sized = (size: number, ...roots: string[]) => [
   'record',
   'accept-from',
   'bob',
   ...roots.flatMap((r) => ['--root', r]),
   '--max-bytes',
-  '65536',
+  `${size}`,
   '--ttl',
   '86400',
 ]
@@ -113,7 +122,9 @@ describe('record keep: the records signed again at half their ttl and republishe
     const second = held(relay, bobs, 'address')
     const secondAccept = held(relay, bobs, 'accept-from')
     expect([second.iat, secondAccept.iat]).toEqual([T0 + 1800, T0 + 1800])
-    expect([content(second), content(secondAccept)]).toEqual([content(first), content(firstAccept)])
+    // Unchanged but for its iat, and the max_bytes of 65,536, the old default, lifted to the envelope cap (W9).
+    const lifted = { ...content(firstAccept), max_bytes: MAX_ENVELOPE_BYTES }
+    expect([content(second), content(secondAccept)]).toEqual([content(first), lifted])
     await pass(1800)
     expect(held(relay, bobs, 'address').iat).toBe(T0 + 3600)
     io.stop.abort()
@@ -134,6 +145,21 @@ describe('record keep: the records signed again at half their ttl and republishe
     console.log(
       `MEASURE L3(a): ttl 3600 published at ts -> republished at ts + ${second.iat - T0} and ts + 3600, content unchanged, exit 0 on stop`,
     )
+  })
+
+  it('lifts a held max_bytes of exactly 65,536 to the envelope cap and keeps 32,768 (W9)', async () => {
+    const relay = new MemoryRelay()
+    const io = keepIo(relay)
+    const dir = home()
+    const bobs = await bob(io, dir)
+    expect(held(relay, bobs, 'accept-from')).toMatchObject({ max_bytes: 65_536 })
+    expect((await cli(io, ...keepArgs(dir, '--relay', RELAY, '--once'))).code).toBe(0)
+    expect(held(relay, bobs, 'accept-from')).toMatchObject({ roots: ['*'], max_bytes: MAX_ENVELOPE_BYTES })
+    await pass(1)
+    await publish(io, dir, sized(32_768, '*'))
+    await pass(1)
+    expect((await cli(io, ...keepArgs(dir, '--relay', RELAY, '--once'))).code).toBe(0)
+    expect(held(relay, bobs, 'accept-from')).toMatchObject({ roots: ['*'], max_bytes: 32_768 })
   })
 
   it('(L3 b) --every sets the interval, and --once republishes now and exits', async () => {

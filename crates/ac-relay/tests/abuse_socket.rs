@@ -31,13 +31,13 @@ async fn a1_oversized_bodies_envelopes_and_frames_are_refused() {
     bin.host().await;
     let r = bin.publish(&vec![b' '; 262_145]).await;
     assert_eq!((r.status, r.error()), (413, "body-too-large".to_owned()));
-    let r = bin.publish(&envelope_of(65_537, now())).await;
+    let r = bin.publish(&envelope_of(196_609, now())).await;
     assert_eq!((r.status, r.error()), (413, "envelope-too-large".to_owned()));
-    let r = bin.publish(&envelope_of(65_536, now() - 1)).await;
+    let r = bin.publish(&envelope_of(196_608, now() - 1)).await;
     assert_eq!(
         (r.status, r.json()["delivered"].clone()),
         (200, 1.into()),
-        "65,536 bytes parse: {}",
+        "196,608 bytes parse: {}",
         r.text()
     );
     let before = bin.last_cursor().await;

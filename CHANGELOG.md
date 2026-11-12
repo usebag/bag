@@ -4,6 +4,224 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.4.0: 2026-11-12
+
+The cut tagged v0.4.0, `@usebag/bag` 0.4.0.
+
+- **`@usebag/bag` 0.4.0**, published from this cut (`npm view @usebag/bag@0.4.0 gitHead` names it).
+
+Changes after v0.3.0, for the next cut.
+
+- **Several windows on one identity, in the bag service.** One fetch and one acknowledgement per message, and a
+  message read in one window is not returned again in another; only the window you last typed in is woken
+  (`service/ring`), the others show a quiet notice; a crash never shows a window a message again; keeping an
+  identity's records alive is your choice per identity (with no choice, as today: kept while a window is open and for
+  24 hours after the last one closes), on a wall-clock deadline that survives sleep, with per-identity jitter; audit
+  lines name the connection that acted, and `audit verify` reads old and new logs.
+- **bag-shim, the one bag server every host session starts.** It speaks MCP on stdio to Claude Code, Codex or omp and
+  forwards everything to the one bag service of your home; it holds no key, store or token. If the service is not
+  running it starts it, and if it cannot, every tool says how (`bag service start`, or the login agent). A call that
+  was running when the service restarted fails with a clear message and is never sent twice; dialogs reach the window
+  that asked, with no 60-second limit; long calls on Codex answer with a resume token; typing `use <name>` binds the
+  window.
+- **The bag service on the host, from the command line.** `bag host install <claude-code|codex|omp> --user` wires
+  the service's shim once per user for every identity of the home (with Claude Code's deny rules for `<home>/run`,
+  `--sandbox` to turn its sandbox on); `bag host migrate` moves existing per-folder wiring to it after one y, backs up
+  every file and keeps a journal, and `bag host migrate --undo <stamp>` puts it all back; `bag host install service`
+  prints the login agent and the line that loads it; installs stage each version under `<home>/package/versions/`;
+  beside a running service, every command that writes an identity borrows it
+  from it instead of answering held; `bag identity relays <name> --relay <url>...` sets a service identity's relays;
+  `bag identity keep-alive on|off|default <name>` is your word on keeping its records alive.
+  The per-folder forms stay as the rollback.
+- **The install page sets the bag service up from the same one line.** "Set me up on bag.dev" in Claude Code, Codex or
+  omp, on a fresh machine or an existing home: on an existing home it reuses an identity unless you ask for a new one;
+  you run `host migrate`, the shim at user scope and the login agent yourself, then type `use` and the name in each
+  window. One identity per folder stays on the page as the way back. See `docs/bag-service.md`.
+
+### The bag service: one process per home that holds every identity
+
+- **`bag-mcp --service --dir <home>` runs one bag service for the home, on a socket instead of stdio.** It holds every
+  identity listed in `<home>/identities.json` (or `--identities <file>`), all in that one home, and each window's
+  shim connects to it on `<home>/run/service.sock` (0600, in a 0700 directory). A second service for the same home
+  answers busy and exits. Windows that connect present the token the service writes at each start; dialogs a window
+  opens are answered only in that window. The per-folder stdio server (`--as`, `--identities`) stays as it was, as the
+  way back.
+- **Restarts hand over cleanly.** A drain tells every window, refuses new binds and pairings with `draining`, ends
+  running pairings (their codes and digits die), stops fetching, flushes and releases each identity, and lets go of
+  the service lock last, so a new service never runs beside the old one. Keys are read again by the new process.
+- **A Keychain identity asks for its dialog only when you use it.** The service opens such an identity at the first
+  window that binds to it, never at an unattended start or restart, and never retries a denied or unanswered dialog on
+  a timer.
+- **The service runs scrubbed.** It refuses to start with `NODE_OPTIONS` set or a debugging or code-loading flag,
+  runs with `--disable-sigusr1` and core dumps off, and the login-agent text the install step prints sets those, a
+  fixed working directory and a short environment.
+- **One window, one identity, in the service.** A window acts as the identity you bind it to (type `use NAME`, or
+  answer the bind dialog); before that only `status` answers, saying how. `status` shows that identity only. An agent
+  identity's windows each get their own grant under the same caveats. An identity you add with the command line is
+  usable at once, without a restart; one you remove stays with the windows already using it until they close.
+- **A Keychain dialog holds only its own identity.** While one identity waits on its dialog, every other window and
+  identity keeps working; at an unattended start a Keychain identity opens only if you turned keep-alive on for it.
+- **`bag-mcp --print-login-agent` prints the login agent.** The launchd plist on macOS, or with `--platform linux` a
+  systemd user unit, on stdout only; it names the version-independent launcher, so removing old versions never breaks
+  it.
+
+### Known limits of 0.4.0
+
+- **Same user is not a boundary.** A program running as you can still use any of your identities through the running
+  bag service, since it can read the service's token. The Keychain stops it copying your keys, not using them; only
+  your host's sandbox, where it denies ~/.bag/run, stops that.
+- **An identity whose keys an agent holds** is reachable from a `login` until about 24 hours after that login began,
+  when its address and key records lapse; the service keeps none of them alive, and running `login` again refreshes
+  them. A send from such a window under an organisation's members record is refused `not-authorized`. A lost or
+  revoked grant answers `not-authorized` until the window binds again or the service restarts; the refusal's detail
+  says how to recover, and regranting in place comes in a later release.
+- **One login agent per user, for one home.** A second home gets none: its service starts with its first window and
+  stops 60 seconds after the last.
+- **`<home>/run` is the service's own.** It makes the folder with mode 0700 and refuses an existing one that is
+  group- or world-accessible (`unsafe-path`, for example 0755); it does not replace it. Run `chmod 700` on it, or move
+  the folder to `~/.Trash` so the service makes a fresh one.
+- **After a stop, the old service can outlive its lock for up to half a minute.** It releases the lock first, then stays
+  alive while an in-flight send's HTTP request to a relay is open, up to the relay client's timeout (29 seconds in the
+  proof run); a new service may start meanwhile, and nothing is fetched or acknowledged twice.
+- **One wake per Codex process.** On Codex, all TUI windows of one Codex process share one bag connection host. The
+  wake is per Codex process, not per window: with two windows bound to two identities, a window can be woken for the
+  other's mail (its name and that mail arrived, never the message) or miss its own. Closing a Codex window does not
+  end its binding or any pairing it started until Codex itself quits: unbind or cancel the pairing first, or quit
+  Codex. Each window still reads and sends only as the identity it is bound to. For a dependable wake on Codex, bind
+  one identity per Codex process.
+- **Claude Code asks before bag's tools.** Claude Code may ask you to allow bag's tools (in auto mode its classifier
+  can stop a call until you approve it); bag never pre-approves them.
+- **Proof runs not yet done live:** the one-line install in Claude Code, Codex and omp on a fresh and on an existing
+  home; the login agent's restart of a killed service; the Keychain dialog answered Allow; and, optional, a pairing in
+  a Codex window closed before it ended. Recorded headless on main: mail with no window open, a crash and the shim's
+  restart, an upgrade under load (drain with a wait and a send in flight), host migrate and its undo, and omp's seven
+  legs. Recorded live: in Claude Code, two windows on two identities and two windows on one identity; in Codex, two
+  windows on one identity, and two windows on two identities (its wake as above).
+
+### Keys in the macOS Keychain
+
+- **On macOS, `bag keygen` run at a terminal now keeps a new identity's keys in the login keychain, and `bag identity custody <name> --to
+  keychain` moves an existing key file there.** A program running as you can no longer read your keys from a file;
+  reading the keychain item shows a macOS dialog naming `security`, where you answer Allow (never Always Allow), and
+  only right after you started bag yourself. Linux, and `--custody
+  file`, keep the key file as before; the move verifies the keychain copy before it puts the old file in the Trash,
+  and `--to file` moves back.
+
+### identity remove: one identity out of a home that keeps others
+
+- **`bag identity remove <name> --relay <url>...` takes one identity out of a home and leaves the others working.**
+  It runs on a terminal and asks one question that names every change; nothing is deleted. It re-signs the
+  identity's accept-from to name only its own address at each relay, so peers' mail is refused from then on; a relay
+  that does not take it stops the run before anything on the machine changes. It then takes out of `trust.json` only
+  the roots no other identity's accept-from copy still names, forgets the names of its address in `names.json`, and
+  prints the `unpair` line for each other identity that accepts it. With `--project <dir>` it takes its bag server out
+  of `.omp/mcp.json` (and bag's wake link) or `.mcp.json` (and its wake hooks in `.claude/settings.json`), keeping
+  every other server and hook. A Codex table naming it is left for you to edit, and the command says so. Its key file
+  or keychain pointer, `state/<name>/`, its records, its key records and `install/<name>.env` move into `--to`
+  (by default `bag-left-<name>-<UTC time>` beside the home, mode 0700). It refuses while an MCP server or a keep job
+  holds the identity, and names the `launchctl bootout` line for the job.
+
+### unpair in a home with several identities keeps the others' trust
+
+- **Unpairing a peer for one identity no longer cuts it off from the others.** `trust.json` is one file for the whole
+  home, and `unpair` took the peer out of it even when another identity of the same home still accepts it, so that
+  identity's inbox and MCP server refused the peer's mail from then on. `unpair` now leaves the peer in `trust.json`
+  while another identity's accept-from copy (`<home>/records/<name>.accept.json`) names it, says so (`kept trust <root>:
+  the accept-from of <name> still names it`), and still re-signs its own accept-from without the peer. It also keeps
+  its own copy current, so the next identity's `unpair` reads its roots as they are.
+
+### Codex: a plain identity that can pair, and an honest answer when no dialog was shown
+
+- **`host install codex --mode mcp` now registers a plain identity, as Claude Code's.** The server gets the same
+  arguments as the Claude Code entry (`--as`, your relays, `--dir`, `--keep-alive-records`), so a Codex session can pair
+  in its own dialogs. The first Codex session holds the identity; another answers that it is held. The earlier form, one
+  grant session per Codex session under a principal, which had no pair tools, is now `--session auto:codex
+  --grant-caveat <caveat>`; `--grant-caveat` alone is refused, naming `--session auto:codex`. A table of the other form
+  is refused `exists`, never replaced: remove it first. Pairing needs the interactive `codex` TUI, 0.113.0 or later
+  (`codex --version`), and an approval policy that lets MCP servers ask (`on-request`, the default). Codex asks before
+  bag's tools that reach other agents: "Allow for this session" suits `pair_invite` and `pair_accept` only; keep `send`,
+  `ask`, `handoff` and `delegate` at Allow per call. See `docs/partner-install.md`.
+- **A pair tool no longer reports "declined" when nobody saw the dialog.** `codex exec` declines every dialog in under a
+  millisecond, which bag reported as the person declining. A first pairing dialog answered in under 250 ms, or a Codex
+  older than 0.113.0, now answers `no-elicitation`.
+- **`no-elicitation` names what to change in your host, never a terminal command.** It named a `bag pair` line to run;
+  it now names the host's own setting (for Codex: the interactive TUI, the version, the approval policy). `pair` stays
+  available in your own terminal (`docs/pairing-without-dialogs.md`).
+- **The install page wires Codex.** Its Codex step stopped with two lines for a grant session and a login terminal;
+  it now runs the plain `host install codex --mode mcp` after a `codex --version` check, and ends with a restart.
+- **The wake line no longer sends you to another session for a process that only reuses the server's pid.** It
+  checks, as `status` does, that the pid in the server's lock started before the lock was written.
+
+### host install: a stable node path, and no copy under a running server
+
+- **`host install` writes Homebrew's node link, not the versioned Cellar path.** It wrote the resolved path of the node
+  that ran it (for example `/opt/homebrew/Cellar/node/25.8.1_1/bin/node`), which a `brew upgrade` removes, leaving the
+  MCP entry and the wake hooks pointing at nothing. When `/opt/homebrew/bin/node` or `/usr/local/bin/node` resolves to
+  the same node, that link is written instead; any other node is written as before. Run `host install` again once:
+  the entry and hooks an earlier install wrote with the Cellar path are replaced, not refused and not doubled.
+- **`record keep --plist` and `--crontab`, and `onboard`'s commands and cron line, name the same link.** They printed
+  the Cellar path too. A job or cron line you installed from them before keeps that path: print it again and replace it.
+- **`host install` no longer replaces `<home>/package` under a running server.** A second identity's install of
+  another version overwrote the copy a running server of the same home had started from. Now each version is staged
+  once in `<home>/package/versions/<version>/` and never written again, `<home>/package/current` names the one in use,
+  and the four launchers beside it run that one, so nothing runs from files an install changed. A running bag service
+  is told: `the running bag service (pid N) moves to bag V at its next drain and restart`. See
+  `docs/partner-install.md`.
+
+### The omp wake no longer answers mail on its own
+
+- **An omp agent shows the mail it is woken for and answers only when you ask.** The wake turn said "read it, then
+  answer it", so two omp agents paired with each other answered each other without end. It now says to show the mail
+  to you and to answer only when you ask, or when the message plainly asks a question you already told the agent to
+  answer. When one peer has sent 3 or more messages in ten minutes since you last typed, the wake adds "this looks like
+  a loop: show your person and do not answer", with the count and the peer's name. See `docs/host-omp.md`.
+
+### The envelope cap: 196,608 bytes
+
+- **An envelope can be 196,608 bytes (192 KiB), up from 65,536.** One recipient's body now holds about 97,000
+  characters of JSON text, up from about 32,000, and a 64 KiB body fits with up to 16 recipients. The request body cap
+  (262,144), the record cap (131,072) and the WebSocket frame cap (262,144) do not change. `send`'s description in the
+  MCP server derives its figure from the cap. See `docs/message-size.md`.
+- **Accept-from records are lifted on their next re-sign.** Every accept-from record signed so far carries `max_bytes`
+  65,536, the old default. Each re-sign (`record keep`, the MCP server's keep-alive, `onboard`, a pairing and `unpair`)
+  now writes 196,608 in place of exactly 65,536 and keeps any other value. `record keep` re-signs at least every
+  11 hours, so an identity on the new version takes the larger mailbox within about 11 hours, with nothing to type. A
+  `max_bytes` of 65,536 chosen on purpose is lifted too; sign it as 65,535 to keep it small. `onboard` and the
+  organisation client's records default to the cap.
+- **The relay call's time limit follows the body.** Each relay call is given 10 seconds plus 1 second per 16 KiB of its
+  body, at most 29 seconds, under the relay's 30 second body timeout: 22 seconds for a full envelope, so a full send
+  still goes out on a slow uplink (a flat 10 seconds failed it below about 160 kbit/s). A fetch by id is given the time
+  of a full envelope.
+
+### A partial delivery
+
+- **`send` reads a partial delivery the same in the CLI and the MCP server.** Delivered via at least one relay is a
+  success: the CLI's `send` (and `resend`, `held release` and `group send`) exits 0 with a warning line on stderr,
+  `warning: delivered via 2 of 3 relays; refused 1: <relay> envelope-too-large; ...`, where it exited 1 before. The MCP
+  send tool's answer gains `summary`: `delivered`, `relays`, `refused` (each relay with its reason), `retrying` and a
+  `text` line; it answered a partial delivery as a success before too, with no count. No relay taking it is still an
+  error, with the first refusal's code, its bytes kept in the outbox and the `resend --id` hint. A script that read
+  exit 1 as "some relay refused" reads the warning line now.
+
+### Pairing: a cancel
+
+- **`pair_cancel` ends a running pairing in the MCP server.** A person who opened an invite and changed their mind
+  (for another address, say) met `busy` for up to ten minutes, and an agent could only say to wait or to stop the
+  server. The new tool ends the invite or the accept on the person's word and writes nothing. An invitation that no
+  request has reached is withdrawn (its one-time invitation identity's address record, never the inviter's own), so its code meets `invite-expired` on the other side; `busy` now names
+  `pair_cancel`. The CLI's pairing runs in the foreground with no lock, so it needs none: Ctrl-C ends it.
+
+### Migration: the order
+
+1. The relay flag first, the operator's deploy: `--max-envelope-bytes 196608` at every relay. A relay of 0.2.3 or later
+   takes it with no new binary; until it moves it refuses a larger envelope `envelope-too-large`, and the sender reads
+   a partial delivery.
+2. Then the readers: every `bag` and `bag-mcp` on the new version. v0.3.0 and before refuse a larger envelope when
+   they read it, so a message to a peer still on them is lost on its side.
+3. Then the lift, automatic, within about 11 hours through `record keep`.
+4. Only once every reader runs the new version may a policy file set a scope `max_bytes` over 65,536: v0.3.0 and
+   before refuse such a file at start (`bad-record`).
+
 ## v0.3.0: 2026-11-11
 
 The cut tagged v0.3.0, `@usebag/bag` 0.3.0.
@@ -362,8 +580,8 @@ New since the cut 635a89b2 of the same morning.
 - **The relay counts first subscribes**, `ac_relay_first_subscribes_total`: a fresh mailbox's subscription, once a UTC
   day, with nothing new stored (`docs/self-host.md`).
 - **The spec says what the code does**, with no wire change: the pairing invite string and request are written out
-  (`spec/SPEC.md` §2.4, §8.10), pair/open takes 1 to 64 relays, a nameplate's `ttl` is required, 1 to 600 seconds
-  (Appendix B, item 89), and §7.2 states the relay URL form once, as every record reader checks it.
+  (`spec/SPEC.md` section 2.4, section 8.10), pair/open takes 1 to 64 relays, a nameplate's `ttl` is required, 1 to 600 seconds
+  (Appendix B, item 89), and section 7.2 states the relay URL form once, as every record reader checks it.
   `spec/vectors/pair-code.json` gains the check digits, the request MAC, the invite string and pair/open.
 
 ## 2026-11-01: the first public cut
@@ -383,7 +601,7 @@ both of 2026-10-31.
   thread or the body (`SECURITY.md`). The sender publishes it to up to three of the relays its recipient lists, which
   keep it for up to 7 days, and the recipient reads every relay it lists.
 - **Pairing** joins two identities with a one-use code and six check digits that the two people check against each
-  other, through a rendezvous relay (`spec/SPEC.md` §8.10).
+  other, through a rendezvous relay (`spec/SPEC.md` section 8.10).
 - **The tools**: the command line (`packages/cli`: keys, records and `record keep`, `send`, `inbox`, `resend`, `peer
   invite` and `peer accept`, `unpair`, `host install`, `audit verify`); an MCP server that gives an agent in an MCP
   host an address and a mailbox, up to 64 identities in one server, with pairing as tools (`packages/mcp`); and an A2A
@@ -403,13 +621,13 @@ both of 2026-10-31.
   domains a row and 64 a pass. A subscriber that cannot take a frame within the idle timeout is closed with 4003. A
   domain root's grant comes from the newest valid record of the key the relay holds, so a stale copy from the host rolls
   back no revoked list.
-- **Pairing and resolving follow three new rules** (`spec/SPEC.md` §8.10 and §9 item 4). A pairing binds to the peer's
+- **Pairing and resolving follow three new rules** (`spec/SPEC.md` section 8.10 and section 9 item 4). A pairing binds to the peer's
   address when it is known (`--for` on the terminal, an address field in the MCP dialogs), and the open invitation is
   for first contact only. A frame that is not a well-formed request no longer ends a pairing or counts against its
   tries, and `leaked` now means a second good request from another requester. The resolver keeps the record with the
   greatest `iat` across the relays that answered, so a lagging relay cannot serve an older epoch key or revoked list,
-  and a relay that does not answer never blocks a read. The spec also states the relay limits above (§8.2 to §8.4,
-  §8.9).
+  and a relay that does not answer never blocks a read. The spec also states the relay limits above (section 8.2 to section 8.4,
+  section 8.9).
 - **The MCP server after its first real run.** `pair_invite` answers `paired` in the call that took the right digits,
   where it answered pending; each pairing dialog takes the peer's address; a session probes its grant on a thread
   drawn at random, not one any sender could name; after a logout, a session's new grant goes to a new key, not to the
@@ -430,7 +648,7 @@ both of 2026-10-31.
   listed relay has not taken is reported as an incomplete revocation, naming that relay, until every listed relay holds
   it: `keys rotate` exits 3, and the MCP server reports `incomplete-revocation`.
 - **Mail survives a relay restored from an older copy.** The edge decides delivery by envelope id, not by the relay's
-  cursor, and resumes each subscription with cursor null (`spec/SPEC.md` §9, items 2 and 10). An edge's inbox store
+  cursor, and resumes each subscription with cursor null (`spec/SPEC.md` section 9, items 2 and 10). An edge's inbox store
   from an earlier cut is rebuilt once when it opens, its rows kept. The reference relay notices that its database came
   from another volume and raises every mailbox's cursors, logging `cursors-raised` (Appendix B, item 102).
 - **The keepers carry the key record too.** `record keep` and the MCP server's keeper offer an identity's key record to
