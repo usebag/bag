@@ -159,6 +159,8 @@ pub struct Rejection {
     pub code: Option<Code>,
     /// For 429, the `Retry-After` seconds.
     pub retry_after: Option<u64>,
+    /// For `envelope-too-large`, the relay's envelope cap, sent as `max_envelope_bytes` beside the code.
+    pub max_envelope_bytes: Option<usize>,
 }
 
 /// The relay status of a code (spec/SPEC.md, Appendix A): 400 for JSON, shape and form, 413 for size, 401 for a
@@ -197,7 +199,7 @@ impl Rejection {
     /// A rejection with the status of Appendix A.
     #[must_use]
     pub const fn new(code: Code) -> Rejection {
-        Rejection { status: status(code), code: Some(code), retry_after: None }
+        Rejection { status: status(code), code: Some(code), retry_after: None, max_envelope_bytes: None }
     }
 
     /// A rejection of a fetch proof's time: `stale-ts` or `future-ts` are 401 there (§8.3).
@@ -207,13 +209,13 @@ impl Rejection {
             Code::StaleTs | Code::FutureTs => 401,
             _ => status(code),
         };
-        Rejection { status, code: Some(code), retry_after: None }
+        Rejection { status, code: Some(code), retry_after: None, max_envelope_bytes: None }
     }
 
     /// The relay's own failure: 500.
     #[must_use]
     pub const fn internal() -> Rejection {
-        Rejection { status: 500, code: None, retry_after: None }
+        Rejection { status: 500, code: None, retry_after: None, max_envelope_bytes: None }
     }
 
     /// The wire string of the code: the code, or `internal` for a 500.

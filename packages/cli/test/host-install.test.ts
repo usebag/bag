@@ -2,9 +2,13 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, w
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
+import { stableNode } from '../src/packaged.ts'
 import { type TestIo, tempDir, testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
 import { cli } from './support/run.ts'
+
+/** The node host install writes: Homebrew's link when it is the node running (packaged.ts). */
+const NODE = stableNode()
 
 // host install (packages/mcp/README.md "Registering"): the MCP server's entry and the
 // wake hooks for Claude Code in a project's files, the Codex table in ~/.codex/config.toml. Temp directories only.
@@ -16,6 +20,7 @@ const ROOT = `ed25519:${'ab'.repeat(32)}`
 const MCP_MAIN = fileURLToPath(new URL('../../mcp/src/main.ts', import.meta.url))
 const CLI_MAIN = fileURLToPath(new URL('../src/main.ts', import.meta.url))
 const CAVEAT = 'topic:build'
+const SESSION = ['--session', 'auto:codex']
 /** The read-only records check's line for bob, a fresh identity: the test relay holds none of his records. */
 const WARN = `warning: no address and accept-from record at ${RELAY} for bob, and no relay or home copy holds one: run bag onboard first (docs/partner-install.md section 4); until then the relay refuses mail to bob`
 let n = 0
@@ -73,12 +78,10 @@ const codexServer = (dir: string, roots: string[] = [], caveats: string[] = [CAV
   dir,
 ]
 const hookOf = (command: string) => ({ type: 'command', command, timeout: 86_400, asyncRewake: true })
-const wakeCommand = (dir: string): string =>
-  `${process.execPath} ${CLI_MAIN} wake-hook --as bob --dir ${dir} --max 86000`
+const wakeCommand = (dir: string): string => `${NODE} ${CLI_MAIN} wake-hook --as bob --dir ${dir} --max 86000`
 /** The hook an install wrote before the day-long wait: no --max (wake-hook's 3500 s), timeout 3600. */
 const earlierHook = (command: string) => ({ type: 'command', command, timeout: 3600, asyncRewake: true })
-const earlierCommand = (dir: string): string =>
-  `${process.execPath} ${CLI_MAIN} wake-hook --as bob --dir ${dir}`
+const earlierCommand = (dir: string): string => `${NODE} ${CLI_MAIN} wake-hook --as bob --dir ${dir}`
 
 describe('host install claude-code: the MCP entry in .mcp.json and the wake hooks in .claude/settings.json', () => {
   it('writes both files, prints each path and entry, and a second run changes nothing and says so', async () => {
@@ -86,7 +89,7 @@ describe('host install claude-code: the MCP entry in .mcp.json and the wake hook
     const mcp = join(w.project, '.mcp.json')
     const settings = join(w.project, '.claude', 'settings.json')
     const first = await install(w, 'claude-code', '--trust-root', ROOT, '--project', w.project)
-    const entry = { command: process.execPath, args: server(w.dir, [ROOT]) }
+    const entry = { command: NODE, args: server(w.dir, [ROOT]) }
     // The address record lapses a day after its last publish without it (packages/mcp/README.md): both hosts carry it.
     expect(entry.args.at(-1)).toBe('--keep-alive-records')
     const group = [{ hooks: [hookOf(wakeCommand(w.dir))] }]
@@ -131,7 +134,7 @@ describe('host install claude-code: the MCP entry in .mcp.json and the wake hook
     const got = await install(w, 'claude-code', '--project', w.project)
     expect(json(mcp)).toEqual({
       note: 1,
-      mcpServers: { other, bag: { command: process.execPath, args: server(w.dir) } },
+      mcpServers: { other, bag: { command: NODE, args: server(w.dir) } },
     })
     expect(json(settings)).toEqual({
       permissions: { allow: ['Bash(ls)'] },
@@ -151,7 +154,7 @@ describe('host install claude-code: the MCP entry in .mcp.json and the wake hook
     }
     const quoted = `'${w.dir.replaceAll("'", "'\\''")}'`
     expect(settings.hooks.Stop[0].hooks[0].command).toBe(
-      `${process.execPath} ${CLI_MAIN} wake-hook --as bob --dir ${quoted} --max 86000`,
+      `${NODE} ${CLI_MAIN} wake-hook --as bob --dir ${quoted} --max 86000`,
     )
   })
 
@@ -282,7 +285,17 @@ describe('host install --rendezvous: the relay pairing codes meet at, passed to 
     want.splice(want.indexOf(RELAY) + 1, 0, ...meet)
     const mcp = json(join(w.project, '.mcp.json')) as { mcpServers: { bag: { args: string[] } } }
     expect(mcp.mcpServers.bag.args).toEqual(want)
-    const codex = await install(w, 'codex', '--user', '--mode', 'mcp', '--grant-caveat', CAVEAT, ...meet)
+    const codex = await install(
+      w,
+      'codex',
+      '--user',
+      '--mode',
+      'mcp',
+      ...SESSION,
+      '--grant-caveat',
+      CAVEAT,
+      ...meet,
+    )
     expect(codex.code).toBe(0)
     const toml = text(join(w.userHome, '.codex', 'config.toml'))
     expect(toml).toContain(JSON.stringify(['--relay', RELAY, ...meet]).slice(1, -1))
@@ -292,12 +305,12 @@ describe('host install --rendezvous: the relay pairing codes meet at, passed to 
   })
 })
 
-describe('host install codex --mode mcp: the table in ~/.codex/config.toml and the Stop hook in ~/.codex/hooks.json', () => {
+describe('host install codex --mode mcp --session auto:codex: the session table in ~/.codex/config.toml and its Stop hook', () => {
   const table = (dir: string) =>
-    `[mcp_servers.bag]\ncommand = ${JSON.stringify(process.execPath)}\nargs = ${JSON.stringify(codexServer(dir, [ROOT]))}\n`
+    `[mcp_servers.bag]\ncommand = ${JSON.stringify(NODE)}\nargs = ${JSON.stringify(codexServer(dir, [ROOT]))}\n`
   const entry = (dir: string) => ({
     type: 'command',
-    command: `${process.execPath} ${CLI_MAIN} wake-hook --as bob --session auto:codex --dir ${dir} --max 30 --no-idle-wake`,
+    command: `${NODE} ${CLI_MAIN} wake-hook --as bob --session auto:codex --dir ${dir} --max 30 --no-idle-wake`,
     timeout: 60,
     statusMessage: 'bag: waiting for mail',
   })
@@ -308,8 +321,9 @@ describe('host install codex --mode mcp: the table in ~/.codex/config.toml and t
     join(w.userHome, '.codex', 'hooks.json'),
   ]
   const mcpInstall = (w: World) =>
-    install(w, 'codex', '--trust-root', ROOT, '--mode', 'mcp', '--grant-caveat', CAVEAT, '--user')
+    install(w, 'codex', '--trust-root', ROOT, '--mode', 'mcp', ...SESSION, '--grant-caveat', CAVEAT, '--user')
 
+  // H3
   it('writes the table 0600 and the Stop hook, prints both and a note on the wait and the trust step, and a second run changes nothing', async () => {
     const w = await world()
     const [file, hooks] = paths(w)
@@ -338,7 +352,18 @@ describe('host install codex --mode mcp: the table in ~/.codex/config.toml and t
   it('writes --session auto:codex with every --grant-caveat in order, and neither --as nor --keep-alive-records, and the Stop hook names auto:codex', async () => {
     const w = await world()
     const [file, hooks] = paths(w)
-    await install(w, 'codex', '--mode', 'mcp', '--user', '--grant-caveat', 'a', '--grant-caveat', 'b=c')
+    await install(
+      w,
+      'codex',
+      '--mode',
+      'mcp',
+      ...SESSION,
+      '--user',
+      '--grant-caveat',
+      'a',
+      '--grant-caveat',
+      'b=c',
+    )
     const args = JSON.parse(text(file).split('\n')[2]?.slice('args = '.length) as string) as string[]
     expect(args).toEqual(codexServer(w.dir, [], ['a', 'b=c']))
     expect(args).not.toContain('--as')
@@ -346,12 +371,13 @@ describe('host install codex --mode mcp: the table in ~/.codex/config.toml and t
     expect(json(hooks)).toEqual({ hooks: { Stop: [{ hooks: [entry(w.dir)] }] } })
   })
 
-  it('refuses --mode mcp without --grant-caveat, naming the grant, and writes neither file', async () => {
+  // H5
+  it('refuses --session auto:codex without --grant-caveat, naming the grant, and writes neither file', async () => {
     const w = await world()
-    const got = await install(w, 'codex', '--trust-root', ROOT, '--mode', 'mcp', '--user')
+    const got = await install(w, 'codex', '--trust-root', ROOT, '--mode', 'mcp', ...SESSION, '--user')
     expect([got.code, got.err[0]]).toEqual([
       1,
-      'bag: usage: codex --mode mcp needs --grant-caveat <caveat>: the session asks the agent for a grant',
+      'bag: usage: codex --session auto:codex needs --grant-caveat <caveat>: the session asks the agent for a grant',
     ])
     expect(existsSync(join(w.userHome, '.codex'))).toBe(false)
   })
@@ -416,13 +442,38 @@ describe('host install codex --mode mcp: the table in ~/.codex/config.toml and t
     const file = join(w.userHome, '.codex', 'config.toml')
     mkdirSync(join(w.userHome, '.codex'))
     writeFileSync(file, 'model = "x"')
-    await install(w, 'codex', '--trust-root', ROOT, '--mode', 'mcp', '--grant-caveat', CAVEAT, '--user')
+    await install(
+      w,
+      'codex',
+      '--trust-root',
+      ROOT,
+      '--mode',
+      'mcp',
+      ...SESSION,
+      '--grant-caveat',
+      CAVEAT,
+      '--user',
+    )
     expect(text(file)).toBe(`model = "x"\n\n${table(w.dir)}`)
     writeFileSync(file, '[mcp_servers.bag]\ncommand = "other"\n')
     expect(
-      (await install(w, 'codex', '--trust-root', ROOT, '--mode', 'mcp', '--grant-caveat', CAVEAT, '--user'))
-        .err[0],
-    ).toBe(`bag: exists: ${file} has [mcp_servers.bag] with other settings: edit or remove it first`)
+      (
+        await install(
+          w,
+          'codex',
+          '--trust-root',
+          ROOT,
+          '--mode',
+          'mcp',
+          ...SESSION,
+          '--grant-caveat',
+          CAVEAT,
+          '--user',
+        )
+      ).err[0],
+    ).toBe(
+      `bag: exists: ${file} has [mcp_servers.bag] with other settings (another identity, or the other form: a plain identity or --session auto:codex): edit or remove it first`,
+    )
     expect(text(file)).toBe('[mcp_servers.bag]\ncommand = "other"\n')
   })
 
@@ -450,7 +501,7 @@ describe('host install codex --mode mcp: the table in ~/.codex/config.toml and t
     ]) {
       writeFileSync(file, `${header}\ncommand = "other"\n`)
       expect(
-        (await install(w, 'codex', '--mode', 'mcp', '--grant-caveat', CAVEAT, '--user')).err[0],
+        (await install(w, 'codex', '--mode', 'mcp', ...SESSION, '--grant-caveat', CAVEAT, '--user')).err[0],
       ).toContain('with other settings')
     }
   })
@@ -488,7 +539,7 @@ describe('host install codex --mode mcp: the table in ~/.codex/config.toml and t
     mkdirSync(join(w.userHome, '.codex'))
     writeFileSync(file, '[mcp_servers.bag]\ncommand = "other"\n')
     expect((await mcpInstall(w)).err[0]).toBe(
-      `bag: exists: ${file} has [mcp_servers.bag] with other settings: edit or remove it first`,
+      `bag: exists: ${file} has [mcp_servers.bag] with other settings (another identity, or the other form: a plain identity or --session auto:codex): edit or remove it first`,
     )
     expect(text(file)).toBe('[mcp_servers.bag]\ncommand = "other"\n')
     expect(existsSync(hooks)).toBe(false)
@@ -510,6 +561,7 @@ describe('host install codex --mode mcp: the table in ~/.codex/config.toml and t
       RELAY,
       '--mode',
       'mcp',
+      ...SESSION,
       '--grant-caveat',
       CAVEAT,
       '--user',
@@ -518,10 +570,115 @@ describe('host install codex --mode mcp: the table in ~/.codex/config.toml and t
   })
 })
 
+// The plain identity, the default of --mode mcp since Dilip's 'plain codex' (2026-11-12): the args of the
+// claude-code entry, so a Codex session can pair; the session form stays behind --session auto:codex.
+describe('host install codex --mode mcp: the plain identity in ~/.codex/config.toml and its Stop hook', () => {
+  const table = (dir: string, args = server(dir, [ROOT])) =>
+    `[mcp_servers.bag]\ncommand = ${JSON.stringify(NODE)}\nargs = ${JSON.stringify(args)}\n`
+  const hookOf = (dir: string, session = false) => ({
+    type: 'command',
+    command: `${NODE} ${CLI_MAIN} wake-hook --as bob${session ? ' --session auto:codex' : ''} --dir ${dir} --max 30 --no-idle-wake`,
+    timeout: 60,
+    statusMessage: 'bag: waiting for mail',
+  })
+  const NOTE =
+    "mcp mode: one plain identity bob for Codex; the first Codex session holds it and any other answers held-by. When a turn ends, a Stop hook waits up to 30 s for mail and continues the turn when one arrives; an idle session is not woken. Trust the hook in Codex with /hooks before it runs. Pairing needs the interactive codex TUI, 0.113.0 or later, and an approval policy that lets MCP servers ask (on-request, the default). Codex asks before bag's tools that reach other agents: Allow for this session suits pair_invite and pair_accept only (each pairing still needs your answers in its dialogs); answer send, ask, handoff and delegate per call"
+  const paths = (w: World): [string, string] => [
+    join(w.userHome, '.codex', 'config.toml'),
+    join(w.userHome, '.codex', 'hooks.json'),
+  ]
+  const plain = (w: World, ...more: string[]) =>
+    install(w, 'codex', '--trust-root', ROOT, '--mode', 'mcp', '--user', ...more)
+  const session = (w: World) => plain(w, ...SESSION, '--grant-caveat', CAVEAT)
+
+  // H1, H2, H7
+  it("writes the claude-code entry's args and the plain Stop hook, the note and the records check; a second run changes nothing", async () => {
+    const w = await world()
+    const [file, hooks] = paths(w)
+    const got = await plain(w)
+    expect(text(file)).toBe(table(w.dir))
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    const args = JSON.parse(text(file).split('\n')[2]?.slice('args = '.length) as string) as string[]
+    expect(args.slice(-1)).toEqual(['--keep-alive-records'])
+    expect(args).not.toContain('--session')
+    // The one builder: the same args as host install claude-code writes into .mcp.json.
+    expect((await install(w, 'claude-code', '--trust-root', ROOT, '--project', w.project)).code).toBe(0)
+    const mcp = json(join(w.project, '.mcp.json')) as {
+      mcpServers: { bag: { command: string; args: string[] } }
+    }
+    expect([mcp.mcpServers.bag.command, mcp.mcpServers.bag.args]).toEqual([NODE, args])
+    const stop = { Stop: [{ hooks: [hookOf(w.dir)] }] }
+    expect(json(hooks)).toEqual({ hooks: stop })
+    expect(JSON.stringify(json(hooks))).not.toContain('--session')
+    expect(got.out).toEqual([
+      `wrote ${file}`,
+      ...table(w.dir)
+        .trimEnd()
+        .split('\n')
+        .map((l) => `  ${l}`),
+      `wrote ${hooks}`,
+      `  ${JSON.stringify(stop)}`,
+      NOTE,
+      WARN,
+    ])
+    const again = await plain(w)
+    expect(again.out).toEqual([`unchanged ${file}`, `unchanged ${hooks}`, 'nothing to change', NOTE, WARN])
+    expect(text(file)).toBe(table(w.dir))
+    expect(json(hooks)).toEqual({ hooks: stop })
+  })
+
+  // H4
+  it('refuses --grant-caveat without --session auto:codex, naming it, and writes neither file', async () => {
+    const w = await world()
+    const got = await plain(w, '--grant-caveat', CAVEAT)
+    expect([got.code, got.err[0]]).toEqual([
+      1,
+      'bag: usage: --grant-caveat is for --session auto:codex: add it for a session of the principal, or drop --grant-caveat for a plain identity',
+    ])
+    expect(existsSync(join(w.userHome, '.codex'))).toBe(false)
+  })
+
+  // H6
+  it('refuses a table of the other form, either way, naming both forms, and changes neither file; the other hook goes once its table is gone', async () => {
+    const w = await world()
+    const [file, hooks] = paths(w)
+    const exists = `bag: exists: ${file} has [mcp_servers.bag] with other settings (another identity, or the other form: a plain identity or --session auto:codex): edit or remove it first`
+    expect((await session(w)).code).toBe(0)
+    const [was, wasHooks] = [text(file), text(hooks)]
+    expect((await plain(w)).err[0]).toBe(exists)
+    expect([text(file), text(hooks)]).toEqual([was, wasHooks])
+    writeFileSync(file, '')
+    expect((await plain(w)).code).toBe(0)
+    expect(json(hooks)).toEqual({ hooks: { Stop: [{ hooks: [hookOf(w.dir)] }] } })
+    const [plainWas, plainHooks] = [text(file), text(hooks)]
+    expect((await session(w)).err[0]).toBe(exists)
+    expect([text(file), text(hooks)]).toEqual([plainWas, plainHooks])
+    writeFileSync(file, '')
+    expect((await session(w)).code).toBe(0)
+    expect(json(hooks)).toEqual({ hooks: { Stop: [{ hooks: [hookOf(w.dir, true)] }] } })
+  })
+
+  // H9
+  it('refuses --session for claude-code, omp and the worker mode, and any value but auto:codex, and writes nothing', async () => {
+    const w = await world()
+    const only = 'bag: usage: --session is for codex --mode mcp only'
+    expect((await install(w, 'claude-code', '--project', w.project, ...SESSION)).err[0]).toBe(only)
+    expect((await install(w, 'omp', '--project', w.project, ...SESSION)).err[0]).toBe(only)
+    expect((await install(w, 'codex', '--user', ...SESSION, '--grant-caveat', CAVEAT)).err[0]).toBe(only)
+    expect((await install(w, 'codex', '--user', '--mode', 'worker', ...SESSION)).err[0]).toBe(only)
+    expect((await plain(w, '--session', 'auto', '--grant-caveat', CAVEAT)).err[0]).toBe(
+      'bag: usage: --session takes auto:codex, not "auto"',
+    )
+    expect(existsSync(join(w.userHome, '.codex'))).toBe(false)
+    expect(existsSync(join(w.project, '.mcp.json'))).toBe(false)
+    expect(existsSync(join(w.project, '.omp'))).toBe(false)
+  })
+})
+
 describe('host install codex --mode worker, the default: the worker line, and nothing written', () => {
   it('prints the inbox --watch --exec line with every relay and trust root, by default and with --mode worker, and writes no file', async () => {
     const w = await world()
-    const line = `the worker path (no MCP table written: one receiver per identity): ${process.execPath} ${CLI_MAIN} inbox --watch --as bob --relay ${RELAY} --relay http://127.0.0.1:10 --dir ${w.dir} --trust-root ${ROOT} --exec 'codex exec --skip-git-repo-check --sandbox read-only "bag: $(cat)"'`
+    const line = `the worker path (no MCP table written: one receiver per identity): ${NODE} ${CLI_MAIN} inbox --watch --as bob --relay ${RELAY} --relay http://127.0.0.1:10 --dir ${w.dir} --trust-root ${ROOT} --exec 'codex exec --skip-git-repo-check --sandbox read-only "bag: $(cat)"'`
     const args = ['--relay', 'http://127.0.0.1:10', '--trust-root', ROOT, '--user']
     expect(await install(w, 'codex', ...args)).toEqual({ code: 0, out: [line], err: [] })
     expect(await install(w, 'codex', '--mode', 'worker', ...args)).toEqual({ code: 0, out: [line], err: [] })
@@ -554,7 +711,7 @@ describe('host install codex --mode worker, the default: the worker line, and no
 
   it('refuses --grant-caveat for the worker mode (by default and named) and for claude-code, and writes nothing', async () => {
     const w = await world()
-    const only = 'bag: usage: --grant-caveat is for codex --mode mcp only'
+    const only = 'bag: usage: --grant-caveat is for codex --mode mcp --session auto:codex only'
     expect((await install(w, 'codex', '--user', '--grant-caveat', CAVEAT)).err[0]).toBe(only)
     expect((await install(w, 'codex', '--mode', 'worker', '--user', '--grant-caveat', CAVEAT)).err[0]).toBe(
       only,
@@ -585,17 +742,17 @@ describe('host install: what it refuses', () => {
       'bag: usage: no host "cursor": the hosts are claude-code, codex and omp',
     )
     expect((await cli(w.io, 'host', 'uninstall', 'codex', '--as', 'bob')).err[0]).toBe(
-      'bag: usage: host takes install or remove, not "uninstall"',
+      'bag: usage: host takes install, remove or migrate, not "uninstall"',
     )
     expect((await cli(w.io, 'host', 'remove', 'codex', '--as', 'bob')).err[0]).toBe(
       'bag: usage: host remove takes claude-code --project <dir> --identities <file> --label <label>',
     )
   })
 
-  it('refuses a scope the repo does not document: claude-code --user, codex --project', async () => {
+  it('refuses a scope the repo does not document: claude-code --user with --as, codex --project', async () => {
     const w = await world()
     expect((await install(w, 'claude-code', '--user')).err[0]).toBe(
-      'bag: usage: claude-code --user is not documented yet: use --project <dir> (.mcp.json, .claude/settings.json)',
+      'bag: usage: claude-code --user takes no --as: it wires the bag service for every identity of the home; --project <dir> wires one identity',
     )
     expect((await install(w, 'codex', '--project', w.project)).err[0]).toBe(
       'bag: usage: codex --project is not documented yet: use --user (~/.codex/config.toml)',
@@ -686,9 +843,8 @@ describe('host install claude-code --identities: many identities in one server',
     relays: [RELAY],
     keep_alive_records: true,
   })
-  const entryOf = (w: Two) => ({ command: process.execPath, args: [MCP_MAIN, '--identities', w.file] })
-  const multiHook = (w: Two) =>
-    hookOf(`${process.execPath} ${CLI_MAIN} wake-hook --identities ${w.file} --max 86000`)
+  const entryOf = (w: Two) => ({ command: NODE, args: [MCP_MAIN, '--identities', w.file] })
+  const multiHook = (w: Two) => hookOf(`${NODE} ${CLI_MAIN} wake-hook --identities ${w.file} --max 86000`)
   const three = (w: Two): string[] => [w.file, w.mcp, w.settings].map((f) => (existsSync(f) ? text(f) : ''))
 
   it('writes the file 0600 in a 0700 directory, the --identities server entry and hook; a re-run changes nothing', async () => {
@@ -837,7 +993,7 @@ describe('host install claude-code --identities: many identities in one server',
     const w = await two()
     expect((await install(w, 'claude-code', '--project', w.project)).code).toBe(0)
     const single = earlierHook(earlierCommand(w.dir))
-    const many = earlierHook(`${process.execPath} ${CLI_MAIN} wake-hook --identities ${w.file}`)
+    const many = earlierHook(`${NODE} ${CLI_MAIN} wake-hook --identities ${w.file}`)
     const now = hookOf(wakeCommand(w.dir))
     const hooks = { SessionStart: [{ hooks: [single] }], Stop: [{ hooks: [many] }, { hooks: [now] }] }
     writeFileSync(w.settings, JSON.stringify({ hooks }))
@@ -871,11 +1027,11 @@ describe('host install claude-code --identities: many identities in one server',
   it('refuses exists for a bag entry of any other form, and changes nothing', async () => {
     const w = await two()
     const forms = [
-      { command: process.execPath, args: [...server(w.dir), '--honor', ROOT] },
+      { command: NODE, args: [...server(w.dir), '--honor', ROOT] },
       { command: '/usr/bin/node', args: server(w.dir) },
-      { command: process.execPath, args: [1] },
-      { command: process.execPath, args: [MCP_MAIN] },
-      { command: process.execPath },
+      { command: NODE, args: [1] },
+      { command: NODE, args: [MCP_MAIN] },
+      { command: NODE },
     ]
     for (const entry of forms) {
       writeFileSync(w.mcp, JSON.stringify({ mcpServers: { bag: entry } }))

@@ -1,7 +1,7 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { describeHolder, holder, refuseWhileHeld } from '../src/held.ts'
+import { describeHolder, holder, refuseWhileHeld, servers } from '../src/held.ts'
 import { tempDir, testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
 import { cli } from './support/run.ts'
@@ -72,5 +72,32 @@ describe('the CLI beside an MCP server that holds the identity', () => {
     expect(s.out.join('\n')).not.toContain('held_by')
     const r = await cli(io, 'inbox', '--as', 'bob', '--dir', dir, '--relay', RELAY, '--once')
     expect(r.err.join('\n')).not.toContain('held:')
+  })
+})
+
+describe('the servers of a home (host install refuses to replace <home>/package under them)', () => {
+  it('names each live holder but the one left out; a dead pid, no lock and no state folder name none', async () => {
+    const { dir } = await home(live)
+    const lock = (name: string, body: unknown) => {
+      mkdirSync(join(dir, 'state', name), { recursive: true })
+      writeFileSync(join(dir, 'state', name, 'mcp.lock'), JSON.stringify(body))
+    }
+    lock('qrfolk', { pid: process.pid })
+    lock('gone', { pid: 2 ** 22 + 12345 })
+    mkdirSync(join(dir, 'state', 'nolock'), { recursive: true })
+    expect(servers(dir, 'bob')).toEqual([`qrfolk (pid ${process.pid})`])
+    expect(servers(dir, 'qrfolk').sort()).toEqual([`bob (pid ${process.pid})`])
+    expect(servers(join(tmp.dir, 'no-home'), 'bob')).toEqual([])
+  })
+})
+
+describe('the servers of a home: a pid used again', () => {
+  it('a live pid that started after the lock was written (mtime plus START_TOLERANCE) is no server', async () => {
+    const { dir } = await home({ pid: process.pid })
+    const lock = join(dir, 'state', 'bob', 'mcp.lock')
+    expect(servers(dir, 'nobody')).toEqual([`bob (pid ${process.pid})`])
+    const past = new Date('2000-01-01T00:00:00Z')
+    utimesSync(lock, past, past)
+    expect(servers(dir, 'nobody')).toEqual([])
   })
 })

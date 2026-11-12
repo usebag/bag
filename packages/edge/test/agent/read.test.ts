@@ -5,6 +5,7 @@ import {
   contentAad,
   envelopeId,
   fromHex,
+  MAX_ENVELOPE_BYTES,
   newThread,
   type OpenerLike,
   replyThread,
@@ -76,7 +77,9 @@ describe('the envelope checks before opening', () => {
     expect(s.open(toBob)).toEqual(refusal('not-recipient'))
     expect(s.open(envelope({ to: [BOB_KEY_FOR_JANE] }))).toEqual(refusal('open-failed'))
     // refused while parsing, so it spends no seq and is the last request here
-    expect(s.send('open', [J, id], { envelope: ' '.repeat(65_537) })).toEqual(refusal('envelope-too-large'))
+    expect(s.send('open', [J, id], { envelope: ' '.repeat(MAX_ENVELOPE_BYTES + 1) })).toEqual(
+      refusal('envelope-too-large'),
+    )
   })
 
   it('refuses a content whose type holds a control character bad-content', () => {

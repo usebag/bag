@@ -348,6 +348,12 @@ export interface EdgeStore {
   auditAnchorPut(name: string, anchor: AuditAnchor, now: number): void
   /** Every audit file the store anchors: the authority for which files must exist. */
   auditAnchors(): readonly NamedAnchor[]
+  /**
+   * The bag service's returned marks (packages/mcp desk.ts): the inbox row an inbox or wait call returned, and the
+   * connection it went to first; a second put of a row keeps the first. Optional: a store without them keeps none.
+   */
+  returnedPut?(seq: number, connection: string, now: number): void
+  returnedAll?(): readonly (readonly [number, string])[]
   // The org policy's state: holds of quarantined rows, held sends, the senders' contacts and the counts.
   inboxGet(seq: number): InboxRow | null
   /** The rows with content received at or after `since`: what the echo breaker compares a send with. */

@@ -10,9 +10,13 @@ import {
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
+import { stableNode } from '../src/packaged.ts'
 import { type TestIo, tempDir, testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
 import { cli } from './support/run.ts'
+
+/** The node host install writes: Homebrew's link when it is the node running (packaged.ts). */
+const NODE = stableNode()
 
 // host install omp (cut/docs/host-omp.md): the bag server in <project>/.omp/mcp.json and the wake link
 // <project>/.omp/hooks/pre/bag-wake.<ext> to the omp wake entry. Temp directories only.
@@ -62,7 +66,7 @@ const remove = (w: World, name = 'bob') =>
 const json = (file: string): unknown => JSON.parse(readFileSync(file, 'utf8'))
 const entry = (dir: string) => ({
   type: 'stdio',
-  command: process.execPath,
+  command: NODE,
   args: [MCP_MAIN, '--as', 'bob', '--relay', RELAY, '--dir', dir, '--keep-alive-records', '--push', 'log'],
 })
 const link = (w: World) => join(w.project, '.omp', 'hooks', 'pre', 'bag-wake.ts')

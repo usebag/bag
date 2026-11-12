@@ -7,6 +7,7 @@ import {
   type AddressRecord,
   generateSealingKey,
   type KeyRecord,
+  MAX_ENVELOPE_BYTES,
   parseRecord,
   serializeRecord,
   signRecord,
@@ -87,12 +88,12 @@ function address(
   })
 }
 
-function accept(p: Party, iat = T0): AcceptFromRecord {
+function accept(p: Party, iat = T0, max_bytes = 65_536): AcceptFromRecord {
   return signRecord(p.keys.signing, {
     kind: 'accept-from',
     owner: p.address,
     roots: [P.bob.address],
-    max_bytes: 65_536,
+    max_bytes,
     ttl: 86_400,
     iat,
   })
@@ -269,7 +270,8 @@ describe('the keep-alive of its own records (--keep-alive-records)', () => {
     expect(verifyRecord(next, half)).toEqual(next)
     expect({ ...next, iat: 0, sig: '' }).toEqual({ ...first, sealing_key: null, iat: 0, sig: '' })
     expect(next.iat).toBe(half)
-    expect(stored('accept-from')).toEqual(accept(P.alice, half))
+    // Its max_bytes of 65,536, the old default, takes the envelope cap (W9's lift).
+    expect(stored('accept-from')).toEqual(accept(P.alice, half, MAX_ENVELOPE_BYTES))
     expect(await keepAlive(s)).toEqual({
       next_at: at(half + TTL / 2),
       address_iat: half,
@@ -284,6 +286,15 @@ describe('the keep-alive of its own records (--keep-alive-records)', () => {
     clock.t = T0 + TTL + 60
     const sent = await bob.call('send', { to: [P.alice.address], type: 'chat.v1', body: 'still there?' })
     expect(sent.value).toMatchObject({ targets: [{ status: 'published' }] })
+  })
+
+  it('keeps a held max_bytes of 32,768 at the re-sign: only exactly 65,536 is lifted (W9)', async () => {
+    await put(address(P.alice))
+    await put(accept(P.alice, T0, 32_768))
+    const s = await alice()
+    const half = T0 + 1 + TTL / 2
+    await cycle(s, half)
+    expect(stored('accept-from')).toEqual(accept(P.alice, half, 32_768))
   })
 
   it('keeps alive a newer record that a person published, and ignores a replayed older one and a forged one', async () => {

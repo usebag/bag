@@ -21,7 +21,9 @@ import {
   watch,
   writeFileSync,
 } from 'node:fs'
+import { createConnection } from 'node:net'
 import { join, resolve } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 /** The fallback poll of the doorbell, in milliseconds: fs.watch carries the rings; this covers a lost event or sleep. */
 export const POLL_MS = 30_000
@@ -35,9 +37,95 @@ export const IDLE_MS = 250
 /** How often the host facts are written while the session lives, in milliseconds (W4's schema: at least every 5 min). */
 export const FACTS_MS = 240_000
 
-/** The wake turn's text. */
-export const wakeText = (name: string): string =>
-  `bag: mail arrived for ${name}. Read it with the bag inbox tool, then answer it.`
+/**
+ * The wake turn's text. It never asks for an answer: two agents told "then answer it" answered each other without end
+ * (W1, 2026-11-12 01:11 UTC). Each loop line is a peer at or over LOOP_AT unread in LOOP_S (loopLines).
+ */
+export const wakeText = (name: string, loops: readonly string[] = []): string =>
+  [
+    `bag: mail arrived for ${name}: read it with the bag inbox tool and show it to your person.`,
+    'Answer only when your person asks, or when it plainly asks a question they already told you to answer.',
+    ...loops,
+  ].join(' ')
+
+/** The loop guard's window in seconds and its threshold: a loop sent 7 in 45 s; a person rarely leaves 3 in 600 s. */
+export const LOOP_S = 600
+export const LOOP_AT = 3
+
+/** An accepted message as the guard counts it: who sent it (the chain's principal) and when it came (Unix seconds). */
+export interface Arrival {
+  readonly id: string
+  readonly peer: string
+  readonly at: number
+}
+
+/**
+ * The accepted messages of the last LOOP_S seconds in <state>/edge.sqlite, read from a read-only connection beside the
+ * server that holds the store's writer lock (as `audit verify` reads it); [] when the store cannot be read. Runs on
+ * omp's Bun as on Node: both have node:sqlite. A rejected row (a duplicate copy from a second relay) keeps its reason.
+ */
+export function arrivals(state: string, now: number): Arrival[] {
+  try {
+    const db = new DatabaseSync(join(state, 'edge.sqlite'), { readOnly: true })
+    try {
+      const rows = db
+        .prepare(
+          `SELECT id, bytes, received_at FROM inbox WHERE content IS NOT NULL AND reason IS NULL
+           AND state IN ('routed', 'queued', 'acked') AND received_at >= ?`,
+        )
+        .all(now - LOOP_S) as { id: string; bytes: Uint8Array; received_at: number }[]
+      return rows.map((r) => {
+        const env = JSON.parse(Buffer.from(r.bytes).toString('utf8')) as {
+          from: string
+          auth: { iss: string }[]
+        }
+        return { id: r.id, peer: env.auth.at(-1)?.iss ?? env.from, at: r.received_at }
+      })
+    } finally {
+      db.close()
+    }
+  } catch {
+    return []
+  }
+}
+
+/** The name book's name of each current address in <home>/names.json; empty when it cannot be read. */
+export function namesOf(home: string): Map<string, string> {
+  try {
+    const doc = JSON.parse(readFileSync(join(home, 'names.json'), 'utf8')) as {
+      names: Record<string, { address: string }>
+    }
+    return new Map(Object.entries(doc.names).map(([n, e]) => [e.address, n]))
+  } catch {
+    return new Map()
+  }
+}
+
+/**
+ * One line per peer with LOOP_AT or more messages the person has not seen: received in the LOOP_S seconds before `now`
+ * and not before the person's last input in this session (`seen`, Unix seconds; 0 for none). A wake turn reads every
+ * message, so the model's reads say nothing of the person; their own input does. A peer is named as the book names
+ * it, else by its short address, as the inbox shows it.
+ */
+export function loopLines(
+  rows: readonly Arrival[],
+  now: number,
+  seen: number,
+  names: Map<string, string>,
+): string[] {
+  const counts = new Map<string, Set<string>>()
+  for (const r of rows) {
+    if (r.at < now - LOOP_S || r.at < seen) continue
+    counts.set(r.peer, (counts.get(r.peer) ?? new Set()).add(r.id))
+  }
+  return [...counts]
+    .filter(([, ids]) => ids.size >= LOOP_AT)
+    .map(
+      ([peer, ids]) =>
+        `${ids.size} unread from ${names.get(peer) ?? `${peer.slice(0, 16)}...`} in ten minutes: ` +
+        'this looks like a loop: show your person and do not answer.',
+    )
+}
 
 /** The line shown, with no turn started, when the identity's server runs in another session. */
 export const awayText = (name: string, holder: Holder): string =>
@@ -530,8 +618,9 @@ export function consentFiles(dir: string, now = () => Date.now()): Omit<ConsentD
 }
 
 /** Writes the .bridge presence file (JSON, 0600, renamed over), which the server reads as "a person can answer here". */
-export function writeBridge(dir: string, now = new Date()): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
+export function writeBridge(dir: string, now = new Date(), make = true): void {
+  // The service's folder (make false) is never made here: a folder it moved away must not come back empty.
+  if (make) mkdirSync(dir, { recursive: true, mode: 0o700 })
   const file = join(dir, '.bridge')
   const tmp = `${file}.${process.pid}.tmp`
   const body = { v: 1, pid: process.pid, host: 'omp', mode: 'tui', at: now.toISOString() }
@@ -540,12 +629,253 @@ export function writeBridge(dir: string, now = new Date()): void {
   renameSync(tmp, file)
 }
 
+// The bag service (packages/shim/README.md): omp's bag
+// server is the shim, which writes <home>/run/shim/<host pid>.json (its channel), .bound and .ring; omp's own pid is
+// the host pid. The extension cannot import packages/shim (check-imports), so it repeats the few lines it needs.
+// With none of these files (the per-folder stdio mode, the rollback) everything above runs as before.
+
+/** How long a channel request waits for its shim, in milliseconds: a dead shim never holds the person's prompt. */
+export const CHANNEL_MS = 2000
+
+/** How often the ring file is read besides its fs events, in milliseconds. */
+export const RING_POLL_MS = 1000
+
+/** The footer key of the quiet notice (a ring for a window that is not speaking). */
+export const WAKE_STATUS = 'bag-wake'
+
+/** The bind word as the shim takes it (channel.ts USE_WORD and typedName): "use" in any case, a lowercase start. */
+export function typedName(prompt: string): string | null {
+  const name = /^\s*use\s+([a-z0-9][a-z0-9._-]{0,63})\s*$/i.exec(prompt)?.[1]
+  return name !== undefined && /^[a-z0-9]/.test(name) ? name : null
+}
+
+/**
+ * The home of the shim entry (args naming bag-shim.js) omp runs, else null. The user-level mcp.json wins: a project's
+ * .omp/mcp.json (a cloned repository's, or one the session's own model wrote) never points the extension at another
+ * home's channel and bridge folder. With no user-level shim entry, a project entry counts only when its --dir is the
+ * default home, AC_HOME or $HOME/.bag.
+ */
+export function shimHomeOf(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const fallback = env.AC_HOME ?? (env.HOME ? join(env.HOME, '.bag') : undefined)
+  const agent =
+    env.PI_CODING_AGENT_DIR ?? (env.HOME === undefined ? undefined : join(env.HOME, '.omp', 'agent'))
+  const user = agent === undefined ? null : entryHome(join(agent, 'mcp.json'), fallback)
+  if (user !== null) return user
+  const project = entryHome(join(cwd, '.omp', 'mcp.json'), fallback)
+  return project !== null && fallback !== undefined && project === resolve(fallback) ? project : null
+}
+
+/** The resolved --dir (else `fallback`) of a shim entry in the mcp.json `file`, or null for none. */
+function entryHome(file: string, fallback: string | undefined): string | null {
+  let args: unknown
+  try {
+    args = (JSON.parse(readFileSync(file, 'utf8')) as { mcpServers?: { bag?: { args?: unknown } } })
+      .mcpServers?.bag?.args
+  } catch {
+    return null
+  }
+  if (!Array.isArray(args) || !args.some((a) => typeof a === 'string' && /(^|\/)bag-shim\.js$/.test(a)))
+    return null
+  const i = args.indexOf('--dir')
+  const home = (i >= 0 ? args[i + 1] : undefined) ?? fallback
+  return typeof home === 'string' && home !== '' ? resolve(home) : null
+}
+
+const shimFile = (home: string, ext: string, pid = process.pid): string =>
+  join(home, 'run', 'shim', `${pid}.${ext}`)
+
+/** A shim file's JSON when it parses, has v 1 and names a live shim pid (5a, 5b rule 2); else null. */
+function shimDoc(file: string): Record<string, unknown> | null {
+  try {
+    const d = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    return d.v === 1 && Number.isSafeInteger(d.shim) && alive(d.shim as number) ? d : null
+  } catch {
+    return null
+  }
+}
+
+/** The labels of a valid <home>/run/shim/<pid>.bound, or null when there is none to go by (5a). */
+export function boundIn(home: string, pid = process.pid): string[] | null {
+  const as = shimDoc(shimFile(home, 'bound', pid))?.as
+  return Array.isArray(as) ? as.filter((l): l is string => typeof l === 'string') : null
+}
+
+/** A ring as the shim writes it (5b). */
+export interface RingDoc {
+  readonly n: number
+  readonly as: string
+  readonly unread: number | null
+  readonly speaking: boolean
+  readonly shim: number
+}
+
+/** <home>/run/shim/<pid>.ring when valid (5b rule 2), else null. */
+export function ringIn(home: string, pid = process.pid): RingDoc | null {
+  const d = shimDoc(shimFile(home, 'ring', pid))
+  if (d === null || !Number.isSafeInteger(d.n) || typeof d.as !== 'string' || typeof d.speaking !== 'boolean')
+    return null
+  const unread = typeof d.unread === 'number' ? d.unread : null
+  return { n: d.n as number, as: d.as, unread, speaking: d.speaking, shim: d.shim as number }
+}
+
+/** The last ring handled, `<shim pid> <n>` in <pid>.ring-seen (the CLI lane's wake hook writes the same). */
+export interface RingSeen {
+  readonly shim: number
+  readonly n: number
+}
+
+export function ringSeenIn(file: string): RingSeen | null {
+  try {
+    const [shim, n] = readFileSync(file, 'utf8').trim().split(' ').map(Number)
+    return Number.isSafeInteger(shim) && Number.isSafeInteger(n)
+      ? { shim: shim as number, n: n as number }
+      : null
+  } catch {
+    return null
+  }
+}
+
+export function rememberRing(file: string, s: RingSeen): void {
+  const tmp = `${file}.${process.pid}`
+  writeFileSync(tmp, `${s.shim} ${s.n}\n`, { mode: 0o600 })
+  renameSync(tmp, file)
+}
+
+/** 5b rule 3: a higher n of the same shim, or any n of another shim pid (a new shim counts from 1 again). */
+export const ringIsNew = (r: RingDoc, seen: RingSeen | null): boolean =>
+  seen === null || r.shim !== seen.shim || r.n > seen.n
+
+/** The quiet notice of a ring for another window, as the service words it (wake-router.ts quietNotice). */
+export const quietText = (r: RingDoc): string =>
+  `bag: ${r.unread ?? 'new'} unread for ${r.as}, shown in the window you last typed in for ${r.as}; ` +
+  'type here to have the next mail shown here'
+
+/** What RingLoop needs from the world. */
+export interface RingDeps {
+  /** Whether a valid .bound file is there (5b rule 1). */
+  readonly bound: () => boolean
+  readonly ring: () => RingDoc | null
+  readonly seen: () => RingSeen | null
+  readonly remember: (s: RingSeen) => void
+  readonly idle: () => boolean
+  readonly fire: (as: string) => void
+  readonly quiet: (r: RingDoc) => void
+  readonly later: (fn: () => void, ms: number) => void
+}
+
+/**
+ * The wake of a session bound through the service: as WakeLoop (the settle, one pending wake while a turn runs), with
+ * the ring file in place of the doorbell. A ring with speaking false shows the quiet notice at once and starts no turn.
+ */
+export class RingLoop {
+  #settling = false
+  #pending = false
+  #waiting = false
+  /** The record in memory too: a .ring-seen the shim removed still counts until it is written again. */
+  #last: RingSeen | null = null
+  readonly #d: RingDeps
+
+  constructor(deps: RingDeps) {
+    this.#d = deps
+  }
+
+  get pending(): boolean {
+    return this.#pending
+  }
+
+  ring(): void {
+    if (this.#settling || this.#due() === null) return
+    this.#settling = true
+    this.#d.later(() => {
+      this.#settling = false
+      this.#handle()
+    }, SETTLE_MS)
+  }
+
+  idle(): void {
+    if (!this.#pending || this.#waiting) return
+    this.#waiting = true
+    const look = (): void => {
+      if (!this.#d.idle()) {
+        this.#d.later(look, IDLE_MS)
+        return
+      }
+      this.#waiting = false
+      this.#handle()
+    }
+    this.#d.later(look, IDLE_MS)
+  }
+
+  #due(): RingDoc | null {
+    const r = this.#d.bound() ? this.#d.ring() : null
+    return r !== null && ringIsNew(r, this.#d.seen() ?? this.#last) ? r : null
+  }
+
+  #handle(): void {
+    const r = this.#due()
+    this.#pending = r?.speaking === true && !this.#d.idle()
+    if (r === null || this.#pending) return
+    this.#last = { shim: r.shim, n: r.n }
+    try {
+      this.#d.remember(this.#last)
+    } catch {
+      // the shim's directory went with it: the record in memory holds until the next ring writes it again
+    }
+    if (r.speaking) this.#d.fire(r.as)
+    else this.#d.quiet(r)
+  }
+}
+
+/** The shim's channel for host pid `pid`: its socket path and secret, from <home>/run/shim/<pid>.json; else null. */
+export function channelOf(home: string, pid = process.pid): { path: string; secret: string } | null {
+  try {
+    const d = JSON.parse(readFileSync(shimFile(home, 'json', pid), 'utf8')) as Record<string, unknown>
+    if (d.v !== 1 || typeof d.sock !== 'string' || !/^[0-9a-f]{8}\.sock$/.test(d.sock)) return null
+    if (typeof d.secret !== 'string' || !/^[0-9a-f]{64}$/.test(d.secret)) return null
+    return { path: join(home, 'run', 'shim', d.sock), secret: d.secret }
+  } catch {
+    return null
+  }
+}
+
+/** Sends one line to the shim and resolves its one-line answer, or null on an error or after `ms`. */
+export function askShim(
+  ch: { path: string; secret: string },
+  body: Record<string, unknown>,
+  ms = CHANNEL_MS,
+): Promise<Record<string, unknown> | null> {
+  return new Promise((done) => {
+    const c = createConnection({ path: ch.path })
+    let buf = ''
+    const end = (a: Record<string, unknown> | null): void => {
+      clearTimeout(timer)
+      c.destroy()
+      done(a)
+    }
+    const timer = setTimeout(() => end(null), ms)
+    c.setEncoding('utf8')
+    c.on('connect', () => c.write(`${JSON.stringify({ v: 1, ...body, secret: ch.secret })}\n`))
+    c.on('data', (chunk: string) => {
+      buf += chunk
+      const nl = buf.indexOf('\n')
+      if (nl === -1) return
+      let a: unknown = null
+      try {
+        a = JSON.parse(buf.slice(0, nl))
+      } catch {}
+      end(typeof a === 'object' && a !== null && !Array.isArray(a) ? (a as Record<string, unknown>) : null)
+    })
+    c.on('error', () => end(null))
+    c.on('close', () => end(null))
+  })
+}
+
 // The parts of omp's ExtensionAPI (@oh-my-pi/pi-coding-agent, 18.17.0) this extension uses, typed here: the package is
 // not a dependency of bag.
 interface Ctx {
   readonly mode?: string
   readonly hasUI?: boolean
-  readonly ui?: ConsentUi
+  readonly ui?: ConsentUi & { notify?(message: string, level?: string): void }
   readonly cwd: string
   readonly agent?: { readonly kind?: string }
   readonly model?: { readonly provider?: string; readonly id?: string }
@@ -556,7 +886,8 @@ interface Ctx {
   setInterval(fn: () => void, ms: number): unknown
 }
 interface Pi {
-  on(event: string, handler: (event: unknown, ctx: Ctx) => void): void
+  /** An input handler's { handled: true } (awaited by omp's emitInput) swallows the prompt: the model never sees it. */
+  on(event: string, handler: (event: unknown, ctx: Ctx) => unknown): void
   sendMessage(
     message: { customType: string; content: string; display: boolean; attribution?: string },
     options?: { triggerTurn?: boolean; deliverAs?: string },
@@ -570,122 +901,254 @@ const log = (line: string): void => {
 /** The extension factory omp calls once per session it binds. */
 export default function bagWake(pi: Pi): void {
   let watcher: FSWatcher | null = null
+  let ringWatcher: FSWatcher | null = null
   let consentWatcher: FSWatcher | null = null
   let bridge: string | null = null
   let facts: (() => void) | null = null
   let loop: WakeLoop | null = null
+  let rings: RingLoop | null = null
+  // Asks the shim for this connection's bridge folder (null: no bridge yet); set by a session that may answer.
+  let askBridge: (() => void) | null = null
+  // The person's last input in this session (Unix seconds): what came before it they have seen (loopLines).
+  let personAt = 0
+  let warned = false
+  const warn = (what: string): void => {
+    if (!warned) log(`bag: the shim of this session did not answer (${what}); the prompt went on as typed`)
+    warned = true
+  }
+  pi.on('input', (event, ctx) => {
+    const e = event as { source?: string; text?: unknown }
+    if (e.source !== 'interactive') return undefined
+    personAt = Math.floor(Date.now() / 1000)
+    ctx?.ui?.setStatus(WAKE_STATUS, undefined)
+    const home = ctx === undefined ? null : (shimHomeOf(ctx.cwd) ?? targetOf(ctx.cwd)?.home ?? null)
+    const ch = home === null ? null : channelOf(home)
+    if (ch === null) return undefined
+    const name = typedName(typeof e.text === 'string' ? e.text : '')
+    if (name === null) {
+      // Not awaited: the service learns the speaking window, and the prompt never waits for it.
+      void askShim(ch, { kind: 'typed' }).then((a) => {
+        if (a === null) warn('typed')
+        askBridge?.()
+      })
+      return undefined
+    }
+    return askShim(ch, { kind: 'use', name }).then((a) => {
+      askBridge?.()
+      if (a === null) {
+        warn('use')
+        return undefined
+      }
+      if (a.bound === false && a.code === 'unknown-identity') return undefined
+      const said =
+        a.bound === true ? `bag: this session now acts as ${name}` : `bag: use ${name}: ${String(a.code)}`
+      ctx.ui?.notify?.(said, a.bound === true ? 'info' : 'warning')
+      return { handled: true }
+    })
+  })
   pi.on('session_start', (_event, ctx) => {
     const target = targetOf(ctx.cwd)
-    if (target === null) return
+    const shimHome = shimHomeOf(ctx.cwd)
+    if (target === null && shimHome === null) return
     const why = refusal(ctx.mode, ctx.agent?.kind)
     if (why !== null) {
       // A spawned session neither wakes nor writes the facts: its model and cost are not the agent's, and a write
       // would overwrite the main session's (the misreport of the omp brief's problem 7).
-      log(`bag: no wake for ${target.name} here: ${why}; only the main omp session speaks for an identity`)
+      log(
+        `bag: no wake for ${target?.name ?? 'bag'} here: ${why}; only the main omp session speaks for an identity`,
+      )
       return
     }
-    const state = join(target.home, 'state', target.name)
-    facts = () => {
-      try {
-        const usage = ctx.getContextUsage?.()
-        const model = ctx.model?.provider && ctx.model.id ? `${ctx.model.provider}/${ctx.model.id}` : null
-        const cost = ctx.sessionManager?.getUsageStatistics?.().cost
-        writeFacts(state, {
-          // omp's extension API (18.17.0) gives no version string; null is "not provided" to the facts reader.
-          host_version: null,
-          host_pid: process.pid,
-          session_id: ctx.sessionManager?.getSessionId?.() ?? null,
-          main_session: true,
-          model,
-          cost_usd: typeof cost === 'number' && cost >= 0 ? cost : null,
-          context_percent: typeof usage?.percent === 'number' ? usage.percent : null,
-          context_tokens: typeof usage?.tokens === 'number' ? usage.tokens : null,
-        })
-      } catch {
-        // facts are best effort: a failed write never stops the wake
-      }
+    // The shim's files (channel, .bound, .ring) sit in this home; per folder, the identity's own.
+    const home = shimHome ?? (target as Target).home
+    const fireFor = (name: string) => {
+      const state = join(home, 'state', name)
+      const now = Math.floor(Date.now() / 1000)
+      const loops = loopLines(arrivals(state, now), now, personAt, namesOf(home))
+      pi.sendMessage(
+        { customType: 'bag-wake', content: wakeText(name, loops), display: true, attribution: 'agent' },
+        { triggerTurn: true },
+      )
     }
-    facts()
-    ctx.setInterval(() => facts?.(), FACTS_MS)
-    const bell = join(state, 'doorbell')
-    const seen = join(state, 'wake-seen')
-    const wake = new WakeLoop({
-      doorbell: () => mtimeOf(bell),
-      seen: () => seenIn(seen),
-      remember: (m) => rememberIn(seen, m),
+    // 5b rule 1: while a valid .bound file is there the ring file is the only wake, never a doorbell.
+    const ringMode = () => boundIn(home) !== null
+    const seenFile = shimFile(home, 'ring-seen')
+    const ringLoop = new RingLoop({
+      bound: ringMode,
+      ring: () => ringIn(home),
+      seen: () => ringSeenIn(seenFile),
+      remember: (s) => rememberRing(seenFile, s),
       idle: () => ctx.isIdle(),
-      fire: () =>
-        pi.sendMessage(
-          { customType: 'bag-wake', content: wakeText(target.name), display: true, attribution: 'agent' },
-          { triggerTurn: true },
-        ),
-      away: () => holderOf(join(state, 'mcp.lock')),
-      show: (h) =>
-        pi.sendMessage(
-          { customType: 'bag-wake', content: awayText(target.name, h), display: true },
-          { deliverAs: 'nextTurn' },
-        ),
+      fire: fireFor,
+      quiet: (r) => ctx.ui?.setStatus(WAKE_STATUS, quietText(r)),
       later: (fn, ms) => ctx.setTimeout(fn, ms),
     })
-    mkdirSync(state, { recursive: true, mode: 0o700 })
-    watcher?.close()
-    loop = wake
-    wake.start()
-    try {
-      watcher = watch(state, (_kind, file) => {
-        if (file === null || file === 'doorbell') wake.ring()
-      })
-      watcher.on('error', () => undefined)
-    } catch {
-      watcher = null
+    rings = ringLoop
+    const watchRings = () => {
+      if (ringWatcher !== null) return
+      try {
+        ringWatcher = watch(join(home, 'run', 'shim'), (_kind, file) => {
+          if (file === null || file.startsWith(`${process.pid}.`)) ringLoop.ring()
+        })
+        ringWatcher.on('error', () => undefined)
+      } catch {
+        ringWatcher = null
+      }
     }
-    ctx.setInterval(() => wake.ring(), POLL_MS)
+    watchRings()
+    if (target !== null) {
+      const state = join(target.home, 'state', target.name)
+      facts = () => {
+        try {
+          const usage = ctx.getContextUsage?.()
+          const model = ctx.model?.provider && ctx.model.id ? `${ctx.model.provider}/${ctx.model.id}` : null
+          const cost = ctx.sessionManager?.getUsageStatistics?.().cost
+          writeFacts(state, {
+            // omp's extension API (18.17.0) gives no version string; null is "not provided" to the facts reader.
+            host_version: null,
+            host_pid: process.pid,
+            session_id: ctx.sessionManager?.getSessionId?.() ?? null,
+            main_session: true,
+            model,
+            cost_usd: typeof cost === 'number' && cost >= 0 ? cost : null,
+            context_percent: typeof usage?.percent === 'number' ? usage.percent : null,
+            context_tokens: typeof usage?.tokens === 'number' ? usage.tokens : null,
+          })
+        } catch {
+          // facts are best effort: a failed write never stops the wake
+        }
+      }
+      facts()
+      ctx.setInterval(() => facts?.(), FACTS_MS)
+      const bell = join(state, 'doorbell')
+      const seen = join(state, 'wake-seen')
+      const wake = new WakeLoop({
+        doorbell: () => (ringMode() ? 0 : mtimeOf(bell)),
+        seen: () => seenIn(seen),
+        remember: (m) => rememberIn(seen, m),
+        idle: () => ctx.isIdle(),
+        fire: () => fireFor(target.name),
+        away: () => holderOf(join(state, 'mcp.lock')),
+        show: (h) =>
+          pi.sendMessage(
+            { customType: 'bag-wake', content: awayText(target.name, h), display: true },
+            { deliverAs: 'nextTurn' },
+          ),
+        later: (fn, ms) => ctx.setTimeout(fn, ms),
+      })
+      mkdirSync(state, { recursive: true, mode: 0o700 })
+      watcher?.close()
+      loop = wake
+      // A session bound through the service takes no first look at the doorbell: it would make the doorbell's mtime
+      // wake-seen, or ring for it. The first look waits for a poll with no .bound file.
+      let started = !ringMode()
+      if (started) wake.start()
+      const bellRing = () => {
+        if (started) wake.ring()
+        else {
+          started = true
+          wake.start()
+        }
+      }
+      try {
+        watcher = watch(state, (_kind, file) => {
+          if (file === null || file === 'doorbell') bellRing()
+        })
+        watcher.on('error', () => undefined)
+      } catch {
+        watcher = null
+      }
+      ctx.setInterval(bellRing, POLL_MS)
+    }
+    ctx.setInterval(() => {
+      watchRings()
+      ringLoop.ring()
+    }, RING_POLL_MS)
+    ringLoop.ring()
     // The consent bridge: only a session a person sees answers for the identity (hasUI; the guard above already keeps
     // print, rpc, json and subagents out).
     // hasUI is true in rpc and acp even when nothing answers there: tui only (the omp research).
     if (ctx.mode === 'tui' && ctx.agent?.kind === 'main' && ctx.hasUI === true && ctx.ui !== undefined) {
-      const dir = join(state, 'consent')
-      const ask = new ConsentLoop({ name: target.name, ui: ctx.ui, ...consentFiles(dir) })
+      const ui = ctx.ui
+      let consent: { dir: string; ask: ConsentLoop; make: boolean } | null = null
       const look = () => {
-        ask.look().catch(() => undefined)
+        consent?.ask.look().catch(() => undefined)
       }
-      try {
-        writeBridge(dir)
-        bridge = join(dir, '.bridge')
-      } catch {
-        bridge = null
-      }
-      ctx.setInterval(() => {
+      const refresh = () => {
         try {
-          writeBridge(dir)
+          if (consent !== null) writeBridge(consent.dir, new Date(), consent.make)
         } catch {
           // a later refresh tries again; the server reads a bridge older than 600 s as absent
         }
-      }, FACTS_MS)
-      consentWatcher?.close()
-      try {
-        consentWatcher = watch(dir, () => look())
-        consentWatcher.on('error', () => undefined)
-      } catch {
-        consentWatcher = null
       }
+      // Moves the bridge to `dir` (null: none); the service's folder (make false) is used only as it stands.
+      const use = (dir: string | null, make: boolean) => {
+        if (consent?.dir === dir) return
+        consentWatcher?.close()
+        consentWatcher = null
+        if (bridge !== null) rmSync(bridge, { force: true })
+        bridge = null
+        consent = null
+        if (dir === null) return
+        const name = boundIn(home)?.join(', ') || target?.name || 'this session'
+        consent = { dir, ask: new ConsentLoop({ name, ui, ...consentFiles(dir) }), make }
+        try {
+          writeBridge(dir, new Date(), make)
+          bridge = join(dir, '.bridge')
+        } catch {
+          bridge = null
+        }
+        try {
+          consentWatcher = watch(dir, () => look())
+          consentWatcher.on('error', () => undefined)
+        } catch {
+          consentWatcher = null
+        }
+        // Never a dialog inside an event handler (a non-tool handler dies at its 30 s budget): the first look runs after.
+        ctx.setTimeout(look, 0)
+      }
+      // With a channel the folder is the connection's, named by the service; with none, the identity's, as before.
+      let asked = 0
+      let saidNone = false
+      askBridge = () => {
+        const ch = channelOf(home)
+        if (ch === null) {
+          if (target !== null) use(join(target.home, 'state', target.name, 'consent'), true)
+          return
+        }
+        const mine = ++asked
+        void askShim(ch, { kind: 'bridge' }).then((a) => {
+          if (mine !== asked) return
+          const dir = typeof a?.bridge === 'string' ? a.bridge : null
+          if (dir === null && !saidNone)
+            log('bag: no consent bridge for this session yet; asking again next turn')
+          saidNone = dir === null
+          use(dir, false)
+        })
+      }
+      askBridge()
+      ctx.setInterval(refresh, FACTS_MS)
       ctx.setInterval(look, CONSENT_POLL_MS)
-      // Never a dialog inside an event handler (a non-tool handler dies at its 30 s budget): the first look runs after.
-      ctx.setTimeout(look, 0)
     }
   })
   pi.on('agent_end', () => {
     facts?.()
     loop?.idle()
+    rings?.idle()
+    askBridge?.()
   })
   pi.on('session_shutdown', () => {
     facts?.()
     watcher?.close()
     watcher = null
+    ringWatcher?.close()
+    ringWatcher = null
     consentWatcher?.close()
     consentWatcher = null
     if (bridge !== null) rmSync(bridge, { force: true })
     bridge = null
+    askBridge = null
     loop = null
+    rings = null
   })
 }

@@ -13,6 +13,7 @@ import {
   type AcceptFromRecord,
   type AddressRecord,
   MAX_ADDRESS_TTL,
+  MAX_ENVELOPE_BYTES,
   serializeRecord,
   signRecord,
   toHex,
@@ -26,7 +27,7 @@ import { type Session, writeJson } from './session.ts'
 export const ADDRESS_TTL = MAX_ADDRESS_TTL
 /** The accept-from record's retention, the relay TTL (7 days), and its largest envelope: bag's own defaults. */
 export const ACCEPT_TTL = 604_800
-export const ACCEPT_MAX_BYTES = 65_536
+export const ACCEPT_MAX_BYTES = MAX_ENVELOPE_BYTES
 
 /** The kept copy: when the records were last published and where. */
 export interface RecordsCopy {

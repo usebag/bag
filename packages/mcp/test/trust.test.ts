@@ -113,7 +113,7 @@ describe('L1, the MCP clause: a server started before a pairing accepts the new 
 })
 
 describe('L5, amended: only the pair tools pair, names or trusts, and only through a dialog', () => {
-  it('lists the base tools, the two pair tools and the three enterprise tools; no other tool is named or described as pairing', async () => {
+  it('lists the base tools, the three pair tools and the three enterprise tools; no other tool is named or described as pairing', async () => {
     expect([...TOOL_NAMES]).toEqual([
       'send',
       'inbox',
@@ -127,6 +127,7 @@ describe('L5, amended: only the pair tools pair, names or trusts, and only throu
       'receipts',
       'pair_invite',
       'pair_accept',
+      'pair_cancel',
       'connect',
       'sign_in',
       'enterprise_status',
@@ -187,6 +188,7 @@ describe('L5, amended: only the pair tools pair, names or trusts, and only throu
       ['receipts', { id: invite }],
       ['pair_invite', { name: 'bob', for: invite }],
       ['pair_accept', { name: 'bob' }],
+      ['pair_cancel', { resume: invite }],
       ['connect', { code: invite }],
       ['sign_in', { domain: invite, instance: invite }],
       ['enterprise_status', {}],
@@ -194,7 +196,9 @@ describe('L5, amended: only the pair tools pair, names or trusts, and only throu
     const results = []
     for (const [tool, args] of calls) results.push(await alice.call(tool, args))
     // The pair tools refuse before any network: this host declared no elicitation, so no dialog can open.
-    expect(results.slice(-5, -3).map((r) => r.value.error)).toEqual(['no-elicitation', 'no-elicitation'])
+    expect(results.slice(-6, -4).map((r) => r.value.error)).toEqual(['no-elicitation', 'no-elicitation'])
+    // pair_cancel with nothing running ends nothing and says so.
+    expect(results.at(-4)?.value).toEqual({ cancelled: false })
     // The enterprise tools refuse it as usage before any network, and there is no session to show.
     expect(results.slice(-3).map((r) => [r.isError, (r.value.lines as string[])[0]?.split(':')[0]])).toEqual([
       [true, 'usage'],

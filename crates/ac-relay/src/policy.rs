@@ -209,7 +209,8 @@ impl Relay {
         }
         // An envelope's size is checked before it is read (§5.4 step 1).
         if body.len() > self.config.max_envelope_bytes {
-            return Err(Code::EnvelopeTooLarge.into());
+            let cap = Some(self.config.max_envelope_bytes);
+            return Err(Rejection { max_envelope_bytes: cap, ..Code::EnvelopeTooLarge.into() });
         }
         let env = Envelope::from_json(&parsed?)?;
         env.check_id()?;

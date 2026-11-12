@@ -31,7 +31,8 @@ A2A client --HTTP JSON-RPC--> A2aBridge (127.0.0.1:7741) --sealed envelope--> re
   that thread from that address (30 s by default), and returns the response as it came. It answers itself: 403 for a
   Host header that is not `127.0.0.1`, `localhost` or `[::1]` at its port and for any request with an Origin (DNS
   rebinding and cross-site requests from a browser), 404 for another path or an address outside `agents`, 405, 415,
-  413 over 24,576 bytes (an envelope is at most 64 KiB and the sealed content travels as hex), Parse error, Invalid
+  413 over 24,576 bytes (set when an envelope was at most 64 KiB, the sealed content travelling as hex; the cap is
+  196,608 since the release after v0.3.0, and this bound has not moved), Parse error, Invalid
   Request, VersionNotSupportedError (-32009) for any version but 1.0, an empty or absent header being 0.3 (section
   3.6.2), Internal error when the agent cannot be reached or does not answer in time, and InvalidAgentResponseError
   (-32006) for a reply that is not a response to the request. A client that goes away mid-body is dropped.

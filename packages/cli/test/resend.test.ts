@@ -77,6 +77,33 @@ function kept(w: World, id: string): Uint8Array | undefined {
 
 const hint = (id: string): string => `the bytes stay in the outbox, and resend --id ${id} sends them`
 
+describe('send: a partial delivery is a success with a warning, as the MCP send answers it (W9)', () => {
+  it('exits 0 when one relay took it, naming each relay that refused with its reason; every relay refusing exits 1', async () => {
+    const w = await world(R1, R2, R3)
+    const publish = w.relay.publish.bind(w.relay)
+    const big = new RelayError('envelope-too-large', 413, null, 'too large')
+    w.relay.publish = (url, bytes) => (url === R3 ? Promise.reject(big) : publish(url, bytes))
+    const partial = await send(w, '--allow-private-relays')
+    const id = partial.out[0] as string
+    expect(partial).toEqual({
+      code: 0,
+      out: [
+        id,
+        `published ${R1} tries=1`,
+        `published ${R2} tries=1`,
+        `failed ${R3} tries=1 reason=envelope-too-large`,
+      ],
+      err: [`warning: delivered via 2 of 3 relays; refused 1: ${R3} envelope-too-large; ${hint(id)}`],
+    })
+    expect(w.relay.box(w.bob)).toHaveLength(1)
+    // No relay took it: an error, as before, with the first refusal's reason and the resend hint.
+    w.relay.publish = () => Promise.reject(big)
+    const none = await send(w, '--allow-private-relays')
+    const other = none.out[0] as string
+    expect([none.code, none.err]).toEqual([1, [`bag: envelope-too-large: ${R1} failed; ${hint(other)}`]])
+  })
+})
+
 describe('resend: a refused send lands once, the same bytes under the same id', () => {
   it('sends what the relay did not take when it is back, and a later run has nothing left', async () => {
     const w = await world()
@@ -245,9 +272,13 @@ describe("resend reaches the edge's failover and its waiting sends", () => {
     w.io.time.now += 2
     expect((await resend(w, '--allow-private-relays')).code).toBe(1)
     w.io.time.now += 4
-    // R1 is retired for R4, which lands; R2 and R3 have no spare left, so they retry, and the run exits 1 for them (§4.3).
+    // R1 is retired for R4, which lands; R2 and R3 have no spare left, so they retry (§4.3). Delivered via R4, the run
+    // exits 0 with a warning line that counts it and names the retries (W9: a partial delivery is a success).
     const landed = await resend(w, '--allow-private-relays')
-    expect(landed.code).toBe(1)
+    expect(landed.code).toBe(0)
+    expect(landed.err).toEqual([
+      `warning: delivered via 1 of 3 relays; retrying 2; the bytes stay in the outbox, and resend --id ${id} sends them`,
+    ])
     expect(landed.out).toEqual([
       id,
       expect.stringMatching(new RegExp(`^retry ${R2} tries=3 `)),

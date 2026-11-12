@@ -18,7 +18,9 @@ async fn health_answers_ok_with_the_version_the_time_and_the_announced_url() {
     assert_eq!(r.header("content-type"), Some("application/json"));
     // In process with no url, the test server sets http://<addr>, as the binary sets its announced URL (since
     // 2026-11-02, the first audience of a fetch proof), and health answers it.
-    assert_eq!(r.json(), serde_json::json!({"ok": true, "version": "0.0.0", "now": NOW, "url": s.base}));
+    // Since 2026-11-11 it also states the envelope cap, an additive member.
+    let want = serde_json::json!({"ok": true, "version": "0.0.0", "now": NOW, "url": s.base, "max_envelope_bytes": 196_608});
+    assert_eq!(r.json(), want);
     assert_eq!(s.base, format!("http://{}", s.addr));
     s.stop().await;
     let url = Some("https://relay.example".to_owned());
@@ -71,10 +73,22 @@ async fn json_shape_and_form_are_400() {
 async fn sizes_over_the_caps_are_413() {
     let s = Server::start(Config { body_limit: 4_096, max_envelope_bytes: 2_048, ..Config::default() }).await;
     let r = s.publish(&vec![b' '; 5_000]).await;
-    assert_eq!((r.status, r.error()), (413, "body-too-large".to_owned()));
+    assert_eq!((r.status, r.json()), (413, serde_json::json!({"error": "body-too-large"})));
     let big = Envelope::sign(&key(1), vec![addr(2)], vec![], NOW, sealed(&[addr(2)], 1_200)).unwrap();
     let r = s.publish(&bytes(&big)).await;
-    assert_eq!((r.status, r.error()), (413, "envelope-too-large".to_owned()));
+    // The refusal names the relay's cap beside the code, an additive member.
+    assert_eq!(
+        (r.status, r.json()),
+        (413, serde_json::json!({"error": "envelope-too-large", "max_envelope_bytes": 2_048}))
+    );
+    s.stop().await;
+}
+
+#[tokio::test]
+async fn health_states_the_configured_envelope_cap() {
+    let s = Server::start(Config { max_envelope_bytes: 2_048, ..Config::default() }).await;
+    let health = s.get("/v0/health", &[]).await.json();
+    assert_eq!((health["max_envelope_bytes"].clone(), health["ok"].clone()), (2_048.into(), true.into()));
     s.stop().await;
 }
 

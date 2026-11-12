@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import * as core from '@usebag/core'
 import { generateEdgeKeys } from './edge.ts'
+import { liftMaxBytes } from './max-bytes.ts'
 import { guardCheck, type RelayGuard } from './net.ts'
 import { heldSomewhere, type Lagging, offerRecord } from './offer.ts'
 import {
@@ -52,7 +53,7 @@ const TOLD = new Set(['bad-code', 'bad-mac', 'not-for'])
 
 /**
  * A refusal and its code: bad-invite, bad-code, invite-expired, bad-request, bad-mac, not-for, leaked, declined,
- * no-answer.
+ * no-answer, cancelled.
  */
 function refusal(code: string, detail: string): Error & { readonly code: string } {
   return Object.assign(new Error(`${code}: ${detail}`), { code })
@@ -290,7 +291,9 @@ async function admit(p: PairingPorts, at: Relays, k: EdgeKeys, peer: string | Re
   const was = old?.roots ?? []
   const roots =
     typeof peer !== 'string' ? peer : was.includes('*') || was.includes(peer) ? was : [...was, peer]
-  const base = { max_bytes: core.MAX_ENVELOPE_BYTES, ttl: core.DEFAULT_TTL, ...old }
+  // A held max_bytes of exactly the old default 65,536 takes the new default (max-bytes.ts); any other is kept.
+  const max_bytes = old === null ? core.MAX_ENVELOPE_BYTES : liftMaxBytes(old.max_bytes)
+  const base = { ttl: core.DEFAULT_TTL, ...old, max_bytes }
   const iat = Math.max(p.clock.now(), (old?.iat ?? -1) + 1)
   const r = core.signRecord(k.signing, { ...base, kind: 'accept-from', owner, roots, iat })
   // Not share: stale-record here is a record this one would have replaced, a change it must not pass over.
@@ -322,8 +325,10 @@ async function admitted(
   owner: string,
   peer: string,
   after: number,
+  signal?: AbortSignal,
 ) {
   for (;;) {
+    if (signal?.aborted) return false
     let wait = p.pollMs
     const r = (await newest(p.client, at, owner, 'accept-from', true).catch((e: unknown) => {
       wait = notYet(p, e, end)
@@ -357,10 +362,31 @@ function invitationAccept(i: EdgeKeys, ttl: number, iat: number): Accept {
   return core.signRecord(i.signing, { kind: 'accept-from', owner, roots, max_bytes: INVITE_BYTES, ttl, iat })
 }
 
+/** What a pairing ended on its person's word throws: the client's own cancel (pair_cancel), not a relay's or a peer's. */
+function cancelled(): Error & { readonly code: string } {
+  return refusal('cancelled', 'the pairing was cancelled here: nothing was written')
+}
+
+/**
+ * The withdrawal of an invitation cancelled before any request was checked: I's address record (the one-time
+ * invitation identity, never the inviter's own) re-signed, newer and naming no sealing key, so an acceptor that reads it (accepting, below) meets invite-expired, as at an invitation's
+ * end, whether it holds the word code (the relay still answers its claim) or the invite string, and no request can be
+ * sealed to I. It is done only on the person's word and only before a request was checked, so it tells a requester
+ * nothing about its check digits (the no-oracle rule of the typed compare). A relay that does not take it leaves the
+ * code dead in effect: the subscription is closed, so a request sealed to I is never read, and its sender's wait ends
+ * in no-answer. Never throws.
+ */
+async function withdraw(p: PairingPorts, at: string, i: EdgeKeys, iat: number, exp: number): Promise<void> {
+  const now = Math.max(p.clock.now(), iat + 1)
+  const r = addressOf(i, null, [at], Math.max(1, exp - now), now, null)
+  await p.client.publish(at, core.serializeRecord(r)).catch(() => {})
+}
+
 /**
  * The inviter's options (--relay, the rendezvous relay, by default --relay, its keys, its current key record,
  * I's ttl, 1 to 600 s, --for) and its client's steps (ask: true, yes). `opened` gets the code, or the invite string
- * (INVITE_PREFIX) when the rendezvous relay offers no pair call.
+ * (INVITE_PREFIX) when the rendezvous relay offers no pair call. `signal`, aborted on the person's word, ends it
+ * cancelled (inviting, below).
  */
 export interface Inviter {
   readonly relay: string
@@ -376,6 +402,7 @@ export interface Inviter {
   readonly ask: (q: PeerRequest) => Promise<boolean>
   readonly leaked: (from: string) => void
   readonly write: (q: PeerRequest) => void
+  readonly signal?: AbortSignal
 }
 
 /**
@@ -383,9 +410,12 @@ export interface Inviter {
  * awaited, then `write`; else the roots go back. Nothing a stranger sends ends an open invitation: a frame that fails
  * is dropped, and only a request whose sole failure is the mac under a code counts, the MAX_CODE_MISSES-th ending it. A
  * copy of a frame already checked is not counted again. leaked is a request that passes from another requester, so a
- * retry by the same requester, a new envelope, is none.
+ * retry by the same requester, a new envelope, is none. An abort of `signal` ends it cancelled: while it waits for a
+ * request (then I is withdrawn), at the ask (the client answers no), or while it waits for the peer's admit (then the
+ * roots go back, as at no-answer).
  */
 async function inviting(p: PairingPorts, o: Inviter): Promise<PeerRequest> {
+  if (o.signal?.aborted) throw cancelled()
   const i = generateEdgeKeys(p.rng)
   const secret = core.toHex(p.rng.bytes(16))
   // The invitation lives at the rendezvous, the one relay a pairing requires (spec/SPEC.md Appendix B 110): the
@@ -454,6 +484,7 @@ async function inviting(p: PairingPorts, o: Inviter): Promise<PeerRequest> {
     return second
   }
   let close = (): void => {}
+  let q: PeerRequest | null = null
   try {
     await pub(addressOf(i, core.toHex(i.sealing.publicKey), [at], o.ttl, iat, null))
     await pub(invitationAccept(i, o.ttl, iat))
@@ -476,11 +507,11 @@ async function inviting(p: PairingPorts, o: Inviter): Promise<PeerRequest> {
     word = nameplate === null ? null : { nameplate, words: newWords(p.rng) }
     if (word !== null) v.secret = codeSecret(word, v.i)
     o.opened(word === null ? inviteText(v) : formatCode(word), exp)
-    let q: PeerRequest | null = null
     while (q === null) {
-      while (queue.length === 0 && failure === null && p.clock.now() < exp) {
+      while (queue.length === 0 && failure === null && p.clock.now() < exp && !o.signal?.aborted) {
         await new Promise((resolve) => setTimeout(resolve, p.pollMs))
       }
+      if (o.signal?.aborted) throw cancelled()
       if (failure !== null) throw failure
       const f = queue.shift()
       if (f === undefined) throw refusal('invite-expired', 'no request came before the invitation ended')
@@ -493,6 +524,7 @@ async function inviting(p: PairingPorts, o: Inviter): Promise<PeerRequest> {
     }
     const yes = await o.ask(q)
     if (extras(q.from) > 0) throw refusal('leaked', 'a second request reached this invitation')
+    if (o.signal?.aborted) throw cancelled()
     if (!yes) throw refusal('declined', 'nothing was written')
     await share(p, mine.relays, q.record, true)
     if (q.key !== null) await share(p, mine.relays, q.key, true)
@@ -500,9 +532,10 @@ async function inviting(p: PairingPorts, o: Inviter): Promise<PeerRequest> {
     // The held set before the speculative add (relay healed from the home copy): a rotation that stranded the relay
     // copy no longer reads as no roots, so the rollback restores the real paired roots instead of a bare [owner].
     const before = await admit(p, reached, o.keys, q.from)
-    const answer = admitted(p, exp, q.record.relays, q.from, v.inviter, seen)
+    const answer = admitted(p, exp, q.record.relays, q.from, v.inviter, seen, o.signal)
     if (!(await answer.catch(() => false))) {
       await admit(p, reached, o.keys, before)
+      if (o.signal?.aborted) throw cancelled()
       throw refusal('no-answer', `${q.from} did not admit this identity before the invitation ended`)
     }
     o.write(q)
@@ -510,6 +543,7 @@ async function inviting(p: PairingPorts, o: Inviter): Promise<PeerRequest> {
     return q
   } finally {
     close()
+    if (q === null && o.signal?.aborted) await withdraw(p, at, i, iat, exp)
   }
 }
 
@@ -524,6 +558,8 @@ export interface Acceptor {
   readonly ask: (code: string) => Promise<void>
   readonly sent: (exp: number) => void
   readonly write: () => void
+  /** Aborted on the person's word: cancelled before the request goes, or while the inviter's admit is awaited. */
+  readonly signal?: AbortSignal
 }
 
 /**
@@ -531,6 +567,7 @@ export interface Acceptor {
  * sent, the inviter's yes awaited, `write`, the inviter admitted.
  */
 async function accepting(p: PairingPorts, k: EdgeKeys, relay: string, v: Invite, h: Acceptor) {
+  if (h.signal?.aborted) throw cancelled()
   await guardCheck(p.guard, v.relay)
   const me = k.signing.address
   const sealing = h.key?.sealing_key ?? core.toHex(k.sealing.publicKey)
@@ -540,6 +577,7 @@ async function accepting(p: PairingPorts, k: EdgeKeys, relay: string, v: Invite,
   }
   const exp = i.iat + i.ttl
   await h.ask(pairingCode(v, me, sealing))
+  if (h.signal?.aborted) throw cancelled()
   const mine = await ownAddress(p, h.relays ?? [relay], k, h.key !== undefined)
   // Its key record at its own relays too, where its peers resolve it (the inviter shares it at the inviter's).
   if (h.key !== undefined) await share(p, [...new Set([relay, ...mine.relays])], h.key)
@@ -557,7 +595,8 @@ async function accepting(p: PairingPorts, k: EdgeKeys, relay: string, v: Invite,
   const env = core.buildEnvelope({ from: k.signing, to, type: PEER_REQUEST_TYPE, thread, body, ts, rng })
   await p.client.publish(v.relay, env.bytes)
   h.sent(exp)
-  if (!(await admitted(p, exp, [v.relay], v.inviter, me, seen))) {
+  if (!(await admitted(p, exp, [v.relay], v.inviter, me, seen, h.signal))) {
+    if (h.signal?.aborted) throw cancelled()
     throw refusal('no-answer', `${v.inviter} did not admit this identity before the invitation ended`)
   }
   // The inviter's records, shared at this side's relays: its address record, and its key record.

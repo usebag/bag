@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   type AcceptFromRecord,
@@ -24,6 +24,7 @@ import {
   continueFrom,
   INCOMPLETE_REVOCATION,
   keepAddressCopy,
+  liftMaxBytes,
   type RelayClient,
   RelayError,
   readRecoveryState,
@@ -269,6 +270,14 @@ async function keep(args: readonly string[], io: Io): Promise<number> {
   const home = file === undefined ? resolve(homeDir(io, str(p, 'dir'))) : dirname(file)
   const name = str(p, 'as') ?? 'identities'
   if (flag(p, 'plist') || flag(p, 'crontab')) {
+    // A keychain identity's job would read the keys at every run: a keychain dialog at night with no one to answer.
+    // The bag service holds the keys from its one open and keeps the records alive instead.
+    if (file === undefined && existsSync(join(home, 'keychain', `${name}.json`))) {
+      throw new CliError(
+        'custody-unsupported',
+        `${name} is kept in the macOS keychain, so a keep job would ask for it at every run: the bag service keeps its records alive (bag host install service, then bag identity keep-alive on ${name})`,
+      )
+    }
     const own = ['--as', name, ...relays.flatMap((r) => ['--relay', r]), '--dir', home]
     const run = ['record', 'keep', ...(file === undefined ? own : ['--identities', file]), '--once']
     const log = join(home, 'keep.log')
@@ -545,7 +554,7 @@ async function republish(
           kind: 'accept-from',
           owner: f.owner,
           roots: f.roots,
-          max_bytes: f.max_bytes,
+          max_bytes: liftMaxBytes(f.max_bytes),
           ttl: f.ttl,
           iat,
         })

@@ -1,7 +1,13 @@
-import { readFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
-import { type AcceptFromRecord, MAX_RELAYS, parseRecord, serializeRecord } from '@usebag/core'
-import { RelayError } from '@usebag/edge'
+import {
+  type AcceptFromRecord,
+  MAX_ENVELOPE_BYTES,
+  MAX_RELAYS,
+  parseRecord,
+  serializeRecord,
+} from '@usebag/core'
+import { acceptCopy, keepAcceptCopy, RelayError } from '@usebag/edge'
 import { afterAll, describe, expect, it } from 'vitest'
 import { USAGE } from '../src/cli.ts'
 import { addTrust, readTrust, removeTrust } from '../src/trust.ts'
@@ -37,11 +43,11 @@ async function world(...answers: boolean[]) {
 type World = Awaited<ReturnType<typeof world>>
 
 /** jane's accept-from of `roots` one second on, published at `at`, as a pairing's admit leaves one. */
-async function hold(w: World, roots: readonly string[], at = [R1, R2]) {
+async function hold(w: World, roots: readonly string[], at = [R1, R2], size = 4096) {
   w.io.time.now += 1
   const file = join(w.dir, `held-${n++}.json`)
   const given = roots.flatMap((r) => ['--root', r])
-  const sizes = ['--max-bytes', '4096', '--ttl', '3600', '--out', file, '--dir', w.dir]
+  const sizes = ['--max-bytes', `${size}`, '--ttl', '3600', '--out', file, '--dir', w.dir]
   expect((await cli(w.io, 'record', 'accept-from', 'jane', ...given, ...sizes)).code).toBe(0)
   for (const url of at) expect((await cli(w.io, 'publish', url, file, '--dir', w.dir)).code).toBe(0)
 }
@@ -82,6 +88,20 @@ describe('unpair <root> --as <name> --relay <url>...: a root leaves both places 
       expect([r.owner, r.roots, r.max_bytes, r.ttl, r.iat]).toEqual([w.jane, [w.carol], 4096, 3600, T0 + 2])
     }
     expect(USAGE).toContain('  unpair <address|domain:<host>> --as <name> --relay <url>... [--dir <home>]\n')
+  })
+
+  it('lifts a held max_bytes of exactly 65,536 to the envelope cap, and keeps 32,768 (W9)', async () => {
+    for (const [size, signed] of [
+      [65_536, MAX_ENVELOPE_BYTES],
+      [32_768, 32_768],
+    ] as const) {
+      const w = await world(true)
+      addTrust(w.dir, w.bob, T0)
+      await hold(w, [w.bob, w.carol], [R1, R2], size)
+      expect((await unpair(w, w.bob)).code).toBe(0)
+      for (const url of [R1, R2])
+        expect([acceptAt(w, url).roots, acceptAt(w, url).max_bytes], `${size}`).toEqual([[w.carol], signed])
+    }
   })
 
   it('(b) n changes nothing: declined, exit 1, trust.json and the relays as they were', async () => {
@@ -297,5 +317,186 @@ describe('unpair <root> --as <name> --relay <url>...: a root leaves both places 
     expect(readFileSync(join(w.dir, 'trust.json'))).toEqual(trust)
     expect(w.net.log).toHaveLength(published + 1)
     expect([acceptAt(w, R1).roots, acceptAt(w, R2).roots]).toEqual([[w.bob, w.carol], [w.bob]])
+  })
+})
+
+describe("unpair in a home that holds other identities: trust.json is the whole home's", () => {
+  /** kim, a second identity of jane's home, whose accept-from copy names `roots`, as kim's own pairing leaves it. */
+  async function kim(w: World, roots: readonly string[]) {
+    const address = (await cli(w.io, 'keygen', 'kim', '--dir', w.dir)).out[0] as string
+    const file = join(w.dir, `kim-${n++}.json`)
+    const given = roots.flatMap((r) => ['--root', r])
+    const args = ['--max-bytes', '4096', '--ttl', '3600', '--out', file, '--dir', w.dir]
+    expect((await cli(w.io, 'record', 'accept-from', 'kim', ...given, ...args)).code).toBe(0)
+    keepAcceptCopy(w.dir, 'kim', parseRecord(readFileSync(file)) as AcceptFromRecord)
+    return address
+  }
+
+  it('(s1) a root another identity still accepts stays in trust.json; the accept-from and its copy leave it', async () => {
+    const w = await world(true)
+    addTrust(w.dir, w.bob, T0)
+    await hold(w, [w.bob, w.carol])
+    await kim(w, [w.bob])
+    const ran = await unpair(w, w.bob)
+    const places = `the accept-from at ${R1} ${R2}`
+    expect(w.io.asked).toEqual([`${question(w, w.bob, places)} (it stays in ${w.dir}/trust.json for kim)`])
+    const published = [R1, R2].map((url) => `published accept-from ${w.jane} ${url}`)
+    const kept = `kept trust ${w.bob}: the accept-from of kim still names it`
+    expect(ran).toEqual({ code: 0, out: [kept, ...published], err: [] })
+    expect(Object.keys(readTrust(w.dir))).toEqual([w.bob])
+    for (const url of [R1, R2]) expect(acceptAt(w, url).roots).toEqual([w.carol])
+    expect(acceptCopy(w.dir, 'jane', w.jane)?.roots).toEqual([w.carol])
+  })
+
+  it("(s4) after jane unpairs a shared peer, it still reaches kim: kim's inbox admits it from trust.json", async () => {
+    const w = await world(true)
+    const peerHome = join(tmp.dir, `peer-${n++}`)
+    const peer = (await cli(w.io, 'keygen', 'peer', '--dir', peerHome)).out[0] as string
+    addTrust(w.dir, peer, T0)
+    await hold(w, [peer])
+    const k = await kim(w, [peer])
+    expect((await unpair(w, peer)).out[0]).toBe(`kept trust ${peer}: the accept-from of kim still names it`)
+    // kim's records at R1, as kim's pairing with the peer leaves them: the address with its sealing key, the accept-from.
+    const at = join(w.dir, `kim-address-${n++}.json`)
+    const af = join(w.dir, `kim-accept-${n++}.json`)
+    const steps = [
+      ['record', 'address', 'kim', '--relay', R1, '--sealing-key', '--out', at, '--dir', w.dir],
+      ['publish', R1, at, '--dir', w.dir],
+      [
+        'record',
+        'accept-from',
+        'kim',
+        '--root',
+        peer,
+        '--max-bytes',
+        '4096',
+        '--ttl',
+        '3600',
+        '--out',
+        af,
+        '--dir',
+        w.dir,
+      ],
+      ['publish', R1, af, '--dir', w.dir],
+    ]
+    for (const step of steps) {
+      const r = await cli(w.io, ...step)
+      expect(r.code, `${step.slice(0, 2).join(' ')}: ${r.err.join(' ')}`).toBe(0)
+    }
+    const body = '{"text":"hi kim"}'
+    const sent = await cli(
+      w.io,
+      'send',
+      '--as',
+      'peer',
+      '--to',
+      k,
+      '--relay',
+      R1,
+      '--type',
+      'chat.v1',
+      '--body',
+      body,
+      '--dir',
+      peerHome,
+    )
+    expect(sent.code, sent.err.join(' ')).toBe(0)
+    const got = await cli(w.io, 'inbox', '--as', 'kim', '--relay', R1, '--once', '--dir', w.dir)
+    expect(got.out).toEqual([`accept ${sent.out[0]} ${peer} ${peer} chat.v1 ${body}`])
+  })
+
+  it('(s5) after jane unpairs the shared peer, its message to jane is refused at the relay', async () => {
+    const w = await world(true)
+    const peerHome = join(tmp.dir, `peer-${n++}`)
+    const peer = (await cli(w.io, 'keygen', 'peer', '--dir', peerHome)).out[0] as string
+    addTrust(w.dir, peer, T0)
+    await hold(w, [peer, w.carol])
+    await kim(w, [peer])
+    const at = join(w.dir, `jane-address-${n++}.json`)
+    for (const step of [
+      ['record', 'address', 'jane', '--relay', R1, '--sealing-key', '--out', at, '--dir', w.dir],
+      ['publish', R1, at, '--dir', w.dir],
+    ])
+      expect((await cli(w.io, ...step)).code).toBe(0)
+    const toJane = (text: string) =>
+      cli(
+        w.io,
+        'send',
+        '--as',
+        'peer',
+        '--to',
+        w.jane,
+        '--relay',
+        R1,
+        '--type',
+        'chat.v1',
+        '--body',
+        text,
+        '--dir',
+        peerHome,
+      )
+    expect((await toJane('{"text":"before"}')).code).toBe(0)
+    expect((await unpair(w, peer)).code).toBe(0)
+    const after = await toJane('{"text":"after"}')
+    expect(after.code).toBe(1)
+    expect([...after.out, ...after.err].join('\n')).toContain('root-not-accepted')
+  })
+
+  it('(s6) an orphaned copy, its identity gone from the home, keeps no root', async () => {
+    const w = await world(true)
+    addTrust(w.dir, w.bob, T0)
+    await hold(w, [w.bob])
+    await kim(w, [w.bob])
+    renameSync(join(w.dir, 'keys', 'kim.json'), join(tmp.dir, `kim-gone-${n++}.json`))
+    expect((await unpair(w, w.bob)).out[0]).toBe(`untrusted ${w.bob}`)
+    expect(Object.keys(readTrust(w.dir))).toEqual([])
+  })
+
+  it('(s7) a home copy that cannot be written after the publish is named on stderr, with run unpair again', async () => {
+    const w = await world(true)
+    addTrust(w.dir, w.bob, T0)
+    await hold(w, [w.bob, w.carol])
+    const records = join(w.dir, 'records')
+    mkdirSync(records, { recursive: true })
+    chmodSync(records, 0o500)
+    try {
+      const ran = await unpair(w, w.bob)
+      expect(ran.code).toBe(0)
+      expect(ran.err).toEqual([
+        expect.stringMatching(
+          new RegExp(
+            `^the home copy ${records}/jane\\.accept\\.json is stale \\(.*\\): it may still name ${w.bob}; run unpair again$`,
+          ),
+        ),
+      ])
+    } finally {
+      chmodSync(records, 0o700)
+    }
+  })
+
+  it('(s2) a root no other identity accepts leaves trust.json as before', async () => {
+    const w = await world(true)
+    addTrust(w.dir, w.bob, T0)
+    await hold(w, [w.bob])
+    await kim(w, [w.carol])
+    const ran = await unpair(w, w.bob)
+    expect(w.io.asked).toEqual([question(w, w.bob, `${w.dir}/trust.json and the accept-from at ${R1} ${R2}`)])
+    expect(ran.out[0]).toBe(`untrusted ${w.bob}`)
+    expect(Object.keys(readTrust(w.dir))).toEqual([])
+  })
+
+  it("(s3) after jane unpairs bob, kim's unpair of bob takes it out of trust.json: jane's copy no longer names it", async () => {
+    const w = await world(true, true)
+    addTrust(w.dir, w.bob, T0)
+    await hold(w, [w.bob, w.carol])
+    keepAcceptCopy(w.dir, 'jane', acceptAt(w, R1)) // jane's copy names bob, as her pairing left it
+    const k = await kim(w, [w.bob])
+    expect((await unpair(w, w.bob)).out[0]).toBe(`kept trust ${w.bob}: the accept-from of kim still names it`)
+    // kim's own unpair, at no relay holding kim's record: trust.json loses bob, since jane's copy left it.
+    w.io.time.now += 1
+    const ran = await cli(w.io, 'unpair', w.bob, '--as', 'kim', '--relay', R1, '--dir', w.dir)
+    expect(ran.out).toEqual([`untrusted ${w.bob}`, `not accepted ${w.bob}`])
+    expect(Object.keys(readTrust(w.dir))).toEqual([])
+    expect(k).toMatch(/^ed25519:/)
   })
 })

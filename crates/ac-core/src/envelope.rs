@@ -24,7 +24,7 @@ pub const SUITE: u64 = 1;
 /// The most recipients one envelope may name.
 pub const MAX_RECIPIENTS: usize = 16;
 /// The largest envelope, in bytes as received.
-pub const MAX_ENVELOPE_BYTES: usize = 65_536;
+pub const MAX_ENVELOPE_BYTES: usize = 196_608;
 /// The relay TTL, 7 days, and the clock skew.
 pub const DEFAULT_TTL: u64 = 604_800;
 /// The allowed clock skew, in seconds.
@@ -168,7 +168,7 @@ fn sealed(value: Option<&serde_json::Value>, to: &[Address]) -> Result<Sealed> {
 }
 
 impl Envelope {
-    /// Parses envelope bytes with the envelope cap of the spec, 65,536 bytes (§5.4).
+    /// Parses envelope bytes with the envelope cap of the spec, 196,608 bytes (§5.4).
     ///
     /// # Errors
     ///

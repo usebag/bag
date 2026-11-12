@@ -28,7 +28,7 @@ export const LABEL = /^[a-z0-9][a-z0-9_-]{0,31}$/
 const TOP = ['version', 'default', 'identities']
 const MEMBERS = [
   ...['label', 'key', 'home', 'relays', 'rendezvous', 'trust_roots', 'honor', 'accept_types'],
-  ...['keep_alive_records', 'allow_delegate', 'policy', 'members', 'receipts_to'],
+  ...['keep_alive_records', 'allow_delegate', 'policy', 'members', 'receipts_to', 'grant_caveats'],
 ]
 
 type Entry = Readonly<Record<string, unknown>>
@@ -40,12 +40,14 @@ const isObject = (v: unknown): v is Entry => typeof v === 'object' && v !== null
 
 /**
  * Reads and checks the file at `file`: its identities, each with the server-wide values, and the default label.
- * `platform` decides how homes not made yet compare (realHome); tests pass it.
+ * `platform` decides how homes not made yet compare (realHome); tests pass it. With `home` (the bag service's, one
+ * service per home) every identity must live in that home, each under its own key name, in place of a home each.
  */
 export function readIdentities(
   file: string,
   wide: ServerWide,
   platform: NodeJS.Platform = process.platform,
+  home?: string,
 ): Pick<ServerConfig, 'identities' | 'defaultLabel'> {
   if (!isAbsolute(file)) throw usage(`${JSON.stringify(file)} is not an absolute path`)
   const doc = fileOf(file)
@@ -56,7 +58,8 @@ export function readIdentities(
   if (!Array.isArray(entries) || entries.length === 0 || entries.length > MAX_IDENTITIES)
     throw usage(`identities is a list of 1 to ${MAX_IDENTITIES} identities`)
   const identities = entries.map((e, i) => identityOf(e, i, wide))
-  distinct(identities, platform)
+  if (home === undefined) distinct(identities, platform)
+  else oneHome(identities, home, platform)
   const defaultLabel = doc.default === undefined ? (identities[0] as Config).label : doc.default
   if (!identities.some((c) => c.label === defaultLabel))
     throw usage(`default ${show(doc.default)} names no identity`)
@@ -125,6 +128,19 @@ function distinct(all: readonly Config[], platform: NodeJS.Platform): void {
   })
 }
 
+/** Throws unless every identity lives in the service's home `home`, under a label and a key name of its own. */
+function oneHome(all: readonly Config[], home: string, platform: NodeJS.Platform): void {
+  const real = realHome(home, platform)
+  all.forEach((c, i) => {
+    const at = `--identities: identities[${i}] ${JSON.stringify(c.label)}`
+    if (all.findIndex((d) => d.label === c.label) < i)
+      throw usage(`identities[${i}] repeats the label ${JSON.stringify(c.label)}`)
+    if (all.findIndex((d) => d.as === c.as) < i) throw usage(`${at} repeats the key ${JSON.stringify(c.as)}`)
+    if (realHome(c.home, platform) !== real)
+      throw usage(`${at}: its home ${c.home} is not the service's home ${home} (one service per home)`)
+  })
+}
+
 /** Entry `i` as a Config, with the server-wide values and no session, chain or mailbox. */
 function identityOf(e: unknown, i: number, wide: ServerWide): Config {
   if (!isObject(e)) throw usage(`identities[${i}] is not an object`)
@@ -178,8 +194,17 @@ function identityOf(e: unknown, i: number, wide: ServerWide): Config {
     receiptsTo: (list(e, 'receipts_to', bad) ?? []).map((t) => receiptPeer(t, `${at}: receipts_to`)),
     policy: str(e, 'policy', bad, true) ?? null,
     members: str(e, 'members', bad, true) ?? null,
+    ...grantCaveatsOf(e, bad),
     ...wide,
   }
+}
+
+/** grant_caveats: an agent identity's grant caveats in the service, each non-empty; absent when not given. */
+function grantCaveatsOf(e: Entry, bad: Bad): { grantCaveats?: readonly string[] } {
+  const v = list(e, 'grant_caveats', bad)
+  if (v === undefined) return {}
+  if (v.some((c) => c.trim() === '')) throw bad('grant_caveats holds an empty caveat')
+  return { grantCaveats: [...new Set(v)] }
 }
 
 /** Member `m`: a string (an absolute path when `path`), or undefined when absent. */

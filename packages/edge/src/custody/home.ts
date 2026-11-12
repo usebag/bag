@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { sealingKeyFromSeed, toHex, utf8 } from '@usebag/core'
 import { FsKeyStore } from '../adapters/fs-keys.ts'
 import {
+  type AsyncSecurityRunner,
   failure,
   type KeychainAccess,
   KeychainCustody,
@@ -11,7 +12,7 @@ import {
   type SecurityRunner,
 } from '../adapters/keychain.ts'
 import type { AgentClient } from '../agent/client.ts'
-import type { EdgeKeys, KeyCustody, KeyEntry } from '../ports.ts'
+import type { CustodyKind, EdgeKeys, KeyCustody, KeyEntry } from '../ports.ts'
 import { AgentCustody } from './agent.ts'
 import { checkName, errno, keyText, present, writeNew } from './files.ts'
 
@@ -28,6 +29,8 @@ export type CustodyTarget =
 export interface HomeCustodyOptions {
   /** How the keychain custody runs /usr/bin/security; its default runner by default. */
   readonly run?: SecurityRunner
+  /** How its reads run without blocking (keysAsync, openIdentityKeys); see KeychainCustodyOptions.runAsync. */
+  readonly runAsync?: AsyncSecurityRunner
   readonly client?: () => AgentClient
 }
 
@@ -37,12 +40,15 @@ export class HomeCustody {
   readonly keychain: KeychainCustody
   readonly agent: AgentCustody
   readonly #home: string
-  readonly #run: { readonly run?: SecurityRunner }
+  readonly #run: { readonly run?: SecurityRunner; readonly runAsync?: AsyncSecurityRunner }
   readonly #runner: SecurityRunner
 
   constructor(home: string, options: HomeCustodyOptions = {}) {
     this.#home = home
-    this.#run = options.run === undefined ? {} : { run: options.run }
+    this.#run = {
+      ...(options.run === undefined ? {} : { run: options.run }),
+      ...(options.runAsync === undefined ? {} : { runAsync: options.runAsync }),
+    }
     this.#runner = options.run ?? runSecurity
     this.files = new FsKeyStore(join(home, 'keys'))
     this.keychain = new KeychainCustody({ dir: join(home, 'keychain'), ...this.#run })
@@ -57,7 +63,10 @@ export class HomeCustody {
     checkName('fs-keys', name)
     if (!present(this.#path('keychain', name))) return this.files
     if (present(this.#path('keys', name)))
-      throw errno('EEXIST', `${name} has both a key file and a keychain pointer`)
+      throw errno(
+        'EEXIST',
+        `${name} has both a key file and a keychain pointer: an identity custody move stopped; run bag identity custody ${name} --to keychain (or --to file) to finish`,
+      )
     return this.keychain
   }
 
@@ -68,10 +77,46 @@ export class HomeCustody {
     return this.agent.entry(name)
   }
 
+  /**
+   * The custody class of `name` ("file", "keychain" or "agent") from which pointer or key file exists, reading no key
+   * and no keychain: cheap enough to check per call. EEXIST when two custodies hold it, as entry; with none, the key
+   * files' own refusal (ENOENT), as entry and holder give.
+   */
+  custodyOf(name: string): CustodyKind {
+    checkName('fs-keys', name)
+    const [file, keychain, agent] = (['keys', 'keychain', 'agent'] as const).map((d) =>
+      present(this.#path(d, name)),
+    )
+    if (agent && (file || keychain)) {
+      const other = this.#path(file ? 'keys' : 'keychain', name)
+      throw errno('EEXIST', `${name} is held by the agent and by ${other}`)
+    }
+    if (agent) return 'agent'
+    if (keychain && file)
+      throw errno(
+        'EEXIST',
+        `${name} has both a key file and a keychain pointer: an identity custody move stopped; run bag identity custody ${name} --to keychain (or --to file) to finish`,
+      )
+    if (keychain) return 'keychain'
+    if (!file) this.files.entry(name) // throws the key file's refusal
+    return 'file'
+  }
+
   /** The keys of `name`: its custody's signer and opener of its address, from one read. */
   keys(name: string): EdgeKeys {
     const custody = this.holder(name)
     const { address } = custody.entry(name)
+    return { signing: custody.signer(address), sealing: custody.opener(address) }
+  }
+
+  /**
+   * The keys of `name` as keys gives them, read without blocking the event loop: a keychain item through the
+   * asynchronous runner (a dialog holds only this promise), a key file read at once. The refusals are keys's.
+   */
+  async keysAsync(name: string): Promise<EdgeKeys> {
+    const custody = this.holder(name)
+    const { address } = custody.entry(name)
+    if (custody === this.keychain) return this.keychain.readKeys(address)
     return { signing: custody.signer(address), sealing: custody.opener(address) }
   }
 
@@ -144,5 +189,55 @@ export class HomeCustody {
 
   #path(dir: 'keys' | 'keychain' | 'agent', name: string): string {
     return join(this.#home, dir, `${name}.json`)
+  }
+}
+
+/**
+ * custodyClass: the custody class of `name` in `home` ("file", "keychain" or "agent"; HomeCustody.custodyOf), from
+ * which pointer or key file exists, never a key or a keychain read, so the bag service's binding code (lane svc-bind)
+ * checks it on every call; the CLI's loadKeys refuses "agent" by the same check.
+ */
+export function custodyClass(home: string, name: string): CustodyKind {
+  return new HomeCustody(home).custodyOf(name)
+}
+
+/** The service's names for a home's classes (docs/bag-service.md 5a `Custody`; `grant` comes from a binding). */
+export type ServiceCustody = 'home-key' | 'keychain' | 'agent'
+
+/** serviceCustody: custodyClass in the wire contract's words, "home-key" for a key file; for ServiceHome.identities. */
+export function serviceCustody(home: string, name: string): ServiceCustody {
+  const c = custodyClass(home, name)
+  return c === 'file' ? 'home-key' : c
+}
+
+/** One identity as the service opens it: its class, its address, and its keys (null for an agent identity). */
+export interface OpenedKeys {
+  readonly custody: ServiceCustody
+  readonly address: string
+  readonly keys: EdgeKeys | null
+}
+
+/**
+ * openIdentityKeys: the one path by which a bag service reads an identity's keys, per identity: at its start, after a
+ * drain-and-restart, and when the identity comes back from a CLI lend (the CLI may have rotated or re-keyed it). Each
+ * call builds a new HomeCustody, so nothing read by an earlier call is reused: a key file is read again, a keychain
+ * item read again through /usr/bin/security (under the prompt access, one dialog per call). Asynchronous: while one
+ * identity's dialog is up (up to 300 s), only its promise waits; other opens, connections and timers run on. An agent identity yields
+ * no keys (its agent signs a session's hops). The keys live in the caller's memory only: nothing here writes them,
+ * and their JSON holds public halves only. Refusals are the custody's (ENOENT, EEXIST, EACCES for a Deny or a locked
+ * keychain, ETIMEDOUT with no one at the dialog), with no key material in any message.
+ */
+export async function openIdentityKeys(
+  home: string,
+  name: string,
+  options: HomeCustodyOptions = {},
+): Promise<OpenedKeys> {
+  const custody = new HomeCustody(home, options)
+  const kind = custody.custodyOf(name)
+  const { address } = custody.entry(name)
+  return {
+    custody: kind === 'file' ? 'home-key' : kind,
+    address,
+    keys: kind === 'agent' ? null : await custody.keysAsync(name),
   }
 }

@@ -270,13 +270,12 @@ async fn alive(s: &Server) {
     assert_eq!(s.get("/v0/health", &[]).await.status, 200, "the relay is alive");
 }
 
-/// A7 as pre-registered: 100,000 levels, each body under the 262,144-byte request cap but over the 65,536-byte
-/// envelope cap. The line named 400 `bad-json`, but a body over the envelope cap is refused 413
-/// `envelope-too-large` before it is read (SPEC.md Appendix B item 22), so the pre-registered bytes could never
-/// reach the parser: a deviation from the pre-registered line, not a defect. This test
-/// asserts the documented 413; the test below carries the line with bodies under the cap.
+/// A7 as pre-registered: 100,000 levels, each body under the 262,144-byte request cap. Under the 196,608-byte
+/// envelope cap (since 2026-11-11; 65,536 before) the bare brackets, 100,000 bytes, reach the parser and are 400
+/// `bad-json` as the line named; the nested caveats and relays, each over 200,000 bytes, are still refused 413
+/// `envelope-too-large` before they are read (SPEC.md Appendix B item 22). Every body is refused and the relay lives.
 #[tokio::test]
-async fn a7_nesting_100000_deep_is_refused_by_the_envelope_cap() {
+async fn a7_nesting_100000_deep_is_refused_by_the_parser_or_the_envelope_cap() {
     let s = hosted(Config::default()).await;
     let mut seen = Vec::new();
     for (label, body) in deep_bodies(100_000) {
@@ -286,8 +285,10 @@ async fn a7_nesting_100000_deep_is_refused_by_the_envelope_cap() {
         alive(&s).await;
     }
     eprintln!("A7 100000 levels: {seen:?}");
-    for (label, _, got) in seen {
-        assert_eq!(got, (413, "envelope-too-large".to_owned()), "{label}");
+    for (label, size, got) in seen {
+        let want = if label == "bare" { (400, "bad-json") } else { (413, "envelope-too-large") };
+        assert_eq!(got, (want.0, want.1.to_owned()), "{label}: {size} bytes");
+        assert_eq!(size > 196_608, label != "bare", "{label}: {size} bytes against the cap");
     }
     s.stop().await;
 }
@@ -296,12 +297,12 @@ async fn a7_nesting_100000_deep_is_refused_by_the_envelope_cap() {
 async fn a7_nesting_under_the_envelope_cap_is_bad_json_and_depth_100_in_caveats_is_bad_hop() {
     let s = hosted(Config::default()).await;
     for (label, body) in deep_bodies(30_000) {
-        assert!(body.len() <= 65_536, "{label}");
+        assert!(body.len() <= 196_608, "{label}");
         assert_eq!(status(&s.publish(&body).await), (400, "bad-json".to_owned()), "{label} at 30000");
         alive(&s).await;
     }
-    let bare = "[".repeat(65_536);
-    assert_eq!(status(&s.publish(bare.as_bytes()).await), (400, "bad-json".to_owned()), "65536 brackets");
+    let bare = "[".repeat(196_608);
+    assert_eq!(status(&s.publish(bare.as_bytes()).await), (400, "bad-json".to_owned()), "196608 brackets");
     let [_, (_, caveats), _] = deep_bodies(100);
     assert_eq!(status(&s.publish(&caveats).await), (422, "bad-hop".to_owned()), "depth 100 in caveats");
     alive(&s).await;

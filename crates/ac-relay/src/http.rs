@@ -70,7 +70,11 @@ pub fn router(state: AppState) -> Router {
 #[must_use]
 pub fn error_response(r: Rejection) -> Response {
     let status = StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    let mut response = (status, json(&serde_json::json!({"error": r.error()}))).into_response();
+    let mut answer = serde_json::json!({"error": r.error()});
+    if let Some(cap) = r.max_envelope_bytes {
+        answer["max_envelope_bytes"] = cap.into();
+    }
+    let mut response = (status, json(&answer)).into_response();
     if let Some(seconds) = r.retry_after {
         response.headers_mut().insert(RETRY_AFTER, HeaderValue::from(seconds));
     }
@@ -211,7 +215,7 @@ async fn fetch_record(
 
 async fn health(State(state): State<AppState>) -> Response {
     let answer = serde_json::json!({"ok": true, "version": env!("CARGO_PKG_VERSION"), "now": state.relay.now(),
-        "url": state.relay.config.url});
+        "url": state.relay.config.url, "max_envelope_bytes": state.relay.config.max_envelope_bytes});
     (StatusCode::OK, json(&answer)).into_response()
 }
 

@@ -2,9 +2,9 @@
 # Dependency direction: fails when a package's code imports a workspace package it may not use,
 # or a relative path out of its own package, or when its package.json depends on one. The rules: core uses no
 # workspace package; edge uses core; enterprise-client, the enterprise client, uses edge and core; cli uses
-# enterprise-client, edge and core; mcp, the MCP server, uses enterprise-client, edge and core; nothing
-# uses cli, mcp or e2e, except e2e, the system test, and bag, the published package that bundles them
-# (packages/bag/src/build.ts), which may use every package. The relay is Rust (crates/ac-relay),
+# enterprise-client, edge and core; mcp, the MCP server, uses enterprise-client, edge and core; shim, the bag
+# service's stdio shim, uses no workspace package; nothing uses cli, mcp, shim or e2e, except e2e, the system test,
+# and bag, the published package that bundles them (packages/bag/src/build.ts), which may use every package. The relay is Rust (crates/ac-relay),
 # so it is no npm package here; e2e reaches it as a process. tsconfig project references do not catch a
 # package-name import (tsc lets in a file reached through node_modules),
 # so this is the gate.
@@ -24,8 +24,9 @@ allowed() {
     cli) echo "core edge enterprise-client" ;;
     mcp) echo "core edge enterprise-client" ;;
     a2a) echo "core edge" ;;
+    shim) echo "" ;;
     e2e) echo "core edge enterprise-client cli mcp a2a" ;;
-    bag) echo "core edge enterprise-client cli mcp a2a" ;;
+    bag) echo "core edge enterprise-client cli mcp a2a shim" ;;
     *) return 1 ;;
   esac
 }

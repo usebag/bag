@@ -1,0 +1,24 @@
+# ~/.config/systemd/user/bag.service: the bag service's systemd user unit, one per user, for one home
+[Unit]
+Description=dev.bag.service
+
+[Service]
+Type=simple
+ExecStart="/opt/homebrew/bin/node" "--disable-sigusr1" "/Users/x/.bag/package/bag-mcp.js" "--service" "--dir" "/Users/x/.bag" "--identities" "/Users/x/.bag/identities.json"
+WorkingDirectory="/Users/x/.bag/run"
+Environment="PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+Environment="HOME=/Users/x"
+Environment="USER=x"
+Environment="LANG=C"
+Environment="AC_HOME=/Users/x/.bag"
+Environment="HTTPS_PROXY=http://proxy:8080"
+Environment="NODE_USE_ENV_PROXY=1"
+UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD
+UMask=0077
+LimitCORE=0
+Restart=on-failure
+StandardOutput=null
+StandardError=append:/Users/x/.bag/run/service.log
+
+[Install]
+WantedBy=default.target

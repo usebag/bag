@@ -136,6 +136,11 @@ async function many(identities: Json[], o: Options = {}): Promise<Many> {
     log,
     resubscribeDelayMs: () => 0,
     pairPollMs: 2,
+    // The scripted person answers in a moment: each dialog reads as a second, a person's pace (pairing.ts FAST_ANSWER_MS).
+    mono: (
+      (t) => () =>
+        (t += 1000)
+    )(0),
     ...(o.env === undefined ? {} : { env: o.env }),
   })
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
@@ -847,7 +852,7 @@ describe('serve with --identities', () => {
     const done = serve(t)
     const client = new Client({ name: 'in-process', version: '0.0.0' })
     await client.connect(new StreamClientTransport(t.stdin, t.stdout))
-    expect((await client.listTools()).tools).toHaveLength(14)
+    expect((await client.listTools()).tools).toHaveLength(15)
     // The process's DO_NOT_TRACK reaches the machine's switch: a person's yes stays off under it.
     const status = await client.callTool({ name: 'status', arguments: { as: 'research' } })
     expect(JSON.parse((status.content as { text: string }[])[0]?.text ?? '{}').telemetry).toEqual({

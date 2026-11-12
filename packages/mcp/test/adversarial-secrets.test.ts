@@ -141,6 +141,7 @@ describe('a scripted child session prints no secret', () => {
         'inbox',
         'lookup',
         'pair_accept',
+        'pair_cancel',
         'pair_invite',
         'receipts',
         'send',

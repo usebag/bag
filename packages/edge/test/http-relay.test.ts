@@ -1,6 +1,13 @@
-import { signFetchAuth, signHop, utf8, verifyFetchAuth } from '@usebag/core'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { createHttpRelay, createRelayClient, MAX_RESPONSE_BYTES } from '../src/adapters/http-relay.ts'
+import { MAX_ENVELOPE_BYTES, signFetchAuth, signHop, utf8, verifyFetchAuth } from '@usebag/core'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import {
+  BASE_TIMEOUT_MS,
+  createHttpRelay,
+  createRelayClient,
+  MAX_RESPONSE_BYTES,
+  MAX_TIMEOUT_MS,
+  timeoutFor,
+} from '../src/adapters/http-relay.ts'
 import { RelayError } from '../src/ports.ts'
 import { P, T0 } from './support/fixtures.ts'
 import { closedPort, json, startHttp, type TestServer } from './support/http.ts'
@@ -275,9 +282,9 @@ describe('http-relay: the relay API of spec/SPEC.md §8 on the global fetch', ()
     }
   })
 
-  it('publishes 1 KiB, 8 KiB and a full 64 KiB envelope whole, and a relay that never answers one ends the try in time', async () => {
+  it('publishes 1 KiB, 8 KiB, 64 KiB and a full envelope at the cap whole, and a relay that never answers one ends the try in time', async () => {
     server.handle = (_req, res) => json(res, 200, { ok: true, id: ID, duplicate: false, delivered: 1 })
-    for (const size of [1024, 8192, 65_536]) {
+    for (const size of new Set([1024, 8192, 65_536, MAX_ENVELOPE_BYTES])) {
       const bytes = utf8(`{"v":1,"pad":"${'p'.repeat(size - 16)}"}`)
       expect(bytes.length).toBe(size)
       expect(await relay.publish(server.url, bytes)).toEqual({ id: ID, duplicate: false, delivered: 1 })
@@ -290,5 +297,33 @@ describe('http-relay: the relay API of spec/SPEC.md §8 on the global fetch', ()
     const e = await failure(slow.publish(server.url, utf8(`{"v":1,"pad":"${'p'.repeat(65_520)}"}`)))
     expect(e.status).toBe(0)
     expect(Date.now() - started).toBeLessThan(5000)
+  })
+})
+
+describe('http-relay: the time a request is given (W9)', () => {
+  it('is 10 s plus 1 s per whole 16 KiB of body, at most 29 s, under the relay 30 s body timeout', () => {
+    expect([BASE_TIMEOUT_MS, MAX_TIMEOUT_MS]).toEqual([10_000, 29_000])
+    const sizes = [0, 16_383, 16_384, 65_536, 131_072, 196_608, 262_144, 311_296, 1_048_576]
+    expect(sizes.map(timeoutFor)).toEqual([
+      10_000, 10_000, 11_000, 14_000, 18_000, 22_000, 26_000, 29_000, 29_000,
+    ])
+  })
+
+  it('gives a publish the time of its body and a fetch by id the time of a full envelope; a timeoutMs is fixed', async () => {
+    server.handle = (_req, res) => json(res, 200, { ok: true, id: ID, duplicate: false, delivered: 1 })
+    const spy = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      const big = utf8(`{"v":1,"pad":"${'p'.repeat(65_536 - 16)}"}`)
+      await createHttpRelay().publish(server.url, big)
+      await createHttpRelay().publish(server.url, BYTES)
+      server.handle = (_req, res) => res.writeHead(200).end(BYTES)
+      const proof = { signer: P.bob.address, ts: T0, sig: 'ab', auth: [] }
+      await createHttpRelay().fetch(server.url, ID, proof)
+      server.handle = (_req, res) => json(res, 200, { ok: true, id: ID, duplicate: false, delivered: 1 })
+      await createHttpRelay({ timeoutMs: 1234 }).publish(server.url, big)
+      expect(spy.mock.calls.map(([ms]) => ms)).toEqual([14_000, 10_000, timeoutFor(MAX_ENVELOPE_BYTES), 1234])
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

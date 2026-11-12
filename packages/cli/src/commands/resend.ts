@@ -18,7 +18,7 @@ const NEVER = Number.MAX_SAFE_INTEGER
  * edge's resend): the relay refused those bytes, so a person says when to try them again. Prints each envelope it tried
  * or left waiting as send prints one, its id and a line per target, then `waiting <to,...> tries=<n> next_at=<n>` per send
  * that has not resolved, or `nothing is waiting`; fails, after all of them are printed, with the reason of the first
- * that has not landed.
+ * that no relay took. One that some relay took and another did not is a warning line, as send prints it (reportSent).
  */
 export async function resend(args: readonly string[], io: Io): Promise<number> {
   const p = parse(args, { positionals: [], options: OPTIONS, required: ['as', 'relay'] })

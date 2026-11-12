@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { readAuditLines, verifyAuditLog } from '@usebag/edge'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { CLI_AUDIT, renewing } from '../src/home.ts'
+import { stableNode } from '../src/packaged.ts'
 import { T0, type TestIo, tempDir, testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
 import { cli } from './support/run.ts'
@@ -200,7 +201,7 @@ describe('the job a person installs: text on stdout, nothing written, nothing to
     expect(got.code).toBe(0)
     const text = got.out.join('\n')
     expect(text).toContain('<string>bag.keep.bob</string>')
-    expect(text).toContain(`<string>${process.execPath}</string>`)
+    expect(text).toContain(`<string>${stableNode()}</string>`)
     expect(text).toContain(`<string>${CLI_MAIN}</string>`)
     expect(text).toContain('<string>--once</string>')
     expect(text).toContain('<key>StartCalendarInterval</key>')
@@ -220,7 +221,7 @@ describe('the job a person installs: text on stdout, nothing written, nothing to
     expect(got.out).toHaveLength(1)
     expect(got.out[0]).toMatch(/^([0-9]|[1-5][0-9]) 2,8,14,20 \* \* \* /)
     expect(got.out[0]).toContain(
-      `* * * ${process.execPath} ${CLI_MAIN} record keep --as bob --relay ${RELAY} --dir /home/u/.bag --once >> /home/u/.bag/keep.log 2>&1`,
+      `* * * ${stableNode()} ${CLI_MAIN} record keep --as bob --relay ${RELAY} --dir /home/u/.bag --once >> /home/u/.bag/keep.log 2>&1`,
     )
   })
 

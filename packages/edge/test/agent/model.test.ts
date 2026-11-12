@@ -3,6 +3,7 @@ import {
   canonical,
   type Hop,
   isAcError,
+  MAX_ENVELOPE_BYTES,
   sha256hex,
   signHop,
   utf8,
@@ -148,9 +149,9 @@ describe('parseRequest', () => {
   })
 
   it('refuses an envelope over the cap envelope-too-large while parsing, before any signature', () => {
-    const big = raw({ op: 'open', args: [P.jane.address, ID], envelope: ' '.repeat(65_537) })
+    const big = raw({ op: 'open', args: [P.jane.address, ID], envelope: ' '.repeat(MAX_ENVELOPE_BYTES + 1) })
     expect(code(() => parseRequest(big))).toBe('envelope-too-large')
-    const fits = raw({ op: 'open', args: [P.jane.address, ID], envelope: ' '.repeat(65_536) })
+    const fits = raw({ op: 'open', args: [P.jane.address, ID], envelope: ' '.repeat(MAX_ENVELOPE_BYTES) })
     expect(parseRequest(fits)).toMatchObject({ op: 'open' })
   })
 

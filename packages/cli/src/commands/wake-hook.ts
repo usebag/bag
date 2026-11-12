@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import {
   existsSync,
   linkSync,
@@ -18,6 +19,7 @@ import {
   sessionAnchor,
 } from '@usebag/edge/agent'
 import { CliError, flag, type Parsed, parse, req, str, UsageError } from '../args.ts'
+import { lockHolder, type Procs } from '../held.ts'
 import { checkIdentity, doorbellPath, homeCustody, homeDir } from '../home.ts'
 import { keyOf, readIdentities } from '../identities.ts'
 import type { Io } from '../io.ts'
@@ -155,21 +157,21 @@ interface Bell {
   readonly server: string
 }
 
+/** The process readers of the walk to a session's claude and of the server lock's holder (held.ts Procs), for tests. */
+type Hosted = SessionNameOptions & Procs
+
 /**
  * The pid of the MCP server holding `lockFile` (an identity's mcp.lock) when it runs in another session than this
  * hook: a live pid whose claude process (sessionAnchor) is not this hook's, or that has none above it. Null when the
- * lock is absent or holds no live pid, when it is this session's own server, or when no claude is above this hook.
+ * lock is absent, holds no live pid or one used again since the lock was written (lockHolder), when it is this
+ * session's own server, or when no claude is above this hook.
  * A second session on one fixed identity has a server that stays up and answers that the identity is held, and by
  * whom, while the identity's doorbell still rings its hook: the ring then says where the message can be read.
  */
-function serverElsewhere(lockFile: string, session?: SessionNameOptions): number | null {
-  let pid: unknown
-  try {
-    pid = (JSON.parse(readFileSync(lockFile, 'utf8')) as { pid?: unknown }).pid
-  } catch {
-    return null
-  }
-  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 1 || !alive(pid)) return null
+function serverElsewhere(lockFile: string, session?: Hosted): number | null {
+  // The lock's live holder (a gone or reused pid is none), read through the injected checks: a test fakes them all.
+  const pid = lockHolder(lockFile, session)?.pid
+  if (pid === undefined) return null
   let own: number
   try {
     own = sessionAnchor(session).pid
@@ -294,7 +296,7 @@ export async function wakeHook(
   args: readonly string[],
   io: Io,
   pollMs = POLL_MS,
-  session?: SessionNameOptions,
+  session?: Hosted,
 ): Promise<number> {
   const options = {
     as: { type: 'string' },
@@ -311,10 +313,13 @@ export async function wakeHook(
   if (file !== undefined && (principal !== undefined || auto !== undefined || str(p, 'dir') !== undefined)) {
     throw new UsageError('--identities takes no --as, --session or --dir: each identity is in the file')
   }
-  if (file === undefined && principal === undefined) throw new UsageError('--as is required')
-  if (auto !== undefined && auto !== 'auto' && auto !== 'auto:codex') {
-    throw new UsageError(`--session takes auto or auto:codex, not ${auto}`)
+  if (file === undefined && principal === undefined && auto !== 'service')
+    throw new UsageError('--as is required')
+  if (auto !== undefined && auto !== 'auto' && auto !== 'auto:codex' && auto !== 'service') {
+    throw new UsageError(`--session takes auto, auto:codex or service, not ${auto}`)
   }
+  if (auto === 'service' && principal !== undefined)
+    throw new UsageError('--session service takes no --as: the shim names it')
   const [max, code, print] = [whole(p, 'max', 3500, 2e6), whole(p, 'exit-code', 2, 255), flag(p, 'print')]
   const [end, signal, quiet] = [Date.now() + max * 1000, io.stopSignal(), flag(p, 'no-idle-wake')]
   if (file !== undefined) {
@@ -333,6 +338,18 @@ export async function wakeHook(
   }
   const home = homeDir(io, str(p, 'dir'))
   let name = principal as string
+  if (auto === 'service') {
+    // The bag service: this session's shim's ring file, while it is bound; an unbound session's hook ends at once.
+    const host = hostOf(home, process.ppid)
+    if (host === null || boundOf(home, process.ppid).length === 0) return 0
+    const release = await lock(join(home, 'run', 'shim', `${host}.wake-hook.lock`), max, signal)
+    if (release === null) return 0
+    try {
+      return await watchRing(io, home, host, { end, signal, pollMs, code })
+    } finally {
+      release()
+    }
+  }
   if (auto === 'auto') {
     const found = await sessionNameOf(io, home, name, { end, signal, pollMs, session })
     if (found === null) return 0
@@ -482,4 +499,131 @@ export async function sessionCode(
     await delay(pollMs, undefined, { signal }).catch(() => undefined)
   }
   return 0
+}
+
+/** The parent of `pid` as ps reports it, or null. */
+function parentOf(pid: number): number | null {
+  try {
+    const n = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim())
+    return Number.isSafeInteger(n) && n > 1 ? n : null
+  } catch {
+    return null
+  }
+}
+
+/** Whether pid answers kill 0 (EPERM: alive, another user's). */
+const answers = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as { code?: unknown }).code === 'EPERM'
+  }
+}
+
+/** The first of `ppid` and its ancestors (at most 8) with a shim's <home>/run/shim/<pid>.bound: the host's pid. */
+export function hostOf(
+  home: string,
+  ppid: number,
+  parent: (pid: number) => number | null = parentOf,
+): number | null {
+  let pid: number | null = ppid
+  for (let i = 0; i < 8 && pid !== null; i++, pid = parent(pid)) {
+    if (existsSync(join(home, 'run', 'shim', `${pid}.bound`))) return pid
+  }
+  return null
+}
+
+/**
+ * The identities the shim of this hook's host is bound to, in bind order, or none: hostOf's
+ * <home>/run/shim/<host pid>.bound, the shim's file (packages/shim channel.ts writeBound):
+ * {"v":1,"as":["omp-3"],"shim":<pid>}. A file that does not parse, of another v, or whose shim is gone is none.
+ */
+export function boundOf(
+  home: string,
+  ppid: number,
+  parent: (pid: number) => number | null = parentOf,
+  alive: (pid: number) => boolean = answers,
+): string[] {
+  const host = hostOf(home, ppid, parent)
+  if (host === null) return []
+  const doc = shimDoc(join(home, 'run', 'shim', `${host}.bound`), alive)
+  if (doc === null || !Array.isArray(doc.as)) return []
+  return doc.as.filter((l): l is string => typeof l === 'string' && LABEL_RE.test(l))
+}
+
+const LABEL_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/
+
+/** A shim file's JSON when it parses, has v 1 and names a live shim pid; else null. */
+function shimDoc(file: string, alive: (pid: number) => boolean): Record<string, unknown> | null {
+  try {
+    const doc = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    return doc.v === 1 && typeof doc.shim === 'number' && alive(doc.shim) ? doc : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The wake of a session bound through the bag service: the shim writes <home>/run/shim/<host pid>.ring on each
+ * service/ring, {"v":1,"n":<sequence>,"as":"<label>","unread":<n>,"speaking":<bool>,"at":"...","shim":<pid>}. Read
+ * every poll while the .bound file is there (gone: exit 0, the session was unbound). A ring is new when its n is above
+ * the last handled with its shim pid, kept in <host pid>.ring-seen as `<shim> <n>` (the first run takes the current
+ * ring as its baseline, so an old ring never wakes; another live shim's ring is new whatever its n); a ring of a dead shim, or one that does not parse, is not read. speaking true: the wake line and exit
+ * `code`; speaking false: handled with no turn (the shim shows the quiet notice). The deadline ends it silently.
+ */
+export async function watchRing(
+  io: Io,
+  home: string,
+  host: number,
+  w: { end: number; signal: AbortSignal; pollMs: number; code: number },
+  alive: (pid: number) => boolean = answers,
+): Promise<number> {
+  const dir = join(home, 'run', 'shim')
+  const [bound, ring, seen] = ['bound', 'ring', 'ring-seen'].map((x) => join(dir, `${host}.${x}`)) as [
+    string,
+    string,
+    string,
+  ]
+  const ringOf = () => {
+    const doc = shimDoc(ring, alive)
+    return doc !== null && Number.isSafeInteger(doc.n)
+      ? { doc, n: doc.n as number, shim: doc.shim as number }
+      : null
+  }
+  // The last ring handled, `<shim pid> <n>` (5b rule 3): a higher n of the same shim, or any n of another shim (a
+  // restarted shim counts from 1 again), is new.
+  const readSeen = (): { shim: number; n: number } | null => {
+    try {
+      const [s, n] = readFileSync(seen, 'utf8').trim().split(' ').map(Number)
+      return Number.isSafeInteger(s) && Number.isSafeInteger(n) ? { shim: s as number, n: n as number } : null
+    } catch {
+      return null
+    }
+  }
+  const keep = (r: { shim: number; n: number }) => {
+    const tmp = `${seen}.${process.pid}`
+    writeFileSync(tmp, `${r.shim} ${r.n}\n`, { mode: 0o600 })
+    renameSync(tmp, seen)
+    return r
+  }
+  let last = readSeen()
+  if (last === null) {
+    const r = ringOf()
+    last = keep(r === null ? { shim: 0, n: 0 } : r)
+  }
+  for (;;) {
+    if (w.signal.aborted || !existsSync(bound)) return 0
+    const r = ringOf()
+    if (r !== null && (r.shim !== last.shim || r.n > last.n)) {
+      last = keep(r)
+      const as = typeof r.doc.as === 'string' && LABEL_RE.test(r.doc.as) ? r.doc.as : null
+      if (r.doc.speaking === true && as !== null) {
+        io.err(`bag: a message was delivered to ${as}; read it with the inbox tool and report it`)
+        return w.code
+      }
+    }
+    if (Date.now() >= w.end) return 0
+    await delay(w.pollMs, undefined, { signal: w.signal }).catch(() => undefined)
+  }
 }

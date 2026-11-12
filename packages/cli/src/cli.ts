@@ -1,5 +1,5 @@
 import { performance } from 'node:perf_hooks'
-import { isAcError } from '@usebag/core'
+import { isAcError, MAX_ENVELOPE_BYTES } from '@usebag/core'
 import {
   countDuration,
   countTelemetry,
@@ -19,6 +19,7 @@ import { grant } from './commands/grant.ts'
 import { group } from './commands/group.ts'
 import { held } from './commands/held.ts'
 import { hostInstall } from './commands/host-install.ts'
+import { identity } from './commands/identity.ts'
 import { inbox } from './commands/inbox.ts'
 import { init, restore } from './commands/init.ts'
 import { keygen } from './commands/keygen.ts'
@@ -45,6 +46,7 @@ import { watch } from './commands/watch.ts'
 import type { Io } from './io.ts'
 import { versionLine } from './packaged.ts'
 import { PolicyFileError } from './policy.ts'
+import { leaseFor } from './service.ts'
 
 // The command line: one command per run, its exit status 0, or 1 with "bag: <code>: <detail>" on stderr (2 for
 // an org policy file that cannot be read or does not verify; 3 for onboard's records written but not resolving yet).
@@ -60,7 +62,8 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       a signing key and a separate sealing key; prints the address only. --custody keychain keeps both in one item
       of a macOS keychain (the default keychain, or --keychain), which no application reads without a dialog
       (--keychain-access prompt, the default) or which /usr/bin/security reads while the keychain is unlocked
-      (security, for a host no one watches); the default custody is a key file
+      (security, for a host no one watches); with no --custody, the keychain on macOS for a person at a terminal
+      when a default keychain exists (prompt access; one stderr line says so), else a key file
   keygen <name> --custody agent --principal <identity> [--recovery personal|none] [--dir <home>]
       the agent identity <name>: a pointer of the public address and sealing key of the key file or keychain
       identity <identity>, no new key, and with --recovery its recovery setting; ac login <name> then holds it
@@ -126,6 +129,25 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       the newest accept-from of <name> (re-signed, max_bytes and ttl kept, published at each relay);
       refused accept-all under a held *, not-trusted when neither holds it. A root that onboard's cron
       line types in --accept comes back on its next run unless dropped there
+  identity relays <name> --relay <url>... [--dir <home>]
+      on a terminal after one y: the relays of a bag service identity, its entry in <home>/identities.json
+  identity remove <name> --relay <url>... [--to <dir>] [--project <dir>] [--dir <home>]
+      takes one identity out of a home that may keep others, on a terminal after one y that names every change;
+      nothing is deleted. Its accept-from is re-signed to name only its own address at each relay (a relay that does
+      not take it stops the run before anything local changes); trust.json loses the roots of that record no other
+      identity's accept-from copy names; names.json forgets the names of its address, and an unpair line is printed
+      for each other identity that accepts it; with --project, its bag server in .omp/mcp.json (and bag's wake link)
+      or .mcp.json (and its wake hooks in .claude/settings.json) comes out, every other server and hook staying; a
+      Codex table naming it is left for the person to edit. Its key file or keychain pointer, state/<name>/, its
+      records, key-records and install/<name>.env move into --to (default <home>/../bag-left-<name>-<UTC stamp>,
+      0700). Prints "removed <name> <address>: <dir>" last. Refused held while an MCP server or a keep job's plist
+      holds it, window-open, exists for a --to that is not empty, stale-record on a change while asking, ENOENT
+      when the identity is gone
+  identity custody <name> --to keychain|file [--keychain <file>] [--keychain-access prompt|security] [--dir <home>]
+      moves one key file or keychain identity into the other custody, on a terminal after one y: the new copy is
+      written, read back and compared first; only then does the old key file (or keychain pointer) move into
+      ~/.Trash/bag-custody-<name>-<UTC stamp>/, never deleted; a keychain item left behind is named with its
+      delete line. Refused held while an MCP server holds it, not-authorized for an agent identity
   record address <name> --relay <url>... [--sealing-key] [--ttl <seconds>] [--rotated-from <name>] [--rotation-key <address>] [--revoke <address>...] [--out <file>] [--dir <home>]
       a signed address record (sealing key included with --sealing-key; ttl at most 86400, the default); with
       --rotated-from, a rotation from that identity's key, which countersigns it; --rotation-key names a separate
@@ -160,8 +182,9 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       the tree to serve, <out> (default <home>/serve/<host>): the org's address record (its sealing key, the relays,
       --ttl default 86400, the rotation key and revoked list of the record already there kept) and the handle record
       of <local>@<host> (default <name>), verified, each put in place by a rename, 0644 ("wrote <file>"); <name>'s
-      address and accept-from records (--max-bytes 65536, --retention 604800 by default) in <home>/records,
-      published at each relay ("published", or "unchanged" for a relay holding one of the same second); each
+      address and accept-from records (--max-bytes ${MAX_ENVELOPE_BYTES}, the envelope cap, and --retention 604800 by
+      default; a held max_bytes is kept, but 65536, the old default, becomes the cap) in <home>/records, published at
+      each relay ("published", or "unchanged" for a relay holding one of the same second); each
       --accept address trusted; the chain from the org key to <name>, <home>/<name>.chain.json (--chain-exp default
       604800). Then the owner's two steps: serve <out> as https://<host>/ (https://bag.<host>/ with --origin
       bag), and add the TXT record of the "dns" line; the next commands and a cron line; and the self-check,
@@ -248,20 +271,37 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       "doorbell <mtime>" on stdout per change instead and runs until SIGINT or SIGTERM. Opens no edge and no store;
       --session auto takes the name from the MCP server's session file (exit 1 if none); --session auto:codex, for a
       Codex Stop hook, names it from the session_id of the Stop JSON on stdin (exit 0 at once before the first tool call)
+  wake-hook --session service [--max <seconds>] [--exit-code <n>] [--no-idle-wake] [--dir <home>]
+      the same for the identity this session's bag service shim is bound to (<home>/run/shim/<host pid>.bound); an
+      unbound session's hook exits 0 at once
   wake-hook --identities <file> [--max <seconds>] [--exit-code <n>] [--no-idle-wake] [--print]
       the same for every identity of an identities file, each by its own doorbell; a ring names the identity's label
   session-code --as <principal> --session auto [--dir <home>]: for a synchronous SessionStart hook, prints the grant request's code as JSON
-  host install <claude-code|codex|omp> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... [--grant-caveat <caveat>]... (--project <dir> | --user) [--mode worker|mcp] [--dir <home>]
+  host install <claude-code|codex|omp> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... (--project <dir> | --user) [--mode worker|mcp [--session auto:codex --grant-caveat <caveat>...]] [--dir <home>]
       claude-code --project <dir>: the MCP server in <dir>/.mcp.json and a SessionStart and a Stop wake-hook in
       <dir>/.claude/settings.json; codex --user [--mode worker|mcp]: worker (the default; Codex has no idle wake) prints
       the inbox --watch --exec 'codex exec ...' line and writes nothing, mcp writes ~/.codex/config.toml and a Stop
-      hook in ~/.codex/hooks.json (a turn that ends waits up to 30 s for mail; trust it with /hooks in Codex); mcp needs
-      --grant-caveat and starts the server as --session auto:codex, one Codex session per server; omp --project
+      hook in ~/.codex/hooks.json (a turn that ends waits up to 30 s for mail; trust it with /hooks in Codex); mcp is
+      the plain identity, as claude-code's, which can pair; with --session auto:codex and --grant-caveat, one Codex
+      session per server, under the principal; omp --project
       <dir>: the MCP server in <dir>/.omp/mcp.json and <dir>/.omp/hooks/pre/bag-wake.js, a link to the wake
       extension in <home>/package/, which starts one turn per delivered message (docs/host-omp.md).
       Merges into what is there, a second run changes nothing and says so; any other place is
       "not documented yet". claude-code --identities <file> [--label <label>] adds the identity to an identities
       file (absolute, outside the project, 0600) and wires the server and the hook to the file
+  host install <claude-code|codex|omp> --user [--sandbox] [--dir <home>]
+      with no --as: the bag service's shim for every identity of the home, once per user (claude-code: ~/.claude.json,
+      a SessionStart, Stop and UserPromptSubmit hook and deny rules for <home>/run in ~/.claude/settings.json, --sandbox
+      turning its sandbox on; codex: ~/.codex/config.toml and a Stop hook; omp: ~/.omp/agent/mcp.json). The --project
+      forms stay as the rollback. From the package, every install stages <home>/package/versions/<version>/ once
+  host migrate [--project <dir>...] [--sandbox] [--dir <home>] | host migrate --undo <stamp> [--dir <home>]
+      on a terminal after one y: every per-folder entry this home wrote (--project, install/*.env, state/*/mcp.lock,
+      the Codex table) moved to the user-scope shim; entries of another home are left; a label with two sets of
+      settings is exists; each file backed up and journalled in <home>/migrate/<stamp>.json; prints a bootout line per
+      old keep job. --undo puts every journalled path back (stale-record when one changed since)
+  host install service [--dir <home>]
+      prints the login agent that starts the bag service (a launchd plist, a systemd user unit) and the line that loads
+      it; writes nothing
   host remove claude-code --project <dir> --identities <file> --label <label>
       takes the identity out of the file; no key, home or state is touched
   host remove omp --as <name> --project <dir>
@@ -283,6 +323,11 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
   version (or --version)
       prints "bag <version> <commit>": the package's version and the commit it was built from, or, run from
       source, "bag source" and the checkout's commit ("unknown" when no .git directory is readable)
+
+With a bag service in the home (<home>/run/service.sock answers), every command that writes an identity (pair, peer,
+inbox, held, send, resend, unpair, lookup, logout, record, init, restore, onboard, keys rotate and prune, group,
+identity) borrows it from the service (service/lend) and gives it back after; held while a window is bound to it, and
+for publish, which names no identity to borrow.
 
 The home is --dir, else $AC_HOME, else ~/.bag: keys in <home>/keys (0600 files in a 0700 directory), or in a
 keychain item that <home>/keychain/<name>.json names, or in the agent (<home>/agent/<name>.json holds the public
@@ -306,6 +351,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ['pair', pair],
   ['peer', peer],
   ['unpair', unpair],
+  ['identity', identity],
   ['pairings', pairings],
   ['record', record],
   ['publish', publish],
@@ -394,7 +440,15 @@ async function dispatch(argv: readonly string[], io: Io): Promise<number> {
   if (command === undefined) {
     throw new UsageError(name === undefined ? 'no command' : `no command ${JSON.stringify(name)}`)
   }
-  const exit = await command(rest, io)
+  // With a bag service in the home, an identity act runs on the identity the service lends it (service.ts).
+  const pending = leaseFor(argv, io)
+  const lease = pending === null ? null : await pending
+  let exit = 1
+  try {
+    exit = await command(rest, io)
+  } finally {
+    await lease?.end()
+  }
   if ((io.isTty && name !== 'telemetry' && name !== 'mcp') || name === 'host') notice(io)
   return exit
 }

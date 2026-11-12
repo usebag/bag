@@ -47,6 +47,11 @@ export interface Io {
    */
   readonly security?: SecurityRunner
   /**
+   * The platform keygen's default custody turns on: the keychain on darwin when `security default-keychain` names one,
+   * else a key file. Absent (the unit tests' io), the default is a key file.
+   */
+  readonly platform?: NodeJS.Platform
+  /**
    * The fetch telemetry's report and erasure go out with (the edge's telemetry-send.ts). Without it nothing is sent:
    * `telemetry send` does nothing and `telemetry forget` fails unreachable, so no unit test reaches the endpoint.
    */
@@ -177,6 +182,7 @@ export function processIo(proc: ProcessLike = process): Io {
     },
     idleMs: 1000,
     security: runSecurity,
+    platform: process.platform,
     fetch,
     spawnSender,
     isTty: proc.stdin.isTTY === true,

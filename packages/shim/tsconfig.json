@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // tsc -b refuses a referenced project that emits nothing (TS6310), so each package emits declarations only,
+    // into node_modules/.cache/tsc (gitignored, never shipped). No JavaScript is ever written.
+    "composite": true,
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "../../node_modules/.cache/tsc/shim",
+    "tsBuildInfoFile": "../../node_modules/.cache/tsc/shim.tsbuildinfo",
+    "rootDir": "."
+  },
+  "include": ["src", "test", "vitest.config.ts"]
+}

@@ -56,7 +56,7 @@ const TRIGGERS: { readonly [C in CoreErrorCode]: () => unknown } = {
   'bad-shape': () => parseEnvelope('[]'),
   'bad-version': () => parseEnvelope(jsonOf((e) => Object.assign(e, { v: 2 }))),
   'bad-suite': () => parseEnvelope(jsonOf((e) => Object.assign(e, { suite: 2 }))),
-  'envelope-too-large': () => parseEnvelope(`${bytes1}${' '.repeat(65_536)}`),
+  'envelope-too-large': () => parseEnvelope(`${bytes1}${' '.repeat(196_608)}`),
   'too-many-recipients': () =>
     checkRecipients(Array.from({ length: 17 }, (_, i) => encodeAddress(new Uint8Array(32).fill(i)))),
   'bad-id': () => checkId({ ...env1, ts: env1.ts + 1 }),

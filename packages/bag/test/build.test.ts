@@ -62,6 +62,16 @@ describe('the build', () => {
     expect(wake).toMatch(/bagWake as default/)
   })
 
+  it('makes bag-shim.js one file of Node built-ins that prints its usage', () => {
+    const shim = readFileSync(join(out, 'bag-shim.js'), 'utf8')
+    const from = [...shim.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1])
+    expect(from.length).toBeGreaterThan(0)
+    expect(from.every((f) => f?.startsWith('node:'))).toBe(true)
+    const r = spawnSync(process.execPath, [join(out, 'bag-shim.js'), '--help'], { encoding: 'utf8' })
+    expect(r.status).toBe(0)
+    expect(r.stderr).toContain('usage: bag-shim [--dir <home>] [--input-hook]')
+  })
+
   it('carries the version of package.json and the source commit', () => {
     expect(built.version).toBe(packageVersion())
     expect(built.commit).toMatch(/^[0-9a-f]{40}(-dirty)?$/)
@@ -108,6 +118,7 @@ describe('the build', () => {
       bag: 'dist/bag.js',
       'bag-mcp': 'dist/bag-mcp.js',
       'bag-a2a': 'dist/bag-a2a.js',
+      'bag-shim': 'dist/bag-shim.js',
     })
     expect(pkg.engines.node).toBe('>=24')
     expect(pkg.publishConfig).toEqual({ access: 'public', provenance: true })

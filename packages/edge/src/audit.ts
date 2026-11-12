@@ -1,14 +1,19 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import {
   type AcErrorCode,
   AUDIT_GENESIS,
   type AuditFields,
   auditHash,
+  auditPreimage,
+  type CanonicalValue,
+  canonical,
   isAcError,
   isCanonicalInteger,
   isHex,
   isPolicyCode,
   type PolicyCode,
   parseJson,
+  sha256hex,
 } from '@usebag/core'
 import { type AuditAnchor, type AuditSink, type Clock, EdgeError, type NamedAnchor } from './ports.ts'
 import { countTelemetry } from './telemetry.ts'
@@ -17,6 +22,13 @@ import { countTelemetry } from './telemetry.ts'
 // preimage, each line's prev the hash of the line before it, 64 zeros for the first. Its anchor, the seq and hash of
 // the last line written, lives in the edge store, updated after every append, so that a log cut short or rewritten
 // is seen: verifyAuditLog reports it, and a new edge refuses to continue such a log.
+//
+// The bag service's lines (bag 0.4.0) carry a twelfth member, `connection`: the public id of the connection whose tool
+// call wrote the line (withConnection), the fallback the service gives for a line outside any call (Audit.attribute),
+// or null. Its preimage is the ten fields with the connection appended, so the member is hashed and chained like the
+// rest. Lines written before the service (and by a per-folder server, which never calls attribute) keep the eleven
+// members and the ten-field preimage: an existing log is migrated by being continued, never rewritten, since a
+// rewritten line breaks its chain and its anchor. connectionOf reads a line's member, undefined for an older line.
 
 /** The steps the edge audits. */
 export const AUDIT_EVENTS = [
@@ -57,6 +69,8 @@ export type AuditValue = string | number | boolean | null | readonly string[]
  * (until its registration in the closed set), or "ok" by default.
  */
 export interface AuditEntry {
+  /** The connection to name, over the call's own (withConnection) and the fallback; only on a log with attribute on. */
+  readonly connection?: string | null
   readonly event: AuditEvent
   readonly decision: AuditDecision
   readonly reason?: PolicyCode | 'ok'
@@ -68,7 +82,60 @@ export interface AuditEntry {
 
 /** One audit line as written: the hashed fields, with `detail` as JSON text, and the line's hash. */
 export interface AuditLine extends AuditFields {
+  /** A service line's connection (null for none); absent on a line written before the service or without it. */
+  readonly connection?: string | null
   readonly hash: string
+}
+
+/** A connection's public id as a line holds it: never the connection's capability, which no log may hold. */
+export const CONNECTION_ID = /^[A-Za-z0-9._:-]{1,64}$/
+
+/** A call's scope: its connection, open until the call settles. */
+interface Scope {
+  readonly id: string
+  open: boolean
+}
+
+const SCOPE = new AsyncLocalStorage<Scope>()
+
+/**
+ * Runs `fn` as connection `id`'s call: every line an attributed log writes while the call runs, awaits included, names
+ * `id`. AsyncLocalStorage carries the scope into every timer, interval and promise chain started inside it, so work
+ * that a call only started (a lazy open, a re-subscribe, a keep-alive timer, a retry) would name that call forever:
+ * the scope closes when `fn` returns or its promise settles, and a line written after that takes the fallback.
+ */
+export function withConnection<T>(id: string, fn: () => T): T {
+  if (!CONNECTION_ID.test(id))
+    throw new Error('a connection id is 1 to 64 of A-Z, a-z, 0-9, ".", "_", ":" and "-"')
+  const scope: Scope = { id, open: true }
+  const close = (): void => {
+    scope.open = false
+  }
+  let out: T
+  try {
+    out = SCOPE.run(scope, fn)
+  } catch (e) {
+    close()
+    throw e
+  }
+  if (out instanceof Promise) out.then(close, close)
+  else close()
+  return out
+}
+
+/** The connection of the call running now: its id while the call is open, else undefined. */
+function current(): string | undefined {
+  const s = SCOPE.getStore()
+  return s?.open === true ? s.id : undefined
+}
+
+/** A line's connection: its id, null for a service line that names none, undefined for a line from before it. */
+export const connectionOf = (line: AuditLine): string | null | undefined => line.connection
+
+/** A line's hash: the ten-field preimage, with the connection appended on a line that carries one (null included). */
+function lineHash(f: AuditFields & { readonly connection?: string | null }): string {
+  if (f.connection === undefined) return auditHash(f)
+  return sha256hex(canonical([...(auditPreimage(f) as CanonicalValue[]), f.connection]))
 }
 
 /** How a log stands against its anchor: as anchored, with lines past it, cut short, or rewritten. */
@@ -160,8 +227,12 @@ export function parseAuditLine(text: string): AuditLine {
     throw new Error('an audit line is a JSON object')
   const o = v as Record<string, unknown>
   const keys = Object.keys(o)
+  const served = Object.hasOwn(o, 'connection')
   const ok =
-    keys.length === LINE_KEYS.length &&
+    keys.length === LINE_KEYS.length + (served ? 1 : 0) &&
+    (!served ||
+      o.connection === null ||
+      (typeof o.connection === 'string' && CONNECTION_ID.test(o.connection))) &&
     LINE_KEYS.every((k) => Object.hasOwn(o, k)) &&
     isCanonicalInteger(o.seq) &&
     isHex(o.prev, 32) &&
@@ -179,7 +250,7 @@ export function parseAuditLine(text: string): AuditLine {
     isHex(o.hash, 32)
   if (!ok)
     throw new Error(
-      'an audit line has exactly seq, prev, ts, event, decision, reason, id, from, root, detail and hash',
+      'an audit line has exactly seq, prev, ts, event, decision, reason, id, from, root, detail and hash (and connection on a service line)',
     )
   return o as unknown as AuditLine
 }
@@ -198,6 +269,7 @@ export class Audit {
   readonly #anchor: AnchorStore | null
   #seq: number
   #prev: string
+  #attribute: ((event: AuditEvent) => string | null) | null = null
 
   constructor(sink: AuditSink, clock: Clock, anchor?: AnchorStore) {
     this.#sink = sink
@@ -267,9 +339,26 @@ export class Audit {
     }
   }
 
+  /**
+   * Turns the connection member on for every later line (the bag service, once per identity's log): a line names the
+   * entry's connection, else the connection whose call writes it (withConnection), else `fallback(event)`.
+   */
+  attribute(fallback: (event: AuditEvent) => string | null): void {
+    this.#attribute = fallback
+  }
+
   /** Writes one line and returns it. */
   record(entry: AuditEntry): AuditLine {
-    const fields: AuditFields = {
+    const by = this.#attribute
+    const connection =
+      by === null
+        ? undefined
+        : entry.connection !== undefined
+          ? entry.connection
+          : (current() ?? by(entry.event))
+    if (typeof connection === 'string' && !CONNECTION_ID.test(connection))
+      throw new Error('not a connection id')
+    const fields: AuditFields & { connection?: string | null } = {
       seq: this.#seq + 1,
       prev: this.#prev,
       ts: this.#clock.now(),
@@ -280,8 +369,9 @@ export class Audit {
       from: entry.from ?? null,
       root: entry.root ?? null,
       detail: entry.detail === undefined ? null : JSON.stringify(entry.detail),
+      ...(connection === undefined ? {} : { connection }),
     }
-    const line: AuditLine = { ...fields, hash: auditHash(fields) }
+    const line: AuditLine = { ...fields, hash: lineHash(fields) }
     this.#sink.append(JSON.stringify(line))
     this.#seq = line.seq
     this.#prev = line.hash
@@ -327,7 +417,7 @@ function verifyLines(lines: readonly string[]): AuditVerdict {
     }
     if (line.seq !== n) return { ok: false, line: n, problem: `seq is ${line.seq}, not ${n}` }
     if (line.prev !== prev) return { ok: false, line: n, problem: "prev is not the previous line's hash" }
-    if (auditHash(line) !== line.hash) return { ok: false, line: n, problem: 'the hash does not recompute' }
+    if (lineHash(line) !== line.hash) return { ok: false, line: n, problem: 'the hash does not recompute' }
     prev = line.hash
   }
   return { ok: true, lines: lines.length }

@@ -1,8 +1,25 @@
-import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
+import { createServer, type Server } from 'node:net'
+import { dirname, join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { SqliteStore } from '@usebag/edge'
 import { afterAll, describe, expect, it } from 'vitest'
 import bagWake, {
+  type Arrival,
+  arrivals,
   awayText,
+  boundIn,
+  CHANNEL_MS,
   CONSENT_POLL_MS,
   CONSENT_STATUS,
   ConsentLoop,
@@ -10,14 +27,26 @@ import bagWake, {
   consentFiles,
   holderOf,
   IDLE_MS,
+  LOOP_AT,
+  LOOP_S,
+  loopLines,
   mtimeOf,
+  namesOf,
   PENDING_TEXT,
   POLL_MS,
+  RING_POLL_MS,
+  type RingDoc,
+  RingLoop,
+  type RingSeen,
   refusal,
   requestOf,
+  ringIn,
   SETTLE_MS,
   seenIn,
+  shimHomeOf,
   targetOf,
+  typedName,
+  WAKE_STATUS,
   WakeLoop,
   wakeText,
   writeFacts,
@@ -29,6 +58,8 @@ import { tempDir } from './support/io.ts'
 
 const tmp = tempDir('omp-wake')
 afterAll(() => tmp.cleanup())
+// omp's user-level mcp.json (shimHomeOf) is read from here, never from the real ~/.omp.
+process.env.PI_CODING_AGENT_DIR = join(tmp.dir, 'omp-agent')
 let n = 0
 
 /** A fake world: a doorbell mtime, wake-seen, an idle flag, and a timer queue run by hand. */
@@ -249,8 +280,11 @@ describe('the pieces', () => {
 
   it('the texts name the identity, and the holder when it is elsewhere', () => {
     expect(wakeText('omp')).toBe(
-      'bag: mail arrived for omp. Read it with the bag inbox tool, then answer it.',
+      'bag: mail arrived for omp: read it with the bag inbox tool and show it to your person. ' +
+        'Answer only when your person asks, or when it plainly asks a question they already told you to answer.',
     )
+    expect(wakeText('omp')).not.toMatch(/answer it|then answer|reply to it/i)
+    expect(wakeText('omp', ['L1', 'L2'])).toMatch(/answer\. L1 L2$/)
     expect(awayText('omp', { pid: 9, cwd: '/w', host: 'omp' })).toContain('(pid 9, /w, omp)')
   })
 })
@@ -329,6 +363,49 @@ describe('the extension factory', () => {
       10,
     ])
     o.emit('agent_end')
+    o.emit('session_shutdown')
+  })
+
+  it('a wake carries the loop line for 3 unseen from one peer, and not after the person types', () => {
+    const home = join(tmp.dir, `h${n++}`)
+    const state = join(home, 'state', 'bob')
+    mkdirSync(state, { recursive: true })
+    const peer = `ed25519:${'d'.repeat(64)}`
+    writeFileSync(
+      join(home, 'names.json'),
+      JSON.stringify({ version: 1, names: { carol: { address: peer } } }),
+    )
+    new SqliteStore(join(state, 'edge.sqlite'), { lock: false }).close()
+    const db = new DatabaseSync(join(state, 'edge.sqlite'))
+    const t = Math.floor(Date.now() / 1000) - 5
+    for (const i of [1, 2, 3])
+      db.prepare(
+        `INSERT INTO inbox (relay, mailbox, cursor, bytes, id, state, content, received_at, updated_at)
+         VALUES ('r', 'm', ?, ?, ?, 'acked', '{}', ?, 0)`,
+      ).run(i, Buffer.from(JSON.stringify({ from: peer, auth: [] })), `x${i}`, t)
+    db.close()
+    writeFileSync(join(state, 'wake-seen'), '1\n')
+    const bell = join(state, 'doorbell')
+    writeFileSync(bell, '')
+    const o = omp(project(home))
+    o.emit('session_start')
+    o.runOnce()
+    expect(o.sent[0]?.content).toBe(
+      `${wakeText('bob')} 3 unread from carol in ten minutes: this looks like a loop: show your person and do not answer.`,
+    )
+    const input = (source: string) => {
+      for (const h of o.handlers.get('input') ?? []) h({ type: 'input', text: 'hi', source }, o.ctx)
+    }
+    input('rpc')
+    utimesSync(bell, new Date(Date.now() + 5000), new Date(Date.now() + 5000))
+    o.timers.find((x) => x.ms === POLL_MS)?.fn()
+    o.runOnce()
+    expect(o.sent[1]?.content).toContain('this looks like a loop')
+    input('interactive')
+    utimesSync(bell, new Date(Date.now() + 9000), new Date(Date.now() + 9000))
+    o.timers.find((x) => x.ms === POLL_MS)?.fn()
+    o.runOnce()
+    expect(o.sent[2]?.content).toBe(wakeText('bob'))
     o.emit('session_shutdown')
   })
 
@@ -793,5 +870,573 @@ describe('the consent bridge (decision 83h)', () => {
     } as never)
     handlers.get('session_start')?.({}, ctx)
     expect(existsSync(join(home, 'state', 'bob', 'consent', '.bridge'))).toBe(false)
+  })
+})
+
+describe('the loop guard', () => {
+  const A = `ed25519:${'a'.repeat(64)}`
+  const B = `ed25519:${'b'.repeat(64)}`
+  const NOW = 1_800_000_000
+  const at = (peer: string, n: number, t = NOW, tag = 'm'): Arrival[] =>
+    Array.from({ length: n }, (_, i) => ({ id: `${tag}${peer.at(-1)}${i}`, peer, at: t - i }))
+  const names = new Map([[A, 'alice']])
+  const LOOP = 'this looks like a loop: show your person and do not answer.'
+
+  it('counts unread per peer: nothing at 0 and 2, a line at 3 and 7', () => {
+    expect([LOOP_S, LOOP_AT]).toEqual([600, 3])
+    expect(loopLines([], NOW, 0, names)).toEqual([])
+    expect(loopLines(at(A, 2), NOW, 0, names)).toEqual([])
+    expect(loopLines(at(A, 3), NOW, 0, names)).toEqual([`3 unread from alice in ten minutes: ${LOOP}`])
+    expect(loopLines(at(A, 7), NOW, 0, names)).toEqual([`7 unread from alice in ten minutes: ${LOOP}`])
+  })
+
+  it('counts two peers apart, names an unknown one by its short address, and counts an id once', () => {
+    expect(loopLines([...at(A, 2), ...at(B, 2)], NOW, 0, names)).toEqual([])
+    const lines = loopLines([...at(A, 3), ...at(B, 4), ...at(B, 4)], NOW, 0, names)
+    expect(lines).toEqual([
+      `3 unread from alice in ten minutes: ${LOOP}`,
+      `4 unread from ed25519:bbbbbbbb... in ten minutes: ${LOOP}`,
+    ])
+    expect(lines.join(' ')).not.toContain(B)
+  })
+
+  it('leaves out messages older than ten minutes and those before the person last typed', () => {
+    const old = at(A, 5, NOW - LOOP_S - 1, 'o')
+    expect(loopLines([...old, ...at(A, 2)], NOW, 0, names)).toEqual([])
+    expect(loopLines(at(A, 3, NOW - LOOP_S + 2), NOW, 0, names)).toHaveLength(1)
+    const seen = [...at(A, 4, NOW - 100, 'r'), ...at(A, 2, NOW, 'u')]
+    expect(loopLines(seen, NOW, NOW - 50, names)).toEqual([])
+    expect(loopLines(seen, NOW, NOW - 200, names)).toEqual([`6 unread from alice in ten minutes: ${LOOP}`])
+  })
+
+  it('reads accepted rows from edge.sqlite beside a writer, by principal, and [] for no store', () => {
+    const state = join(tmp.dir, `st${n++}`)
+    mkdirSync(state, { recursive: true })
+    new SqliteStore(join(state, 'edge.sqlite'), { lock: false }).close()
+    const db = new DatabaseSync(join(state, 'edge.sqlite'))
+    const put = db.prepare(
+      `INSERT INTO inbox (relay, mailbox, cursor, bytes, id, state, reason, content, received_at, updated_at)
+       VALUES ('r', 'm', ?, ?, ?, ?, ?, ?, ?, 0)`,
+    )
+    const env = (from: string, auth: object[] = []) => Buffer.from(JSON.stringify({ from, auth }))
+    const S = `ed25519:${'c'.repeat(64)}`
+    put.run(1, env(A), 'i1', 'acked', null, '{}', NOW)
+    put.run(2, env(S, [{ iss: B, sub: S }]), 'i2', 'routed', null, '{}', NOW - 10)
+    put.run(3, env(A), 'i3', 'acked', 'duplicate', '{}', NOW)
+    put.run(4, env(A), 'i4', 'rejected', 'bad-sig', null, NOW)
+    put.run(5, env(A), 'i5', 'received', null, null, NOW)
+    put.run(6, env(A), 'i6', 'acked', null, '{}', NOW - LOOP_S - 1)
+    expect(arrivals(state, NOW)).toEqual([
+      { id: 'i1', peer: A, at: NOW },
+      { id: 'i2', peer: B, at: NOW - 10 },
+    ])
+    db.close()
+    expect(arrivals(join(tmp.dir, 'none'), NOW)).toEqual([])
+  })
+
+  it('names come from the book, and an unreadable book names nothing', () => {
+    const home = join(tmp.dir, `nb${n++}`)
+    mkdirSync(home, { recursive: true })
+    expect(namesOf(home).size).toBe(0)
+    writeFileSync(join(home, 'names.json'), JSON.stringify({ version: 1, names: { alice: { address: A } } }))
+    expect(namesOf(home).get(A)).toBe('alice')
+  })
+})
+
+// The bag service (packages/shim/README.md): the shim's channel (a fake one here, on a real unix
+// socket under a short /tmp home, as packages/shim's tests do), its .bound and .ring files, and the per-folder mode
+// left as it was when they are absent.
+describe('the service: channel, bridge and ring', () => {
+  const short = mkdtempSync('/tmp/bow-')
+  const servers: Server[] = []
+  afterAll(() => {
+    for (const s of servers) s.close()
+    rmSync(short, { recursive: true, force: true })
+  })
+  const DEAD = 2 ** 31 - 2
+
+  /** A fake shim: its channel socket and index for this process, answering each request line with `answer` (undefined: never). */
+  async function shim(answer: (r: Record<string, unknown>) => unknown) {
+    const home = join(short, `h${n++}`)
+    const dir = join(home, 'run', 'shim')
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const sock = `${randomBytes(4).toString('hex')}.sock`
+    const secret = randomBytes(32).toString('hex')
+    const got: Record<string, unknown>[] = []
+    const server = createServer((c) => {
+      let buf = ''
+      c.setEncoding('utf8')
+      c.on('error', () => undefined)
+      c.on('data', (d: string) => {
+        buf += d
+        const nl = buf.indexOf('\n')
+        if (nl < 0) return
+        const r = JSON.parse(buf.slice(0, nl)) as Record<string, unknown>
+        got.push(r)
+        const a = answer(r)
+        if (a !== undefined) c.end(`${JSON.stringify(a)}\n`)
+      })
+    })
+    servers.push(server)
+    await new Promise<void>((r) => server.listen(join(dir, sock), () => r()))
+    writeFileSync(join(dir, `${process.pid}.json`), JSON.stringify({ v: 1, sock, secret, shim: process.pid }))
+    return { home, dir, secret, got }
+  }
+
+  /** A project whose bag server is the shim (service mode), or the per-folder line with `as`. */
+  function project(home: string, as?: string): string {
+    const cwd = join(tmp.dir, `p${n++}`)
+    mkdirSync(join(cwd, '.omp'), { recursive: true })
+    const args =
+      as === undefined
+        ? ['/pkg/bag-shim.js', '--dir', home, '--input-hook']
+        : ['m', '--as', as, '--dir', home]
+    writeFileSync(join(cwd, '.omp', 'mcp.json'), JSON.stringify({ mcpServers: { bag: { args } } }))
+    // Service mode as host install omp --user leaves it: the shim entry at user level too (the test's own agent dir,
+    // never the real ~/.omp), since a project entry alone counts only for the default home. A per-folder project
+    // clears it, so no earlier test's entry decides for it.
+    const user = join(process.env.PI_CODING_AGENT_DIR as string, 'mcp.json')
+    mkdirSync(dirname(user), { recursive: true })
+    if (as === undefined) writeFileSync(user, JSON.stringify({ mcpServers: { bag: { args } } }))
+    else rmSync(user, { force: true })
+    return cwd
+  }
+
+  /** A fake omp session; with `bridge` a tui session that may answer consent (hasUI). */
+  function session(cwd: string, bridge = false) {
+    const handlers = new Map<string, ((e: unknown, ctx: unknown) => unknown)[]>()
+    const sent: { content: string; options: unknown }[] = []
+    const timers: { fn: () => void; ms: number; every: boolean }[] = []
+    const status: (string | undefined)[] = []
+    const notes: string[] = []
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: bridge,
+      agent: { kind: 'main' },
+      ui: {
+        confirm: async () => true,
+        input: async () => undefined,
+        setStatus: (key: string, text: string | undefined) => {
+          if (key === WAKE_STATUS) status.push(text)
+        },
+        setWidget: () => undefined,
+        notify: (m: string) => notes.push(m),
+      },
+      idle: true,
+      isIdle() {
+        return this.idle
+      },
+      setTimeout: (fn: () => void, ms: number) => timers.push({ fn, ms, every: false }),
+      setInterval: (fn: () => void, ms: number) => timers.push({ fn, ms, every: true }),
+    }
+    bagWake({
+      on: (e: string, h: (e: unknown, ctx: unknown) => unknown) =>
+        handlers.set(e, [...(handlers.get(e) ?? []), h]),
+      sendMessage: (m: { content: string }, options: unknown) => sent.push({ content: m.content, options }),
+    } as never)
+    const emit = (e: string) => {
+      for (const h of handlers.get(e) ?? []) h({}, ctx)
+    }
+    const input = (text: string, source = 'interactive') =>
+      (handlers.get('input') ?? []).map((h) => h({ type: 'input', text, images: [], source }, ctx))[0]
+    const runOnce = () => {
+      const due = timers.filter((t) => !t.every)
+      timers.splice(0, timers.length, ...timers.filter((t) => t.every))
+      for (const t of due) t.fn()
+    }
+    const poll = () => {
+      for (const t of timers.filter((t) => t.ms === RING_POLL_MS)) t.fn()
+      runOnce()
+    }
+    return { ctx, sent, status, notes, emit, input, runOnce, poll, timers }
+  }
+
+  const until = async (ok: () => boolean) => {
+    for (let i = 0; i < 150 && !ok(); i++) await new Promise((r) => setTimeout(r, 20))
+  }
+
+  const stderr = async (fn: () => Promise<unknown>): Promise<string> => {
+    const err: string[] = []
+    const write = process.stderr.write.bind(process.stderr)
+    process.stderr.write = ((s: string) => {
+      err.push(String(s))
+      return true
+    }) as typeof process.stderr.write
+    try {
+      await fn()
+    } finally {
+      process.stderr.write = write
+    }
+    return err.join('')
+  }
+
+  it('typedName takes the bind word as the shim does, and shimHomeOf finds a shim entry and its home', () => {
+    expect([
+      typedName('use omp-3'),
+      typedName('  USE omp.x_1  '),
+      typedName('use Omp'),
+      typedName('use omp now'),
+    ]).toEqual(['omp-3', 'omp.x_1', null, null])
+    const cwd = project('/h/.bag')
+    // a project entry counts only when its --dir is the default home
+    expect(shimHomeOf(cwd, {})).toBeNull()
+    expect(shimHomeOf(cwd, { HOME: '/h' })).toBe('/h/.bag')
+    expect(shimHomeOf(cwd, { HOME: '/other' })).toBeNull()
+    const agent = join(tmp.dir, `a${n++}`)
+    mkdirSync(agent)
+    writeFileSync(
+      join(agent, 'mcp.json'),
+      JSON.stringify({ mcpServers: { bag: { args: ['/v/bag-shim.js'] } } }),
+    )
+    const plain = join(tmp.dir, `p${n++}`)
+    mkdirSync(plain)
+    expect(shimHomeOf(plain, { PI_CODING_AGENT_DIR: agent, HOME: '/u' })).toBe('/u/.bag')
+    expect(shimHomeOf(plain, { PI_CODING_AGENT_DIR: agent, AC_HOME: '/a' })).toBe('/a')
+    expect(shimHomeOf(project('/h/.bag', 'bob'), {})).toBeNull()
+    // the user-level entry wins over a planted project entry naming another home
+    const planted = project('/evil/.bag')
+    expect(shimHomeOf(planted, { PI_CODING_AGENT_DIR: agent, HOME: '/u' })).toBe('/u/.bag')
+    expect(shimHomeOf(planted, { HOME: '/u' })).toBeNull()
+  })
+
+  it('use <name> is sent on the channel and the prompt is handled', async () => {
+    const s = await shim(() => ({ bound: true, as: 'omp-3' }))
+    const o = session(project(s.home))
+    expect(await o.input('use omp-3')).toEqual({ handled: true })
+    expect(s.got).toEqual([{ v: 1, kind: 'use', name: 'omp-3', secret: s.secret }])
+    expect(o.notes).toEqual(['bag: this session now acts as omp-3'])
+  })
+
+  it('use of an unknown identity goes on to the model; another refusal is still handled', async () => {
+    const s = await shim((r) => ({
+      bound: false,
+      code: r.name === 'pandas' ? 'unknown-identity' : 'not-allowed',
+    }))
+    const o = session(project(s.home))
+    expect(await o.input('use pandas')).toBeUndefined()
+    expect(await o.input('use omp')).toEqual({ handled: true })
+  })
+
+  it('any other interactive prompt is sent as typed and not handled', async () => {
+    const s = await shim(() => ({ typed: true }))
+    const o = session(project(s.home))
+    expect(o.input('hello there')).toBeUndefined()
+    await until(() => s.got.length > 0)
+    expect(s.got).toEqual([{ v: 1, kind: 'typed', secret: s.secret }])
+  })
+
+  it('an rpc prompt is not sent and not handled', async () => {
+    const s = await shim(() => ({ bound: true, as: 'omp-3' }))
+    const o = session(project(s.home))
+    expect(o.input('use omp-3', 'rpc')).toBeUndefined()
+    await new Promise((r) => setTimeout(r, 100))
+    expect(s.got).toEqual([])
+  })
+
+  it('a dead or a slow shim does not hold the prompt past CHANNEL_MS and does not handle it; logged once', async () => {
+    const slow = await shim(() => undefined)
+    const o = session(project(slow.home))
+    let took = 0
+    const err = await stderr(async () => {
+      const t = Date.now()
+      expect(await o.input('use omp-3')).toBeUndefined()
+      took = Date.now() - t
+      expect(await o.input('use omp-3')).toBeUndefined()
+    })
+    expect(took).toBeGreaterThanOrEqual(CHANNEL_MS - 50)
+    expect(took).toBeLessThan(CHANNEL_MS + 1000)
+    expect(err.match(/did not answer/g)?.length).toBe(1)
+    const dead = await shim(() => ({ bound: true, as: 'x' }))
+    rmSync(join(dead.dir, JSON.parse(readFileSync(join(dead.dir, `${process.pid}.json`), 'utf8')).sock))
+    const d = session(project(dead.home))
+    const t = Date.now()
+    expect(await d.input('use omp-3')).toBeUndefined()
+    expect(Date.now() - t).toBeLessThan(1000)
+  }, 20_000)
+
+  it('the bridge folder comes from the channel: .bridge is written there and a request is answered there', async () => {
+    const s0 = await shim(() => ({ bridge: null }))
+    const folder = join(s0.dir, 'c0nn.consent')
+    mkdirSync(folder, { mode: 0o700 })
+    const s = await shim(() => ({ bridge: folder }))
+    const o = session(project(s.home, 'bob'), true)
+    o.emit('session_start')
+    await until(() => existsSync(join(folder, '.bridge')))
+    expect(JSON.parse(readFileSync(join(folder, '.bridge'), 'utf8')).host).toBe('omp')
+    expect(s.got).toEqual([{ v: 1, kind: 'bridge', secret: s.secret }])
+    expect(existsSync(join(s.home, 'state', 'bob', 'consent'))).toBe(false)
+    const id = 'aaaaaaaaaaaaaaaa'
+    const expires = new Date(Date.now() + 60_000).toISOString()
+    writeFileSync(
+      join(folder, `${id}.json`),
+      JSON.stringify({
+        v: 1,
+        id,
+        kind: 'pair-invite-show',
+        peer: null,
+        code: '760-a-b-c',
+        relay: 'r',
+        asked_at: expires,
+        expires_at: expires,
+      }),
+    )
+    for (const t of o.timers.filter((t) => t.ms === CONSENT_POLL_MS)) t.fn()
+    await until(() => existsSync(join(folder, `${id}.answer.json`)))
+    expect(JSON.parse(readFileSync(join(folder, `${id}.answer.json`), 'utf8')).accepted).toBe(true)
+    o.emit('session_shutdown')
+    expect(existsSync(join(folder, '.bridge'))).toBe(false)
+  }, 20_000)
+
+  it('a null bridge is no bridge (not the identity folder), said once, and asked again at the next turn', async () => {
+    let folder: string | null = null
+    const s = await shim(() => ({ bridge: folder }))
+    const o = session(project(s.home, 'bob'), true)
+    const err = await stderr(async () => {
+      o.emit('session_start')
+      await until(() => s.got.length > 0)
+      await new Promise((r) => setTimeout(r, 50))
+    })
+    expect(err).toContain('no consent bridge for this session yet')
+    expect(existsSync(join(s.home, 'state', 'bob', 'consent', '.bridge'))).toBe(false)
+    folder = join(s.dir, 'c1.consent')
+    mkdirSync(folder, { mode: 0o700 })
+    o.emit('agent_end')
+    await until(() => existsSync(join(folder as string, '.bridge')))
+    expect(existsSync(join(folder, '.bridge'))).toBe(true)
+    o.emit('session_shutdown')
+  }, 20_000)
+
+  /** A home with this process's .bound (shim alive) and a ring file of the given members. */
+  function files(home: string) {
+    const dir = join(home, 'run', 'shim')
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const f = (ext: string) => join(dir, `${process.pid}.${ext}`)
+    return {
+      f,
+      bound: (doc: unknown = { v: 1, as: ['bob'], shim: process.pid }) =>
+        writeFileSync(f('bound'), typeof doc === 'string' ? doc : JSON.stringify(doc)),
+      ring: (o: Record<string, unknown> = {}) =>
+        writeFileSync(
+          f('ring'),
+          JSON.stringify({
+            v: 1,
+            n: 1,
+            as: 'bob',
+            unread: 2,
+            speaking: true,
+            at: null,
+            shim: process.pid,
+            ...o,
+          }),
+        ),
+    }
+  }
+
+  it('5b rule 2 and 5a: a ring or bound file that does not parse, has v 2, or names a dead shim is none', () => {
+    const home = join(tmp.dir, `h${n++}`)
+    const x = files(home)
+    x.ring()
+    x.bound()
+    expect(ringIn(home)?.n).toBe(1)
+    expect(boundIn(home)).toEqual(['bob'])
+    for (const bad of [{ v: 2 }, { shim: DEAD }]) {
+      x.ring(bad)
+      expect(ringIn(home)).toBeNull()
+    }
+    writeFileSync(x.f('ring'), '{"v":1,')
+    expect(ringIn(home)).toBeNull()
+    for (const bad of [{ v: 2, as: ['bob'], shim: process.pid }, { v: 1, as: ['bob'], shim: DEAD }, 'nope']) {
+      x.bound(bad)
+      expect(boundIn(home)).toBeNull()
+    }
+  })
+
+  /** RingLoop over a fake ring file and session. */
+  function rings() {
+    const w = {
+      bound: true,
+      ring: null as RingDoc | null,
+      seen: null as RingSeen | null,
+      idle: true,
+      fired: [] as string[],
+      quiet: [] as RingDoc[],
+      timers: [] as (() => void)[],
+    }
+    const loop = new RingLoop({
+      bound: () => w.bound,
+      ring: () => w.ring,
+      seen: () => w.seen,
+      remember: (s) => {
+        w.seen = s
+      },
+      idle: () => w.idle,
+      fire: (as) => w.fired.push(as),
+      quiet: (r) => w.quiet.push(r),
+      later: (fn) => w.timers.push(fn),
+    })
+    const tick = () => {
+      for (let i = 0; i < 100 && w.timers.length > 0; i++) (w.timers.shift() as () => void)()
+    }
+    const at = (n: number, shim = 10, speaking = true): RingDoc => ({
+      n,
+      as: 'omp',
+      unread: 1,
+      speaking,
+      shim,
+    })
+    return { w, loop, tick, at }
+  }
+
+  it('5b rule 3: only a higher n of the same shim, or any n of another shim pid, is handled', () => {
+    const { w, loop, tick, at } = rings()
+    w.ring = at(2)
+    loop.ring()
+    tick()
+    expect([w.fired, w.seen]).toEqual([['omp'], { shim: 10, n: 2 }])
+    for (const r of [at(2), at(1)]) {
+      w.ring = r
+      loop.ring()
+      tick()
+    }
+    expect(w.fired.length).toBe(1)
+    w.ring = at(3)
+    loop.ring()
+    tick()
+    expect(w.fired.length).toBe(2)
+    w.ring = at(1, 11)
+    loop.ring()
+    tick()
+    expect([w.fired.length, w.seen]).toEqual([3, { shim: 11, n: 1 }])
+  })
+
+  it('5b rule 4: speaking true is one turn (pending while busy), speaking false the notice and no turn', () => {
+    const { w, loop, tick, at } = rings()
+    w.idle = false
+    w.ring = at(1)
+    loop.ring()
+    tick()
+    expect([w.fired.length, loop.pending]).toEqual([0, true])
+    w.idle = true
+    loop.idle()
+    tick()
+    expect([w.fired, loop.pending]).toEqual([['omp'], false])
+    w.idle = false
+    w.ring = at(2, 10, false)
+    loop.ring()
+    tick()
+    expect([w.fired.length, w.quiet.map((r) => r.n), loop.pending]).toEqual([1, [2], false])
+    w.bound = false
+    w.ring = at(3)
+    loop.ring()
+    tick()
+    expect(w.fired.length).toBe(1)
+  })
+
+  it('with a valid .bound the ring file is the only wake: the doorbell does not wake, a ring does, once', () => {
+    const home = join(tmp.dir, `h${n++}`)
+    const state = join(home, 'state', 'bob')
+    mkdirSync(state, { recursive: true })
+    writeFileSync(join(state, 'wake-seen'), '1\n')
+    writeFileSync(join(state, 'doorbell'), '')
+    const x = files(home)
+    x.bound()
+    const o = session(project(home, 'bob'))
+    o.emit('session_start')
+    o.runOnce()
+    expect(o.sent).toEqual([])
+    x.ring()
+    o.poll()
+    expect(o.sent).toEqual([{ content: wakeText('bob'), options: { triggerTurn: true } }])
+    expect(readFileSync(x.f('ring-seen'), 'utf8')).toBe(`${process.pid} 1\n`)
+    o.poll()
+    expect(o.sent.length).toBe(1)
+    o.emit('session_shutdown')
+  })
+
+  it('a .bound that comes while a doorbell ring settles stops that wake', () => {
+    const home = join(tmp.dir, `h${n++}`)
+    const state = join(home, 'state', 'bob')
+    mkdirSync(state, { recursive: true })
+    writeFileSync(join(state, 'wake-seen'), '1\n')
+    writeFileSync(join(state, 'doorbell'), '')
+    const x = files(home)
+    const o = session(project(home, 'bob'))
+    o.emit('session_start')
+    x.bound()
+    o.runOnce()
+    expect(o.sent).toEqual([])
+    o.emit('session_shutdown')
+  })
+
+  it('a session that starts bound takes its first doorbell look only once unbound: old mail does not wake', () => {
+    const home = join(tmp.dir, `h${n++}`)
+    const state = join(home, 'state', 'bob')
+    mkdirSync(state, { recursive: true })
+    writeFileSync(join(state, 'doorbell'), '')
+    const x = files(home)
+    x.bound()
+    const o = session(project(home, 'bob'))
+    o.emit('session_start')
+    o.runOnce()
+    rmSync(x.f('bound'))
+    for (const t of o.timers.filter((t) => t.ms === POLL_MS)) t.fn()
+    o.runOnce()
+    expect(o.sent).toEqual([])
+    expect(seenIn(join(state, 'wake-seen'))).toBe(mtimeOf(join(state, 'doorbell')))
+    o.emit('session_shutdown')
+  })
+
+  it('no .bound (or a dead one) means the doorbell as today, and the ring file is not read', () => {
+    const home = join(tmp.dir, `h${n++}`)
+    const state = join(home, 'state', 'bob')
+    mkdirSync(state, { recursive: true })
+    writeFileSync(join(state, 'wake-seen'), '1\n')
+    writeFileSync(join(state, 'doorbell'), '')
+    const x = files(home)
+    x.ring({ as: 'other' })
+    x.bound({ v: 1, as: ['bob'], shim: DEAD })
+    const o = session(project(home, 'bob'))
+    o.emit('session_start')
+    o.runOnce()
+    o.poll()
+    expect(o.sent.map((s) => s.content)).toEqual([wakeText('bob')])
+    expect(existsSync(x.f('ring-seen'))).toBe(false)
+    o.emit('session_shutdown')
+  })
+
+  it('speaking false shows the quiet notice in the footer and starts no turn; typing clears it', async () => {
+    const home = join(tmp.dir, `h${n++}`)
+    const x = files(home)
+    x.bound()
+    const o = session(project(home))
+    o.emit('session_start')
+    x.ring({ speaking: false, unread: 3 })
+    o.poll()
+    expect(o.sent).toEqual([])
+    expect(o.status).toEqual([
+      'bag: 3 unread for bob, shown in the window you last typed in for bob; type here to have the next mail shown here',
+    ])
+    o.input('hi')
+    expect(o.status.at(-1)).toBeUndefined()
+    o.emit('session_shutdown')
+  })
+
+  it('a .ring-seen the shim removed is written again at the next ring, and the old ring does not wake again', () => {
+    const home = join(tmp.dir, `h${n++}`)
+    const x = files(home)
+    x.bound()
+    const o = session(project(home))
+    o.emit('session_start')
+    x.ring()
+    o.poll()
+    rmSync(x.f('ring-seen'))
+    o.poll()
+    expect(o.sent.length).toBe(1)
+    x.ring({ n: 2 })
+    o.poll()
+    expect(o.sent.map((s) => s.content)).toEqual([wakeText('bob'), wakeText('bob')])
+    expect(readFileSync(x.f('ring-seen'), 'utf8')).toBe(`${process.pid} 2\n`)
+    o.emit('session_shutdown')
   })
 })

@@ -48,7 +48,7 @@ describe('@usebag/core', () => {
       core.MAX_ENVELOPE_BYTES,
       core.DEFAULT_TTL,
       core.DEFAULT_SKEW,
-    ]).toEqual([1, 1, 65_536, 604_800, 300])
+    ]).toEqual([1, 1, 196_608, 604_800, 300])
     expect([
       core.MAX_RECIPIENTS,
       core.MAX_HOPS,

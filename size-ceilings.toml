@@ -49,17 +49,27 @@ path = 'packages/cli/src'
 # Raised 2026-11-01 from 6237 to 6884 by a decision entry (the same entry as edge 12828): the client telemetry switch measured packages/cli/src at 6258, and 6258 times 1.1 is 6883.8, rounded up.
 # Raised 2026-11-07 from 6884 to 7623 by a decision entry (the same entry as enterprise-client 2680): the 0.2.1 assembly (branch release/0-2-1) measured packages/cli/src at 6930, and 6930 times 1.1 is 7623.0. The client defaults logic lives in packages/enterprise-client (defaults.ts); cli carries the command surface only.
 # Raised 2026-11-11 from 7623 to 8417 by a decision entry (the measured figure plus 10 percent, decision 83d): the omp host installer and wake extension (lane W1, build/w1-omp-host 7cc5f0ee) measured packages/cli/src at 7651, and 7651 times 1.1 is 8416.1, rounded up.
-ceiling = 8417 # earlier 7623, 6884, 6237, 6201, 5241, 4759, 3550, 3400 and 2875; raised 2026-10-27 from 2500 by 15 percent; earlier 2500 (2026-10-26, from 2200); earlier 1900, 1400; measured 1189, 1320, 1888 and 2191 as main grew
+# Raised 2026-11-12 from 8417 to 9386 by a decision entry (the measured figure plus 10 percent, Dilip's word 'raise cli' of 10:25 UTC):
+# main 60bad6ad measures 8390, and three heads add 70 (build/host-install-shared-home 7658d7ef), 11 (build/stable-node-keep bdaaab8e,
+# stacked on 7658d7ef) and 61 (build/unpair-shared-trust 0b491f8e): 8532, times 1.1 is 9385.2, rounded up.
+# Raised 2026-11-12 from 9386 to 12863 by a decision entry (the measured figure plus 10 percent, decision 92's integration raise, Dilip's word 'raise cli' of 15:14 UTC):
+# the integration head a85c96f7 measures 9226, and three heads add 363 (build/omp-service 2ed0b716), 2025 (build/svc-cli 244c2676) and 79
+# (build/svc-core through build/svc-wiring): 11693, times 1.1 is 12862.3, rounded up.
+ceiling = 12863 # earlier 9386, 8417, 7623, 6884, 6237, 6201, 5241, 4759, 3550, 3400 and 2875; raised 2026-10-27 from 2500 by 15 percent; earlier 2500 (2026-10-26, from 2200); earlier 1900, 1400; measured 1189, 1320, 1888 and 2191 as main grew
 
 [mcp]
 path = 'packages/mcp/src'
-# Raised 2026-11-11 from 7738 to 8690 by a decision entry (the measured figure plus 10 percent, decision 83i): the omp integration's pairing consent bridge (lane W7s, build/w7-consent-server 1472b80b, consent.ts and the pairing.ts wiring) measured packages/mcp/src at 7900, and 7900 times 1.1 is 8690.
+# Raised 2026-11-12 from 8690 to 12895 by a decision entry (the measured figure plus 10 percent, decision 92's integration raise, Dilip's word 'merge the service, raise mcp' of 18:17 UTC):
+# build/bag-service 968b85dc measures packages/mcp/src at 11722, from main's 8081: the mailbox side +330 (build/svc-mail), the bindings +907 (build/svc-bind),
+# the service core and its wiring +2166 (build/svc-wiring), the agent opening +215 (build/svc-wiring-2), the shim's consent bridge +21 (build/omp-service)
+# and the docs head's drain test +2 (build/svc-docs); 11722 times 1.1 is 12894.2, rounded up.
+# Earlier: raised 2026-11-11 from 7738 to 8690 by a decision entry (the measured figure plus 10 percent, decision 83i): the omp integration's pairing consent bridge (lane W7s, build/w7-consent-server 1472b80b, consent.ts and the pairing.ts wiring) measured packages/mcp/src at 7900, and 7900 times 1.1 is 8690.
 # Earlier: raised 2026-11-11 from 6939 to 7738 by a decision entry (the measured figure plus 10 percent, decision 83b): the omp integration's agent facts tool (lane W4, build/w4-facts eab08c75) measured packages/mcp/src at 7034, and 7034 times 1.1 is 7737.4, rounded up.
 # Earlier: raised 2026-11-02 from 6257 to 6939 by a decision entry (the measured figure plus 10 percent): the local telemetry counts (W1.7, mcp/local-counts, src/tally.ts trimmed to 87 lines) measured packages/mcp/src at 6308, and 6308 times 1.1 is 6938.8, rounded up.
 # Earlier: raised 2026-10-30 from 5312 to 6257 by a decision entry (the measured figure plus 10 percent): the multi-identity change (one MCP server holding many identities, after a trim to one per-identity unit and one tool guard) measured packages/mcp/src at 5688, and 5688 times 1.1 is 6256.8, rounded up.
 # Earlier: raised 2026-10-29 from 4417 to 5312 by a decision entry (the measured figure plus 10 percent): the pairing change measured packages/mcp/src at 4829, and 4829 times 1.1 is 5311.9, rounded up.
 # Earlier: raised 2026-10-28 from 3910 to 4417 by a decision entry (the measured figure plus 10 percent): the many-sessions change measured packages/mcp/src at 4015, and 4015 times 1.1 is 4416.5, rounded up.
-ceiling = 8690 # earlier 7738, 6939, 6257, 5312, 4417 and 3910; raised 2026-10-27 from 3300 by 15 percent (the recommended 3,400 plus 15%); earlier 3300 (2026-10-26, from 2800); measured 2399, then 2363
+ceiling = 12895 # earlier 8690, 7738, 6939, 6257, 5312, 4417 and 3910; raised 2026-10-27 from 3300 by 15 percent (the recommended 3,400 plus 15%); earlier 3300 (2026-10-26, from 2800); measured 2399, then 2363
 
 [enterprise-client]
 path = 'packages/enterprise-client/src'
@@ -97,3 +107,10 @@ path = 'packages/bag/src'
 # package build (packages/bag/src/build.ts, moved from lib/ so that coverage measures src/ as check-ratchet.sh requires)
 # measured 160, and 160 times 1.1 is 176. Proposed by the package agent; it stands on the maintainer's decision entry.
 ceiling = 176
+
+[shim]
+path = 'packages/shim/src'
+# First ceiling 2026-11-12, 2111, by the rule of the latest raises (the measured figure plus 10 percent, rounded up): the
+# bag service shim (lane svc-shim, branch build/svc-shim, decision 92) measured 1919 with this file's command, and 1919
+# times 1.1 is 2110.9. Proposed by the shim lane; it stands on the maintainer's decision entry.
+ceiling = 2111

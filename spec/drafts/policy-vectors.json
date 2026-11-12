@@ -176,8 +176,8 @@
       "expect": "bad-record"
     },
     {
-      "name": "max_bytes over 65,536",
-      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":65537},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
+      "name": "max_bytes over 196,608",
+      "text": "{\"kind\":\"policy\",\"key\":\"ed25519:c050c5637a44fa8629fff3cccce2300cb362a63d99d95fc54145266f4332445a\",\"scopes\":[{\"match\":\"*\",\"accept_types\":[\"chat.*\",\"query.v1\"],\"max_bytes\":196609},{\"match\":\"repo=web\",\"accept_types\":[\"deploy.*\"],\"max_bytes\":4096}],\"external\":{\"required_caveats\":[\"type=*\"],\"max_hop_lifetime\":86400,\"max_hops\":2},\"inspection\":null,\"iat\":1800000000,\"sig\":\"46555c4cf747c5be14cf2e4e4ed6a287ded86906d46a75d4d11a45ac052ce218239e037b30dc4722920b220433b4518dfd3e2d5a2b6e0e417c6dd9e34567940d\"}",
       "now": 1800000000,
       "expect": "bad-record"
     },

@@ -9,13 +9,15 @@ use std::time::Duration;
 pub const DEFAULT_TTL: u64 = 604_800;
 /// The allowed clock skew, in seconds.
 pub const DEFAULT_SKEW: u64 = 300;
-/// The envelope cap, in bytes (64 KiB).
-pub const DEFAULT_MAX_ENVELOPE_BYTES: usize = 65_536;
+/// The envelope cap, in bytes (192 KiB).
+pub const DEFAULT_MAX_ENVELOPE_BYTES: usize = 196_608;
 /// The hard cap on any request body, in bytes (256 KiB); not configurable.
 pub const BODY_LIMIT: usize = 262_144;
 /// The cap on a record's body, in bytes (128 KiB); not configurable. A larger record is 413
 /// `body-too-large`, so that what any key can store at the relay is bounded.
 pub const RECORD_LIMIT: usize = 131_072;
+/// The most envelope bytes one subscriber batch sends (1 MiB), on top of `max_unacked`; a batch always sends one row.
+pub const BATCH_BYTES: usize = 1_048_576;
 /// How long one resolution of a `domain:` root may take, in seconds, from the DNS lookup to the last byte.
 pub const DEFAULT_WELL_KNOWN_TIMEOUT: u64 = 10;
 /// The longest a domain's record is cached, in seconds: a day, the longest an address record lives.
@@ -173,6 +175,8 @@ pub struct Config {
     pub rate: RateLimits,
     /// The most envelopes sent to a subscriber and not yet acknowledged.
     pub max_unacked: usize,
+    /// The most envelope bytes one batch to a subscriber sends, past its first row ([`BATCH_BYTES`]).
+    pub batch_bytes: usize,
     /// How often a subscriber is pinged.
     pub ping_interval: Duration,
     /// How long a subscriber may stay silent before it is closed (and how long the relay waits for its auth).
@@ -219,6 +223,7 @@ impl Default for Config {
             record_limit: RECORD_LIMIT,
             rate: RateLimits::default(),
             max_unacked: 32,
+            batch_bytes: BATCH_BYTES,
             ping_interval: Duration::from_secs(30),
             idle_timeout: Duration::from_mins(1),
             sweep_interval: Duration::from_mins(1),

@@ -90,7 +90,7 @@ function folder(home: string, at: string, platform: string): string {
 }
 
 /** One entry of the list, checked: identities-invalid, or home-shared for a home another entry holds. */
-function entry(e: unknown, at: string, homes: Set<string>, platform: string): Identity {
+function entry(e: unknown, at: string, homes: Set<string> | null, platform: string): Identity {
   if (!object(e)) throw bad(`${at} is not an object`)
   const extra = Object.keys(e).find((k) => ![...MEMBERS, ...FLAGS, ...PATHS].includes(k))
   if (extra !== undefined) throw bad(`${at} has an unknown member ${JSON.stringify(extra)}`)
@@ -100,9 +100,9 @@ function entry(e: unknown, at: string, homes: Set<string>, platform: string): Id
   each([(e.key as string | undefined) ?? e.label], (k) => checkName('key', k), at)
   if (typeof e.home !== 'string' || !isAbsolute(e.home)) throw bad(`${at}.home is not an absolute path`)
   const home = folder(e.home, at, platform)
-  if (homes.has(home))
+  if (homes?.has(home))
     throw new CliError('home-shared', `${at}.home ${e.home} is another identity's: one home per identity`)
-  homes.add(home)
+  homes?.add(home)
   const relays = e.relays
   if (!strings(relays) || relays.length === 0 || relays.length > MAX_RELAYS)
     throw bad(`${at}.relays is not a list of 1 to ${MAX_RELAYS} URLs`)
@@ -132,8 +132,15 @@ function entry(e: unknown, at: string, homes: Set<string>, platform: string): Id
   return e as unknown as Identity
 }
 
-/** `doc` as an identities file, checked whole; identities-invalid (or home-shared) names the first fault. */
-export function checkIdentities(doc: unknown, platform: string = process.platform): Identities {
+/**
+ * `doc` as an identities file, checked whole; identities-invalid (or home-shared) names the first fault. `shared`: the
+ * bag service's <home>/identities.json, where every identity has the service's home (no home-shared).
+ */
+export function checkIdentities(
+  doc: unknown,
+  platform: string = process.platform,
+  shared = false,
+): Identities {
   if (!object(doc)) throw bad('the file is not a JSON object')
   const extra = Object.keys(doc).find((k) => !TOP.includes(k))
   if (extra !== undefined) throw bad(`unknown member ${JSON.stringify(extra)}`)
@@ -142,7 +149,7 @@ export function checkIdentities(doc: unknown, platform: string = process.platfor
   if (!Array.isArray(list) || list.length === 0 || list.length > MAX_IDENTITIES) {
     throw bad(`identities is not a list of 1 to ${MAX_IDENTITIES}`)
   }
-  const homes = new Set<string>()
+  const homes = shared ? null : new Set<string>()
   const labels = list.map((e, i) => entry(e, `identities[${i}]`, homes, platform).label)
   if (new Set(labels).size !== labels.length) throw bad('a label repeats')
   if (doc.default !== undefined && !labels.includes(doc.default as string))
@@ -154,7 +161,7 @@ export function checkIdentities(doc: unknown, platform: string = process.platfor
  * The file, read and checked through one descriptor, opened without blocking (a FIFO cannot hold the reader):
  * identities-invalid when it is not a regular file, the group or others may read or write it, or it is not one.
  */
-export function readIdentities(file: string): Identities {
+export function readIdentities(file: string, shared = false): Identities {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK)
   let text: string
   try {
@@ -171,7 +178,7 @@ export function readIdentities(file: string): Identities {
   } catch {
     throw bad(`${file} is not JSON`)
   }
-  return checkIdentities(doc)
+  return checkIdentities(doc, process.platform, shared)
 }
 
 /** Writes the file: its directory made 0700 when missing, a 0600 temporary file beside it, renamed over it. */
@@ -202,7 +209,7 @@ const INSTALLED = [
  * `doc` with `e` appended (at the front with `first`), checked whole; null when an entry with the same installed members
  * is there. exists when the label, or the home and key, is there with other settings.
  */
-export function addIdentity(doc: Identities, e: Identity, first = false): Identities | null {
+export function addIdentity(doc: Identities, e: Identity, first = false, shared = false): Identities | null {
   const there = doc.identities.find(
     (x) => x.label === e.label || (x.home === e.home && keyOf(x) === keyOf(e)),
   )
@@ -213,7 +220,11 @@ export function addIdentity(doc: Identities, e: Identity, first = false): Identi
       `identity ${there.label} is in the file with other settings: edit or remove it first`,
     )
   }
-  return checkIdentities({ ...doc, identities: first ? [e, ...doc.identities] : [...doc.identities, e] })
+  return checkIdentities(
+    { ...doc, identities: first ? [e, ...doc.identities] : [...doc.identities, e] },
+    process.platform,
+    shared,
+  )
 }
 
 /** `doc` without the identity `label`, and without `default` when it named it; unknown-identity, last-identity. */

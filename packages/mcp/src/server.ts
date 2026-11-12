@@ -1,14 +1,17 @@
 import { execFileSync } from 'node:child_process'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
+import { fileURLToPath } from 'node:url'
 import { format } from 'node:util'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import type { Hop } from '@usebag/core'
 import {
   BUILD_INFO,
   type Clock,
   countTelemetry,
   createRelayClient,
+  type EdgeKeys,
   HomeCustody,
   proxyStatus,
   type RecordSource,
@@ -105,8 +108,15 @@ export interface ServerDeps {
   readonly names?: SessionNameOptions
   /** How often a pairing polls the relay, in ms (default PAIR_POLL_MS), for tests. */
   readonly pairPollMs?: number
+  /** A monotonic clock in ms, which times a pair dialog's answer (default performance.now), for tests. */
+  readonly mono?: () => number
   /** The enterprise tools' ports over the process's (tools.ts, ToolContext.enterprise), for tests. */
   readonly enterprise?: Partial<EnterprisePorts>
+  /** The bag service's keep-alive (service.ts): a keeper for each identity, whatever its file says; null for none. */
+  readonly keeper?: (
+    args: ConstructorParameters<typeof RecordKeeper>[0],
+    config: Config,
+  ) => RecordKeeper | null
 }
 
 /** An --identities server's ports: a server's, with a relay client made for each identity. */
@@ -132,7 +142,7 @@ export interface Running {
 }
 
 /** What a unit's tool context shares with the server: everything but the identity's own state. */
-type Shared = Omit<
+export type Shared = Omit<
   ToolContext,
   'config' | 'opened' | 'desk' | 'records' | 'chain' | 'subscriptions' | 'edgeErrors'
 >
@@ -155,6 +165,12 @@ function coded(e: unknown): { code: string; detail: string } {
  * and tool context. A server of one opens and starts it, a failure thrown. An --identities server runs it (tryOpen,
  * run): its start waits, and a failure marks it failed, which its tools answer, and opens it again every REOPEN_MS.
  */
+/** How the bag service opens an agent identity's unit: a key of its own, the agent's hop to it, the principal's mailbox. */
+export type AgentOpening =
+  | { readonly keys: EdgeKeys; readonly hop: Hop; readonly mailbox: string }
+  /** A session's configuration (session.ts openAgentUnit): its key file, its grant.json and the principal's mailbox. */
+  | { readonly config: Config }
+
 export class Unit {
   config: Config
   readonly ctx: ToolContext
@@ -299,9 +315,12 @@ export class Unit {
     const { edge, client, signer, sealingKey, epochs } = o
     const { relays, home, as: name } = config
     const keeper = { edge, client, signer, sealingKey, epochs, relays, home, name, clock, timers, log }
-    this.records = config.keepAliveRecords
-      ? new RecordKeeper({ ...keeper, ...(this.#multi ? { rng } : {}) })
-      : null
+    this.records =
+      deps.keeper !== undefined
+        ? deps.keeper({ ...keeper, rng }, config)
+        : config.keepAliveRecords
+          ? new RecordKeeper({ ...keeper, ...(this.#multi ? { rng } : {}) })
+          : null
     const desk = new Desk(o.edge, o.store, timers)
     desk.delivered.add((m) => {
       for (const f of this.view.delivered) f(m)
@@ -373,10 +392,62 @@ export class Unit {
     this.#deps.log.log('info', 'stop', { address: o.identity.address })
   }
 
-  /** An --identities server's opening: true, or false with the identity failed (and opened again later). */
-  tryOpen(): boolean {
+  /**
+   * The service's way to read keys before the open (service.ts): a Keychain read may wait on the person's dialog, and
+   * the other identities keep serving meanwhile. Null: open reads them itself.
+   */
+  readKeys: (() => Promise<EdgeKeys | AgentOpening>) | null = null
+
+  /**
+   * The service's opening: `pending` is what the tools answer while the keys are read through readKeys, then the open;
+   * true, or false with the identity failed (a timed-out read is opened again as a failed unit is; a denied one is not).
+   */
+  async openWith(pending: unknown): Promise<boolean> {
+    const read = this.readKeys
+    if (read === null) return this.tryOpen()
+    this.#failure = pending
+    this.state = 'failed'
+    let keys: EdgeKeys | AgentOpening
     try {
-      this.open()
+      keys = await read()
+    } catch (e) {
+      if (this.#stopped) return false
+      // A Keychain dialog denied or unanswered waits for the next bind: never a dialog on a timer.
+      const code = (e as { code?: unknown }).code
+      // An agent's refusal or a local refusal of an agent open is not retried on a timer either (no y on a timer).
+      this.#fail(e, code !== 'EACCES' && code !== 'ETIMEDOUT' && (e as { retry?: unknown }).retry !== false)
+      return false
+    }
+    if (this.#stopped) return false
+    if ('config' in keys) {
+      // The agent unit's session configuration: its key file and grant are read by the open, under its own lock.
+      this.config = keys.config
+      return this.tryOpen(undefined, undefined, true)
+    }
+    if ('hop' in keys) {
+      // An agent identity opens as a session does: the opening's key under the agent's hop, at the principal's mailbox.
+      this.config = { ...this.config, mailbox: keys.mailbox }
+      return this.tryOpen(keys.keys, [keys.hop])
+    }
+    return this.tryOpen(keys)
+  }
+
+  /** An --identities server's opening: true, or false with the identity failed (and opened again later). */
+  tryOpen(keys?: EdgeKeys, auth?: readonly Hop[], sessionLock = false): boolean {
+    try {
+      // An agent unit's session holds its mcp.lock already (openAgentUnit): the open takes none of its own.
+      const lock = sessionLock ? { release: () => {} } : {}
+      this.open(
+        keys === undefined && !sessionLock
+          ? {}
+          : {
+              deps: {
+                ...(keys === undefined ? {} : { keys }),
+                ...(auth === undefined ? {} : { auth }),
+                ...lock,
+              },
+            },
+      )
     } catch (e) {
       // The guards see it all the same: its address from the custody's entry, the public pointer or key file, without
       // the lock and without opening a keychain item (no dialog) or asking an agent.
@@ -418,6 +489,34 @@ export class Unit {
       void this.records?.start()
     })()
     return this.#starting
+  }
+
+  /**
+   * The service's suspension (a lend to the CLI, a drain): no start wait, no reopening, its keep-alive, desk, edge,
+   * store and lock closed, and `why` what its tools answer until resume. Unlike stop it can open again.
+   */
+  async suspend(why: unknown): Promise<void> {
+    this.#cancel()
+    this.#cancel = () => {}
+    await this.#starting
+    this.halt()
+    await this.shut()
+    this.opened = null
+    this.records = null
+    this.#failure = why
+    this.state = 'failed'
+  }
+
+  /**
+   * Opens it again after a suspension, keys read fresh through the start's open path, and starts it at once; a failure
+   * (its lock still held by the CLI, say) is retried every REOPEN_MS as a failed unit's, until it opens.
+   */
+  async resume(pending: unknown = null): Promise<boolean> {
+    if (this.#stopped) return false
+    this.subscriptions.reset()
+    if (!(await this.openWith(pending ?? this.#failure))) return false
+    void this.run(0)
+    return true
   }
 
   /** An --identities server's stop: no start wait, no reopening; its lock and store are closed. */
@@ -468,14 +567,15 @@ export class Unit {
    * Marks it failed with `e` (logged once per code) and, unless stopped, opens it again after REOPEN_MS, then starts it
    * after a new start wait, as at the server's start: the default identity at once.
    */
-  #fail(e: unknown): void {
+  #fail(e: unknown, retry = true): void {
     if (this.state !== 'failed' || codeOf(this.failure) !== codeOf(e))
       this.#deps.log.log('error', 'start', coded(e))
     this.failure = e
     this.state = 'failed'
-    if (this.#stopped) return
-    this.#cancel = this.#deps.timers.after(REOPEN_MS, () => {
-      if (this.#stopped || !this.tryOpen()) return
+    if (this.#stopped || !retry) return
+    this.#cancel = this.#deps.timers.after(REOPEN_MS, async () => {
+      if (this.#stopped) return
+      if (this.readKeys !== null ? !(await this.openWith(this.#failure)) : !this.tryOpen()) return
       this.subscriptions.reset()
       const first = this.config.label === this.ctx.identities?.defaultLabel
       void this.run(first ? 0 : startDelayMs(this.#deps.rng, START_SPREAD_S))
@@ -558,27 +658,38 @@ function chainSource(config: Config): ChainSource | null {
  * What a server's units share: its ports and the pair tools' dialogs (pairing.ts), form elicitation (a bare
  * `elicitation: {}` reads as form) related to the tool call, open up to an invitation's life rather than the SDK's 60 s.
  */
-function sharedOf(
-  mcp: McpServer,
+export function sharedOf(
+  mcp: McpServer | null,
   deps: ServerDeps | ManyDeps,
   more: Pick<Shared, 'bind' | 'front' | 'identities'>,
 ) {
   const { clock, rng, log, timers } = deps
   const ports = { clock, rng, log, timers, startedAt: clock.now(), pollMs: deps.pairPollMs ?? PAIR_POLL_MS }
   // One MCP session by its client's host kind, never its name; nothing unless the process counts (startTelemetry).
-  mcp.server.oninitialized = () => countTelemetry('sessions', [hostKind(mcp.server.getClientVersion()?.name)])
+  if (mcp !== null)
+    mcp.server.oninitialized = () =>
+      countTelemetry('sessions', [hostKind(mcp.server.getClientVersion()?.name)])
   const shared: Shared = {
     ...more,
     ...ports,
     env: deps.env ?? {},
     ...(deps.enterprise === undefined ? {} : { enterprise: deps.enterprise }),
-    canElicit: () => mcp.server.getClientCapabilities()?.elicitation?.form !== undefined,
-    elicit: (dialog, extra) =>
-      mcp.server.elicitInput(dialog, {
+    canElicit: () => mcp?.server.getClientCapabilities()?.elicitation?.form !== undefined,
+    mono: deps.mono ?? (() => performance.now()),
+    client: () => {
+      const c = mcp?.server.getClientVersion()
+      return { kind: lockHost(c?.name), version: c?.version ?? '' }
+    },
+    elicit: (dialog, extra) => {
+      // The service's units have no MCP server of their own: each connection's contexts carry its elicit (service.ts).
+      if (mcp === null)
+        return Promise.reject(new ToolError('no-elicitation', 'no connection to show a dialog on'))
+      return mcp.server.elicitInput(dialog, {
         relatedRequestId: extra.requestId,
         signal: extra.signal,
         timeout: 600_000,
-      }),
+      })
+    },
   }
   return shared
 }
@@ -945,6 +1056,8 @@ export interface ProcessIo {
    * Without it the process sends none: a test's io has none.
    */
   readonly fetch?: typeof fetch
+  /** The process for --service (service.ts): its node flags, chdir and the drain's signals; absent, --service is refused. */
+  readonly service?: import('./service.ts').ServiceIo
 }
 
 /**
@@ -988,6 +1101,12 @@ export function processIo(): ProcessIo {
     console,
     run: runShell,
     fetch,
+    service: {
+      env: process.env,
+      execArgv: process.execArgv,
+      chdir: (d) => process.chdir(d),
+      signals: process,
+    },
   }
 }
 
@@ -1078,6 +1197,13 @@ function guardConsole(c: ConsoleLike, log: Logger): () => void {
   return () => Object.assign(c, saved)
 }
 
+/** The directory of the module at `url` when it is a versioned package directory (<home>/package/versions/<v>), else null. */
+export function packageDirOf(url: string): string | null {
+  if (!url.startsWith('file:')) return null
+  const dir = dirname(fileURLToPath(url))
+  return /\/package\/versions\/[0-9A-Za-z][0-9A-Za-z._+-]*$/.test(dir) && !dir.endsWith('/..') ? dir : null
+}
+
 /**
  * Runs the server on the process's stdio until stdin ends, the client closes, or SIGINT or SIGTERM arrives (on a
  * terminal stdin, which runs raw: rawTerminal, Ctrl-C or Ctrl-D too). Resolves with the exit status: 0 after a stop, 2 for a flag it cannot take or an org policy file that cannot be read or does
@@ -1088,6 +1214,13 @@ export async function serve(io: ProcessIo): Promise<number> {
     io.stderr.write(text)
   }
   const log = jsonLogger(write, io.clock)
+  if (io.argv.includes('--print-login-agent')) {
+    const { printLoginAgent } = await import('./service.ts')
+    const r = printLoginAgent(io.argv, io.env, { platform: process.platform, node: process.execPath })
+    io.stdout.write(r.out)
+    write(r.err)
+    return r.status
+  }
   let config: ServerConfig | 'help'
   try {
     config = parseServerConfig(io.argv, io.env)
@@ -1098,6 +1231,27 @@ export async function serve(io: ProcessIo): Promise<number> {
   if (config === 'help') {
     write(`${USAGE}\n`)
     return 0
+  }
+  if (config.service !== undefined && io.service !== undefined) {
+    const { rereadOf, serveService } = await import('./service.ts')
+    const at = io.argv.indexOf('--identities')
+    const file = at >= 0 ? (io.argv[at + 1] as string) : join(config.service, 'identities.json')
+    const deps = {
+      clock: io.clock,
+      rng: io.rng,
+      timers: io.timers,
+      pid: io.pid,
+      alive: io.alive,
+      log,
+      env: io.env,
+      relayFor: () => io.relay(jitteredDelay(io.rng)),
+      reread: rereadOf(file, config, config.service),
+      // The versioned package directory this bundle was loaded from, by its own URL: a launcher at
+      // <home>/package/bag-mcp.js imports versions/<v>/bag-mcp.js in-process, so argv[1] names the launcher.
+      packageDir: packageDirOf(import.meta.url),
+      ...(io.records === undefined ? {} : { records: io.records }),
+    }
+    return serveService(config, deps, io.service)
   }
   // Behind a proxy, one line naming it without its user or password, a warning when Node does not send through it.
   const net = proxyStatus(io.env)

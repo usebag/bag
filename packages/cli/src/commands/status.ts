@@ -14,6 +14,7 @@ import { describeHolder, holder } from '../held.ts'
 import { checkIdentity, doorbellPath, homeDir } from '../home.ts'
 import type { Io } from '../io.ts'
 import { instant } from '../names.ts'
+import { runPath, serviceLine } from '../service.ts'
 import { deps, refresherJob } from './refresher.ts'
 
 /** The detail of the edge's end of a subscription (receiver.ts, run). */
@@ -53,6 +54,18 @@ export function status(args: readonly string[], io: Io): number | Promise<number
   io.out(`doorbell ${doorbellPath(home, name)}`)
   const held = holder(home, name)
   if (held !== null) io.out(`held_by ${describeHolder(held)}`)
+  // A bag service of the home: one line from its hello (service.ts), before the rest.
+  if (existsSync(runPath(home, 'service.sock'))) {
+    return serviceLine(home).then((line) => {
+      if (line !== null) io.out(line)
+      return rest(io, home, name)
+    })
+  }
+  return rest(io, home, name)
+}
+
+/** status --as after its first lines: the proxy and what the audit log says of the subscriptions. */
+function rest(io: Io, home: string, name: string): number {
   // Behind a proxy, the proxy this process sends through: scheme, host and port only, never a user or password.
   const net = proxyStatus(io.env)
   if (net.https !== null || net.http !== null) {

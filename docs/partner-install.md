@@ -5,8 +5,8 @@ A step-by-step install and first exchange for the bag reference implementation. 
 and contributing.
 
 This guide is the route by hand. The agent route, [bag.dev/install](https://bag.dev/install), is a page for a coding
-agent, Claude Code: it installs the npm package and makes an identity, and leaves pairing and wiring Claude Code to
-you. The package, which section 1a runs, has its page on the npm registry:
+agent (Claude Code, Codex or omp): it installs the npm package and makes or reuses an identity, and leaves pairing,
+wiring the host and starting the bag service to you. The package, which section 1a runs, has its page on the npm registry:
 [npmjs.com/package/@usebag/bag](https://www.npmjs.com/package/@usebag/bag).
 
 This guide takes you from a clean machine to a working identity, a relay, published records, a message sent and
@@ -30,14 +30,14 @@ Name the version and the program every time. Define a shell function once per te
 below:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.3.0 bag "$@"; }
-c --version                            # prints: bag 0.3.0 <the commit it was built from>
-npm view @usebag/bag@0.3.0 gitHead     # prints the commit npm records for 0.3.0
+c() { npx --yes --package=@usebag/bag@0.4.0 bag "$@"; }
+c --version                            # prints: bag 0.4.0 <the commit it was built from>
+npm view @usebag/bag@0.4.0 gitHead     # prints the commit npm records for 0.4.0
 c help                                 # prints every command
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance, and
-`npm view @usebag/bag@0.3.0 gitHead` names that commit. The two commits above must be the same, and must be the
+`npm view @usebag/bag@0.4.0 gitHead` names that commit. The two commits above must be the same, and must be the
 published commit of this release, which the agent route's page names; if they differ, or `npm view` fails (`E404`
 among the errors), stop and do not use the package. The first run fetches the package into npm's cache, `$HOME/.npm`,
 so it needs the network once.
@@ -244,8 +244,9 @@ c inbox --as alice --relay "$R" --once --trust-root "$(c address bob)"
 
 - `send` prints the envelope id, then one line per target relay: `published <relay> tries=<n>`, or a retry or failed
   state with a reason. `--to` takes a raw address, a name from your name book (`c name add <name> <address>`) or a
-  handle such as `jane@acme.example`. The envelope is signed by `--as <name>` as its own root. A send that was not
-  published exits 1 and keeps its exact bytes in the identity's outbox. Sending again makes a new envelope; to send the
+  handle such as `jane@acme.example`. The envelope is signed by `--as <name>` as its own root. A send that no relay
+  published exits 1 and keeps its exact bytes in the identity's outbox; one that at least one relay published exits 0,
+  with a warning line naming each relay that did not take it and why. Sending again makes a new envelope; to send the
   same one, use `resend` below.
 - `resend --as <name> --relay "$R"` sends what waits, once, the same bytes under the same id, so it lands once. It takes
   the targets in `retry` whose next try has come; a line with `next_at=<unix seconds>` says it is not yet time, and the
@@ -348,7 +349,36 @@ request reaches A on the same one, A's side prints `second request <address>: th
 
 ## 5c. Connect your agent host
 
-The CLI and the MCP server are two ways to be one identity. An MCP server (`packages/mcp`, the package's `bag-mcp`)
+### With the bag service (bag 0.4.0 and later)
+
+The bag service ([bag-service.md](bag-service.md)) holds every identity of your home; each host session starts the bag
+shim, which talks to it, and you give a window an identity by typing `use` and its name. One command per host wires the
+shim for every folder and registers the identity with the service:
+
+```sh
+c identity relays me --relay "$R"     # on a terminal, one y: me and its relays in <home>/identities.json
+c host install claude-code --user     # or codex, or omp; add --sandbox on Claude Code to confine every Bash command
+```
+
+`host install --user` takes no `--as` and no relays: the service reads the home. It writes, for this user and never
+into a project folder: Claude Code's `~/.claude.json` (the `bag` server, which
+runs the launcher `<home>/package/bag-shim.js`) and `~/.claude/settings.json` (the wake hook and the hook that
+reads your `use`); Codex's `~/.codex/config.toml` and `~/.codex/hooks.json`; omp's `~/.omp/agent/mcp.json` and the wake link in
+`~/.omp/agent/hooks/pre/`. Then start the service at login: `c host install service` prints the login agent for
+your platform (a launchd plist labelled `dev.bag.service`, or a systemd user unit `bag.service`), and you load it
+yourself. Folders an earlier bag wired one identity into are moved with `c host migrate` (it asks once and keeps a
+journal), and put back with `c host migrate --undo` and the journal's stamp. A folder's own entry wins over the user's in Claude Code and omp,
+so a folder left unmoved keeps its per-folder server.
+
+
+On Codex the dialogs need Codex 0.113.0 or later, as below; Codex has no input hook, so `use` there opens a dialog. On
+Codex, no sandbox rule can keep the model's shell from reading `<home>/run/`: there a model's shell can read the launch
+token and drive the service as any identity, dialogs included. The Keychain stops the keys being copied, not their use.
+
+### One identity per folder (the way back)
+
+What follows is the per-folder form of earlier releases, kept in 0.4.0 as the way back and for any other MCP host
+([one-identity-per-folder.md](one-identity-per-folder.md)). The CLI and the MCP server are two ways to be one identity. An MCP server (`packages/mcp`, the package's `bag-mcp`)
 puts your address and mailbox inside an agent host, as tools. Use one receiver per identity: if a host runs the MCP
 server for `me`, do not also run `c inbox --watch --as me`; whichever starts second is refused as busy. A host that
 talks to the server over stdio works; three are described here, and this guide documents none of them as the only way.
@@ -356,10 +386,15 @@ talks to the server over stdio works; three are described here, and this guide d
 `c host install` writes the registration for you. It needs an identity that exists, at least one `--relay`, and your
 `--trust-root` for anyone who is not already paired with you (a paired peer is already trusted). Nothing it writes holds
 a key; it holds the path of `node`, the paths of bag's programs, your identity name, your home and the relay URLs.
-From source those paths are in this repository. From the package, it first copies the package to `<home>/package/`
-(printing `wrote <home>/package (bag 0.3.0 <commit>)`) and writes the paths of that copy, so the registration does not
-depend on npm's cache. Run it again and it changes nothing and says so. The files hold paths of your machine: do not
-commit or send them.
+From source those paths are in this repository. From the package, it first stages the package once per version at
+`<home>/package/versions/<version>/` (printing `wrote <home>/package/versions/<version> (bag <version> <commit>)`),
+points `<home>/package/current` at it, and writes the paths of that copy, so the registration does not depend on npm's
+cache. Run it again and it changes nothing and says so. The path of `node` is Homebrew's link
+(`/opt/homebrew/bin/node` or `/usr/local/bin/node`) when that is the node you ran, so a `brew upgrade` does not leave the
+registration pointing at a removed version. A staged version is never written again, so a server or a service that runs
+from an older one keeps running; a running bag service is told it moves to the new version at its next restart. A
+version directory that holds another build of the same version is refused (`exists`). The files hold paths of your machine: do not commit
+or send them.
 
 Claude Code, for a project directory:
 
@@ -385,16 +420,34 @@ argument as written; nothing expands `~`). That line is the source route's. On t
 with `c host install` above: it copies the package to `<home>/package/` and writes `node <home>/package/bag-mcp.js`
 as the server. For the Claude Code plugin: see the README.
 
-Codex:
+Codex: run `codex --version` first. It prints the version; bag's pairing dialogs need 0.113.0 or later. Older Codex
+shows only the dialog's message and pairing fails. Then:
 
 ```sh
 c host install codex --as me --relay "$R" --user --mode mcp
 ```
 
-writes a `[mcp_servers.bag]` table to `~/.codex/config.toml`. Codex has no idle wake, so a session sees mail
-only when it calls the tools. Without `--mode mcp` the default is `worker`, which writes nothing and prints the
-`inbox --watch --exec 'codex exec ...'` line that runs Codex once per accepted message; choose one of the two for an
-identity, never both. If the file already has a different `bag` table, the command refuses.
+writes a `[mcp_servers.bag]` table to `~/.codex/config.toml` with the same server arguments as the Claude Code entry
+(`--as me`, the relays, `--dir`, `--keep-alive-records`), and a Stop hook in `~/.codex/hooks.json` that waits up to 30 s
+for mail when a turn ends; trust it in Codex with `/hooks`. The table serves every Codex session of this user: the first
+session holds the identity and any other answers held-by. Pairing works in the interactive `codex` TUI (not `codex
+exec`, which declines every dialog at once: the pair tools then answer `no-elicitation`) with an approval policy that
+lets MCP servers ask; `on-request`, the default, is enough.
+
+Codex asks before bag's tools that reach other agents. For `pair_invite` and `pair_accept`, pick "Allow for this
+session" once: Codex then stops asking for them until the session ends, and each pairing still needs your answers in its
+dialogs. For `send`, `ask`, `handoff` and `delegate` keep answering Allow per call: they have no dialog of their own,
+and the server runs outside Codex's sandbox, so a session-wide allow lets the model reach any paired agent with no
+further prompt. To stop the prompt for the pair tools for good, you may add `tools.pair_invite.approval_mode =
+"approve"` under `[mcp_servers.bag]` yourself; `host install` never does.
+
+The earlier form, one grant session per Codex session under the principal `me`, is `--session auto:codex --grant-caveat
+type=chat.v1` added to the line above: each session's grant is signed with a `y` at `c login --as me --relay "$R"`,
+which keeps a terminal open, and such a session has no pair tools. A table of the other form, or of another identity,
+is refused `exists`: remove it first. An old `[mcp_servers.agent_comms]` table, from before the rename, starts a second
+server: remove it too. Codex has no idle wake, so a session sees mail only when it calls the tools. Without `--mode
+mcp` the default is `worker`, which writes nothing and prints the `inbox --watch --exec 'codex exec ...'` line that runs
+Codex once per accepted message; choose one of the two for an identity, never both.
 
 Any other stdio MCP host: register a server whose command is `node` and whose arguments are
 `<repo>/packages/mcp/src/main.ts --as me --relay <relay-url> --dir <home> --keep-alive-records`, in the host's own

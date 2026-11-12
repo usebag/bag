@@ -186,7 +186,9 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
     the paired roots in trust.json are still admitted by `*`, and come back on a later narrowing. Beside held
     roots a typed `*` is refused (`accept-held`), and more than 1,024 roots in all is `too-many-roots`,
     both before the tree is written or anything published. Its `--max-bytes` and `--retention` are the typed ones,
-    else the held record's (as `peer` keeps them), else 65,536 and 604,800.
+    else the held record's (as `peer` keeps them), else 196,608 (`MAX_ENVELOPE_BYTES`) and 604,800. A held
+    `max_bytes` of exactly 65,536, the default of the first cuts, is written as 196,608 (the lift: every re-sign, `record
+    keep`, `unpair`, a pairing and the MCP keep-alive, does the same); any other is kept.
     Removing a root takes two steps, in this order, since a refresh keeps every held and trusted root:
     (1) drop it from the cron line's `--accept`; (2) `node packages/cli/src/main.ts unpair <root> --as <name>
     --relay <url>... --dir <home>` with the cron line's relays ("Names and pairing", below), which removes it
@@ -252,15 +254,19 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
 - **`send --as <name> --to <name|address|handle>... --relay <url> --body <json|@-|@file> [--type <type>] [--auth <chain.json>]
   [--thread <id> [--prev <id>...]] [--policy <file>] [--members <file>] [--allow-private-relays] [--dir <home>]`**: one
   envelope (of `--type`, default `chat.v1`) to every recipient (`--body @-` reads the JSON from stdin, whole; `--body
-  @<path>` from a regular file, never through a symbolic link; each at most 65,536 bytes, else `body-too-large`), signed by `<name>` as its own root, or with `--auth` as a session under the chain
+  @<path>` from a regular file, never through a symbolic link; each at most 196,608 bytes, the envelope cap, else `body-too-large`), signed by `<name>` as its own root, or with `--auth` as a session under the chain
   `delegate` wrote (its last hop must be to `<name>`: `chain-not-to-sender`). `--to` repeats and takes a name from the
   name book (`name-unknown` when the book lacks it; the book is read only when a `--to` is neither an address nor a
   handle), an address, or a handle such as `jane@acme.example`, which the edge resolves through the domain's TXT
   record, its org record and the handle record the org signs (`resolve-failed` naming the step, or `revoked`; nothing
   is sent). `--body` must be JSON and `--prev` needs `--thread` (`usage`).
-  It prints the id, then one line per target, `<state> <relay> tries=<n>[ reason=<code>][ next_at=<n>]`. A target
-  that was not published fails with its reason as the code and `<relay> <state>; the bytes stay in the outbox, and
-  resend --id <id> sends them`. Sending again with `send` makes a new envelope; `resend` sends the same one. For a 403
+  It prints the id, then one line per target, `<state> <relay> tries=<n>[ reason=<code>][ next_at=<n>]`. Delivered
+  via one relay or more exits 0 (in earlier cuts any relay that did not publish exited 1),
+  with a warning line on stderr when another relay did not take it: `warning: delivered via <n> of <m> relays;
+  refused <k>: <relay> <reason>, ...; retrying <j>; the bytes stay in the outbox, and resend --id <id> sends them`, the
+  count the MCP send tool gives in its `summary`. When no relay published it, a target that was not published fails
+  with its reason as the code (exit 1) and `<relay> <state>; the bytes stay in the outbox, and resend --id <id> sends
+  them`. Sending again with `send` makes a new envelope; `resend` sends the same one. For a 403
   `root-not-accepted` the detail adds the next step, naming the root (the chain's first issuer under `--auth`, else
   the identity's own address): `the recipient does not accept this identity's root yet: ask them to add <root> (or
   your org's domain root) to their accept-from record, or send under a chain from a root they accept (send --auth /
@@ -286,7 +292,8 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   targets again: run it once the cause is gone, say when the recipient accepts your root. `not-found` for an id the
   outbox lacks. It prints each envelope it tried or left waiting as `send` does, the id and one line per target, then
   `waiting <to,...> tries=<n> next_at=<n>` per send that has not resolved, or `nothing is waiting`; a `failed` target
-  not named by `--id` is not listed. It fails, once all are printed, with the reason of the first that has not landed.
+  not named by `--id` is not listed. It fails, once all are printed, with the reason of the first that no relay took;
+  one that some relay took is a warning line, as `send` prints it.
   Beside an edge of the same identity it is `busy`, as `send` is: that edge flushes by itself.
 - **`held list | held release <id> | held drop <id>`, each with `--as <name> --relay <url> [--members <file>]
   [--policy <file>] [--auth <chain.json>] [--allow-private-relays] [--dir <home>]`**: the sends the outbound gate
@@ -550,7 +557,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   request file that does not parse is read as absent and the poll (every 250 ms) goes on. The wait is 10 s for the
   session file and the request together, so it delays session start by at most 10 s, and only while a grant is pending
   (in `src/commands/wake-hook.ts`, `test/session-code.test.ts`). `host install claude-code` writes only the async wake-hook entries, not `session-code`: a stated debt; the plugin's `hooks/hooks.json` carries it.
-- **`host install <claude-code|codex|omp> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... [--grant-caveat <caveat>]... (--project <dir> | --user) [--mode worker|mcp] [--dir <home>]`**:
+- **`host install <claude-code|codex|omp> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... (--project <dir> | --user) [--mode worker|mcp [--session auto:codex --grant-caveat <caveat>...]] [--dir <home>]`**:
   writes the MCP server's registration and, for Claude Code, the wake hooks, into the places the repo documents, and
   prints each file and the entries it added (no key is read; the entries hold paths, the name, relay URLs and trust
   roots). `claude-code --project <dir>` writes `<dir>/.mcp.json` (`mcpServers.bag = {command, args}`, as
@@ -573,13 +580,18 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   install writes one of them. `--mode worker`, the default, because Codex has no idle wake, writes
   nothing and prints the line that runs `inbox --watch --as <name> --exec 'codex exec --skip-git-repo-check --sandbox read-only "bag: $(cat)"'`, the form of the `--exec` bullet above (every `--relay` and
   `--trust-root` is on it). `--mode mcp` appends the `[mcp_servers.bag]` table of the mcp README to
-  `~/.codex/config.toml` (0600 when it makes the file), with the server as `--session auto:codex --principal <name>`
-  (one server per Codex session, each named from Codex's session id at its first tool call, and the person types
-  `y` at the agent for each session's grant; no `--as`, no `--keep-alive-records`) and one `--grant-caveat <caveat>`
-  per flag given, which `--mode mcp` requires (a `usage` error without it) and every other host and mode refuses, and
+  `~/.codex/config.toml` (0600 when it makes the file). By default (since 2026-11-12, Dilip's 'plain codex') the server
+  is the plain identity, the same args as the claude-code entry (`--as <name>`, every `--relay`, `--rendezvous` and
+  `--trust-root`, `--dir <home>`, `--keep-alive-records`), so a Codex session can pair; the first Codex session holds
+  the identity and any other answers held-by; the install then runs the same read-only check of the identity's records
+  as claude-code. With `--session auto:codex` the server is `--session auto:codex --principal <name>` (one server per
+  Codex session, each named from Codex's session id at its first tool call, and the person types `y` at the agent for
+  each session's grant; no `--as`, no `--keep-alive-records`, and no pair tools) with one `--grant-caveat <caveat>` per
+  flag given, which `--session auto:codex` requires; `--grant-caveat` without it is a `usage` error naming it, and
+  `--session` anywhere but `codex --mode mcp` is one too. A table of the other form is `exists`, never replaced. It
   merges a `Stop` hook into `~/.codex/hooks.json`,
   `{"hooks": [{"type": "command", "command": "<node> <this checkout>/packages/cli/src/main.ts wake-hook --as <name>
-  --session auto:codex --dir <home> --max 30 --no-idle-wake", "timeout": 60, "statusMessage": "bag: waiting for mail"}]}`, in the
+  [--session auto:codex] --dir <home> --max 30 --no-idle-wake", "timeout": 60, "statusMessage": "bag: waiting for mail"}]}`, in the
   event's list (an entry that already carries the same command counts as there; every other key and event stays). When
   a turn ends, the hook waits up to 30 s for the doorbell and, on a ring, exits 2 with one stderr line, which Codex
   takes as the prompt that continues the turn; with no ring it exits 0, silent, and the turn ends, so an idle session
@@ -736,7 +748,7 @@ audit log, `<home>/state/<name>/audit.jsonl`; no line holds a key.
 - **`group create <name> --relay <url>... --rotation-key <address> [--root <address>...] [--ttl <s>] [--max-bytes <n>]
   [--retention <s>]`**: generation 1, and the group's address record and accept-from record published at every
   `--relay`. `--relay` and `--rotation-key` are required. The defaults: `--ttl` 3,600 s (the core's `GROUP_RECORD_TTL`),
-  `--max-bytes` 65,536 (`MAX_ENVELOPE_BYTES`), `--retention` 604,800 s (`DEFAULT_TTL`). Prints
+  `--max-bytes` 196,608 (`MAX_ENVELOPE_BYTES`), `--retention` 604,800 s (`DEFAULT_TTL`). Prints
   `group <address> generation 1`, then `published <kind> <address> iat <iat> <relay>` per relay for each kind,
   `address` then `accept-from`. Only `create` takes `--relay`: the other verbs use the relays in the group's state
   (`--relay` there is `usage`).
@@ -834,7 +846,7 @@ is decided by the organisation's instance on the server, not by the client. The 
 `sign-in.ts` (sign-in and sign-out), `status.ts` (with no `--as`), `mcp.ts` and `refresher.ts`.
 
 A person gives their agent the prompt the console shows beside a minted connect code. The console fills in the exact
-version it pins (the current cut, `@usebag/bag@0.3.0`), never `@latest`:
+version it pins (the current cut, `@usebag/bag@0.4.0`), never `@latest`:
 
     1. Register once: claude mcp add bag -- npx -y @usebag/bag@<version> mcp (or run directly: BAG_ORG_CODE=<code> npx -y @usebag/bag@<version> connect)
     2. Paste the code into the chat and ask the agent to connect with the bag tool `connect`.

@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { processStart, START_TOLERANCE } from '@usebag/edge'
 import { CliError } from './args.ts'
@@ -11,22 +11,39 @@ export interface Holder {
   readonly host: string | null
 }
 
+/** The process checks a holder is read with: whether a pid answers, and when it started (s); the real ones by default. */
+export interface Procs {
+  readonly alive?: (pid: number) => boolean
+  readonly startOf?: (pid: number) => number | null
+}
+
+/** Whether pid answers kill 0; EPERM (a process of another user) reads as alive, as the server does. */
+function answers(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as { code?: unknown }).code === 'EPERM'
+  }
+}
+
+/** The live MCP server holding <home>/state/<name>/mcp.lock (lockHolder). */
+export const holder = (home: string, name: string, procs: Procs = {}): Holder | null =>
+  lockHolder(join(home, 'state', name, 'mcp.lock'), procs)
+
 /**
- * The live MCP server holding <home>/state/<name>/mcp.lock, or null: no lock, a lock that names no pid, a pid that is
- * gone, or one that started after the lock was written (a pid used again). EPERM reads as alive, as the server does.
+ * The live MCP server holding the mcp.lock `file`, or null: no lock, a lock that names no pid, a pid that is gone, or
+ * one that started after the lock was written (a pid used again), each read through `procs`.
  */
-export function holder(home: string, name: string): Holder | null {
-  const file = join(home, 'state', name, 'mcp.lock')
+export function lockHolder(
+  file: string,
+  { alive = answers, startOf = processStart }: Procs = {},
+): Holder | null {
   try {
     const v = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
     const pid = v.pid
-    if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 1) return null
-    try {
-      process.kill(pid, 0)
-    } catch (e) {
-      if ((e as { code?: unknown }).code !== 'EPERM') return null
-    }
-    const start = processStart(pid)
+    if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 1 || !alive(pid)) return null
+    const start = startOf(pid)
     if (start !== null && start > statSync(file).mtimeMs / 1000 + START_TOLERANCE) return null
     const text = (x: unknown): string | null => (typeof x === 'string' ? x : null)
     return { pid, startedAt: text(v.started_at), cwd: text(v.cwd), host: text(v.host) }
@@ -57,4 +74,18 @@ export function refuseWhileHeld(home: string, name: string, what: string): void 
     `the identity ${name} is held by a running bag MCP server (${describeHolder(h)}); ` +
       `that session reads this mailbox with its inbox tool, so ${what} needs that session closed first`,
   )
+}
+
+/** The live MCP servers of the home but `but`'s, by the mcp.lock files under <home>/state/<name>/, as `<name> (pid <pid>)`. */
+export function servers(home: string, but: string): string[] {
+  let names: string[] = []
+  try {
+    names = readdirSync(join(home, 'state')).filter((n) => n !== but)
+  } catch {
+    // no state folder: no server
+  }
+  return names.flatMap((n) => {
+    const h = holder(home, n)
+    return h === null ? [] : [`${n} (pid ${h.pid})`]
+  })
 }

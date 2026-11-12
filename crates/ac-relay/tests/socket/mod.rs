@@ -87,9 +87,9 @@ impl Bin {
         request(self.addr, "GET", "/v0/health", &[], b"").await.status
     }
 
-    /// Hosts mailbox `key(2)` for every root, up to 65,536 bytes.
+    /// Hosts mailbox `key(2)` for every root, up to the envelope cap of 196,608 bytes.
     pub async fn host(&self) {
-        let r = self.publish(&record_bytes(&accept(2, Roots::Any, 65_536, 3_600, now()))).await;
+        let r = self.publish(&record_bytes(&accept(2, Roots::Any, 196_608, 3_600, now()))).await;
         assert_eq!(r.status, 200, "{}", r.text());
     }
 

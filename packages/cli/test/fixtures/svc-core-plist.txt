@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.bag.service</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>--disable-sigusr1</string>
+    <string>/Users/x/.bag/package/bag-mcp.js</string>
+    <string>--service</string>
+    <string>--dir</string>
+    <string>/Users/x/.bag</string>
+    <string>--identities</string>
+    <string>/Users/x/.bag/identities.json</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/x/.bag/run</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/Users/x</string>
+    <key>USER</key><string>x</string>
+    <key>LANG</key><string>C</string>
+    <key>AC_HOME</key><string>/Users/x/.bag</string>
+    <key>HTTPS_PROXY</key><string>http://proxy:8080</string>
+    <key>NODE_USE_ENV_PROXY</key><string>1</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+  <key>ProcessType</key><string>Background</string>
+  <key>Umask</key><integer>63</integer>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>Core</key><integer>0</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>Core</key><integer>0</integer>
+  </dict>
+  <key>StandardErrorPath</key><string>/Users/x/.bag/run/service.log</string>
+</dict>
+</plist>

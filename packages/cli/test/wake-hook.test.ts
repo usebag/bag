@@ -763,7 +763,7 @@ describe('wake-hook --session auto: the name is read from the session file the M
     const w = await world()
     const r = await hook(w, '--session', 'bob', '--max', '0')
     expect(r.code).toBe(1)
-    expect(r.err[0]).toBe('bag: usage: --session takes auto or auto:codex, not bob')
+    expect(r.err[0]).toBe('bag: usage: --session takes auto, auto:codex or service, not bob')
     expect(existsSync(join(w.dir, 'state', 'bob'))).toBe(false)
     expect(await hook(w, '--max', '0')).toEqual({ code: 0, out: [], err: [] })
   })
@@ -1077,16 +1077,28 @@ describe('wake-hook --identities: every identity of the file, each by its own do
 })
 
 describe('wake-hook: a ring while the identity is served by another session (a second session on one fixed name)', () => {
-  /** The tree the hook walks: the hook 900 under claude 901, 903 under no claude, and this test's live pid under `of`. */
-  const tree = (of: number, from = 900): SessionNameOptions => {
+  /** The server's pid: a fake one, never this process's, which a busy machine may give any number (900 once, in a gate). */
+  const SERVER = 904
+  /**
+   * The tree and the process checks the hook reads, all fakes: the hook 900 under claude 901, 903 under no claude, and
+   * the server under `of`; the server answers kill 0 unless `dead`, and started `started` s before now (negative: after
+   * the lock was written, a pid used again).
+   */
+  const tree = (of: number, from = 900, o: { dead?: boolean; started?: number } = {}) => {
     const ps: Record<number, { ppid: number; command: string }> = {
       900: { ppid: 901, command: '/bin/sh -c node main.ts wake-hook --as bob' },
       901: { ppid: 1, command: 'claude' },
       902: { ppid: 1, command: 'claude' },
       903: { ppid: 1, command: 'bash' },
-      [process.pid]: { ppid: of, command: 'node /x/packages/mcp/src/main.ts --as bob' },
+      [SERVER]: { ppid: of, command: 'node /x/packages/mcp/src/main.ts --as bob' },
     }
-    return { pid: from, info: (pid) => ps[pid] ?? null, startOf: () => 1_800_000_000 }
+    const before = Date.now() / 1000 - (o.started ?? 60)
+    return {
+      pid: from,
+      info: (pid: number) => ps[pid] ?? null,
+      startOf: (pid: number) => (pid === SERVER ? before : 1_700_000_000),
+      alive: (pid: number) => pid === SERVER && o.dead !== true,
+    }
   }
 
   it('says to read it there when mcp.lock names a live server under another claude, and keeps its line otherwise', async () => {
@@ -1094,7 +1106,11 @@ describe('wake-hook: a ring while the identity is served by another session (a s
     w.touch(1_700_000_001)
     await hook(w, '--max', '0')
     const lock = join(w.dir, 'state', 'bob', 'mcp.lock')
-    const ring = async (held: object | null, session: SessionNameOptions, at: number): Promise<string[]> => {
+    const ring = async (
+      held: object | null,
+      session: ReturnType<typeof tree>,
+      at: number,
+    ): Promise<string[]> => {
       if (held === null) rmSync(lock, { force: true })
       else writeFileSync(lock, JSON.stringify(held))
       w.touch(at)
@@ -1102,14 +1118,16 @@ describe('wake-hook: a ring while the identity is served by another session (a s
       expect(await wakeHook(['--as', 'bob', '--dir', w.dir, '--max', '0'], w.io, 5, session)).toBe(2)
       return [...w.io.stderr]
     }
-    expect(await ring({ pid: process.pid, keep_alive: true }, tree(902), 1_700_000_002)).toEqual([
-      `bag: a message was delivered to bob, but its server runs in another session (pid ${process.pid}): ` +
+    expect(await ring({ pid: SERVER, keep_alive: true }, tree(902), 1_700_000_002)).toEqual([
+      `bag: a message was delivered to bob, but its server runs in another session (pid ${SERVER}): ` +
         'read it there, or close that session and reconnect bag here in /mcp',
     ])
-    // This session's own server, a lock whose pid is gone, no lock, and a hook with no claude above it: the usual line.
-    expect(await ring({ pid: process.pid }, tree(901), 1_700_000_003)).toEqual([MESSAGE])
-    expect(await ring({ pid: 999_999_999 }, tree(902), 1_700_000_004)).toEqual([MESSAGE])
-    expect(await ring(null, tree(902), 1_700_000_005)).toEqual([MESSAGE])
-    expect(await ring({ pid: process.pid }, tree(902, 903), 1_700_000_006)).toEqual([MESSAGE])
+    // This session's own server, a lock whose pid is gone, one whose pid started after the lock was written (used
+    // again), no lock, and a hook with no claude above it: the usual line.
+    expect(await ring({ pid: SERVER }, tree(901), 1_700_000_003)).toEqual([MESSAGE])
+    expect(await ring({ pid: SERVER }, tree(902, 900, { dead: true }), 1_700_000_004)).toEqual([MESSAGE])
+    expect(await ring({ pid: SERVER }, tree(902, 900, { started: -3600 }), 1_700_000_005)).toEqual([MESSAGE])
+    expect(await ring(null, tree(902), 1_700_000_006)).toEqual([MESSAGE])
+    expect(await ring({ pid: SERVER }, tree(902, 903), 1_700_000_007)).toEqual([MESSAGE])
   })
 })

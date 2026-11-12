@@ -1,18 +1,47 @@
 # Running bag in omp
 
-omp (oh-my-pi, a coding agent) runs bag's MCP server like any MCP host, but it has no hook that wakes an idle session
-when mail arrives. `bag host install omp` wires one project folder with one command: the bag server in
-`.omp/mcp.json`, and bag's wake extension, which starts a turn in the omp session when a message is delivered. This
-page is about omp 18.17.0; [partner-install.md](partner-install.md) covers identities, relays and pairing, which come
-first.
+omp (oh-my-pi, a coding agent) runs bag like any MCP host, but it has no hook that wakes an idle session when mail
+arrives, and no MCP dialogs. From bag 0.4.0, `bag host install omp --user` wires omp once for every folder: the bag
+shim in omp's user-level MCP configuration, which connects each omp session to the bag service
+([bag-service.md](bag-service.md)), and bag's wake extension, which reads your `use`, opens bag's dialogs and starts a
+turn when a message is delivered. The per-folder form of bag 0.3.0 stays as the way back (section 5). This page is about
+omp 18.17.0; [partner-install.md](partner-install.md) covers identities, relays and pairing, which come first. `c` is
+the function of partner-install.md section 1a.
 
-## 1. Install
+## 1. Install, for every folder
 
 You need an identity (`bag keygen`, partner-install.md section 2) whose records are published at your relays
-(section 4), and the folder omp will run in. Then, from the npm package:
+(section 4). Then:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.3.0 bag "$@"; }
+c identity relays alice --relay https://relay1.bag.dev --relay https://relay2.bag.dev
+c host install omp --user
+```
+
+The first, on a terminal with one `y`, puts `alice` and its relays into the bag service's list, `<home>/identities.json`;
+the second writes, once per user, the shim into omp's user-level `mcp.json` and the link `bag-wake.js` to bag's wake
+extension into omp's user-level `hooks/pre/`. Start omp in any folder and type `use alice`: the
+extension reads the word before the model sees it, and the window speaks as `alice` from then on. Start the service at
+login as the install page's step 6c says.
+
+omp's user-level files are `<agentDir>/mcp.json` and `<agentDir>/hooks/pre/`, where `<agentDir>` is
+`~/.omp/agent` unless `PI_CODING_AGENT_DIR` names another. A folder's own `.omp/mcp.json` entry named `bag` wins over
+the user's, which is why section 5 moves them.
+
+The extension finds its own session's shim by omp's process id, through `<home>/run/shim/`, a directory the shim
+keeps inside the service's 0700 run directory; your `use` goes to that shim only, with a secret the shim made at its
+start, so no other session can bind your window.
+
+`host install omp --user` takes no `--as` and no relays (the identity's relays are in the service's list, which `bag
+identity relays` sets), and prints `wrote <agentDir>/mcp.json: mcpServers.bag, the bag service's shim` and a line for
+the wake link, then that omp has no sandbox or path-deny setting, so the model's shell can read and write `<home>/run`,
+and that the wake extension starts a turn on a ring in the main interactive omp session.
+
+### The per-folder form
+
+The rest of this section is the form of bag 0.3.0, one folder for one identity, which section 5 keeps as the way back:
+
+```sh
 c host install omp --as alice --relay https://relay1.bag.dev --relay https://relay2.bag.dev \
   --rendezvous https://relay1.bag.dev --project /path/to/folder
 ```
@@ -51,15 +80,30 @@ It takes out the `mcpServers.bag` entry of that identity and bag's link, and not
 
 ## 2. How the wake works
 
-The bag server moves the mtime of the identity's doorbell, `<home>/state/<name>/doorbell`, once for each message it
-accepts. The extension, loaded in the omp session, reads the identity from the bag server's `--as` and `--dir` in
-`.omp/mcp.json` and watches the doorbell:
+With the service, the extension rings for the identity its window uses: the service tells the window's shim when mail
+for that identity arrives, and only the window you last typed in starts a turn; another omp window that uses the same
+identity shows a quiet notice. The text of the turn, the loop guard and the pending wake below are the same.
+
+The ring reaches the window's shim over its socket; the shim writes it to `<home>/run/shim/<omp pid>.ring` beside
+the `.bound` file that names the window's identities, and the extension watches that file instead of the doorbell
+while `.bound` exists. A window that is not speaking starts no turn and shows, in the footer:
+`bag: 2 unread for omp, shown in the window you last typed in for omp; type here to have the next mail shown here`.
+
+In the per-folder form, the bag server moves the mtime of the identity's doorbell, `<home>/state/<name>/doorbell`, once
+for each message it accepts. The extension, loaded in the omp session, reads the identity from the bag server's `--as`
+and `--dir` in `.omp/mcp.json` and watches the doorbell:
 
 - by file-system events on `<home>/state/<name>/`, with a look every 30 s as a fallback (a missed event, the machine
   waking from sleep);
 - on a ring, it waits 300 ms for the rest of a burst (several messages land as several rings a few milliseconds
-  apart), then, if the session is idle, starts exactly one turn whose text is `bag: mail arrived for alice. Read it
-  with the bag inbox tool, then answer it.` The model reads with the inbox tool; it needs no `wait` or `ask` loop;
+  apart), then, if the session is idle, starts exactly one turn whose text is `bag: mail arrived for alice: read it
+  with the bag inbox tool and show it to your person. Answer only when your person asks, or when it plainly asks a
+  question they already told you to answer.` The model reads with the inbox tool; it needs no `wait` or `ask` loop.
+  It is never told to answer on its own: two agents told so answer each other without end;
+- when one peer has sent 3 or more messages in the last ten minutes since you last typed in the session, the turn's
+  text adds `3 unread from bob in ten minutes: this looks like a loop: show your person and do not answer.`, with the
+  count, and the peer named as your name book names it (else by its short address). The count is read from the
+  identity's store without its lock, so it holds whatever the model does;
 - a ring while a turn runs is kept as one pending wake and fires when that turn ends, so a ring is never lost and two
   wake turns never overlap;
 - the mtime it handled is written to `<home>/state/<name>/wake-seen`, the file the Claude Code and Codex hooks use, so
@@ -75,10 +119,12 @@ The extension also writes `<home>/state/<name>/host-facts.json` at session start
 minutes: the model (`provider/id`), the session's cost and context use as omp computes them, the session id and
 whether this is the main session. bag's `facts` tool reads them, so an agent reports its model and cost from data.
 
-## 3. One identity per folder, one main session
+## 3. Windows, identities and the main session
 
-Run one omp session per folder and identity. A second session in the same folder starts a second bag server for the
-same identity; only one of them can hold it.
+Any omp window can use any identity of the home, and two windows can use one: the service owns the mailbox, and one
+window speaks for it ([one-identity-per-folder.md](one-identity-per-folder.md)). In the per-folder form, run one omp
+session per folder and identity: a second session in the same folder starts a second bag server for the same identity,
+and only one of them can hold it.
 
 Only the main session the person opened speaks for the identity. The extension wakes nothing, and says so on stderr,
 in a session omp starts with `-p`/`--print`, in `--mode rpc` or `--mode json`, and in a subagent. A session you spawn
@@ -91,9 +137,18 @@ from the folder for a side task:
 
 ## 4. Pairing inside the omp session
 
-omp shows no MCP dialogs, so when a pairing needs your word the bag server asks through the wake extension instead.
-In the main interactive session the extension writes `<home>/state/<name>/consent/.bridge`, refreshes it every few
-minutes and removes it when omp ends; the server writes a request beside it and the extension asks you in the TUI:
+omp shows no MCP dialogs, so when a pairing needs your word bag asks through the wake extension instead. With the
+service the question goes to the window that started the pairing, and only there; the bridge belongs to that window's
+session, and closing the window ends the pairing. In the per-folder form, in the main interactive session the
+extension writes `<home>/state/<name>/consent/.bridge`, refreshes it every few minutes and removes it when omp ends; the
+server writes a request beside it and the extension asks you in the TUI:
+
+With the service the bridge directory is the session's own, `<home>/run/shim/<omp pid>.consent/`, made by its
+service at the window's start and gone when the session ends; only the service writes the questions there, and the
+request and answer files are the same as below. The invite code shows only in omp's own dialog, never in a tool
+result: a person who closes that dialog before copying the code asks the agent to cancel the pairing (`pair_cancel`)
+and invite again, and the new dialog shows the new code.
+
 
 - someone pairs with you: a Yes/No dialog, `bag: <peer> asks to pair as <name>` with the check digits to compare
   with what your peer reads out (arrows and Enter: typing y does not answer it). Yes pairs; No, or no answer within
@@ -106,19 +161,26 @@ Only the answer goes back to the server, which pairs with the peer of its own re
 (`omp -p`, `--mode rpc` or `json`, a subagent) writes no `.bridge`, so the server answers as it does without
 elicitation: with the `bag pair` command to run in a terminal (pairing-without-dialogs.md).
 
-## 5. Moving a folder wired by hand
+## 5. Moving wired folders, and the way back
 
-A folder wired before this command has a bag entry in `.omp/mcp.json` and a wake file of its own in
-`.omp/hooks/pre/`. Close the omp session in the folder, then run these, one per line, with the folder and the identity
-of that agent:
+`c host migrate --dry-run` lists every folder an earlier bag wired for omp (its `.omp/mcp.json` entry and wake link)
+and changes nothing. `c host migrate`, on a terminal, asks once, keeps a journal of every file it edits, takes only
+bag's entries out of each folder and remembers each folder's identity as the one a window opened there is offered
+first. `c host migrate --undo` puts every journalled file back, byte for byte: the way back to the per-folder form.
+Close the omp sessions in those folders first.
+
+A folder wired by hand, before `host install omp` existed, has a wake file of its own in `.omp/hooks/pre/`, which the
+migration does not take: move it away first, with the folder and the identity of that agent, one per line:
 
 ```sh
 FOLDER=/path/to/folder
 NAME=alice
 mv "$FOLDER/.omp/hooks/pre/bag-wake.ts" "$HOME/.Trash/bag-wake.ts-$NAME-$(date -u +%Y%m%dT%H%M%SZ)"
-npx --yes --package=@usebag/bag@0.3.0 bag host remove omp --as "$NAME" --project "$FOLDER"
-npx --yes --package=@usebag/bag@0.3.0 bag host install omp --as "$NAME" --relay https://relay1.bag.dev --relay https://relay2.bag.dev --rendezvous https://relay1.bag.dev --project "$FOLDER"
+c host remove omp --as "$NAME" --project "$FOLDER"
 ```
 
-Then start omp in the folder as before, with its `--model`. The first session takes the doorbell's mtime as
-`wake-seen` only when none is there; with one, mail that came while the folder moved wakes it.
+Then start omp anywhere and type `use` and the name. The first session takes the doorbell's mtime as `wake-seen` only
+when none is there; with one, mail that came while the folder moved wakes it.
+
+`host migrate` takes a folder's `mcpServers.bag` entry of `.omp/mcp.json` that names this home and an identity it
+holds; a hand-written wake file is not bag's entry, so move it as above.

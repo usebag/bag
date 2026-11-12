@@ -245,13 +245,13 @@ async function main(): Promise<void> {
   const names = ((listed.result as { tools?: { name: string }[] } | undefined)?.tools ?? []).map(
     (t) => t.name,
   )
-  if (names.length !== 15) mismatches.push(`tools/list: ${names.length} tools`)
-  // bob runs without --allow-delegate: 14 tools, and delegate is the SDK's unknown-tool error.
+  if (names.length !== 16) mismatches.push(`tools/list: ${names.length} tools`)
+  // bob runs without --allow-delegate: 15 tools, and delegate is the SDK's unknown-tool error.
   const bobs = await bob.rpc.request('tools/list')
   const bobNames = ((bobs.result as { tools?: { name: string }[] } | undefined)?.tools ?? []).map(
     (t) => t.name,
   )
-  if (bobNames.length !== 14 || bobNames.includes('delegate'))
+  if (bobNames.length !== 15 || bobNames.includes('delegate'))
     mismatches.push(`tools/list without --allow-delegate: ${bobNames.join(', ')}`)
   expectOutcome(
     'delegate unlisted',
