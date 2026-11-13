@@ -846,7 +846,7 @@ is decided by the organisation's instance on the server, not by the client. The 
 `sign-in.ts` (sign-in and sign-out), `status.ts` (with no `--as`), `mcp.ts` and `refresher.ts`.
 
 A person gives their agent the prompt the console shows beside a minted connect code. The console fills in the exact
-version it pins (the current cut, `@usebag/bag@0.4.0`), never `@latest`:
+version it pins (the current cut, `@usebag/bag@0.4.1`), never `@latest`:
 
     1. Register once: claude mcp add bag -- npx -y @usebag/bag@<version> mcp (or run directly: BAG_ORG_CODE=<code> npx -y @usebag/bag@<version> connect)
     2. Paste the code into the chat and ask the agent to connect with the bag tool `connect`.

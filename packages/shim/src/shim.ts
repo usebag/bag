@@ -71,6 +71,8 @@ export interface ShimDeps {
   readonly ring?: (ring: Ring) => void
   /** True for an omp host whose dialogs the service writes into its bridge folder (adds the capability). */
   readonly consentBridge?: boolean
+  /** The host's pid (omp's), named in the bridge capability: the service asks that omp's registered extension. */
+  readonly hostPid?: number
   readonly newToken?: () => string
   /** How long a start is waited for, in milliseconds (the contract's 5 s). */
   readonly startWaitMs?: number
@@ -454,7 +456,8 @@ export class Shim {
   #capabilities(): Params {
     const caps = { ...((this.#init?.params?.capabilities ?? {}) as Params) }
     if (this.#d.consentBridge === true && this.#kind === 'omp' && caps.elicitation === undefined) {
-      caps.experimental = { ...((caps.experimental ?? {}) as Params), [BRIDGE_CAPABILITY]: {} }
+      const pid = this.#d.hostPid === undefined ? {} : { pid: this.#d.hostPid }
+      caps.experimental = { ...((caps.experimental ?? {}) as Params), [BRIDGE_CAPABILITY]: pid }
     }
     return caps
   }
@@ -739,10 +742,12 @@ export class Shim {
       return
     }
     const speaking = params.speaking !== false
+    const requests = typeof params.requests === 'number' && params.requests > 0 ? params.requests : 0
     const ring: Ring = {
       n: ++this.#ringSeq,
       as,
       unread: typeof params.unread === 'number' ? params.unread : null,
+      ...(requests > 0 ? { requests } : {}),
       speaking,
       at: typeof params.at === 'string' ? params.at : null,
     }
@@ -756,7 +761,14 @@ export class Shim {
       this.#d.toHost({
         jsonrpc: '2.0',
         method: 'notifications/message',
-        params: { level: 'info', logger: 'bag', data: `new mail for ${as}; another window is answering it` },
+        params: {
+          level: 'info',
+          logger: 'bag',
+          data:
+            ring.unread === 0 && requests > 0
+              ? `a request from your own identity waits for ${as}; another window asks your person`
+              : `new mail for ${as}; another window is answering it`,
+        },
       })
     }
   }

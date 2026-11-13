@@ -4,7 +4,8 @@
 // bound to the identity, not the one speaking window the service chose (the coordinator's ruling, 2026-11-12). The
 // CLI lane's wake hook (Claude Code, Codex) and omp's wake extension wake from this file while a .bound file exists;
 // with no .bound file (the per-folder stdio mode, the rollback) nothing changes. Shape:
-// {"v":1,"n":<sequence>,"as":"omp","unread":3,"speaking":true,"at":"<the service's at>","shim":<shim pid>}, 0600,
+// {"v":1,"n":<sequence>,"as":"omp","unread":3,"speaking":true,"at":"<the service's at>","shim":<shim pid>}, with
+// "requests":<n> only while local pair requests wait for the identity's person (the ring's own count), 0600,
 // written beside and renamed over, removed at exit only while it names this shim. Reader rules: packages/shim/README.md.
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -20,6 +21,8 @@ export interface Ring {
   readonly n: number
   readonly as: string
   readonly unread: number | null
+  /** Local pair requests waiting for the person, asked at the speaking window's next tool call; absent with none. */
+  readonly requests?: number
   readonly speaking: boolean
   readonly at: string | null
 }

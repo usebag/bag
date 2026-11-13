@@ -97,6 +97,29 @@ describe('the wake router', () => {
     )
   })
 
+  it('rings for a waiting local pair request with nothing unread, naming requests; none with neither', () => {
+    const clock = new FakeClock()
+    const timers = new ManualTimers()
+    let requests = 1
+    const r = new WakeRouter({ clock, timers, unread: () => 0, requests: () => requests })
+    const [a, b, c] = [conn('c-a'), conn('c-b'), conn('c-c')]
+    r.bind('research', a)
+    clock.t += 1
+    r.bind('research', b)
+    r.bind('personal', c)
+    r.arrived('research')
+    timers.fire()
+    expect(b.got).toEqual([
+      { method: RING, params: { as: 'research', unread: 0, requests: 1, speaking: true, at: at(T0 + 1) } },
+    ])
+    expect(a.got).toEqual([
+      { method: RING, params: { as: 'research', unread: 0, requests: 1, speaking: false, at: at(T0 + 1) } },
+    ])
+    expect(c.got).toEqual([])
+    requests = 0
+    expect(r.ring('research').size).toBe(0)
+  })
+
   it('rings the rest when one connection fails under the ring', () => {
     const { r } = router()
     const ok = conn('c-ok')

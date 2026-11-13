@@ -191,6 +191,7 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
       writeRing(home, hostPid, io.pid, r)
     },
     consentBridge: true,
+    hostPid,
     bridgeDirOf: (given) => bridgeDirOf(home, given),
     inputHook: false,
     owner: (pid) => ownsHome(home, pid, alive),

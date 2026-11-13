@@ -623,7 +623,13 @@ export function writeBridge(dir: string, now = new Date(), make = true): void {
   if (make) mkdirSync(dir, { recursive: true, mode: 0o700 })
   const file = join(dir, '.bridge')
   const tmp = `${file}.${process.pid}.tmp`
-  const body = { v: 1, pid: process.pid, host: 'omp', mode: 'tui', at: now.toISOString() }
+  const body = {
+    v: 1,
+    pid: process.pid,
+    host: 'omp',
+    mode: 'tui',
+    at: now.toISOString(),
+  }
   rmSync(tmp, { force: true })
   writeFileSync(tmp, JSON.stringify(body), { flag: 'wx', mode: 0o600 })
   renameSync(tmp, file)
@@ -705,6 +711,8 @@ export interface RingDoc {
   readonly n: number
   readonly as: string
   readonly unread: number | null
+  /** Local pair requests waiting for the person (the service's ring, 0.4.1); absent with none. */
+  readonly requests?: number
   readonly speaking: boolean
   readonly shim: number
 }
@@ -715,7 +723,8 @@ export function ringIn(home: string, pid = process.pid): RingDoc | null {
   if (d === null || !Number.isSafeInteger(d.n) || typeof d.as !== 'string' || typeof d.speaking !== 'boolean')
     return null
   const unread = typeof d.unread === 'number' ? d.unread : null
-  return { n: d.n as number, as: d.as, unread, speaking: d.speaking, shim: d.shim as number }
+  const requests = typeof d.requests === 'number' && d.requests > 0 ? { requests: d.requests } : {}
+  return { n: d.n as number, as: d.as, unread, ...requests, speaking: d.speaking, shim: d.shim as number }
 }
 
 /** The last ring handled, `<shim pid> <n>` in <pid>.ring-seen (the CLI lane's wake hook writes the same). */
@@ -747,8 +756,10 @@ export const ringIsNew = (r: RingDoc, seen: RingSeen | null): boolean =>
 
 /** The quiet notice of a ring for another window, as the service words it (wake-router.ts quietNotice). */
 export const quietText = (r: RingDoc): string =>
-  `bag: ${r.unread ?? 'new'} unread for ${r.as}, shown in the window you last typed in for ${r.as}; ` +
-  'type here to have the next mail shown here'
+  r.unread === 0 && (r.requests ?? 0) > 0
+    ? `bag: a request from your own identity waits for ${r.as}; the window you last typed in for ${r.as} asks you`
+    : `bag: ${r.unread ?? 'new'} unread for ${r.as}, shown in the window you last typed in for ${r.as}; ` +
+      'type here to have the next mail shown here'
 
 /** What RingLoop needs from the world. */
 export interface RingDeps {
@@ -870,6 +881,129 @@ export function askShim(
   })
 }
 
+/** How often a lost consent link to the bag service is opened again, in milliseconds. */
+export const RELINK_MS = 2000
+
+/**
+ * Item 7 (O1, with the red team's C2): this extension's own connection to the bag service, opened at load in the main
+ * interactive session and registered for this omp process (service/consent-register {pid}). The service sends its
+ * consent questions for this omp's windows here (service/consent-ask {id, title, message, ms}) and takes the person's
+ * answer only on this connection (service/consent-answer {id, accepted}: true, false, or null for no answer), never
+ * from a file. service/consent-withdraw {id} dismisses that ask's confirm, and no answer is sent for it. The first registration
+ * answers a secret, kept in this process's memory only; a registration after a service restart presents it, so a
+ * command the model runs cannot take the link over. A lost link is opened again every RELINK_MS.
+ */
+export function consentLink(
+  home: string,
+  pid: number,
+  ask: (title: string, message: string, ms: number, withdrawn: AbortSignal) => Promise<boolean | null>,
+): { close(): void } {
+  let secret: string | null = null
+  let sock: ReturnType<typeof createConnection> | null = null
+  /** The asks whose confirm is open, by id: a withdraw aborts one. */
+  const asking = new Map<string, AbortController>()
+  let closed = false
+  const open = (): void => {
+    if (closed || sock !== null) return
+    let token: string
+    try {
+      token = readFileSync(join(home, 'run', 'service.token'), 'utf8').trim()
+    } catch {
+      return
+    }
+    const c = createConnection({ path: join(home, 'run', 'service.sock') })
+    sock = c
+    let buf = ''
+    const send = (m: Record<string, unknown>): unknown =>
+      c.write(`${JSON.stringify({ jsonrpc: '2.0', ...m })}\n`)
+    const register = { pid, ...(secret === null ? {} : { secret }) }
+    c.setEncoding('utf8')
+    c.on('connect', () =>
+      send({
+        id: 1,
+        method: 'service/hello',
+        params: { contract: 1, token, host: 'omp', cwd: resolve(home) },
+      }),
+    )
+    c.on('data', (chunk: string) => {
+      buf += chunk
+      for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+        let m: Record<string, unknown> = {}
+        try {
+          m = JSON.parse(buf.slice(0, i)) as Record<string, unknown>
+        } catch {}
+        buf = buf.slice(i + 1)
+        const r = m.result as Record<string, unknown> | undefined
+        if (m.id === 1 && r !== undefined)
+          send({ id: 2, method: 'service/consent-register', params: register })
+        if (m.id === 2 && typeof r?.secret === 'string') secret = r.secret
+        const q = m.params as { id?: unknown; title?: unknown; message?: unknown; ms?: unknown } | undefined
+        // The service withdraws an ask (its tool call ended, or its wait ran out): its confirm is dismissed, unanswered.
+        if (m.method === 'service/consent-withdraw') asking.get(String(q?.id))?.abort()
+        if (
+          m.method === 'service/consent-ask' &&
+          typeof q?.title === 'string' &&
+          typeof q.message === 'string'
+        ) {
+          const id = String(q.id)
+          const withdrawn = new AbortController()
+          asking.set(id, withdrawn)
+          void ask(q.title, q.message, Number(q.ms) || 25_000, withdrawn.signal).then((accepted) => {
+            asking.delete(id)
+            if (!withdrawn.signal.aborted)
+              send({ id: `a${id}`, method: 'service/consent-answer', params: { id: q.id, accepted } })
+          })
+        }
+      }
+    })
+    c.on('error', () => undefined)
+    c.on('close', () => {
+      sock = null
+    })
+  }
+  open()
+  const timer = setInterval(open, RELINK_MS)
+  timer.unref()
+  return {
+    close: () => {
+      closed = true
+      clearInterval(timer)
+      sock?.destroy()
+    },
+  }
+}
+
+/**
+ * One consent question over the link (L1): true for Yes, false for No, null when its own timeout aborted it (no
+ * answer). omp's confirm resolves false for No and for Esc alike (Esc gives undefined, and confirm returns result ===
+ * "Yes"), so an Esc cannot be told from a No here and stays a No. A confirm that throws is no answer.
+ *
+ * An abort of omp's session-handler signal is no answer too (falsifier 9b). omp attaches that signal to every dialog
+ * of the captured ctx (runner.ts attachHandlerSignal) and never shows it to the extension; but session_start returns at
+ * once here, and a settled handler's signal never aborts afterwards, so it can only be aborted already when the confirm
+ * opens (a handler that once ran past omp's 30 s budget), and then the confirm resolves false at once. So a false
+ * faster than any person (OMP_FAST_MS) is that abort, or a host's own answer: null, never a No.
+ */
+export async function ompConfirm(
+  ui: Pick<ConsentUi, 'confirm'>,
+  title: string,
+  message: string,
+  ms: number,
+  withdrawn?: AbortSignal,
+  now: () => number = () => performance.now(),
+): Promise<boolean | null> {
+  // Its own timeout, or the service's withdraw: either dismisses the confirm, and either is no answer.
+  const signal =
+    withdrawn === undefined ? AbortSignal.timeout(ms) : AbortSignal.any([AbortSignal.timeout(ms), withdrawn])
+  const t0 = now()
+  const yes = await ui.confirm(title, message, { initialIndex: 1, signal }).catch(() => null)
+  if (yes === true) return true
+  return yes === null || signal.aborted || now() - t0 < OMP_FAST_MS ? null : false
+}
+
+/** A confirm answered No faster than this (ms) was answered by no person (as the service's FAST_ANSWER_MS). */
+export const OMP_FAST_MS = 250
+
 // The parts of omp's ExtensionAPI (@oh-my-pi/pi-coding-agent, 18.17.0) this extension uses, typed here: the package is
 // not a dependency of bag.
 interface Ctx {
@@ -904,6 +1038,7 @@ export default function bagWake(pi: Pi): void {
   let ringWatcher: FSWatcher | null = null
   let consentWatcher: FSWatcher | null = null
   let bridge: string | null = null
+  let link: { close(): void } | null = null
   let facts: (() => void) | null = null
   let loop: WakeLoop | null = null
   let rings: RingLoop | null = null
@@ -1127,6 +1262,10 @@ export default function bagWake(pi: Pi): void {
         })
       }
       askBridge()
+      // Item 7: the consent questions over this extension's own registered connection, opening on No.
+      const confirm = (title: string, message: string, ms: number, withdrawn: AbortSignal) =>
+        ompConfirm(ui, title, message, ms, withdrawn)
+      link ??= consentLink(home, process.pid, confirm)
       ctx.setInterval(refresh, FACTS_MS)
       ctx.setInterval(look, CONSENT_POLL_MS)
     }
@@ -1145,6 +1284,8 @@ export default function bagWake(pi: Pi): void {
     ringWatcher = null
     consentWatcher?.close()
     consentWatcher = null
+    link?.close()
+    link = null
     if (bridge !== null) rmSync(bridge, { force: true })
     bridge = null
     askBridge = null

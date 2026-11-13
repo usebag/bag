@@ -1,8 +1,17 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { type Hop, isAcError, parseEnvelope, serializeRecord, signHop, toHex } from '@usebag/core'
-import { RelayError } from '@usebag/edge'
+import {
+  buildEnvelope,
+  type Hop,
+  isAcError,
+  newThread,
+  parseEnvelope,
+  serializeRecord,
+  signHop,
+  toHex,
+} from '@usebag/core'
+import { keepAddressCopy, LOCAL_RELAY, RelayError } from '@usebag/edge'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { type Config, ConfigError, parseConfig } from '../src/config.ts'
 import {
@@ -323,6 +332,44 @@ describe('openIdentity: keys, chain, lock, store, audit log and edge, as the CLI
       opened.close()
     }
     expect(existsSync(join(tmp.dir, 'state', 'alice', 'mcp.lock'))).toBe(false)
+  })
+
+  it('with no bag service (stdio) a local: row is refused untrusted-root, even with an allowed pair on disk (r3)', async () => {
+    saveKeys(tmp.dir, P.alice)
+    keepAddressCopy(tmp.dir, P.carol.name, addressRecord(P.carol))
+    // The word on and an allowed pair of alice and carol on disk: the raw table the old default trusted.
+    mkdirSync(join(tmp.dir, 'run'), { recursive: true, mode: 0o700 })
+    writeFileSync(join(tmp.dir, 'run', 'local.json'), '{"version":1,"local_delivery":"on"}', { mode: 0o600 })
+    const row = {
+      a: 'alice',
+      b: 'carol',
+      a_addr: P.alice.address,
+      b_addr: P.carol.address,
+      added_at: 1,
+      state: 'allowed',
+    }
+    writeFileSync(join(tmp.dir, 'run', 'local-peers.json'), JSON.stringify({ version: 1, pairs: [row] }), {
+      mode: 0o600,
+    })
+    const opened = openIdentity(config(['--as', 'alice']), deps())
+    try {
+      const rng = seededRng('stdio-local')
+      const env = buildEnvelope({
+        from: P.carol.keys.signing,
+        to: [{ address: P.alice.address, sealingKey: P.alice.keys.sealing.publicKey }],
+        auth: [],
+        type: 'chat.v1',
+        thread: newThread((n) => rng.bytes(n)),
+        body: { text: 'from carol' },
+        ts: T0,
+        rng: (n) => rng.bytes(n),
+      })
+      // recover() re-receives a stored local: row through this same receive path (receiver.ts localRoots).
+      const r = await opened.edge.receive(LOCAL_RELAY, 1, env.bytes)
+      expect([r.state, r.reason]).toEqual(['rejected', 'untrusted-root'])
+    } finally {
+      opened.close()
+    }
   })
 
   it("keeps a --session server's waiting sends in memory, gone at close, and an identity's on disk", () => {

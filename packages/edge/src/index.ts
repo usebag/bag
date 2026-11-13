@@ -232,6 +232,7 @@ export { EdgeError, RelayError } from './ports.ts'
 export { programName } from './program.ts'
 export { RECEIPT_ACK, RECEIPT_HINT, RECEIPT_TYPE } from './receipts.ts'
 export {
+  LOCAL_RELAY,
   MAX_REFUSALS,
   REFUSALS,
   Receiver,

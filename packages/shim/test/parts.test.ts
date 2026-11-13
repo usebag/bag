@@ -633,7 +633,9 @@ describe('run in process', () => {
       )
       await svc.next((m) => m.method === 'initialize')
       expect(await postBridge(home, [process.pid])).toBe(folder)
-      expect(svc.hellos[0]?.client_capabilities).toEqual({ experimental: { 'bag.dev/consent-bridge': {} } })
+      expect(svc.hellos[0]?.client_capabilities).toEqual({
+        experimental: { 'bag.dev/consent-bridge': { pid: expect.any(Number) } }, // the omp pid (item 7)
+      })
       expect(readdirSync(folder)).toEqual([])
       a.handlers.get('SIGINT')?.()
       expect(await done).toBe(0)

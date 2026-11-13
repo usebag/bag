@@ -30,6 +30,7 @@ import {
   EdgeError,
   flushTelemetry,
   keepAliveChoice,
+  LOCAL_RELAY,
   MAX_INVITE_TTL,
   PolicyRefusal,
   parseAuditLine,
@@ -39,6 +40,7 @@ import {
   type Rng,
   readTelemetrySpool,
   Sender,
+  type SendInput,
   type SendResult,
   type TelemetryState,
   telemetryDir,
@@ -178,8 +180,8 @@ function ok(value: Json): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
 }
 
-function failure(code: string, detail: string): CallToolResult {
-  const value = { error: code, detail }
+function failure(code: string, detail: string, more: Json = {}): CallToolResult {
+  const value = { error: code, detail, ...more }
   return { isError: true, content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
 }
 
@@ -225,7 +227,94 @@ export interface ToolContext {
   readonly enterprise?: Partial<EnterprisePorts>
   /** The bag service's calling connection (socket.ts, docs/bag-service.md 5a); absent in the stdio mode. */
   readonly connection?: ServiceConnection
+  /** Delivery between identities of this home (local.ts, spec/SPEC.md 9.2): the bag service's only. */
+  readonly local?: LocalHome
 }
+
+/** The bag service's delivery between identities of one home, by label (service.ts; spec/SPEC.md 9.2). */
+export interface LocalHome {
+  /** Whether the home word is on (run/local.json). */
+  on(): boolean
+  /** The label of the identity of this home at `address` that `from` may pair with locally, the word on; else null. */
+  own(from: string, address: string): string | null
+  /** As own, and only when the two are a pair of the local table. */
+  peer(from: string, address: string): string | null
+  /** The labels `label` is locally paired with. */
+  peers(label: string): readonly string[]
+  /** The pair of a and b (decision 104): allowed, requested, declined (within its cooling) or none. */
+  pairState(
+    a: string,
+    b: string,
+  ): {
+    readonly state: 'allowed' | 'requested' | 'declined' | 'none'
+    /** The row, when there is one: `at` is when its state was set (for declined, the time of the No). */
+    readonly row?: { readonly at?: number }
+  }
+  /** A first touch: the message held for the person's Allow (local-declined in cooling, local-pair-pending past 10). */
+  hold(from: string, to: string, id: string, bytes: Uint8Array): void
+  /** A request with nothing held (pair_invite with for). */
+  request(from: string, to: string): void
+  /** A re-ask in cooling: with yes null, the seconds to wait (null: ask now); else records the sender's answer. */
+  reask(from: string, to: string, yes: boolean | null): number | null
+  /** A request waiting for `label`'s person, for its speaking window `handle` only, marked asked; else null. */
+  pending(
+    label: string,
+    handle: string,
+  ): {
+    readonly from: string
+    readonly peer: { readonly name: string; readonly address: string; readonly root: string }
+    readonly words: { readonly title: string; readonly message: string }
+  } | null
+  /**
+   * A yes or no asked over the registered omp extension link of `window` (item 7); null when it has none. `signal` is
+   * the asking tool call's: its abort withdraws the ask (no answer).
+   */
+  consent(
+    window: ServiceConnection,
+    words: { title: string; message: string },
+    signal?: AbortSignal,
+  ): Promise<boolean | null> | null
+  /** The person's answer to `from`'s request in `to`'s window; null: no dialog was shown (asked again later). */
+  answer(from: string, to: string, yes: boolean | null): Promise<void>
+  /** Whether `label` is hidden (run/local.json v2): it sees none of the others locally and none reaches it. */
+  hidden(label: string): boolean
+  /** Counts one local send from `label` now; the limit it passed ('minute' or 'day'), counting nothing, else null. */
+  admit(label: string): 'minute' | 'day' | null
+  /** Hides `label` or shows it again: only after the person's Yes in a dialog of a window bound to it. */
+  setHidden(label: string, hidden: boolean): void
+  /**
+   * Discovery (decision 103): the word, whether `label` itself takes part (`local`), and every other identity of the
+   * home that does, with its address, relays and whether its unit is open now; none with the word off.
+   */
+  /** The word's changes the window `handle` has not been shown, each once (C1): its next tool result's notice. */
+  notices(handle: string, label: string): readonly string[]
+  home(label: string): {
+    readonly local_delivery: 'on' | 'on (default)' | 'off'
+    readonly local: 'on' | 'off'
+    readonly identities: readonly HomeIdentity[]
+    readonly note: string
+  }
+  /** The address and sealing key of `label`, read from the home's own files, never a relay; resolve-failed without one. */
+  recipient(label: string): { readonly address: string; readonly sealingKey: Uint8Array }
+  /** Hands sealed bytes to `label`: injected into its open unit, else spooled until it opens (no dialog). */
+  deliver(label: string, bytes: Uint8Array): Promise<{ readonly spooled: boolean }>
+}
+
+/** One other identity of the home, as status's home lists it. */
+export interface HomeIdentity {
+  readonly label: string
+  readonly address: string
+  readonly relays: readonly string[]
+  readonly open: boolean
+}
+
+/** What status's home says to the model. */
+export const HOME_NOTE =
+  'your own other identities on this machine; messages to them stay on this machine; never put their addresses in a ' +
+  'message to anyone else'
+/** What status's home says while the word is off. */
+export const HOME_OFF =
+  'local delivery is off in this home: your person turns it on with bag local-delivery on, on a terminal'
 
 /** An --identities server's identities: the label reads default to, and each identity by label. */
 export interface Identities {
@@ -302,6 +391,47 @@ function labelled(c: ToolContext, value: Json): Json {
   return { ...value, resume: `${c.config.label}:${value.resume}` }
 }
 
+/**
+ * What a message the bag service delivered locally adds (decision 103): from_own, the label of the own identity that
+ * sent it, and the line saying so; nothing for any other message.
+ */
+function ownOf(c: ToolContext, m: { readonly via?: string; readonly from: string }): Json {
+  if (m.via !== 'local') return {}
+  const label = [...(c.identities?.all.values() ?? [])].find((s) => s.address === m.from)?.ctx.config.label
+  return label === undefined
+    ? {}
+    : { from_own: label, from_own_note: `from your own identity ${label} on this machine` }
+}
+
+/**
+ * A local pair request waiting for this window's identity (decision 104): its person's dialog, at this tool call, in
+ * this window only. A window that cannot show it answers nothing, and the request waits for the next one.
+ */
+async function askPending(root: ToolContext, c: ToolContext, extra: unknown): Promise<void> {
+  const ask =
+    c.connection === undefined ? null : (c.local?.pending(c.config.label, c.connection.handle) ?? null)
+  if (ask === null) return
+  const pairs = pairingsFor(root, c)
+  const yes = await (
+    pairs?.confirmLocal(extra as never, c.connection, ask.peer, ask.words) ?? Promise.resolve(null)
+  ).catch(() => null)
+  // The answer's own failure is logged, never the person's tool call's (the request stays as the service left it).
+  const failed = (): void => c.log.log('warn', 'local-answer', { ok: false })
+  await c.local?.answer(ask.from, c.config.label, yes).catch(failed)
+}
+
+/** status's home word as home says it ("on (default)" while no run/local.json exists, D4), its pairs, and home. */
+function localStatus(local: LocalHome, label: string): Json {
+  const home = local.home(label)
+  return { local_delivery: home.local_delivery, local_peers: local.peers(label), home }
+}
+
+/** C1: the home word's changes this window was not shown yet, once, on any tool's result: notice and its line. */
+function noticed(c: ToolContext): Json {
+  const seen = c.connection === undefined ? [] : (c.local?.notices(c.connection.handle, c.config.label) ?? [])
+  return seen.length === 0 ? {} : { notice: seen, notice_line: seen.join('; ') }
+}
+
 /** What an --identities server adds to a message it returns: the identity that received it. */
 const asOf = (c: ToolContext): Json => (c.identities === undefined ? {} : { as: c.config.label })
 
@@ -313,19 +443,13 @@ const asOf = (c: ToolContext): Json => (c.identities === undefined ? {} : { as: 
  * open is seen by its key's address (server.ts, tryOpen); only a sibling whose key cannot be read has no known address,
  * so the guards cannot see it. A server of one has no other.
  */
-export function refuseLinks(c: ToolContext, a: Asked): void {
+export function refuseLinks(c: ToolContext, a: Asked, local = false): void {
   const others = [...(c.identities?.all.values() ?? [])].filter((s) => s.ctx !== c && s.address !== null)
   if (others.length === 0) return
-  const named = (t: string): string => {
-    try {
-      return Names.read(c.config.home).resolve(t, 'to')
-    } catch {
-      return t // the tool's body refuses it with its own code
-    }
-  }
-  const to = [a.to ?? []].flat().map((t) => (unnamed(t) ? t : named(t)))
+  const to = [a.to ?? []].flat().map((t) => booked(c, t))
   const own = others.find((s) => to.includes(s.address as string))?.ctx.config.label
-  if (own !== undefined)
+  // A local-only call (localTo) names only own identities locally paired with `c`, and nothing of it reaches a relay.
+  if (own !== undefined && !local)
     refuse('to-own-identity', `${own} is another identity of this server: never send to or pair with it`)
   const self = c.identities?.all.get(c.config.label)
   const threads = (a.threads ?? []).filter((t) => self?.holds(t) !== true)
@@ -333,8 +457,159 @@ export function refuseLinks(c: ToolContext, a: Asked): void {
   if (holder !== undefined)
     refuse('thread-of-other-identity', `that thread is ${holder}'s: answer it as ${holder}`)
   const text = String(JSON.stringify(a.scan))
-  if (others.some((s) => text.includes((s.address as string).slice('ed25519:'.length))))
+  if (!local && others.some((s) => text.includes((s.address as string).slice('ed25519:'.length))))
     refuse('body-names-other-identity', 'the body names another identity of this server: nothing was sent')
+}
+
+/** A recipient as an address: a name through the book of `c`; an address, a handle or an unknown name as given. */
+function booked(c: ToolContext, t: string): string {
+  if (unnamed(t)) return t
+  try {
+    return Names.read(c.config.home).resolve(t, 'to')
+  } catch {
+    return t // the tool's body refuses it with its own code
+  }
+}
+
+/** The code of a local act to or from a hidden identity: to-own-identity, its detail naming the case. */
+export const LOCAL_HIDDEN = 'to-own-identity'
+/** How a hidden identity is shown again: only by the person. */
+export const SHOW_HOW =
+  'your person shows it again with bag local-delivery show <name> on a terminal, or by pair_invite for its own ' +
+  'address in a window bound to it (one dialog)'
+
+/** The tools whose message may go locally (spec/SPEC.md 9.2); delegate, lookup and the rest never do (M4). */
+const LOCAL_TOOLS = ['send', 'ask', 'handoff']
+
+/**
+ * The labels of a call's recipients when it goes locally: the home word on and every recipient an own identity
+ * locally paired with `c` (send, ask, handoff), or for pair_invite the one own identity it may pair with. Else null:
+ * the call is judged by the wire guards, so a mix of local and wire recipients is to-own-identity (M3).
+ */
+export function localTo(c: ToolContext, tool: string, to: Asked['to']): readonly string[] | null {
+  const local = c.local
+  const list = [to ?? []].flat()
+  if (local === undefined || list.length === 0) return null
+  // Any visible own identity: a send with no allowed pair holds for its Allow (decision 104), never goes to a relay.
+  if (tool !== 'pair_invite' && !LOCAL_TOOLS.includes(tool)) return null
+  const pick = local.own
+  const own = list.map((t) => local.own(c.config.label, booked(c, t)))
+  // Every recipient an own identity: a hidden one on either side is local-hidden, never the wire (decision 103).
+  const shut = [c.config.label, ...own].find((l) => l !== null && local.hidden(l))
+  if (tool !== 'pair_invite' && own.every((l) => l !== null) && shut !== undefined)
+    refuse(LOCAL_HIDDEN, `hidden: ${shut} is kept apart from this home's other identities; ${SHOW_HOW}`)
+  const labels = list.map((t) => pick.call(local, c.config.label, booked(c, t)))
+  return labels.every((l) => l !== null) ? (labels as string[]) : null
+}
+
+/** What status says of its id. */
+const STATUS_ID_NOTE =
+  'With id, the id a send, ask or handoff returned: {id, delivery, status}, delivery "local" and status "delivered locally" for a message delivered on this machine to another identity of this home, else delivery "relay" with each target as send answers them.'
+
+/**
+ * The delivery of message `id` of this identity: local when its own audit log holds the local send's line
+ * (sendLocal's delivered-local), else its outbox targets.
+ */
+function deliveryOfId(c: ToolContext, id: string): Json {
+  const detail = (text: string | null): Json => (text === null ? {} : (JSON.parse(text) as Json))
+  const local = c.opened.audit
+    .read()
+    .map((l) => parseAuditLine(l))
+    .filter((l) => l.event === 'publish' && l.id === id)
+    .map((l) => detail(l.detail))
+  // The last local line decides: held (waiting for the Allow), then delivered, or failed with its reason.
+  const last = local.filter((d) => String(d.delivery).endsWith('-local')).at(-1)
+  const why = { declined: 'not delivered: your person declined', 'no answer': 'not delivered: no answer' }
+  if (last?.delivery === 'failed-local') {
+    const status =
+      why[last.reason as keyof typeof why] ??
+      `not delivered locally: ${last.to} could not open it (${last.reason})`
+    return { id, delivery: 'local', status, reason: last.reason }
+  }
+  if (last?.delivery === 'held-local')
+    return { id, delivery: 'local', status: `waiting for ${last.to} to allow` }
+  if (last !== undefined)
+    return { id, delivery: 'local', status: 'delivered locally', spooled: Number(last.spooled) > 0 }
+  const raw = c.opened.edge.status(id)
+  const targets = raw.map((t) => ({ relay: t.relay, status: t.state, reason: t.reason }))
+  return { id, delivery: 'relay', status: raw.length === 0 ? 'unknown' : deliveryOf(raw).line, targets }
+}
+
+/** The codes of a first touch refused (decision 104, D2): the pair declined, in cooling; too many held already. */
+export const LOCAL_DECLINED = 'local-declined'
+export const LOCAL_PENDING = 'local-pair-pending'
+/** At most this many messages are held for one pair's Allow; a request no one answers lasts this many days. */
+export const LOCAL_HELD_MAX = 10
+export const LOCAL_ASK_DAYS = 7
+/** The Allow dialog's words after "<a> on this machine wants to message <b>. Allow both ways?". */
+export const ALLOW_TAIL =
+  'Their messages stay on this machine, never go to a relay, and reach each agent as mail from your own identity.'
+/** What a held send's answer says. */
+export const REQUESTED_NOTE = (to: string): string =>
+  `pairing requested: ${to}'s window will ask your person to allow it; the message waits until then`
+
+/** A sending identity's local sends, at most (S5): past either, to-own-identity with the detail rate, audited. */
+export const LOCAL_PER_MINUTE = 20
+export const LOCAL_PER_DAY = 200
+
+/** What a local send's answer says. */
+export const LOCAL_NOTE =
+  'delivered on this machine to another identity of this home: no relay was used; spooled: true means it is delivered when that identity opens'
+
+/**
+ * A local send (spec/SPEC.md 9.2): the envelope a wire send would build, signed and sealed (Edge.seal), handed to
+ * each recipient's edge by the service; no resolver, outbox or relay (M3). The audit records it delivered-local.
+ */
+async function sendLocal(
+  c: ToolContext,
+  labels: readonly string[],
+  input: Omit<SendInput, 'to'>,
+): Promise<Json> {
+  const local = c.local as LocalHome
+  const over = local.admit(c.config.label)
+  if (over !== null) {
+    const detail = { relay: LOCAL_RELAY, limit: over }
+    c.opened.edge.audit.record({
+      event: 'rate-limit',
+      decision: 'reject',
+      from: c.opened.identity.address,
+      detail,
+    })
+    refuse(
+      'to-own-identity',
+      `rate: at most ${LOCAL_PER_MINUTE} local sends a minute and ${LOCAL_PER_DAY} a day`,
+    )
+  }
+  const sealed = c.opened.edge.seal(
+    input,
+    labels.map((l) => local.recipient(l)),
+  )
+  let spooled = 0
+  const from = c.config.label
+  // A recipient with no allowed pair: the first touch holds the message for its person's Allow (decision 104).
+  const held = labels.filter((l) => local.pairState(from, l).state !== 'allowed')
+  for (const label of held) local.hold(from, label, sealed.id, sealed.bytes)
+  for (const label of labels.filter((l) => !held.includes(l)))
+    if ((await local.deliver(label, sealed.bytes)).spooled) spooled++
+  const [delivery, decision] =
+    held.length > 0 ? ['held-local', 'queue' as const] : ['delivered-local', 'accept' as const]
+  const detail = { relay: LOCAL_RELAY, delivery, recipients: labels.length, spooled, to: held.join(' ') }
+  c.opened.edge.audit.record({
+    event: 'publish',
+    decision,
+    id: sealed.id,
+    from: c.opened.identity.address,
+    detail,
+  })
+  if (held.length > 0)
+    return {
+      id: sealed.id,
+      thread: sealed.thread,
+      delivery: 'local',
+      pairing: 'requested',
+      note: REQUESTED_NOTE(held.join(', ')),
+    }
+  return { id: sealed.id, thread: sealed.thread, delivery: 'local', spooled: spooled > 0, note: LOCAL_NOTE }
 }
 
 /**
@@ -349,14 +624,18 @@ async function guard(
   body: (c: ToolContext, resume: string | undefined) => Promise<Json>,
 ): Promise<CallToolResult> {
   const began = performance.now()
+  // The identity the call acts as: its notices are its own, never the root context's (pick may throw first: none).
+  let picked: ToolContext | undefined
   try {
     ctx.bind(extra._meta)
     const { c, resume } = pick(ctx, tool, asked)
-    refuseLinks(c, asked)
+    picked = c
+    await askPending(ctx, c, extra)
+    refuseLinks(c, asked, localTo(c, tool, asked.to) !== null)
     const value = await body(c, resume)
     ctx.log.log('info', 'tool', { tool, ok: true })
     counted(tool, 'ok', began)
-    return ok(labelled(c, value))
+    return ok({ ...labelled(c, value), ...noticed(c) })
   } catch (e) {
     // A server whose identity another session holds (a --session server exits at start instead) answers status and
     // facts with who holds it, every other tool with the error.
@@ -368,7 +647,7 @@ async function guard(
     const code = codeOf(e)
     ctx.log.log('warn', 'tool', { tool, ok: false, code })
     counted(tool, code, began)
-    return failure(code, detailOf(e, code))
+    return failure(code, detailOf(e, code), picked === undefined ? {} : noticed(picked))
   }
 }
 
@@ -787,6 +1066,15 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         { as, to, scan: [type, body], threads: thread && [thread.id] },
         extra,
         async (c) => {
+          const local = localTo(c, 'send', to)
+          if (local !== null) {
+            const input = { type, body, session: SESSION, ...(receipt ? { receipt } : {}) }
+            return sendLocal(
+              c,
+              local,
+              thread === undefined ? input : { ...input, thread: checkThread(thread) },
+            )
+          }
           const book = to.every(unnamed) ? null : Names.read(c.config.home)
           // A handle is resolved here, before the org's gate, which judges the address; and only here
           // can the own-identity guard see the address a handle names.
@@ -866,7 +1154,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         }
         const book = Names.read(c.config.home)
         const page = c.desk.inbox(query, c.connection?.handle)
-        const messages = page.messages.map((m) => ({ ...book.named(m), ...asOf(c) }))
+        const messages = page.messages.map((m) => ({ ...book.named(m), ...ownOf(c, m), ...asOf(c) }))
         const refused = c.subscriptions.refused()
         return { ...page, messages, ...policyView(outbound(c)), ...refused, note: TRUST_NOTE }
       }),
@@ -908,7 +1196,11 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         // A mailbox whose every subscription has ended ends the wait at once, and the call says so.
         const live = { ...extra, signal: AbortSignal.any([extra.signal, c.subscriptions.dead]) }
         const out = await waitOnce(c, 'wait', at, token !== undefined, live)
-        if ('message' in out) return { message: { ...book.named(out.message), ...asOf(c) }, note: TRUST_NOTE }
+        if ('message' in out)
+          return {
+            message: { ...book.named(out.message), ...ownOf(c, out.message), ...asOf(c) },
+            note: TRUST_NOTE,
+          }
         const refused = c.subscriptions.refused()
         return refused === null ? out : { timed_out: false, pending: false, resume: out.resume, ...refused }
       }),
@@ -1039,25 +1331,38 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             true,
             extra,
           )
-          return 'message' in out ? { answer: book.named(out.message), note: TRUST_NOTE } : out
+          return 'message' in out
+            ? { answer: { ...book.named(out.message), ...ownOf(c, out.message) }, note: TRUST_NOTE }
+            : out
         }
         if (to === undefined || body === undefined)
           throw new ToolError('usage', 'ask takes to and body, or resume alone')
-        const { to: recipients, relays } = await c.opened.edge.resolver.addresses([book.resolve(to, 'to')])
+        const local = localTo(c, 'ask', to)
+        const { to: recipients, relays } =
+          local === null
+            ? await c.opened.edge.resolver.addresses([book.resolve(to, 'to')])
+            : { to: [], relays: [] }
         refuseLinks(c, { to: recipients }) // a handle's address
         const thread = newThread(coreRng(c.rng))
         c.opened.edge.register(thread.id, c.desk.handler)
         const cursor = c.desk.frontier()
         const question = { to: recipients, relays, type: QUESTION_TYPE, body, thread, session: SESSION }
-        const result = await sendThrough(await signerOf(c, 'ask'), question, true)
+        const result = local === null ? await sendThrough(await signerOf(c, 'ask'), question, true) : null
         // A question the org's gate holds is not sent: no answer can come, so nothing is waited for.
-        if ('held' in result) return heldOf(result)
-        const waiting = 'waiting' in result ? waitingOf(result) : null
-        const asked = waiting ?? (await sent(c, result as SendResult, recipients))
+        if (result !== null && 'held' in result) return heldOf(result)
+        const waiting = result !== null && 'waiting' in result ? waitingOf(result) : null
+        const asked =
+          local !== null
+            ? await sendLocal(c, local, question)
+            : (waiting ?? (await sent(c, result as SendResult, recipients)))
         const deadline = now + (timeout_s ?? c.config.maxToolSeconds)
         const out = await waitOnce(c, 'ask', { cursor, deadline, thread: thread.id }, false, extra)
         return 'message' in out
-          ? { answer: book.named(out.message), question: asked, note: TRUST_NOTE }
+          ? {
+              answer: { ...book.named(out.message), ...ownOf(c, out.message) },
+              question: asked,
+              note: TRUST_NOTE,
+            }
           : { ...out, ...waiting, question: asked }
       }),
   )
@@ -1085,6 +1390,13 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         address(to, 'to')
         const ids = [...new Set(threads.map(threadId))]
         const body = note === undefined ? { threads: ids } : { threads: ids, note }
+        const local = localTo(c, 'handoff', to)
+        if (local !== null) {
+          const result = await sendLocal(c, local, { type: HANDOFF_TYPE, body, session: SESSION })
+          c.desk.handOff(ids, to)
+          return { ...result, handed_off: ids }
+        }
+        refuseLinks(c, { to: [to] }) // the word turned off since the guard: the wire rule
         const out = await sendThrough(
           await signerOf(c, 'handoff'),
           { to: [to], type: HANDOFF_TYPE, body, session: SESSION },
@@ -1102,12 +1414,16 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     'status',
     {
       title: 'Identity and mailbox status',
-      description: `${DESCRIPTIONS.status} ${STATUS_NOTE} ${REFUSED_NOTE} ${HELD_ANSWER_NOTE}`,
-      inputSchema: { as: asSchema },
+      description: `${DESCRIPTIONS.status} ${STATUS_NOTE} ${REFUSED_NOTE} ${HELD_ANSWER_NOTE} ${STATUS_ID_NOTE}`,
+      inputSchema: {
+        as: asSchema,
+        id: z.string().optional().describe("the id a send returned: that message's delivery alone"),
+      },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ as }, extra) =>
+    ({ as, id }, extra) =>
       boundGuard(ctx, 'status', { as }, extra, async (c) => {
+        if (id !== undefined) return deliveryOfId(c, id)
         // With several identities and no as: the summary of all; never on a service connection, which sees only its own.
         if (as === undefined && c.identities !== undefined && c.connection === undefined) {
           const { defaultLabel, all } = c.identities
@@ -1156,6 +1472,8 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
                 keep_alive_choice: keepAliveChoice(c.config.home, c.config.label),
               }),
           receipts_to: c.config.receiptsTo,
+          // In the bag service: the home word, and only the labels this identity is locally paired with (spec 9.2).
+          ...(c.local === undefined ? {} : localStatus(c.local, c.config.label)),
           started_at: iso(c.startedAt),
           uptime_s: c.clock.now() - c.startedAt,
           waiting: c.opened.edge.waiting().map(waitingOf),

@@ -309,6 +309,19 @@ describe('rings and notices', () => {
     h.shim.close()
   })
 
+  it('passes a local pair request count on, and words the quiet notice for a request with nothing unread', async () => {
+    const rung: Ring[] = []
+    const h = harness(home, { ring: (r) => rung.push(r) })
+    await up(h)
+    svc.notify('service/ring', { as: 'omp', unread: 0, requests: 1, speaking: false, at: 'x' })
+    const quiet = await h.next((m) => m.method === 'notifications/message')
+    expect((quiet.params as { data?: unknown }).data).toBe(
+      'a request from your own identity waits for omp; another window asks your person',
+    )
+    expect(rung).toEqual([{ n: 1, as: 'omp', unread: 0, requests: 1, speaking: false, at: 'x' }])
+    h.shim.close()
+  })
+
   it('never moves the doorbell on a service connection', async () => {
     const h = harness(home, { ring: () => {} })
     await up(h)

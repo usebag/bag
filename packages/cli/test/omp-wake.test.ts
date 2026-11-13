@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -25,6 +26,7 @@ import bagWake, {
   ConsentLoop,
   type ConsentUi,
   consentFiles,
+  consentLink,
   holderOf,
   IDLE_MS,
   LOOP_AT,
@@ -32,8 +34,11 @@ import bagWake, {
   loopLines,
   mtimeOf,
   namesOf,
+  OMP_FAST_MS,
+  ompConfirm,
   PENDING_TEXT,
   POLL_MS,
+  RELINK_MS,
   RING_POLL_MS,
   type RingDoc,
   RingLoop,
@@ -806,6 +811,8 @@ describe('the consent bridge (decision 83h)', () => {
     handlers.get('session_start')?.({}, ctx)
     const bridge = JSON.parse(readFileSync(join(dir, '.bridge'), 'utf8'))
     expect([bridge.v, bridge.pid, bridge.host, bridge.mode]).toEqual([1, process.pid, 'omp', 'tui'])
+    // The local pair's dialog goes over the consent link, never a file: the .bridge lists no kinds.
+    expect(bridge.kinds).toBeUndefined()
     expect(statSync(join(dir, '.bridge')).mode & 0o777).toBe(0o600)
     const soon = new Date(Date.now() + 60_000).toISOString()
     writeFileSync(join(dir, `${ID}.json`), request({ expires_at: soon }), { mode: 0o600 })
@@ -1422,6 +1429,21 @@ describe('the service: channel, bridge and ring', () => {
     o.emit('session_shutdown')
   })
 
+  it('a quiet ring for a local pair request with nothing unread says a request waits, not 0 unread', () => {
+    const home = join(tmp.dir, `h${n++}`)
+    const x = files(home)
+    x.bound()
+    const o = session(project(home))
+    o.emit('session_start')
+    x.ring({ speaking: false, unread: 0, requests: 1 })
+    o.poll()
+    expect(o.sent).toEqual([])
+    expect(o.status).toEqual([
+      'bag: a request from your own identity waits for bob; the window you last typed in for bob asks you',
+    ])
+    o.emit('session_shutdown')
+  })
+
   it('a .ring-seen the shim removed is written again at the next ring, and the old ring does not wake again', () => {
     const home = join(tmp.dir, `h${n++}`)
     const x = files(home)
@@ -1439,4 +1461,131 @@ describe('the service: channel, bridge and ring', () => {
     expect(readFileSync(x.f('ring-seen'), 'utf8')).toBe(`${process.pid} 2\n`)
     o.emit('session_shutdown')
   })
+})
+
+describe("ompConfirm: a link question's answer (L1)", () => {
+  /** omp's confirm as the research read it: resolves the person's choice, else false once its signal aborts. */
+  const ui = (said: boolean | 'wait' | 'throw', opened: unknown[] = []): Pick<ConsentUi, 'confirm'> => ({
+    confirm: (_t, _m, options) => {
+      opened.push(options?.initialIndex)
+      if (said === 'throw') return Promise.reject(new Error('ui gone'))
+      if (said !== 'wait') return Promise.resolve(said)
+      return new Promise((r) => options?.signal?.addEventListener('abort', () => r(false)))
+    },
+  })
+
+  /** A clock that moves `ms` between the confirm's open and its answer. */
+  const after = (ms: number) => {
+    let t = 0
+    return () => {
+      t += ms
+      return t
+    }
+  }
+
+  it('Yes is true and an explicit No (or an Esc, which omp cannot tell apart) is false, opening on No', async () => {
+    const opened: unknown[] = []
+    expect(await ompConfirm(ui(true, opened), 'T', 'M', 1000)).toBe(true)
+    expect(await ompConfirm(ui(false, opened), 'T', 'M', 1000, undefined, after(OMP_FAST_MS))).toBe(false)
+    expect(opened).toEqual([1, 1])
+  })
+
+  it("a false faster than any person (omp's aborted session signal resolves at once) is null, never a No (9b)", async () => {
+    expect(await ompConfirm(ui(false), 'T', 'M', 1000, undefined, after(1))).toBeNull()
+    expect(await ompConfirm(ui(true), 'T', 'M', 1000, undefined, after(1))).toBe(true)
+  })
+
+  it('a confirm its own timeout aborted, or one that throws, is null: no answer, never a No', async () => {
+    expect(await ompConfirm(ui('wait'), 'T', 'M', 20)).toBeNull()
+    expect(await ompConfirm(ui('throw'), 'T', 'M', 1000)).toBeNull()
+  })
+
+  it('a confirm the service withdraws is dismissed at once and is null (item j)', async () => {
+    const withdrawn = new AbortController()
+    const asked = ompConfirm(ui('wait'), 'T', 'M', 60_000, withdrawn.signal)
+    withdrawn.abort()
+    expect(await asked).toBeNull()
+  })
+})
+
+describe('the consent link to the bag service (item 7, C2)', () => {
+  it('registers for its pid, answers each ask over the link, after a restart presents the secret', async () => {
+    const home = join('/tmp', `bwl-${process.pid}-${n++}`)
+    mkdirSync(join(home, 'run'), { recursive: true, mode: 0o700 })
+    writeFileSync(join(home, 'run', 'service.token'), 'ab'.repeat(32))
+    const got: Record<string, unknown>[] = []
+    const conns: import('node:net').Socket[] = []
+    const server: Server = createServer((c) => {
+      conns.push(c)
+      let buf = ''
+      c.on('data', (b: Buffer) => {
+        buf += b.toString()
+        for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+          const m = JSON.parse(buf.slice(0, i)) as Record<string, unknown>
+          buf = buf.slice(i + 1)
+          got.push(m)
+          const answer =
+            m.method === 'service/consent-register' ? { secret: 'f'.repeat(64) } : { contract: 1 }
+          if (m.id !== undefined && m.method !== 'service/consent-answer')
+            c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: answer })}\n`)
+        }
+      })
+    })
+    await new Promise<void>((r) => server.listen(join(home, 'run', 'service.sock'), () => r()))
+    const asked: string[] = []
+    let dismissed = false
+    const l = consentLink(home, 4242, async (title, message, _ms, withdrawn) => {
+      asked.push(`${title} | ${message}`)
+      // W: a confirm left open until the service withdraws it.
+      if (title === 'W')
+        return new Promise((r) =>
+          withdrawn.addEventListener('abort', () => {
+            dismissed = true
+            r(null)
+          }),
+        )
+      return title === 'T' ? true : null
+    })
+    const until = async (f: () => boolean, ms = 3000) => {
+      for (let i = 0; i < ms / 10 && !f(); i++) await new Promise((r) => setTimeout(r, 10))
+    }
+    const registers = () => got.filter((m) => m.method === 'service/consent-register').map((m) => m.params)
+    await until(() => registers().length === 1)
+    expect(got[0]?.params).toMatchObject({ token: 'ab'.repeat(32), host: 'omp' })
+    expect(registers()).toEqual([{ pid: 4242 }])
+    const ask = { method: 'service/consent-ask', params: { id: 'q1', title: 'T', message: 'M', ms: 1000 } }
+    conns[0]?.write(`${JSON.stringify({ jsonrpc: '2.0', ...ask })}\n`)
+    await until(() => got.some((m) => m.method === 'service/consent-answer'))
+    expect(asked).toEqual(['T | M'])
+    expect(got.find((m) => m.method === 'service/consent-answer')?.params).toEqual({
+      id: 'q1',
+      accepted: true,
+    })
+    // No answer (an aborted confirm) goes over the link as accepted null, never false.
+    const none = { method: 'service/consent-ask', params: { id: 'q2', title: 'U', message: 'M', ms: 1000 } }
+    conns[0]?.write(`${JSON.stringify({ jsonrpc: '2.0', ...none })}\n`)
+    const answers = () => got.filter((m) => m.method === 'service/consent-answer')
+    await until(() => answers().length === 2)
+    expect(answers()[1]?.params).toEqual({ id: 'q2', accepted: null })
+    // A withdraw (the tool call ended, or the wait ran out) dismisses the open confirm, and no answer is sent for it.
+    const open = { method: 'service/consent-ask', params: { id: 'q3', title: 'W', message: 'M', ms: 25_000 } }
+    conns[0]?.write(`${JSON.stringify({ jsonrpc: '2.0', ...open })}\n`)
+    await until(() => asked.length === 3)
+    conns[0]?.write(
+      `${JSON.stringify({ jsonrpc: '2.0', method: 'service/consent-withdraw', params: { id: 'q3' } })}\n`,
+    )
+    await until(() => dismissed)
+    expect(dismissed).toBe(true)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(answers().map((m) => (m.params as { id: string }).id)).toEqual(['q1', 'q2'])
+    // The service restarts (the link's connection ends): it opens again and presents the secret, kept in memory only.
+    conns[0]?.destroy()
+    await until(() => registers().length === 2, RELINK_MS + 2000)
+    expect(registers()[1]).toEqual({ pid: 4242, secret: 'f'.repeat(64) })
+    expect(readdirSync(join(home, 'run')).sort()).toEqual(['service.sock', 'service.token'])
+    l.close()
+    for (const c of conns) c.destroy()
+    await new Promise<void>((r) => server.close(() => r()))
+    rmSync(home, { recursive: true, force: true })
+  }, 10_000)
 })

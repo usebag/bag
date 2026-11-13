@@ -7,9 +7,9 @@
 
 /**
  * The commit whose deploy/telemetry/src/schema.ts, builds.ts and index.ts these values copy (the package versions
- * 0.1.0, 0.1.1, 0.1.2, 0.2.0, 0.2.1, 0.2.2, 0.2.3, 0.3.0 and 0.4.0 as builds, and `version` as a command).
+ * 0.1.0, 0.1.1, 0.1.2, 0.2.0, 0.2.1, 0.2.2, 0.2.3, 0.3.0, 0.4.0 and 0.4.1 as builds, and `version` as a command).
  */
-export const TELEMETRY_SCHEMA_COMMIT = '3a1400e1750d91b7330593edd7a001bd3d16e44a'
+export const TELEMETRY_SCHEMA_COMMIT = 'a3be93daa38c8968b41858039882339b1c2d03db'
 
 /**
  * The builds a report's `build` may name (builds.ts): the published versions of the npm package @usebag/bag, and the
@@ -25,6 +25,7 @@ export const BUILDS: readonly string[] = [
   '0.2.3',
   '0.3.0',
   '0.4.0',
+  '0.4.1',
 ]
 
 /** The largest count a report may carry: 2^19. Every count is 0 or a power of two up to it. */
@@ -97,7 +98,7 @@ export const SETS = {
     identities-invalid name-exists name-unknown names-invalid no-forward-secrecy no-identity no-relays no-session-file
     no-tty not-individual rotation session-principal single-copy trust-invalid unhealthy unsafe-path window-open
     as-required body-names-other-identity cancelled thread-of-other-identity to-own-identity unknown-identity usage
-    draining not-bound
+    draining not-bound local-declined local-pair-pending
     error other
   `),
   // The buckets of a duration, in the order a histogram lists them.

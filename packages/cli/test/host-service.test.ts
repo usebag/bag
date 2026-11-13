@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { keepAliveChoice } from '@usebag/edge'
 import { afterAll, describe, expect, it } from 'vitest'
 import { serviceInstall, servicePlist, serviceUnit } from '../src/commands/host-service.ts'
+import { visibleLine } from '../src/commands/local.ts'
 import { stableNode } from '../src/packaged.ts'
 import { stage } from '../src/stage.ts'
 import { type TestIo, tempDir, testIo } from './support/io.ts'
@@ -762,9 +763,16 @@ describe("keygen, init and restore put the identity in the service's identities.
     )
     const bob = await keygen('bob')
     expect(bob.out).toHaveLength(1)
-    expect(bob.err).toEqual([`added bob to ${file} for the bag service (relays ${RELAY} ${RELAY2})`])
+    // With the word on (the default), a served identity's visible line follows (C4).
+    expect(bob.err).toEqual([
+      `added bob to ${file} for the bag service (relays ${RELAY} ${RELAY2})`,
+      visibleLine('bob'),
+    ])
     const carol = await keygen('carol')
-    expect(carol.err).toEqual([`added carol to ${file} for the bag service (relays ${RELAY} ${RELAY2})`])
+    expect(carol.err).toEqual([
+      `added carol to ${file} for the bag service (relays ${RELAY} ${RELAY2})`,
+      visibleLine('carol'),
+    ])
     const doc = json(file) as { identities: Record<string, unknown>[] }
     expect(doc.identities).toEqual([
       {

@@ -35,6 +35,8 @@ export interface Ringable {
 export interface Ring {
   readonly as: string
   readonly unread: number
+  /** The local pair requests waiting for this identity's person (decision 104); present only when there are any. */
+  readonly requests?: number
   readonly speaking: boolean
   readonly at: string
 }
@@ -51,6 +53,8 @@ export interface WakeRouterOptions {
   readonly timers: Timers
   /** The unread count of an identity when its batch rings (its desk's unread list). */
   readonly unread: (label: string) => number
+  /** The local pair requests waiting for an identity's person, asked at its speaking window's next tool call. */
+  readonly requests?: (label: string) => number
   readonly settleMs?: number
 }
 
@@ -124,16 +128,18 @@ export class WakeRouter {
     }
   }
 
-  /** Rings `label`'s connections now, unless nothing is unread; returns the rings sent, by handle. */
+  /** Rings `label`'s connections now, unless nothing is unread and no request waits; the rings sent, by handle. */
   ring(label: string): ReadonlyMap<string, Ring> {
     const speaking = this.speaking(label)
     const sent = new Map<string, Ring>()
     const at = new Date(this.#o.clock.now() * 1000).toISOString()
-    const unread = this.#o.unread(label)
-    // A batch that a pending wait took whole leaves nothing unread: that call already holds it, so nothing rings.
-    if (unread === 0) return sent
+    const [unread, requests] = [this.#o.unread(label), this.#o.requests?.(label) ?? 0]
+    // A batch that a pending wait took whole leaves nothing unread: that call already holds it, so nothing rings. A
+    // local pair request is held in the spool, never unread: it rings by its own count (the dialog needs a tool call).
+    if (unread + requests === 0) return sent
     for (const [handle, seat] of this.#seats.get(label) ?? []) {
-      const ring: Ring = { as: label, unread, speaking: handle === speaking, at }
+      const more = requests > 0 ? { requests } : {}
+      const ring: Ring = { as: label, unread, ...more, speaking: handle === speaking, at }
       try {
         seat.conn.notify(RING, { ...ring })
         sent.set(handle, ring)

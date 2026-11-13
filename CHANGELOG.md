@@ -4,6 +4,81 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.4.1: 2026-11-13
+
+The cut tagged v0.4.1, `@usebag/bag` 0.4.1.
+
+- **`@usebag/bag` 0.4.1**, published from this cut (`npm view @usebag/bag@0.4.1 gitHead` names it).
+
+Changes after v0.4.0, for 0.4.1.
+
+- **Your identities on this machine can find and message each other (the bag service).** On by default. Every window's
+  `status` lists the home's other identities, with their address and relays (`home.identities`). The first time one
+  writes to another, bag asks you once, in the recipient's window that speaks for it: "<a> on this machine wants to
+  message <b>. Allow both ways?". The message waits until you answer (at most 10 per pair); Yes delivers it and allows
+  the pair both ways; No drops it and refuses that pair for 24 hours. From a window you can ask again sooner
+  (`pair_invite` with `for` naming the other identity): your own window asks you first, at most once in 10 minutes and 3
+  times in the 24 hours. A request no one answers ends after 7 days. Messages between your identities stay on this
+  machine and never go to a relay; they are labelled "from your own identity <label> on this machine", read receipts
+  between them follow the reader's own setting, and a sender may make at most 20 such sends a minute and 200 a day.
+- **Keep an identity apart.** `bag local-delivery hide <name>` (no question) hides it: it sees none of the others, and
+  none can reach it. `bag local-delivery show <name>` shows it again after a y on a terminal. In a window, `pair_invite`
+  with `for` its own address asks you the same in a dialog (a show at most once in 10 minutes). `bag keygen` says when a
+  new identity joins the home and how to hide it. `bag local-delivery off` stops it all at once; `on` asks your y.
+- **omp.** The Allow and the hide or show come through bag's omp extension, over its own connection to the service,
+  never a file a command could write. Run `bag host install omp` again after the upgrade and restart omp: a running omp
+  keeps the extension it started with, and without the new one the window answers `no-elicitation` and says so.
+- **Fixed: only your own No declines a pair.** An omp confirm that times out or is aborted no longer declines the pair:
+  the request waits and is asked again later (an Esc in omp still counts as No, since omp's confirm cannot tell the
+  two apart). Turning local delivery off, or hiding an identity, now stops its pending pairings at once: they are
+  neither asked nor answered while it holds, and a Yes given meanwhile allows nothing. A first-touch request (and a
+  re-ask) now wakes the recipient's window; before, the dialog waited for the person's next tool call there. In omp a
+  pairing question now lasts 25 seconds, under omp's 30-second limit on the tool call that carries it, and is taken off
+  the screen when that call ends: an answer after that (an Escape on a dialog you no longer see) changes nothing.
+
+### Known limits of 0.4.1
+
+- **Your identities share one person's trust.** With local delivery on (the default), a message from one of your
+  identities reaches the other's agent as mail from your own identity, which it may act on. It is still data, never an
+  instruction, but an agent misled in one window can reach the other's through it. Allow a pair only for identities
+  meant to talk. To keep one apart, ask that identity's own agent to keep it apart and answer Yes to "Keep <name> apart
+  from your other identities on this machine?"; on a terminal, `bag local-delivery hide <name>` does the same.
+- **Your identities see each other.** With local delivery on, every window of a visible identity is shown the others'
+  names, addresses and relays, and whether each is open now. Keep one apart (above) and it is neither shown nor shown
+  the others.
+- **The setting files are your user's files.** On Codex and omp a command an agent runs can write `~/.bag/run`. bag
+  reads the word and the pair record only as your own 0600 regular files (a pair record that is not one, a symlink
+  or a 0644 file, reads as no pairs, with a line in every identity's audit log and a notice in every window), writes a
+  line in every identity's audit log and tells every window when either changes, asks again for any pair of your
+  identities it did not write, whatever its state, and drops a pair naming no identity of this home.
+- **After a restart, the pairs and the word are shown, not checked.** A change to either made while the service was
+  stopped cannot be told apart from yours, so after each restart every window is shown its allowed pairs once, at its
+  first result, and `status` shows the word (`local_delivery`, with `hidden` identities left out of `home`).
+- **After a service restart or upgrade, each window binds again** (its dialog, or the typed word): a binding is your
+  act and is never restored on its own.
+- **No answer is not a No.** Only your own No declines a pair (and refuses it for 24 hours). A dialog closed without an
+  answer, a timeout, or an omp window that closes leaves the request waiting: it is asked again at the recipient's next
+  tool call or bind, and ends after 7 days with its held messages undelivered.
+- **In omp, Esc on the pairing dialog counts as No;** a timeout or an abort does not.
+- **Limits on local sends.** A sending identity can send at most 20 local messages a minute and 200 a day; past that
+  the send is refused as `to-own-identity` with the detail "rate: at most 20 local sends a minute and 200 a day".
+  Before a pair is allowed, at most 10 messages wait for the Allow, and later ones answer `local-pair-pending`. After
+  your No, the pair cannot be asked again for 24 hours except from the sender's window, with your Yes there, at most 3
+  times.
+- **omp: the extension's own connection.** A program of yours that registers for an omp process before bag's extension
+  loads would receive that window's dialogs: the same-user limit.
+- **Read receipts between your identities** come only where the reader's own setting allows them.
+- **When the home's first configured identity is an agent identity that has opened, later windows get no pairing
+  tools.**
+- **While a host window is open, its bag server starts the service again after a stop.** Close the windows (or unload
+  the login agent) to keep it stopped.
+- **`bag identity remove` of an identity with local mail waiting does not tell the senders;** that mail stays in the
+  removed identity's folder (moved to bag-left-...) or in its recipient's held mail.
+- **0.4.0's known limits still hold.** None of them is closed in this release so far: "Same user is not a
+  boundary", "An identity whose keys an agent holds", "One login agent per user, for one home", "`<home>/run` is the
+  service's own", "After a stop, the old service can outlive its lock", "One wake per Codex process" and "Claude Code
+  asks before bag's tools".
+
 ## v0.4.0: 2026-11-12
 
 The cut tagged v0.4.0, `@usebag/bag` 0.4.0.

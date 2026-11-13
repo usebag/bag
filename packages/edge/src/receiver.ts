@@ -84,7 +84,12 @@ export interface ReceiverOptions {
   readonly onError?: (error: unknown) => void
   /** Takes a read receipt, before the type check: the sender's accept list is for messages, and a receipt is none. */
   readonly receipts?: Pick<Receipts, 'take'>
+  /** Roots trusted for a row whose relay is LOCAL_RELAY only (the bag service's own injection, spec/SPEC.md 9.2). */
+  readonly localRoots?: () => readonly string[]
 }
+
+/** The relay of a row the bag service injects between identities of one home: no relay URL can be it (not http). */
+export const LOCAL_RELAY = 'local:'
 
 /**
  * The error-frame codes that refuse a subscription's handshake whatever the timing: a proof that does not verify, a
@@ -512,7 +517,8 @@ export class Receiver {
           until,
         })
       }
-      decision = await policy.decide(chain, env.auth, { ts: env.ts, now, waived, pinned })
+      const local = row.relay === LOCAL_RELAY ? (this.#o.localRoots?.() ?? []) : []
+      decision = await policy.decide(chain, env.auth, { ts: env.ts, now, waived, pinned, local })
     } catch (e) {
       // A verdict rejects; a local fault (the store, say) propagates, and the row stays received for recover().
       if (!isAcError(e)) throw e

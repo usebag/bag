@@ -33,6 +33,7 @@ import {
   type RecordSource,
   type RelayClient,
   type Rng,
+  type SendInput,
   SqliteStore,
   START_TOLERANCE,
   type Subscription,
@@ -85,6 +86,10 @@ export interface OpenDeps {
   readonly onArrival?: (relay: string) => void
   /** The edge's doorbell: called at most once per message the edge accepts, in Receiver.ack. */
   readonly doorbell?: () => void
+  /** A local row's receipt, sent on this machine by the bag service (edge.ts localSend). */
+  readonly localSend?: (input: SendInput) => Promise<unknown>
+  /** The bag service's local roots of this identity, from its reconciled pair table (q1); with none, no roots (r3). */
+  readonly localRoots?: () => readonly string[]
   /** The edge's wait before resubscription attempt n (default the edge's: 250 ms × 2^n, at most 30 s). */
   readonly resubscribeDelayMs?: (attempt: number) => number
   /** The keys, already read (the bag service reads them first, so a Keychain dialog never stalls another identity). */
@@ -493,7 +498,11 @@ export function openIdentity(config: Config, deps: OpenDeps): Opened {
       allowPrivateRelays: config.allowPrivateRelays,
       ...(deps.resubscribeDelayMs === undefined ? {} : { resubscribeDelayMs: deps.resubscribeDelayMs }),
       ...(deps.doorbell === undefined ? {} : { doorbell: deps.doorbell }),
+      ...(deps.localSend === undefined ? {} : { localSend: deps.localSend }),
       accepted: deps.accepted,
+      // Trusted for a row the bag service injects (LOCAL_RELAY) only, from its reconciled table; with no service (stdio)
+      // there are none, so a stored local: row that recover() re-receives is refused, whatever the disk says (r3).
+      localRoots: deps.localRoots ?? (() => []),
     })
     const first = chain[0] as Hop
     if (underAgent) {

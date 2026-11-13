@@ -1,9 +1,11 @@
-import { mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { buildEnvelope, newThread } from '@usebag/core'
 import type { PeerRequest } from '@usebag/edge'
 import { type Fetch, PAIRINGS_PATH, type PairingCommand, writeJson } from '@usebag/enterprise-client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CONSOLE_POLL_MS, type ConsoleDeps, consolePass, type Pairer, pollConsole } from '../src/console.ts'
+import { localPairs, type Own, spool, spoolDir, writePairs } from '../src/local.ts'
 import { addTrust } from '../src/trust.ts'
 import {
   FakeClock,
@@ -29,6 +31,15 @@ const DOMAIN = 'acme.example'
 const ORIGIN = 'https://bag.acme.example'
 const ID = '3f2c9a1e-0b7d-4e55-9a61-2c4d8e0f1a2b'
 const PEER = P.bob.address
+
+/** An allowed pair of x and y, once (the service's own writes are its; this writes the file as it would). */
+function addLocalPair(h: string, x: Own, y: Own, at: number): void {
+  const rows = localPairs(h).filter(
+    (p) => !((p.a === x.label || p.b === x.label) && (p.a === y.label || p.b === y.label)),
+  )
+  const row = { a: x.label, b: y.label, a_addr: x.address, b_addr: y.address, added_at: at }
+  writePairs(h, [...rows, { ...row, state: 'allowed' }])
+}
 
 let tmp: ReturnType<typeof tempDir>
 let log: MemoryLog
@@ -149,6 +160,39 @@ describe('consolePass', () => {
     expect(at.events).toEqual([{ id: ID, body: { event: 'unpaired' } }])
     expect(c.runs()).toBe(0)
     expect(log.lines.map((l) => l.event)).toEqual(['console-unpaired'])
+  })
+
+  it('an unpair of an own identity of the home also drops the local pair and the mail spooled between them (9.2)', async () => {
+    const h = home()
+    saveKeys(h, P.alice)
+    saveKeys(h, P.carol)
+    const own = P.carol.address
+    addTrust(h, own, T0)
+    addLocalPair(h, { label: 'alice', address: P.alice.address }, { label: 'carol', address: own }, T0)
+    addLocalPair(h, { label: 'carol', address: own }, { label: 'jane', address: P.jane.address }, T0)
+    const rng = (n: number): Uint8Array => new Uint8Array(n).fill(7)
+    const sealed = (from: typeof P.alice) =>
+      buildEnvelope({
+        from: from.keys.signing,
+        to: [{ address: own, sealingKey: P.carol.keys.sealing.publicKey }],
+        auth: [],
+        type: 'chat.v1',
+        thread: newThread(rng),
+        body: from.name,
+        ts: T0,
+        rng,
+      })
+    const [mine, theirs] = [sealed(P.alice), sealed(P.jane)]
+    spool(h, 'carol', mine.envelope.id, mine.bytes)
+    spool(h, 'carol', theirs.envelope.id, theirs.bytes)
+    const link = { id: ID, peer: own, name: 'carol', paired_at: T0, until: null }
+    writeJson(join(h, 'orgs', DOMAIN, 'enterprise', 'pairings.json'), { v: 1, links: [link], done: [] })
+    const at = instance([pair({ action: 'unpair', spoken: null, outsideAddress: own })])
+    await consolePass(deps(h, at.fetch, pairer().p))
+    expect(trust(h)).toEqual([])
+    expect(localPairs(h).map((p) => [p.a, p.b])).toEqual([['carol', 'jane']])
+    expect(readdirSync(spoolDir(h, 'carol'))).toEqual([`${theirs.envelope.id}.env`])
+    expect(log.lines.map((l) => l.event)).toEqual(['console-local-unpaired', 'console-unpaired'])
   })
 
   it('runs the enterprise tick after a pass that ended a link or ran a pairing, and not after one that changed nothing', async () => {

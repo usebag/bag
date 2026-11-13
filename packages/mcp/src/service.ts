@@ -1,16 +1,20 @@
-import { randomBytes } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import type { Server } from 'node:net'
-import { join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import type { Hop } from '@usebag/core'
+import { type Hop, parseEnvelope } from '@usebag/core'
 import {
+  type AuditEntry,
   type EdgeKeys,
   HomeCustody,
+  type InboxRow,
   keepAliveChoice,
+  LOCAL_RELAY,
   markUsed,
   type OpenedKeys,
   openIdentityKeys,
+  type SendInput,
   serviceCustody,
   withConnection,
 } from '@usebag/edge'
@@ -19,8 +23,29 @@ import { Bindings, bridgeOf, type Custody, serveBindings, serviceMethods, sweepG
 import { type Config, ConfigError, type ServerConfig } from './config.ts'
 import { readIdentities } from './identities.ts'
 import { keepAliveOn, RecordKeeper } from './keepalive.ts'
+import {
+  cleanHeld,
+  HELD_ID,
+  type LocalPair,
+  type LocalWord,
+  localPeersOf,
+  localPeersPath,
+  localRootsOf,
+  localSealingKey,
+  localWord,
+  type Own,
+  pairsFromText,
+  pairsRefused,
+  spool,
+  spoolDir,
+  spooled,
+  stateOf,
+  unspool,
+  writeLocalWord,
+  writePairs,
+} from './local.ts'
 import type { Logger } from './log.ts'
-import { holderLives, readLock } from './open.ts'
+import { holderLives, type Opened, readLock } from './open.ts'
 import { type ManyDeps, REOPEN_MS, SERVER_VERSION, sharedOf, Unit } from './server.ts'
 import { connectionGrant, openAgentUnit, type SessionKeyMark, type SessionStart } from './session.ts'
 import {
@@ -38,12 +63,23 @@ import {
   takeServiceLock,
 } from './socket.ts'
 import {
+  ALLOW_TAIL,
+  HOME_NOTE,
+  HOME_OFF,
   IDENTITIES_NOTE,
   INSTRUCTIONS,
+  LOCAL_ASK_DAYS,
+  LOCAL_DECLINED,
+  LOCAL_HELD_MAX,
+  LOCAL_PENDING,
+  LOCAL_PER_DAY,
+  LOCAL_PER_MINUTE,
+  type LocalHome,
   pairingsFor,
   registerTools,
   type Sibling,
   type ToolContext,
+  ToolError,
 } from './tools.ts'
 import { drainMail, WakeRouter } from './wake-router.ts'
 
@@ -60,6 +96,12 @@ export const RETURN_WAIT_MS = 5000
 export const RETRY_AFTER_MS = 2000
 /** The hello capability (client_capabilities.experimental) of a host whose dialogs go through the consent bridge. */
 export const CONSENT_BRIDGE = 'bag.dev/consent-bridge'
+
+/**
+ * How long an ask over an omp consent link waits, in seconds: under omp's 30 s limit on an MCP tool call, which carries
+ * the ask (W1 leg 5). Past it the ask is withdrawn and asked again at a later call.
+ */
+export const LINK_ASK_S = 25
 
 export type { Custody }
 
@@ -264,6 +306,9 @@ function writeWhole(path: string, body: string): void {
   renameSync(tmp, path)
 }
 
+/** One pair request's key in the asking set: its requester and recipient (labels hold no line break). */
+const askKey = (from: string, to: string): string => `${from}\n${to}`
+
 export class Service implements ServiceHome {
   readonly home: string
   readonly paths: ReturnType<typeof runPaths>
@@ -302,6 +347,46 @@ export class Service implements ServiceHome {
   readonly #deps: ServiceDeps
   readonly #log: Logger
   readonly #shared: ReturnType<typeof sharedOf>
+  /** Delivery between identities of this home (local.ts, spec/SPEC.md 9.2): every connection's tools reach it. */
+  readonly local: LocalHome = this.#localHome()
+  /** The home word as the service last read it (C1), and the changes it noticed since its start, numbered. */
+  #word: LocalWord | null = null
+  /** Changes told once to each window (C1): for `label` only when set; `about`, the identities a line names. */
+  readonly #changes: {
+    readonly what: string
+    readonly label?: string
+    readonly about?: readonly string[]
+  }[] = []
+  /** The local pair table's text as this service last wrote or accepted it (C1); null before its first read. */
+  #pairsText: string | null = null
+  /** The identities removed by a reread this run (u1): never cleared by #dropGone, only by a later reread listing it. */
+  readonly #removed = new Set<string>()
+  /** A removed identity's key name, recorded at the remove: its spool is found after its unit is gone (v2). */
+  readonly #removedNames = new Map<string, string>()
+  /** A removed identity re-added this run, with the clock second of its re-add: older rows of it are foreign (u1). */
+  readonly #reborn = new Map<string, number>()
+  /** The identities whose log has had the start's audit lines this run (#opened, t3). */
+  readonly #replayed = new Set<string>()
+  /** The labels whose address could not be read at a table read, audited once each (t2). */
+  readonly #unread = new Set<string>()
+  /** The table text whose bad held ids were last audited (r1). */
+  #heldAudited: string | null = null
+  /** True from construction until Service.start has done the start's held work: #policy keeps its lines (s1). */
+  #starting = true
+  /** The policy lines of the start, written into each identity's log as it opens (#opened, q1, r2, s1). */
+  readonly #startLines: string[] = []
+  /** Audit entries for an identity not open yet (a failed-local at the start's expiry), by label, written at its open. */
+  readonly #unsent = new Map<string, AuditEntry[]>()
+  /** When a refused re-ask of each pair (askKey) was last audited, clock seconds (#reaskRefused). */
+  readonly #reaskLogged = new Map<string, number>()
+  /** Why the local pair table was last refused (pairsRefused), told once per change; null while it reads. */
+  #pairsWhy: string | null = null
+  /** The pairs (requester and recipient, by askKey) whose dialog is open in a window now. */
+  readonly #asking = new Set<string>()
+  /** Each connection's count of #changes its window was shown (the next tool result's notice shows the rest once). */
+  readonly #changesSeen = new Map<string, number>()
+  /** Each label's local sends in the last day, by clock second (the rate limit, S5). */
+  readonly #localSent = new Map<string, number[]>()
 
   private constructor(config: ServerConfig, home: string, deps: ServiceDeps) {
     this.#config = config
@@ -314,6 +399,14 @@ export class Service implements ServiceHome {
       clock: deps.clock,
       timers: deps.timers,
       unread: (label) => this.units.get(label)?.desk?.unread().length ?? 0,
+      // A first touch or a re-ask (#hold, #reask) rings the recipient by this count: its held mail is never unread.
+      requests: (label) => {
+        const waits = (r: LocalPair): boolean => r.state === 'requested' && r.b === label
+        // Only a request that would be asked rings: never one naming an agent, grant or principal (v5, as u4).
+        const asked = (r: LocalPair): boolean =>
+          this.#askable(r.a, r.b) && this.#pairable(r.a) && this.#pairable(r.b)
+        return this.#pairs().filter((r) => waits(r) && asked(r)).length
+      },
     })
     this.#mail = deps.mail ?? mailHooks(this.router, deps.clock)
     const router = this.router
@@ -360,6 +453,98 @@ export class Service implements ServiceHome {
     )
     this.#handlers.set('service/lend', (c, p) => this.#lend(c as Connection, p))
     this.#handlers.set('service/return', (c, p) => this.#return(c as Connection, p))
+    this.#handlers.set('service/consent-register', async (c, p) => this.#register(c as Connection, p))
+    this.#handlers.set('service/consent-answer', async (c, p) => {
+      const ask = this.#consentAsks.get(String(p.id))
+      if (ask === undefined || ask.link !== c) throw new ToolError('not-authorized', 'not this consent link')
+      // L1: true is Yes, false the person's own No; anything else (null: an aborted or timed-out confirm) is no
+      // answer, and the pair stays requested.
+      ask.done(p.accepted === true ? true : p.accepted === false ? false : null)
+      return {}
+    })
+  }
+
+  /** Each omp process's registered consent link (item 7), by its pid, and the questions open on them, by id. */
+  readonly #links = new Map<number, Connection>()
+  /** The omp pids a window has named in its hello (L2): a first registration for one comes too late, refused. */
+  readonly #advertised = new Set<number>()
+  readonly #consentAsks = new Map<
+    string,
+    { link: Connection; done: (yes: boolean | null) => void; withdraw: () => void }
+  >()
+
+  /**
+   * An omp extension's registration for its process (C2): the first wins while its connection lives. The first answers
+   * a secret whose hash the service keeps in run/consent-<pid>.json (0600); while that pid lives a later registration
+   * must present the secret, else it is refused and audited.
+   */
+  #register(conn: Connection, p: Readonly<Record<string, unknown>>): Record<string, unknown> {
+    const pid = Number(p.pid)
+    const file = join(this.paths.dir, `consent-${pid}.json`)
+    const hash = (x: unknown) => createHash('sha256').update(String(x)).digest('hex')
+    let kept: string | null = null
+    try {
+      kept = this.#deps.alive(pid) ? (JSON.parse(readFileSync(file, 'utf8')) as { hash: string }).hash : null
+    } catch {}
+    const held = this.#links.get(pid)
+    if (
+      !Number.isSafeInteger(pid) ||
+      (held !== undefined && !held.closed) ||
+      (kept === null && this.#advertised.has(pid)) ||
+      (kept !== null && hash(p.secret) !== kept)
+    ) {
+      this.#policy(`consent registration refused for omp ${pid}`)
+      throw new ToolError('not-authorized', 'this omp process has a consent link already')
+    }
+    this.#links.set(pid, conn)
+    if (kept !== null) return {}
+    const secret = randomBytes(32).toString('hex')
+    writeWhole(file, `${JSON.stringify({ hash: hash(secret) })}\n`)
+    return { secret }
+  }
+
+  /**
+   * A yes or no from the person, asked over the registered link of `window`'s omp; null when it has none. The ask
+   * lives inside the asking tool call, which omp ends at 30 s: it is withdrawn (service/consent-withdraw {id}, the
+   * extension dismisses its confirm) when that call is cancelled or after LINK_ASK_S, and any later answer for its id
+   * is refused, so the row stays requested and is asked again at a later call (L1). A new ask on a link withdraws any
+   * open one first, so no confirm stacks behind a stale one.
+   */
+  #consent(
+    window: ServiceConnection,
+    words: { title: string; message: string },
+    signal?: AbortSignal,
+  ): Promise<boolean | null> | null {
+    const pid = (window.capabilities.raw.experimental as Record<string, { pid?: number }> | undefined)?.[
+      CONSENT_BRIDGE
+    ]
+    const link = pid?.pid === undefined ? undefined : this.#links.get(pid.pid)
+    if (link === undefined || link.closed) return null
+    const id = randomBytes(8).toString('hex')
+    const ms = LINK_ASK_S * 1000
+    for (const a of [...this.#consentAsks.values()]) if (a.link === link) a.withdraw()
+    return new Promise((resolve) => {
+      // L1: only an explicit accepted false is a No; a timeout, a cancelled call or a closed link is no answer.
+      let settled = false
+      const done = (yes: boolean | null): void => {
+        if (settled) return
+        settled = true
+        cancel()
+        signal?.removeEventListener('abort', withdraw)
+        this.#consentAsks.delete(id)
+        resolve(yes)
+      }
+      const withdraw = (): void => {
+        if (!settled && !link.closed) link.notify('service/consent-withdraw', { id })
+        done(null)
+      }
+      const cancel = this.#deps.timers.after(ms, withdraw)
+      if (signal?.aborted === true) return withdraw()
+      this.#consentAsks.set(id, { link, done, withdraw })
+      link.onClose(() => done(null))
+      signal?.addEventListener('abort', withdraw, { once: true })
+      link.notify('service/consent-ask', { id, ...words, ms })
+    })
   }
 
   /** Whether `conn` is bound to `label` (W1's require of a tool every class runs, status). */
@@ -391,12 +576,21 @@ export class Service implements ServiceHome {
     }
     s.#lock = await takeServiceLock(paths.lock, holder, deps.lockRetryMs)
     try {
+      // The pair table's baseline is read now, before any identity opens or its spool drains (q1), with no held work;
+      // the identities are made (not opened), then the start's held work runs (the expiry's drops, s1), its audit
+      // lines kept for each identity's open; then the socket, and the opens, each of which drains its spool.
+      s.#pairs(false)
       const open = s.#openUnits()
+      s.#pairs()
+      s.#starting = false
       s.#server = await bindSocket(paths.sock, (socket) => s.#accept(socket))
       writeWhole(paths.token, s.token.toString('hex'))
       s.#writeJson()
       sweepGone(home, Date.now())
       s.#sweepSessionKeys()
+      // L3: a consent link's secret hash outlives no omp process.
+      for (const f of readdirSync(paths.dir).filter((x) => /^consent-\d+\.json$/.test(x)))
+        if (!deps.alive(Number(f.slice(8, -5)))) rmSync(join(paths.dir, f), { force: true })
       s.opening = open()
     } catch (e) {
       await s.#teardown()
@@ -547,7 +741,21 @@ export class Service implements ServiceHome {
       log: (level, event, f = {}) => deps.log.log(level, event, { ...f, label: c.label }),
     }
     const keeper = deps.keeper ?? this.#keeper(c.label)
-    const unit = new Unit(c, this.#shared, { ...deps, relay: deps.relayFor(c), log: tagged, keeper }, true)
+    const localSend = (input: SendInput) => this.#localReceipt(c.label, input)
+    // The receiver trusts only the service's reconciled table, never the raw disk (item q1).
+    const localRoots = (): string[] => {
+      const address = this.#addressOf(unit)
+      if (address === null) return []
+      return localRootsOf(this.home, { label: c.label, address }, this.#pairs(), (l) =>
+        this.#identityAddress(l),
+      )
+    }
+    const unit = new Unit(
+      c,
+      this.#shared,
+      { ...deps, relay: deps.relayFor(c), log: tagged, keeper, localSend, localRoots },
+      true,
+    )
     unit.readKeys = async () => {
       const o = await read(this.home, c.as)
       this.#custody.set(c.label, o.custody)
@@ -601,6 +809,9 @@ export class Service implements ServiceHome {
     const labels = new Set(list.map((c) => c.label))
     const principal = principals(this.home)
     for (const c of list) {
+      // Listed again: a removed identity re-added is the home's again, with no pairs: its old ones were dropped, and a
+      // row of it older than the re-add that survived on disk is dropped as foreign at the next read (u1).
+      if (this.#removed.delete(c.label)) this.#reborn.set(c.label, this.#deps.clock.now())
       if (this.units.has(c.label)) {
         this.#gone.delete(c.label)
         continue
@@ -615,8 +826,12 @@ export class Service implements ServiceHome {
     for (const label of this.units.keys())
       if (!labels.has(label) && !this.#lends.has(label) && !this.#gone.has(label)) {
         this.#gone.add(label)
+        this.#removed.add(label)
+        this.#removedNames.set(label, (this.units.get(label) as Unit).config.as)
         this.#log.log('info', 'identity-removed', { label })
       }
+    // Its pairs leave now, while its unit still exists, so its held mail is found and failed to its senders (u1).
+    if (this.#removed.size > 0) this.#pairs()
     this.#dropGone()
   }
 
@@ -699,10 +914,672 @@ export class Service implements ServiceHome {
     return this.#openUnit(u)
   }
 
-  /** A unit has opened: the mail lane's restore and wiring, then its network start. */
+  /** A unit has opened: the mail lane's restore and wiring, its local spool delivered (M6), then its network start. */
   #opened(u: Unit): void {
+    // Every audit line of the start (the table read, its refusal, dropped held ids, reset rows) and any refusal now:
+    // each identity's log gets them as it opens (r2, s1), then the failed-local lines its held mail earned meanwhile.
+    // Once per identity per service run: a reopen (a CLI lend and return) repeats none of them (t3).
+    const why = this.#pairsWhy
+    const now = why === null ? null : `local pairs refused: ${why}`
+    const first = !this.#replayed.has(u.config.label)
+    this.#replayed.add(u.config.label)
+    const start = [...this.#startLines, ...(now === null || this.#startLines.includes(now) ? [] : [now])]
+    const lines = first ? start : []
+    for (const local of lines)
+      u.opened?.edge.audit.record({ event: 'policy', decision: 'route', detail: { local } })
+    for (const entry of this.#unsent.get(u.config.label) ?? []) u.opened?.edge.audit.record(entry)
+    this.#unsent.delete(u.config.label)
     this.#mail.opened?.(u.config.label, u)
-    void u.run(0)
+    if (spooled(this.home, u.config.as).length === 0) void u.run(0)
+    else void this.#drainSpool(u).then(() => u.run(0))
+  }
+
+  /**
+   * The address of the home's identity `label`, by its own files, before or after its unit exists (s2): its unit's,
+   * else the custody entry of its configured key name; null for no identity of the home (or a gone one).
+   */
+  #identityAddress(label: string): string | null {
+    if (this.#gone.has(label) || this.#removed.has(label)) return null
+    const u = this.units.get(label)
+    if (u !== undefined) return this.#addressOf(u)
+    const c = this.#config.identities.find((i) => i.label === label)
+    try {
+      return c === undefined ? null : new HomeCustody(this.home).entry(c.as).address
+    } catch {
+      return null
+    }
+  }
+
+  /** Whether `label` takes part in local pairs (M5): a key file or Keychain identity, no session, chain or members. */
+  #pairable(label: string): boolean {
+    const c = this.units.get(label)?.config
+    const custody = this.#custody.get(label)
+    return (
+      c !== undefined &&
+      (custody === 'home-key' || custody === 'keychain') &&
+      c.session === null &&
+      c.auth === null &&
+      c.chainCmd === null &&
+      c.members === null
+    )
+  }
+
+  /** An identity's address without opening it: its unit's, else its custody entry's (no dialog). */
+  #addressOf(u: Unit): string | null {
+    try {
+      return u.address ?? new HomeCustody(this.home).entry(u.config.as).address
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * The home's local delivery, by label (spec/SPEC.md 9.2): the word (run/local.json), the table (run/local-peers.json),
+   * the recipient's key from the home's own files, and the injection. Only a key file or Keychain identity with no
+   * session, chain or org members record takes part (M5): never an agent or a grant.
+   */
+  #localHome(): LocalHome {
+    const own = (label: string): Own | null => {
+      const u = this.units.get(label)
+      const address = u === undefined || this.#gone.has(label) ? null : this.#addressOf(u)
+      return address === null ? null : { label, address }
+    }
+    const pairable = (label: string): boolean => this.#pairable(label)
+    const ownOf = (from: string, address: string): string | null => {
+      if (!this.#readWord().on) return null
+      const to = [...this.units.keys()].find((l) => own(l)?.address === address) ?? null
+      return to === null || to === from || !pairable(from) || !pairable(to) ? null : to
+    }
+    const both = (a: string, b: string): [Own, Own] => {
+      const [x, y] = [own(a), own(b)]
+      if (x === null || y === null) throw new ToolError('unknown-identity', 'no such identity in this home')
+      return [x, y]
+    }
+    return {
+      on: () => this.#readWord().on,
+      own: ownOf,
+      peer: (from, address) => {
+        const to = ownOf(from, address)
+        return to !== null && this.#pairState(from, to).state === 'allowed' ? to : null
+      },
+      pairState: (a, b) => this.#pairState(a, b),
+      hold: (from, to, id, bytes) => this.#hold(from, to, id, bytes),
+      request: (from, to) => this.#hold(from, to, null, null),
+      reask: (from, to, yes) => this.#reask(from, to, yes),
+      pending: (label, handle) => {
+        // Only the speaking window asks (the one-speaking-window rule); the others see the state in status. With the
+        // word off or either side hidden the request waits, unasked.
+        if (this.router.speaking(label) !== handle) return null
+        const row = this.#pairs().find(
+          (r) =>
+            r.state === 'requested' &&
+            r.b === label &&
+            !this.#asking.has(askKey(r.a, r.b)) &&
+            this.#askable(r.a, r.b) &&
+            // Never an agent or grant identity, nor a principal: a planted row naming one is not asked (u4).
+            pairable(r.a) &&
+            pairable(r.b),
+        )
+        if (row === undefined) return null
+        // The requester's address is its identity's in this home, never the row's; none: no ask (s2).
+        const address = this.#identityAddress(row.a)
+        if (address === null) return null
+        this.#asking.add(askKey(row.a, label))
+        const message = `${row.a} on this machine wants to message ${label}. Allow both ways? ${ALLOW_TAIL}`
+        const peer = { name: row.a, address, root: address }
+        return { from: row.a, peer, words: { title: `Yes: allow ${row.a} and ${label}`, message } }
+      },
+      answer: (from, to, yes) => this.#answer(from, to, yes),
+      consent: (window, words, signal) => this.#consent(window, words, signal),
+      peers: (label) => {
+        const x = own(label)
+        return x === null ? [] : localPeersOf(this.home, x, this.#pairs())
+      },
+      hidden: (label) => this.#readWord().hidden.includes(label),
+      admit: (label) => {
+        const now = this.#deps.clock.now()
+        const day = (this.#localSent.get(label) ?? []).filter((t) => t > now - 86_400)
+        const over =
+          day.length >= LOCAL_PER_DAY
+            ? 'day'
+            : day.filter((t) => t > now - 60).length >= LOCAL_PER_MINUTE
+              ? 'minute'
+              : null
+        this.#localSent.set(label, over === null ? [...day, now] : day)
+        return over
+      },
+      setHidden: (label, hide) => {
+        const w = this.#readWord()
+        const rest = w.hidden.filter((h) => h !== label)
+        writeLocalWord(this.home, w.on, hide ? [...rest, label] : rest)
+        this.#readWord()
+      },
+      notices: (handle, label) => {
+        this.#readWord()
+        this.#pairs()
+        const first = !this.#changesSeen.has(handle)
+        const seen = this.#changesSeen.get(handle) ?? 0
+        this.#changesSeen.set(handle, this.#changes.length)
+        // D1: a window's first result lists its allowed pairs (a restart cannot launder a forged row unseen).
+        const ok = this.#pairs().filter((r) => stateOf(r) === 'allowed' && (r.a === label || r.b === label))
+        const pairs = ok.map((r) => (r.a === label ? r.b : r.a))
+        const listed =
+          first && pairs.length > 0 ? [`local pairs allowed for ${label}: ${pairs.join(', ')}`] : []
+        // A change naming an identity removed since is not told: it would name one that is gone (u1).
+        const gone = (c: { readonly about?: readonly string[] }): boolean =>
+          (c.about ?? []).some((l) => this.#removed.has(l))
+        const mine = this.#changes
+          .slice(seen)
+          .filter((c) => (c.label === undefined || c.label === label) && !gone(c))
+        return [...listed, ...mine.map((c) => c.what)]
+      },
+      home: (label) => {
+        const word = this.#readWord()
+        const on = word.on
+        const takes = (l: string): boolean => own(l) !== null && pairable(l) && !word.hidden.includes(l)
+        // An identity that takes no part (an agent or a grant identity) is shown none of the others.
+        const identities =
+          !on || !takes(label)
+            ? []
+            : [...this.units.values()]
+                .filter((u) => u.config.label !== label && takes(u.config.label))
+                .map((u) => ({
+                  label: u.config.label,
+                  address: (own(u.config.label) as Own).address,
+                  relays: u.config.relays,
+                  open: u.opened !== null,
+                  pair: this.#pairLine(label, u.config.label),
+                }))
+        const local: 'on' | 'off' = on && takes(label) ? 'on' : 'off'
+        return {
+          // D4: while no run/local.json exists, the default holds, and status says so.
+          local_delivery: on ? (word.set ? 'on' : 'on (default)') : 'off',
+          local,
+          identities,
+          note: on ? HOME_NOTE : HOME_OFF,
+        }
+      },
+      recipient: (label) => {
+        const [x] = both(label, label)
+        const name = (this.units.get(label) as Unit).config.as
+        const key = localSealingKey(this.home, name, x.address)
+        if (key === null)
+          throw new ToolError('resolve-failed', `no sealing key of ${label} in this home's own records`)
+        return { address: x.address, sealingKey: key }
+      },
+      deliver: (label, bytes) => this.#inject(label, bytes),
+    }
+  }
+
+  /**
+   * The home word, read now (C1): a change from what the service last read (the word, or a label hidden or shown) is a
+   * policy line in every open identity's audit log and a line each bound window's next status shows once. The first
+   * read is the baseline. A file read as off for its shape is logged with why.
+   */
+  #readWord(): LocalWord {
+    const now = localWord(this.home)
+    const was = this.#word
+    this.#word = now
+    if (now.why !== null && was?.why !== now.why) this.#log.log('warn', 'local-word', { detail: now.why })
+    if (was === null) return now
+    // Each change with the identity it names (a hide or a show), so one removed since is not told (v1).
+    const what: [string, string[]][] = [
+      ...(was.on === now.on ? [] : [[`word ${now.on ? 'on' : 'off'}`, []] as [string, string[]]]),
+      ...now.hidden
+        .filter((h) => !was.hidden.includes(h))
+        .map((h): [string, string[]] => [`hidden ${h}`, [h]]),
+      ...was.hidden
+        .filter((h) => !now.hidden.includes(h))
+        .map((h): [string, string[]] => [`shown ${h}`, [h]]),
+    ]
+    const at = new Date(this.#deps.clock.now() * 1000).toISOString().slice(11, 16)
+    for (const [w, about] of what) {
+      this.#changes.push({ what: `local delivery on this machine changed: ${w} at ${at} UTC`, about })
+      for (const u of this.units.values())
+        u.opened?.edge.audit.record({ event: 'policy', decision: 'route', detail: { local: w } })
+    }
+    return now
+  }
+
+  /**
+   * The local pair table (decision 104), reconciled with what this service last wrote (C1): a change it did not
+   * write is audited in every identity's log and told to every window, and an allowed row it did not know is put back
+   * to requested (D1 covers a restart, which forgets the text). The first read audits the count. A request no one
+   * answered in LOCAL_ASK_DAYS days expires: its held mail is dropped, each failed-local no answer for its sender.
+   */
+  #pairs(held = true): LocalPair[] {
+    // A table refused for its mode or as a symlink reads as no pairs (fail closed): audited and told once (C1, item l),
+    // and never written over while refused (#putPairs): no change check, no rewrite, no expiry (item n 24).
+    const why = pairsRefused(this.home)
+    if (why !== this.#pairsWhy && why !== null) {
+      const fix = `chmod 600 ${localPeersPath(this.home)}, or put a regular file of yours there in place of a link`
+      this.#policy(`local pairs refused: ${why}`)
+      this.#changes.push({ what: `local pairs on this machine refused: ${why}; to use them again: ${fix}` })
+    }
+    this.#pairsWhy = why
+    // Refused at start: the baseline is empty, so every row is unknown once it reads (never a forged baseline, q1).
+    if (why !== null) {
+      this.#pairsText ??= ''
+      return []
+    }
+    // One read: the rows are parsed from the very text compared with the last write below (t1).
+    let text = ''
+    try {
+      text = readFileSync(localPeersPath(this.home), 'utf8')
+    } catch {}
+    const raw = pairsFromText(text)
+    let rows = raw.map(cleanHeld)
+    // Held ids that are not envelope ids (a path, say) are dropped at the read, audited once per table text (r1).
+    if (rows.some((r, i) => r !== raw[i]) && text !== this.#heldAudited) {
+      this.#heldAudited = text
+      this.#policy('a local pair named held mail that is not an envelope id: those entries dropped')
+    }
+    const now = this.#deps.clock.now()
+    if (this.#pairsText === null) {
+      // Read at start, before any identity opens (q1): each identity's log gets the line as it opens (#opened).
+      this.#policy(`local pairs read: ${rows.filter((r) => stateOf(r) === 'allowed').length}`)
+    } else if (text !== this.#pairsText) {
+      // Any row that is not one this service last wrote, field for field, goes back to requested whatever its state
+      // (a forged allowed or declined row included), its held list kept (item k).
+      // A baseline that does not read (the table this service started with was not a table) counts as empty, so
+      // every row is unknown: never a throw out of #pairs (item n EXTRA).
+      let known = new Set<string>()
+      try {
+        const was = (JSON.parse(this.#pairsText || '{"pairs":[]}') as { pairs: LocalPair[] }).pairs
+        known = new Set(was.map((k) => JSON.stringify(k)))
+      } catch {
+        this.#policy(
+          'local pairs: the table read at start does not parse; every row on disk counts as unknown',
+        )
+      }
+      // Reset with no held mail: a forged row may name another pair's real held envelopes (r1).
+      rows = rows.map((r) =>
+        known.has(JSON.stringify(r)) ? r : { ...r, state: 'requested', at: now, held: [] },
+      )
+      this.#policy('a local pair on this machine changed outside bag')
+      this.#changes.push({ what: 'a local pair on this machine changed outside bag' })
+      // Not written if the table was refused since the check above: the rows read (reset) are returned (item o).
+      if (!this.#tryPut(rows)) return rows
+    }
+    // A row naming a label that is not one of the home's identities now is dropped and audited: a planted row's held
+    // files are left alone (they may be another pair's), while a removed identity's rows have their held mail failed
+    // to the senders once the table is written (v2); the home's identities are, at every read, the service's units (kept by #refresh)
+    // or, before units exist at start, the configured list, less those a reread removed this run (#removed); a row of
+    // an identity re-added this run that is older than its re-add is dropped the same way (u1, u2). A configured
+    // identity whose address cannot be read now (a custody move stopped partway, a Keychain pointer that does not read)
+    // keeps its rows unchanged, unasked and untrusted (both trust sites read null), audited once, until its address
+    // reads (t2). A row whose addresses are not its labels' identities' is reset to requested with the identities' own
+    // addresses and no held mail. Drops and resets are written (s2).
+    const configured = (l: string): boolean =>
+      !this.#gone.has(l) &&
+      !this.#removed.has(l) &&
+      (this.units.has(l) || this.#config.identities.some((c) => c.label === l))
+    const fresh = (r: LocalPair): boolean => [r.a, r.b].every((l) => r.added_at >= (this.#reborn.get(l) ?? 0))
+    const known = rows.filter((r) => configured(r.a) && configured(r.b) && fresh(r))
+    const removedRows = rows.filter((x) => this.#removed.has(x.a) || this.#removed.has(x.b))
+    const fixed = known.map((r) => {
+      const [a, b] = [this.#identityAddress(r.a), this.#identityAddress(r.b)]
+      if (a === null || b === null) {
+        for (const l of [r.a, r.b].filter((x) => this.#identityAddress(x) === null && !this.#unread.has(x))) {
+          this.#unread.add(l)
+          this.#policy(
+            `local pairs of ${l}: its address cannot be read now; kept unchanged, neither asked nor trusted`,
+          )
+        }
+        return r
+      }
+      if (a === r.a_addr && b === r.b_addr) return r
+      // Idempotent: a row already reset (requested, no held mail) keeps its time, so it is not reset at every read.
+      const at = r.state === 'requested' ? (r.at ?? now) : now
+      const next = { ...r, a_addr: a, b_addr: b, state: 'requested' as const, at, held: [] }
+      return JSON.stringify(next) === JSON.stringify(r) ? r : next
+    })
+    const dropped = rows.length - known.length
+    const reset = fixed.filter((r, i) => r !== known[i]).length
+    if (dropped > 0 || reset > 0) {
+      rows = fixed
+      if (dropped > 0)
+        this.#policy(`a local pair named a label that is no identity of this home: ${dropped} dropped`)
+      if (reset > 0)
+        this.#policy("a local pair named an address that is not its identity's: reset to requested")
+      if (!this.#tryPut(rows)) return rows
+      // The table first, as the expiry: then a removed identity's rows take its held mail with them, failed-local to
+      // each sender, its spool found by the key name recorded at the remove (u1, v2).
+      if (held) for (const r of removedRows) this.#dropRemoved(r)
+    }
+    this.#pairsText ??= text
+    // The start's first read does no held work: the identities are not known yet (Service.start runs it again, s1).
+    if (!held) return rows
+    const old = rows.filter((r) => r.state === 'requested' && (r.at ?? now) + LOCAL_ASK_DAYS * 86_400 <= now)
+    // The table first: if it cannot be written now, the old requests and their held mail stay for a later read.
+    const rest = rows.filter((r) => !old.includes(r))
+    if (old.length === 0 || !this.#tryPut(rest)) return rows
+    for (const r of old) this.#drop(r, 'no answer')
+    // The reconciled rows, as written: never a fresh raw read of the disk (r5).
+    return rest
+  }
+
+  /** #putPairs inside #pairs, which never throws: a refusal that came since its check is logged, and false. */
+  #tryPut(rows: readonly LocalPair[]): boolean {
+    try {
+      this.#putPairs(rows)
+      return true
+    } catch (e) {
+      const code = e instanceof ToolError ? e.code : 'internal'
+      this.#log.log('warn', 'local-pairs-not-written', { code })
+      return false
+    }
+  }
+
+  #putPairs(rows: readonly LocalPair[]): void {
+    this.#writable()
+    this.#pairsText = writePairs(this.home, rows)
+  }
+
+  /** Refuses any local write while the table is refused (item n 24): to-own-identity, nothing written or moved. */
+  #writable(): void {
+    const why = pairsRefused(this.home)
+    if (why !== null) throw new ToolError('to-own-identity', `the local pair table is refused: ${why}`)
+  }
+
+  /** One policy line in every open identity's audit log (C1). */
+  #policy(local: string): void {
+    // During start no identity is open yet: the line is kept and written into each identity's log as it opens (s1).
+    if (this.#starting) this.#startLines.push(local)
+    for (const u of this.units.values())
+      u.opened?.edge.audit.record({ event: 'policy', decision: 'route', detail: { local } })
+  }
+
+  #pairState(
+    a: string,
+    b: string,
+  ): { readonly state: 'allowed' | 'requested' | 'declined' | 'none'; readonly row?: LocalPair } {
+    const row = this.#pairs().find((r) => (r.a === a && r.b === b) || (r.a === b && r.b === a))
+    const state = stateOf(row, this.#deps.clock.now())
+    return state === 'none' || row === undefined ? { state: 'none' } : { state, row }
+  }
+
+  #pairLine(a: string, b: string): string {
+    const { state, row } = this.#pairState(a, b)
+    return state === 'declined' ? `declined until ${new Date((row?.until ?? 0) * 1000).toISOString()}` : state
+  }
+
+  /**
+   * A first touch from `from` to `to` with no allowed pair (decision 104): one request per pair, the message (if any)
+   * held in <to>'s spool's held/ until the person answers, at most LOCAL_HELD_MAX; to's windows are rung.
+   */
+  #hold(from: string, to: string, id: string | null, bytes: Uint8Array | null): void {
+    this.#writable()
+    const { state, row } = this.#pairState(from, to)
+    const now = this.#deps.clock.now()
+    if (state === 'declined')
+      throw new ToolError(
+        LOCAL_DECLINED,
+        `${row?.b} declined messages from ${row?.a} until ${new Date((row?.until ?? 0) * 1000).toISOString()}`,
+      )
+    const held = state === 'requested' ? (row?.held ?? []) : []
+    if (held.length >= LOCAL_HELD_MAX)
+      throw new ToolError(
+        LOCAL_PENDING,
+        `${LOCAL_HELD_MAX} messages already wait for the person to allow this pair`,
+      )
+    const [x, y] = [this.local.recipient(from).address, this.local.recipient(to).address]
+    if (id !== null && bytes !== null)
+      spool(this.home, (this.units.get(to) as Unit).config.as, id, bytes, true)
+    const rest = this.#pairs().filter((r) => !((r.a === from && r.b === to) || (r.a === to && r.b === from)))
+    const fresh = {
+      a: from,
+      b: to,
+      a_addr: x,
+      b_addr: y,
+      added_at: now,
+      state: 'requested' as const,
+      at: now,
+    }
+    const kept = state === 'requested' && row !== undefined ? row : fresh
+    this.#putPairs([...rest, { ...kept, held: id === null ? held : [...held, id] }])
+    this.#mail.arrived?.(kept.b)
+  }
+
+  /** A re-ask in cooling (the red team's form): its bounds, then the sender's own Yes puts the request back. */
+  #reask(from: string, to: string, yes: boolean | null): number | null {
+    const { row } = this.#pairState(from, to)
+    const now = this.#deps.clock.now()
+    const times = row?.reasks ?? []
+    const wait = times.length >= 3 ? (row?.until ?? now) - now : (times.at(-1) ?? -600) + 600 - now
+    if (yes === null && wait > 0) this.#reaskRefused(from, to, times.length >= 3, now)
+    if (yes === null) return wait > 0 ? wait : null
+    const rows = this.#pairs().filter((r) => r.a !== row?.a || r.b !== row?.b)
+    this.#putPairs([...rows, { ...(row as LocalPair), reasks: [...times, now] }])
+    this.#policy(`re-ask ${from} to ${to}: ${yes ? 'yes' : 'no'}`)
+    if (yes) {
+      this.#putPairs([
+        ...rows,
+        { ...(row as LocalPair), state: 'requested', at: now, held: [], reasks: [...times, now] },
+      ])
+      // The request is asked in row.b's window (pending), whichever side asked again: ring row.b (falsifier 18).
+      this.#mail.arrived?.((row as LocalPair).b)
+    }
+    return null
+  }
+
+  /**
+   * A re-ask refused past its bounds (item m): a line in the sender's own audit log naming the bound it hit, at most
+   * one per pair per 10 minutes, so a model that loops leaves a trace without flooding the log.
+   */
+  #reaskRefused(from: string, to: string, capped: boolean, now: number): void {
+    const key = askKey(from, to)
+    if (now - (this.#reaskLogged.get(key) ?? -600) < 600) return
+    this.#reaskLogged.set(key, now)
+    const bound = capped ? 'at most 3 re-asks in a cooling' : 'at most one re-ask in 10 minutes'
+    const local = `re-ask ${from} to ${to} refused: ${bound}`
+    this.units.get(from)?.opened?.edge.audit.record({ event: 'policy', decision: 'route', detail: { local } })
+  }
+
+  /** Whether the pair of a and b may be asked or answered now: the word on and neither hidden (else it waits). */
+  #askable(a: string, b: string): boolean {
+    const { on, hidden } = this.#readWord()
+    return on && !hidden.includes(a) && !hidden.includes(b)
+  }
+
+  /**
+   * The person's answer in `to`'s window to `from`'s request: Yes allows both ways and delivers the held mail; with
+   * the word off or either side hidden since the ask, nothing is written. After a Yes the pair stays allowed: a held
+   * message that does not deliver is reported failed-local to its sender with the refusal's code and its file removed
+   * (never re-asked, never a failed tool call).
+   */
+  async #answer(from: string, to: string, yes: boolean | null): Promise<void> {
+    this.#asking.delete(askKey(from, to))
+    const row = this.#pairState(from, to).row
+    if (yes === null || row?.state !== 'requested' || !this.#askable(row.a, row.b)) return
+    const rest = this.#pairs().filter((r) => r.a !== row.a || r.b !== row.b)
+    const now = this.#deps.clock.now()
+    if (!yes) {
+      this.#drop(row, 'declined')
+      const until = now + 86_400
+      this.#putPairs([
+        ...rest,
+        { ...row, state: 'declined', at: now, until, held: [], reasks: row.reasks ?? [] },
+      ])
+      return
+    }
+    const { state: _s, at: _a, until: _u, held: _h, reasks: _r, ...pair } = row
+    this.#putPairs([...rest, { ...pair, state: 'allowed' }])
+    let n = 0
+    for (const [bytes, file] of this.#heldOf(row)) {
+      const env = this.#heldEnvelope(bytes, file, to)
+      if (env === null) continue
+      try {
+        const target = [row.a, row.b].find((l) => this.local.recipient(l).address !== env.from) as string
+        await this.#inject(target, bytes)
+      } catch (e) {
+        const c = (e as { code?: unknown } | null)?.code
+        const code = typeof c === 'string' ? c : 'internal'
+        this.#log.log('warn', 'local-held-failed', { label: to, code })
+        this.#failedLocal(bytes, to, code)
+        rmSync(file, { force: true })
+        continue
+      }
+      rmSync(file, { force: true })
+      const sender = [...this.units.values()].find((x) => x.opened?.identity.address === env.from)
+      const detail = { relay: LOCAL_RELAY, delivery: 'delivered-local', recipients: 1, spooled: 0 }
+      sender?.opened?.edge.audit.record({
+        event: 'publish',
+        decision: 'accept',
+        id: env.id,
+        from: env.from,
+        detail,
+      })
+      n++
+    }
+    this.#changes.push({
+      what: `${to} allowed ${from}; ${n} messages delivered`,
+      label: from,
+      about: [from, to],
+    })
+  }
+
+  /** A pair's held envelopes in its held order, with their files. */
+  #heldOf(row: LocalPair): [Uint8Array, string][] {
+    const names = [row.a, row.b].map((l) => this.units.get(l)?.config.as).filter((n) => n !== undefined)
+    // Only a regular file directly inside the spool's own held/ directory, by an envelope id (r1, belt and braces).
+    const inside = (n: string, id: string): string[] => {
+      const dir = resolve(spoolDir(this.home, n), 'held')
+      const file = resolve(dir, `${id}.env`)
+      return HELD_ID.test(id) && file.startsWith(dir + sep) && dirname(file) === dir ? [file] : []
+    }
+    const files = (row.held ?? []).flatMap((id) => names.flatMap((n) => inside(n, id)))
+    return files.flatMap((f): [Uint8Array, string][] => {
+      try {
+        return lstatSync(f).isFile() ? [[new Uint8Array(readFileSync(f)), f]] : []
+      } catch {
+        return []
+      }
+    })
+  }
+
+  /**
+   * A removed identity's row's held mail, failed-local to each sender and deleted (v2): its spool is resolved from the
+   * key name recorded at the remove, as its unit may be gone; the other side's from its unit. A separate path from
+   * #heldOf, which the normal drain keeps unchanged; the same guard: an envelope id, directly in held/, a regular file.
+   */
+  #dropRemoved(row: LocalPair): void {
+    const nameOf = (l: string): string | undefined =>
+      this.units.get(l)?.config.as ?? this.#removedNames.get(l)
+    const names = [row.a, row.b].map(nameOf).filter((n) => n !== undefined)
+    for (const id of row.held ?? [])
+      for (const n of names) {
+        const dir = resolve(spoolDir(this.home, n), 'held')
+        const file = resolve(dir, `${id}.env`)
+        if (!HELD_ID.test(id) || !file.startsWith(dir + sep) || dirname(file) !== dir) continue
+        let bytes: Uint8Array
+        try {
+          if (!lstatSync(file).isFile()) continue
+          bytes = new Uint8Array(readFileSync(file))
+        } catch {
+          continue
+        }
+        if (this.#heldEnvelope(bytes, file, row.b) === null) continue
+        this.#failedLocal(bytes, row.b, 'identity removed')
+        rmSync(file, { force: true })
+      }
+  }
+
+  /** Drops a request's held mail, each reported failed-local `reason` to its sender. */
+  #drop(row: LocalPair, reason: string): void {
+    for (const [bytes, file] of this.#heldOf(row)) {
+      if (this.#heldEnvelope(bytes, file, row.b) === null) continue
+      this.#failedLocal(bytes, row.b, reason)
+      rmSync(file, { force: true })
+    }
+  }
+
+  /**
+   * A held file's envelope; one that does not parse is renamed <id>.env.failed and logged, with no sender line (its
+   * sender cannot be read), and the caller goes on with the rest (falsifier 21).
+   */
+  #heldEnvelope(bytes: Uint8Array, file: string, label: string): ReturnType<typeof parseEnvelope> | null {
+    try {
+      return parseEnvelope(bytes)
+    } catch {
+      renameSync(file, `${file}.failed`)
+      this.#log.log('warn', 'local-held-corrupt', { label })
+      return null
+    }
+  }
+
+  /** A local row's read receipt from `label` (its own setting decided it): sealed and handed back on this machine. */
+  async #localReceipt(label: string, input: SendInput): Promise<void> {
+    const to = this.local.peer(label, input.to[0] as string)
+    const edge = this.units.get(label)?.opened?.edge
+    if (to === null || edge === undefined) return
+    await this.#inject(to, edge.seal(input, [this.local.recipient(to)]).bytes)
+  }
+
+  /** Hands sealed bytes to `label`'s open unit, or spools them for its open: never an open, never a dialog (M6). */
+  async #inject(label: string, bytes: Uint8Array): Promise<{ spooled: boolean }> {
+    const u = this.units.get(label) as Unit
+    const o = u.opened
+    if (o === null) {
+      spool(this.home, u.config.as, parseEnvelope(bytes).id, bytes)
+      this.#log.log('info', 'local-spool', { label })
+      return { spooled: true }
+    }
+    const row = await this.#ingest(o, bytes)
+    if (row.state === 'rejected')
+      throw new ToolError(row.reason ?? 'internal', `the identity ${label} refused it (${row.reason})`)
+    return { spooled: false }
+  }
+
+  /**
+   * The one call site that passes LOCAL_RELAY (M2): the recipient's next local cursor, its edge's receive (verify,
+   * policy with its local roots, dedup, one unseal, route), then its ack, which reaches its desk and the wake router.
+   */
+  async #ingest(o: Opened, bytes: Uint8Array): Promise<InboxRow> {
+    const local = o.edge.inbox().filter((r) => r.relay === LOCAL_RELAY)
+    const row = await o.edge.receive(LOCAL_RELAY, 1 + Math.max(0, ...local.map((r) => r.cursor)), bytes)
+    o.edge.receiver.ack(row)
+    return row
+  }
+
+  /** Delivers a unit's spool at its open; one that fails to unseal (its key rotated since) is kept and logged. */
+  async #drainSpool(u: Unit): Promise<void> {
+    const o = u.opened
+    if (o === null) return
+    for (const { file, bytes } of spooled(this.home, u.config.as)) {
+      try {
+        const row = await this.#ingest(o, bytes)
+        const failed = row.state === 'rejected' && row.reason === 'open-failed'
+        // Every refusal is logged with its code (the word off, the pair dropped, a key rotated); only open-failed is kept.
+        if (row.state === 'rejected') {
+          this.#log.log('warn', 'local-spool', { label: u.config.label, code: row.reason ?? 'internal' })
+          this.#failedLocal(bytes, u.config.label, row.reason ?? 'internal')
+        }
+        unspool(file, failed)
+      } catch (e) {
+        this.#log.log('warn', 'local-spool', {
+          label: u.config.label,
+          code: String((e as { code?: unknown }).code ?? 'internal'),
+        })
+      }
+    }
+  }
+
+  /**
+   * C3: a spooled envelope `label` refused at its drain is reported to its sender, the own identity whose address is
+   * the envelope's from, in that identity's audit: publish reject {relay: local:, delivery: failed-local, reason, to},
+   * which status(id) reads. A sender not open now is not told (the service log has the line).
+   */
+  #failedLocal(bytes: Uint8Array, label: string, reason: string): void {
+    const env = parseEnvelope(bytes)
+    // The sender by its address, open or not (#addressOf reads its custody entry): one not open yet gets the line at
+    // its open (s1: the start's expiry runs before any identity opens).
+    const sender = [...this.units.values()].find((x) => this.#addressOf(x) === env.from)
+    const detail = { relay: LOCAL_RELAY, delivery: 'failed-local', reason, to: label }
+    const entry: AuditEntry = { event: 'publish', decision: 'reject', id: env.id, from: env.from, detail }
+    if (sender === undefined) return
+    if (sender.opened !== null) sender.opened.edge.audit.record(entry)
+    else this.#unsent.set(sender.config.label, [...(this.#unsent.get(sender.config.label) ?? []), entry])
   }
 
   #writeJson(): void {
@@ -774,6 +1651,7 @@ export class Service implements ServiceHome {
   #attach(conn: Connection) {
     const over: Partial<ToolContext> = {
       connection: conn,
+      local: this.local,
       canElicit: () => conn.capabilities.elicitation,
       client: () => ({ kind: conn.host, version: '' }),
       elicit: (dialog, extra) => conn.elicit(dialog, { signal: extra.signal }),
@@ -787,8 +1665,10 @@ export class Service implements ServiceHome {
       const ctx = derive((this.units.get(label) as Unit).ctx, { ...over, identities })
       all.set(label, {
         ctx,
+        // A unit not open yet (a Keychain or agent identity before its bind) by its custody entry: the guards see it.
         get address() {
-          return service.units.get(label)?.address ?? null
+          const u = service.units.get(label)
+          return u === undefined ? null : service.#addressOf(u)
         },
         holds: (t) => service.units.get(label)?.holds(t) ?? false,
         summary: () => service.units.get(label)?.summary() ?? {},
@@ -833,6 +1713,8 @@ export class Service implements ServiceHome {
   #bridge(conn: Connection): Record<string, unknown> {
     const exp = conn.capabilities.raw.experimental
     if (typeof exp !== 'object' || exp === null || !(CONSENT_BRIDGE in exp)) return {}
+    const pid = (exp as Record<string, { pid?: unknown }>)[CONSENT_BRIDGE]?.pid
+    if (typeof pid === 'number') this.#advertised.add(pid)
     ensureRunDir(join(this.paths.dir, 'shim'), this.#deps.uid)
     const dir = bridgeOf(conn, this.home, this.#deps.uid ?? process.getuid?.() ?? -1)
     if (dir === null) return {}

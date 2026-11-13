@@ -79,6 +79,8 @@ export interface Facts {
   readonly now: number
   readonly waived: readonly string[]
   readonly pinned: (host: string) => string | null
+  /** Roots trusted for this message only: the local roots of a row the bag service injected (receiver.ts). */
+  readonly local?: readonly string[]
 }
 
 const PASS: Decision = { action: 'pass' }
@@ -124,7 +126,8 @@ export class Policy {
    * root cannot be read or its key changed without a valid rotation; revoked when a hop's sub is in the root's
    * current revoked list. A chain with hops needs the root's address record; an empty chain needs none.
    */
-  async admit(chain: ChainResult, auth: readonly Hop[]): Promise<void> {
+  async admit(chain: ChainResult, auth: readonly Hop[], local: readonly string[] = []): Promise<void> {
+    if (local.includes(chain.root) && auth.length === 0) return
     this.#revoked(await this.#rootRecord(chain.root, auth.length > 0), auth)
   }
 
@@ -136,7 +139,7 @@ export class Policy {
    */
   async decide(chain: ChainResult, auth: readonly Hop[], facts: Facts): Promise<Decision> {
     const roots = this.#o.members?.roots ?? null
-    if (this.orgKey === null || roots === null) await this.admit(chain, auth)
+    if (this.orgKey === null || roots === null) await this.admit(chain, auth, facts.local)
     else {
       const ruling = await this.#roots(roots, chain, auth, facts)
       if (ruling !== null) return ruling
