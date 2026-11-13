@@ -41,6 +41,8 @@ export interface ReceiptsOptions {
   readonly spreadS: number
   /** Sends the receipt; a recipient that does not resolve yet waits, as any send does. */
   readonly send: (input: SendInput) => Promise<unknown>
+  /** The recipients of an envelope sealed with no outbox entry (a local send), else undefined. */
+  readonly sealed?: (id: string) => readonly string[] | undefined
   readonly onError: (error: unknown) => void
 }
 
@@ -56,8 +58,8 @@ export class Receipts {
    * The reader's side, for an accepted row: a receipt when the message asks for one and its peer is named, after the
    * jitter. It lives in memory until it goes: a process that ends first sends none, which says nothing. Never throws.
    */
-  answer(row: InboxRow): void {
-    const { onError, rng, send, spreadS, to } = this.#o
+  answer(row: InboxRow, send = this.#o.send): void {
+    const { onError, rng, spreadS, to } = this.#o
     try {
       const { type, thread, body } = JSON.parse(row.content as string) as SealedContent
       if (type === RECEIPT_TYPE || !isObject(body) || body[RECEIPT_HINT] !== true) return
@@ -103,7 +105,8 @@ export class Receipts {
     const id = body[RECEIPT_ACK]
     if (typeof id !== 'string') return false
     const sent = store.outboxGet(id)
-    if (sent === null || !parseEnvelope(sent.bytes).to.includes(principal)) return false
+    const named = sent === null ? this.#o.sealed?.(id) : parseEnvelope(sent.bytes).to
+    if (named === undefined || !named.includes(principal)) return false
     store.receiptAdd(id, principal, clock.now())
     return true
   }

@@ -477,6 +477,17 @@ export interface CliRun {
 
 const lines = (text: string): string[] => text.split('\n').filter((l) => l !== '')
 
+let cliHomeDir: string | null = null
+
+/** The CLI processes' HOME: one empty directory under AC_TEST_TMP (else the system's), made once, removed at exit. */
+function cliHome(): string {
+  if (cliHomeDir !== null) return cliHomeDir
+  const made = mkdtempSync(join(process.env.AC_TEST_TMP || tmpdir(), 'bag-e2e-home-'))
+  process.once('exit', () => rmSync(made, { recursive: true, force: true }))
+  cliHomeDir = made
+  return made
+}
+
 /**
  * One CLI process, `node packages/cli/src/main.ts <args>`, from the repository root, with no AC_HOME (the
  * scenarios pass --dir); `seen` collects its raw stdout and stderr, for the check that no key was printed.
@@ -484,6 +495,9 @@ const lines = (text: string): string[] => text.split('\n').filter((l) => l !== '
 export function cliProcess(args: readonly string[], seen?: string[]): Promise<CliRun> {
   const env: NodeJS.ProcessEnv = { ...process.env }
   delete env.AC_HOME
+  // HOME is an empty directory of the tests' own (cliHome), never the person's: a bag service running on the real
+  // HOME's .bag answers every writing verb "held" (gate red 2026-11-13). PATH stays whole, so cargo and rustup resolve.
+  env.HOME = cliHome()
   // The CLI keeps one telemetry store per machine, in HOME/.bag: off here, so no scenario counts into it or marks it.
   env.DO_NOT_TRACK = '1'
   return new Promise((resolve) => {

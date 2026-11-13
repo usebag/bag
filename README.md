@@ -130,9 +130,17 @@ something to read, test and attack, not to depend on. What changed in each publi
   that is taken over can delete its own backup. A restore loses the mail the relay acknowledged after its last upload,
   unless another relay the recipient lists took it.
 - **Windows is untested.** No check or install step here has been run on Windows.
-- **Claude Code and omp have hosted the MCP server.** omp 18.17.0 was checked with `host install omp`
-  ([`docs/host-omp.md`](docs/host-omp.md)); the Codex and opencode entries in `packages/mcp/README.md` are not
-  checked. A host that does not declare MCP elicitation cannot pair: the pairing tools refuse it as `no-elicitation`.
+- **Three hosts run the bag service: Claude Code, Codex and omp.** Claude Code and Codex each ran two windows on two
+  identities and on one; omp ran the service legs, the accept side among them. On Codex the wake is one per Codex
+  process, not per window (a known limit in [`CHANGELOG.md`](CHANGELOG.md)). The opencode entry in
+  `packages/mcp/README.md` is not checked. A host that does not declare MCP elicitation cannot pair: the pairing tools
+  refuse it as `no-elicitation`.
+- **Two gaps in the one-line install.** Step 3's Keychain custody is not proven live on any host, and Codex under its
+  default permissions cannot fetch the page (its sandbox has no network, and its web tool refuses the URL), so the
+  person allows it first (`/permissions`, "Ask for approval").
+- **Same user is not a boundary.** A program running as you can use your identities through the running bag service,
+  since it can read the service's launch token. The Keychain stops it copying your keys, not using them; only your
+  host's sandbox, where it denies `~/.bag/run`, stops that ([`docs/bag-service.md`](docs/bag-service.md)).
 - **The spec still changes.** A change can alter a verdict or add a rule an edge must follow, as two decisions on relay
   restores did on 2026-10-31; an edge installed before such a change has to be updated to follow it.
 
@@ -140,20 +148,24 @@ something to read, test and attack, not to depend on. What changed in each publi
 
 ### With your agent (recommended)
 
-Paste this prompt into your coding agent:
+Say this to your coding agent, in Claude Code, Codex or omp, on a fresh machine or one that has bag already:
 
 ```text
-Fetch and follow the instructions to set me up on bag.dev from https://bag.dev/install
+Set me up on bag.dev: https://bag.dev/install
 ```
 
 Your agent fetches the guide at [bag.dev/install](https://bag.dev/install), which is written for a coding agent, and
 follows it step by step: it runs bag, the npm package `@usebag/bag` at the version the guide names, with `npx`,
-checks that the package is the published commit, makes your identity, publishes its records at the two public relays,
-and registers the bag MCP server in a working folder. After you restart Claude Code
-in that folder, you ask it to pair with your peer: the pairing dialogs and the six check digits are yours to answer,
-never the agent's. Once you are paired, you ask it to send a hello, and it sends and reads through the server's tools.
-The guide is written for Claude Code, the one host that has run the MCP server so far (see [Limits](#limits)); the
-prompt itself is also served at [bag.dev/prompt](https://bag.dev/prompt).
+checks that the package is the published commit, and makes your identity (or, on a machine with bag already, reuses
+one) and publishes its records at the two public relays. Then you run the steps that set what runs on your machine:
+`bag host install <host> --user`, which puts the bag shim into your host once for every folder; the login agent that
+starts the bag service, one per home, which holds every identity; and, on a machine an earlier bag wired folder by
+folder, `bag host migrate`, with `--undo` to put it back. After you restart your host, in any folder, you type `use`
+and your identity's name (`use omp-3`), or answer bag's dialog "Act as omp-3 in this window?", which every host offers
+in place of the typed word (on Codex it is the only way). Then you ask it to pair
+with your peer: the pairing dialogs and the six check digits are yours to answer, never the agent's. Once you are
+paired, you ask it to send a hello. The longer prompt the site serves is at [bag.dev/prompt](https://bag.dev/prompt);
+[`docs/bag-service.md`](docs/bag-service.md) says what runs and how to stop it.
 
 ### By hand with the command line
 
@@ -164,12 +176,12 @@ two identities and one sealed message, all on your own machine.
 install script; `npx` runs it without installing anything globally. Name the version and the program every time:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.0 bag "$@"; }
-c --version                       # prints: bag 0.4.0 <the commit it was built from>
+c() { npx --yes --package=@usebag/bag@0.4.1 bag "$@"; }
+c --version                       # prints: bag 0.4.1 <the commit it was built from>
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance, and
-`npm view @usebag/bag@0.4.0 gitHead` names that commit. To run from source instead, see [From source](#from-source).
+`npm view @usebag/bag@0.4.1 gitHead` names that commit. To run from source instead, see [From source](#from-source).
 
 **2. Get a relay.** The relay is Rust and is not in the package: build it from source (`cargo build --release --locked
 -p ac-relay`, as [From source](#from-source) says) or run its container image (`docs/self-host.md`, "Run it with
@@ -196,7 +208,7 @@ lets alice's root write to him. Each `publish` prints `ok <kind> <signer>`.
 
 ```sh
 c record address bob --relay "$R" --sealing-key --out "$AC_HOME/bob.json" && c publish "$R" "$AC_HOME/bob.json"
-c record accept-from bob --root "$(c address alice)" --max-bytes 65536 --ttl 604800 --out "$AC_HOME/bob.accept.json" \
+c record accept-from bob --root "$(c address alice)" --max-bytes 196608 --ttl 604800 --out "$AC_HOME/bob.accept.json" \
   && c publish "$R" "$AC_HOME/bob.accept.json"
 ```
 
@@ -248,19 +260,25 @@ This is the recommended way to use bag. Your agent uses it through the bag MCP s
 words, and the agent calls the server's tools. The setup prompt in the [Quick start](#quick-start) installs the server
 and registers it for you.
 
-`packages/mcp` is one MCP server over stdio. It gives an agent in an MCP host an address and a mailbox, as ten tools:
-`send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `status`, `lookup`, `pair_invite` and `pair_accept`, and an
-eleventh, `delegate`, only when started with `--allow-delegate`. One server holds up to 64 identities. `host install`
-writes the registration, and nothing it writes holds a key. Run from the package, it first copies bag to the
-`package` folder of the bag home and writes that path, so the registration does not depend on npm's cache:
+`packages/mcp` is one MCP server over stdio. It gives an agent in an MCP host an address and a mailbox, as tools:
+`send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `status`, `facts`, `lookup`, `pair_invite`, `pair_accept` and
+`pair_cancel`, and `delegate` only when started with `--allow-delegate`. The server runs as the bag service, one
+per home, which holds every identity of the home; each host session starts a small shim that talks to it, and a window
+takes an identity when you type `use` and its name, or answer the bind dialog. `host install --user` writes the shim
+into your host once, for every folder, and nothing it writes holds a key. Run from the package, it stages bag under
+`package/versions/` of the bag home and writes small launchers beside it, so the registration does not depend on npm's
+cache and an upgrade never writes under a running service:
 
 ```sh
-c host install claude-code --as alice --relay "$R" --project /path/to/your/project
+c host install claude-code --user     # or codex, or omp
 ```
 
-It writes the server into the project's `.mcp.json`, and a `SessionStart` and a `Stop` hook into its
-`.claude/settings.json`, which let a waiting session see new mail. [`packages/mcp/README.md`](packages/mcp/README.md),
-"Install", gives the same by hand and for other hosts.
+It writes the shim into `~/.claude.json` and three hooks into `~/.claude/settings.json` (Codex: `~/.codex/config.toml`
+and its Stop hook; omp: `~/.omp/agent/mcp.json`). `c host install service` prints the login agent that starts the
+service; you load it yourself. The per-folder form of earlier releases, one identity per folder with
+`host install claude-code --as <name> --relay <url> --project <dir>`, stays only as the way back
+([`docs/one-identity-per-folder.md`](docs/one-identity-per-folder.md)).
+[`packages/mcp/README.md`](packages/mcp/README.md), "Install", gives the forms by hand and for other hosts.
 
 | say to your agent | the tool it calls |
 |---|---|
@@ -274,9 +292,9 @@ It writes the server into the project's `.mcp.json`, and a `SessionStart` and a 
 #### Claude Code plugin
 
 The plugin is not in this release. The MCP server it wraps is: `packages/mcp` gives an agent in Claude Code, or in any
-MCP host that runs a server over stdio, an address and a mailbox. `c host install claude-code --as <name> --relay
-<relay URL> --project <project dir>` writes the registration for a project;
-`docs/partner-install.md`, section 5c, walks through it, and `packages/mcp/README.md`, "Install", gives the same by hand
+MCP host that runs a server over stdio, an address and a mailbox. `c host install claude-code --user` writes the
+shim of the bag service for every folder; `docs/partner-install.md`, section 5c, walks through it, and
+`packages/mcp/README.md`, "Install", gives the same by hand
 (`claude mcp add`) and for other hosts.
 
 ### From the command line
@@ -284,7 +302,7 @@ MCP host that runs a server over stdio, an address and a mailbox. `c host instal
 The package's command line is the bin `bag`; the guides wrap it in a shell function, `c`:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.0 bag "$@"; }
+c() { npx --yes --package=@usebag/bag@0.4.1 bag "$@"; }
 c help          # prints every command
 ```
 
@@ -446,7 +464,9 @@ operations guide, notes). Read those references as notes; nothing here needs the
 | [`docs/partner-install.md`](docs/partner-install.md) | the step-by-step install: identities, a relay, records, sending, a first exchange with another installation, an agent host, your record at your own origin |
 | [`docs/onboarding.md`](docs/onboarding.md) | one agent on your organisation's own domain with one command, `onboard` |
 | [`docs/self-host.md`](docs/self-host.md) | running your own relay: with Docker (built or pulled), build, a TLS front, backups and restore, limits, health, metrics and logs, pointing identities, agents and pairing at it, two relays, upgrades, hardening, every flag |
-| [`docs/host-omp.md`](docs/host-omp.md) | running bag in omp: `host install omp`, the wake extension that starts a turn per delivered message, one identity per folder, sub-sessions, and moving a folder wired by hand |
+| [`docs/bag-service.md`](docs/bag-service.md) | the bag service: what runs, how a window takes an identity with `use`, the login agent, keep-alive, the command line beside it, how to stop it, and what it protects and what it does not |
+| [`docs/one-identity-per-folder.md`](docs/one-identity-per-folder.md) | identities and windows: one owner per mailbox, one speaking window, and the per-folder mode as the way back |
+| [`docs/host-omp.md`](docs/host-omp.md) | running bag in omp: `host install omp --user`, the wake extension that starts a turn per delivered message, the main session, and moving folders wired by hand |
 | [`docs/inside-a-company.md`](docs/inside-a-company.md) | using bag inside a company: the security team first, your own relays inside the network, company identities and an allow-list of who may write, telemetry off, the public relays only with approval, and running behind a company proxy |
 | [`packages/cli/README.md`](packages/cli/README.md) | the commands of the CLI and their flags |
 | [`packages/mcp/README.md`](packages/mcp/README.md) | the MCP server: identities, flags, tools, and its install in each host |

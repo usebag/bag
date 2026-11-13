@@ -1282,6 +1282,48 @@ the source repository, contract 1), not part of this specification.
    with two owners. A fetched envelope that was not yet acknowledged stays durable and is acknowledged by the next
    owner, which item 3's dedup makes safe.
 
+### 9.2 Delivery between identities of one home (added 2026-11-13, bag 0.4.1)
+
+This section is local, outside the frozen core: no wire format, preimage, record or relay call changes, and no vector
+moves. Two identities of one person must stay unlinkable to relays and wire peers, so an edge that holds several
+identities refuses an act from one to another (the reference's `to-own-identity`). This section says how such an edge
+MAY still deliver mail between two of its own identities without that link ever reaching the wire.
+
+1. **A home-wide word, and one Allow per pair.** A home-wide word turns local delivery on or off (the reference:
+   `<home>/run/local.json`, version 2 `{"local_delivery": "on" | "off", "hidden": [label]}`, read only as a 0600
+   regular file of the user; with no file it is on, one constant; `bag local-delivery off` turns it off at once and
+   `on` asks a terminal y). An identity may be hidden: it sees none of the others and none reaches it. The edge MAY
+   list the visible identities to each other (the reference: `status.home`). Each pair is then the person's own yes,
+   asked once, on the first message from one to the other, in the recipient's window, in words built from the two
+   labels only, never the message; the message waits until then, and a no refuses the pair for a cooling period (the
+   reference: 10 held at most, 24 hours, re-asks bounded, 7 days to answer). Only the person's own no declines; no
+   answer leaves the request waiting (a dialog closed or timed out, a cancelled call, an aborted confirm), and it is
+   asked again later. While the word is off or either side is hidden the request is neither asked nor answered. No
+   code, check digits or relay call is involved: there is no party between the two sides.
+2. **A local record, never wire trust.** A pair's state is kept in a record of the edge's own (the reference:
+   `<home>/run/local-peers.json`, 0600: requested, allowed, declined), never in the trust list item 6 reads for wire
+   mail, never in an accept-from or any published record. So an envelope between the two that arrives from a relay is
+   judged by the wire rules alone, and refused. A change the edge did not write is recorded and shown to the person,
+   and a pair it did not write, whatever its state, is asked again; one naming no identity of the edge is dropped.
+3. **The same envelope, a local origin.** A local send builds the envelope a wire send would (section 5: signed by the
+   sender's key, sealed to the recipient's newest epoch key the edge holds, else the sealing key of its own copy of the
+   recipient's address record, never one read from a relay) and hands its bytes to the recipient's receive path with an
+   origin the edge itself sets: no relay URL can be that origin (the reference: the relay value `local:`, which no
+   `http` or `https` URL is). The receive path runs as for a frame (items 1 to 7: verify, policy, dedup, one unseal,
+   route); the recipient's local roots are added to its policy only for an envelope of that origin. Nothing is written
+   to the outbox and no relay is called; a read receipt, when the reader's own setting allows it, goes back the same
+   way.
+4. **What stays refused.** A send whose recipients mix own identities and wire peers is refused: an envelope's `to` is
+   seen by every recipient. Delegation, and any hop issued from one own identity to another, stays refused, since a
+   chain travels in envelopes. An identity whose keys an agent holds, or whose authority is a grant, is never paired
+   locally.
+5. **Not open yet.** A recipient whose keys are not open (a keychain item read only when a person binds it) is never
+   opened by a send: the sealed bytes wait in its own state (the reference: `<home>/state/<name>/local-spool/`) and are
+   handed to its receive path when it opens. One that no longer unseals there (its key rotated since) is kept (the
+   reference: `<id>.env.failed` in the spool) and logged, never dropped silently, and every refused drain is reported
+   to the sender's own record. Unpairing drops the pair (the next message asks again); removing an identity drops its
+   pairs and its waiting mail.
+
 ## 10. Security considerations
 
 - **Metadata.** Relays see `v`, `id`, `to`, `from`, `auth` (every hop's keys, caveats and expiry), `suite`, `ts`, sizes,
@@ -1291,6 +1333,13 @@ the source repository, contract 1), not part of this specification.
   count-only distinct-networks gauge — a set under a per-process, in-memory salt, dropped daily, from which only the
   bare count is exported and no network is stored — adds nothing. The new-signers-a-day metric is the delta of a counter
   (`ac_relay_new_signers_total`), not a per-record first-seen store, so it adds no per-identity metadata.
+- **Local pairs join contexts (section 9.2).** Delivery between two identities of one home never reaches a relay,
+  so no relay or wire peer can link them; but a local pair joins two contexts the person may have kept apart. A
+  message from one identity reaches the other's host session as mail from a trusted sender: still data, never an
+  instruction, yet a model misled in one session can now reach the other. Allow a pair only for identities that are
+  meant to talk to each other, and hide one that must stay apart; a sender's local sends are bounded (the reference:
+  20 a minute, 200 a day). The same user is not a boundary either way: a process of that user could already act as
+  either identity, write the edge's local files, or take a host's consent link by registering first.
 - **Root compromise** is unsolved, for everyone. It is bounded by short-lived principal and
   session keys, by revocation in address records that live a day at most, and by countersigned rotation against
   pinned keys. A rotation key kept offline lets an org recover a lost or compromised root.

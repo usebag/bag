@@ -30,6 +30,7 @@ import { addToServiceHome } from '../service-home.ts'
 import { isTrustRoot, readTrust, removeTrust } from '../trust.ts'
 import { removeOmp } from './host-install.ts'
 import { IDENTITY_CUSTODY_USAGE, identityCustody } from './identity-custody.ts'
+import { dropLocalPairs, needPairsTable, pairedLocally } from './local.ts'
 import { newestAccept } from './record.ts'
 import { failed, heldBy } from './unpair.ts'
 
@@ -175,6 +176,8 @@ export async function identity(args: readonly string[], io: Io): Promise<number>
   const keys = loadKeys(io, home, name)
   const agent = keys.signing.address
   const custody = homeCustody(io, home)
+  // A refused local pair table (q3): the remove changes nothing, and says how to fix the file.
+  needPairsTable(home)
   const twin = custody.list().find((e) => e.name !== name && e.address === agent)
   if (twin !== undefined) {
     throw new CliError(
@@ -262,6 +265,7 @@ export async function identity(args: readonly string[], io: Io): Promise<number>
     join(keyDir, `${name}.json`), // last: a run again after a failed move still finds the identity
   ].filter((rel) => there(join(home, rel)))
   const relayList = relays.join(' ')
+  const locally = custody.list().some((e) => e.address !== agent && pairedLocally(home, agent, e.address))
   const question = [
     `remove ${name} (${agent}) from ${home}:`,
     newest === null
@@ -272,6 +276,7 @@ export async function identity(args: readonly string[], io: Io): Promise<number>
       .filter((r) => !leave.includes(r))
       .map((r) => `  trust.json keeps ${r} for ${keptFor.get(r)?.join(', ')}`),
     ...(forget.length === 0 ? [] : [`  names.json forgets ${forget.join(' ')}`]),
+    ...(locally ? ['  run/local-peers.json: its local pairs leave'] : []),
     `  moved into ${to}: ${moves.map((m) => join('home', m)).join(' ')}`,
     ...(wiring?.lines.map((l) => `  ${l}`) ?? []),
     ...(codexNote === null ? [] : [`  ${codexNote}`]),
@@ -320,6 +325,9 @@ export async function identity(args: readonly string[], io: Io): Promise<number>
     io.out(`forgot ${n} ${agent}`)
   }
   if (forget.length > 0) book.save()
+  // Its local pairs (spec/SPEC.md 9.2); its spool moves with state/<name>.
+  if (dropLocalPairs(home, (q) => q.a_addr === agent || q.b_addr === agent) > 0)
+    io.out(`dropped the local pairs of ${name}`)
   const flags = relays.map((r) => `--relay ${r}`).join(' ')
   for (const other of heldBy(home, name, agent, agent)) {
     io.out(

@@ -38,12 +38,23 @@ import {
   type ConsentKind,
   type ConsentOutcome,
   type ConsentPeer,
+  type ConsentWords,
   pidAlive,
 } from './consent.ts'
 import { incompleteLine } from './keepalive.ts'
 import { NAME, Names } from './names.ts'
 import { type ProgressExtra, startProgress } from './progress.ts'
-import { codeOf, refuseLinks, type ToolContext, ToolError } from './tools.ts'
+import {
+  codeOf,
+  LOCAL_DECLINED,
+  LOCAL_HIDDEN,
+  LOCAL_PENDING,
+  REQUESTED_NOTE,
+  refuseLinks,
+  SHOW_HOW,
+  type ToolContext,
+  ToolError,
+} from './tools.ts'
 import { addTrust } from './trust.ts'
 
 // Pairing inside the MCP host (relaxing, on 2026-10-29, the earlier "CLI only" rule): pair_invite and pair_accept drive the edge's unchanged invitePeer
@@ -68,6 +79,7 @@ import { addTrust } from './trust.ts'
 export const PAIRING_CODES =
   'bad-invite bad-code invite-expired bad-request bad-mac not-for leaked declined no-answer'.split(' ')
 
+/** What a local pair's result says. */
 /** What pair_accept says while it is not paired: a send to the inviter before its admit is refused. */
 export const NOT_PAIRED = 'not paired yet: send nothing to this peer until pair_accept answers paired: true'
 
@@ -131,6 +143,27 @@ function usedInvite(e: unknown): unknown {
 /** A connection's checked bridge directory (binding.ts bridgeOf) holds a live .bridge. */
 const bridgeAt = (dir: string | undefined, now: number): boolean =>
   dir !== undefined && bridgePresent(dir, null, now, pidAlive)
+
+/** The dialog's words to hide an identity, and to show it again (decision 103, section 3). */
+export const HIDE_WORDS = (name: string): string =>
+  `Keep ${name} apart from your other identities on this machine?`
+export const SHOW_WORDS = (name: string): string => `Let ${name} reach your other identities on this machine?`
+/** One show dialog per identity per this many seconds (a hide needs no bound): when each home's label last asked. */
+export const SHOW_EVERY_S = 600
+const SHOW_ASKED = new Map<string, number>()
+const HIDDEN_NOTE =
+  "hidden: the home's other identities no longer see this identity or reach it on this machine"
+const SHOWN_NOTE =
+  "shown: the home's other identities see this identity and may reach it on this machine again"
+
+/** A local dialog with no answer (a decline faster than a person, a timeout, a cancel): cancelled, never declined. */
+const UNANSWERED = 'the dialog was not answered: nothing was changed'
+
+/** The no-elicitation detail for an omp window with no registered consent link (an older extension, or a subagent). */
+export const OLD_EXTENSION =
+  "This omp session's bag extension has no link to the bag service for this dialog (older, or not in omp's main " +
+  'interactive session), so nothing was written. Your user runs bag host install omp again and restarts omp, then ' +
+  'asks again. Do not call a pair tool again until they say so.'
 
 /** The window a service pairing runs in, as busy and a refused cancel name it: host kind and cwd, never the handle. */
 const windowOf = (c: ServiceConnection): string => `the ${c.host} window at ${c.cwd}`
@@ -296,6 +329,19 @@ export class Pairings {
   ): Promise<Json> {
     const { resume, ...rest } = a
     if (resume !== undefined) return this.#resume('pair_invite', resume, rest, extra, conn)
+    // for naming this identity's own address in the bag service: hide it from the home's others, or show it again.
+    if (a.for !== undefined && this.#ctx.local !== undefined && a.for === this.#ctx.opened.identity.address)
+      return this.#visibility(extra, conn)
+    // for naming an identity of this home, with the home word on: the local pair, one dialog and nothing else.
+    const local = a.for === undefined ? null : (this.#ctx.local?.own(this.#ctx.config.label, a.for) ?? null)
+    const shut =
+      local === null ? undefined : [this.#ctx.config.label, local].find((l) => this.#ctx.local?.hidden(l))
+    if (shut !== undefined)
+      throw new ToolError(
+        LOCAL_HIDDEN,
+        `hidden: ${shut} is kept apart from this home's other identities; ${SHOW_HOW}`,
+      )
+    if (local !== null) return this.#localPair(local, extra, conn)
     const live = this.#start('pair_invite', a.name, a.for, conn)
     if (live.bridge) return this.#bridgeInvite(live, a.for, a.ttl)
     const only = a.for ?? (await this.#first(live, this.#boundPeer(live, extra), true))
@@ -329,6 +375,109 @@ export class Pairings {
     // The word code, or the invite string from a relay without the rendezvous (edge pairing.ts, INVITE_PREFIX).
     const given = text.startsWith(INVITE_PREFIX) ? { invite: text } : { code: text }
     return { invite_open: true, ...given, expires_at: iso(exp), resume: live.token, note: SHOW_CODE }
+  }
+
+  /**
+   * pair_invite with `for` an own identity (decision 104): allowed answers already allowed; requested,
+   * local-pair-pending; none asks now (a request in its window, nothing held). Declined, in cooling, first asks this
+   * window's own person (the red team's re-ask form), within 3 per cooling and one per 10 minutes, then the request.
+   */
+  async #localPair(peer: string, extra: PairExtra, conn: Opt<ServiceConnection>): Promise<Json> {
+    const ctx = this.#ctx
+    const self = ctx.config.label
+    const local = ctx.local as NonNullable<ToolContext['local']>
+    const { state, row } = local.pairState(self, peer)
+    if (state === 'allowed') return { local: true, peer, pair: 'allowed', note: 'already allowed' }
+    if (state === 'requested')
+      throw new ToolError(LOCAL_PENDING, `already asked: waiting for ${peer} to allow it`)
+    if (state === 'declined') {
+      const wait = local.reask(self, peer, null)
+      if (wait !== null) throw new ToolError(LOCAL_DECLINED, `${peer} declined: ask again in ${wait} s`)
+      // The time of the No (the declined row's at), never the time of this re-ask.
+      const at = new Date((row?.at ?? ctx.clock.now()) * 1000).toISOString().slice(11, 16)
+      const message = `Ask ${peer} again to allow messages from ${self}? You declined at ${at}.`
+      const yes = await this.#localConfirm(extra, conn, this.#peer(peer, ''), {
+        title: `Yes: ask ${peer}`,
+        message,
+      })
+      if (yes === null) throw new ToolError('cancelled', UNANSWERED)
+      local.reask(self, peer, yes)
+      if (!yes) throw new ToolError('declined', 'not asked again: nothing was changed')
+    } else local.request(self, peer)
+    return { local: true, peer, pairing: 'requested', note: REQUESTED_NOTE(peer) }
+  }
+
+  /** The dialog of a local pair request in this window (askPending): a yes or no, or a throw when none is shown. */
+  confirmLocal(
+    extra: PairExtra,
+    conn: Opt<ServiceConnection>,
+    peer: ConsentPeer,
+    words: ConsentWords,
+  ): Promise<boolean | null> {
+    return this.#localConfirm(extra, conn, peer, words)
+  }
+
+  /**
+   * Hide or show this identity to the home's other identities (decision 103): pair_invite with `for` its own address
+   * asks the person in one dialog, the design's words; only their Yes writes run/local.json, never a tool argument.
+   */
+  async #visibility(extra: PairExtra, conn: Opt<ServiceConnection>): Promise<Json> {
+    const ctx = this.#ctx
+    const self = ctx.config.label
+    const local = ctx.local as NonNullable<ToolContext['local']>
+    const hidden = local.hidden(self)
+    const key = `${ctx.config.home} ${self}`
+    const wait = (SHOW_ASKED.get(key) ?? -SHOW_EVERY_S) + SHOW_EVERY_S - ctx.clock.now()
+    if (hidden && wait > 0)
+      throw new ToolError('busy', `a show dialog for ${self} was asked lately: ask again in ${wait} s`)
+    if (hidden) SHOW_ASKED.set(key, ctx.clock.now())
+    const words = hidden
+      ? { title: `Yes: let ${self} reach them again`, message: SHOW_WORDS(self) }
+      : { title: `Yes: keep ${self} apart`, message: HIDE_WORDS(self) }
+    const me = this.#peer(self, ctx.opened.identity.address)
+    // Only the person's explicit No is declined; no answer (a fast decline, a timeout, a cancel) is cancelled (q2).
+    const yes = await this.#localConfirm(extra, conn, me, words)
+    if (yes === null) throw new ToolError('cancelled', UNANSWERED)
+    if (!yes) throw new ToolError('declined', 'not confirmed: nothing was changed')
+    local.setHidden(self, !hidden)
+    this.#audit('accept', hidden ? 'local-shown' : 'local-hidden', null, { name: self })
+    return { local: true, hidden: !hidden, note: hidden ? SHOWN_NOTE : HIDDEN_NOTE }
+  }
+
+  /**
+   * One yes or no for a local act, in the asking window: its elicitation, or with none (omp) the question over its
+   * extension's registered consent link, else no-elicitation. True for Yes, false for the person's own No, null for no
+   * answer (a closed dialog, a timeout, an aborted confirm): only a No declines (L1).
+   */
+  async #localConfirm(
+    extra: PairExtra,
+    conn: Opt<ServiceConnection>,
+    _peer: ConsentPeer,
+    words: ConsentWords,
+  ): Promise<boolean | null> {
+    const ctx = this.#ctx
+    const live = new Live('pair_invite', '', '', () => {})
+    if (conn !== undefined) live.conn = conn
+    // L1: a No is the person's own (accept with false, or decline); a closed or unanswered dialog is no answer. A
+    // decline faster than FAST_ANSWER_MS is the host's (codex exec declines a form in under a millisecond), never a
+    // person's: no answer too, on every local form (falsifier 9a).
+    if (conn === undefined ? ctx.canElicit() : conn.capabilities.elicitation) {
+      const field = { type: 'boolean' as const, title: words.title }
+      const mono = ctx.mono ?? (() => performance.now())
+      const t0 = mono()
+      const said = await this.#ask(live, extra, words.message, 'confirm', field).catch((e: unknown) => {
+        if (e instanceof ToolError && e.code === 'declined')
+          return mono() - t0 < FAST_ANSWER_MS ? null : false
+        if (e instanceof ToolError && e.code === 'cancelled') return null
+        throw e
+      })
+      // An accept with no boolean in it is no answer, not a No (r5).
+      return said === true ? true : said === false ? false : null
+    }
+    // omp (item 7): only over its extension's own registered link, never a file; none is no-elicitation.
+    const asked = conn === undefined ? null : (ctx.local?.consent(conn, words, extra.signal) ?? null)
+    if (asked === null) throw new ToolError('no-elicitation', OLD_EXTENSION)
+    return asked
   }
 
   /** pair_accept: take the pasted invite string, show this side's code and send the request; or (resume) wait. */

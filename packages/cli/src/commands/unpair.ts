@@ -11,10 +11,11 @@ import {
 } from '@usebag/core'
 import { keepAcceptCopy, liftMaxBytes, RelayError } from '@usebag/edge'
 import { CliError, list, parse, relayUrl, req, str, UsageError } from '../args.ts'
-import { homeDir, loadKeys } from '../home.ts'
+import { homeCustody, homeDir, loadKeys } from '../home.ts'
 import type { Io } from '../io.ts'
 import { confirmed, needTty } from '../policy.ts'
 import { isTrustRoot, readTrust, removeTrust } from '../trust.ts'
+import { dropLocalPairs, needPairsTable, pairedLocally } from './local.ts'
 import { newestAccept } from './record.ts'
 
 // unpair: the person's act that ends a pairing (or a typed --accept), the inverse of peer's y. The trust
@@ -52,6 +53,20 @@ export async function unpair(args: readonly string[], io: Io): Promise<number> {
   const keys = loadKeys(io, home, as)
   const agent = keys.signing.address
   if (root === agent) throw new UsageError(`${root} is ${as} itself`)
+  // An own identity paired locally (spec/SPEC.md 9.2): the pair leaves the service's table; no relay is called, since
+  // a local pair is never in trust.json or an accept-from (M1). An own identity with the table refused: nothing changes.
+  if (ownAddresses(io, home).includes(root)) needPairsTable(home)
+  if (pairedLocally(home, agent, root)) {
+    await confirmed(
+      io,
+      `unpair ${as} and ${root} on this machine (run/local-peers.json)?`,
+      'nothing was changed',
+    )
+    const ours = (x: string, y: string): boolean => (x === agent && y === root) || (x === root && y === agent)
+    dropLocalPairs(home, (q) => ours(q.a_addr, q.b_addr))
+    io.out(`unpaired locally ${root}`)
+    return 0
+  }
   const trusted = Object.hasOwn(readTrust(home), root)
   const keptFor = trusted ? heldBy(home, as, agent, root) : []
   const client = io.relay({})
@@ -187,4 +202,15 @@ export function heldBy(home: string, as: string, agent: string, root: string): s
 export function failed(e: unknown): string {
   if (!(e instanceof RelayError)) return 'error'
   return e.code ?? (e.status === 0 ? 'unreachable' : `http-${e.status}`)
+}
+
+/** The addresses of this home's identities, by their custody entries (no key read); none when they do not list. */
+function ownAddresses(io: Io, home: string): string[] {
+  try {
+    return homeCustody(io, home)
+      .list()
+      .map((e) => e.address)
+  } catch {
+    return []
+  }
 }

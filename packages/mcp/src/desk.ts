@@ -1,5 +1,13 @@
 import { parseEnvelope, type SealedContent, type Thread, verifyChain } from '@usebag/core'
-import type { Clock, Edge, EdgeStore, InboxRow, SessionHandler, VerifiedHandle } from '@usebag/edge'
+import {
+  type Clock,
+  type Edge,
+  type EdgeStore,
+  type InboxRow,
+  LOCAL_RELAY,
+  type SessionHandler,
+  type VerifiedHandle,
+} from '@usebag/edge'
 import { MAX_TOOL_SECONDS } from './config.ts'
 
 // The server's mailbox desk, on the edge's store and router. Every row the edge accepts comes here once, from its
@@ -56,6 +64,8 @@ export interface Message {
   readonly thread: Thread
   readonly received_at: string
   readonly relay: string
+  /** "local" for a message the bag service delivered between identities of this home (spec/SPEC.md 9.2). */
+  readonly via?: 'local'
   readonly trust: Trust
   /** The address its thread was handed off to, when it was. */
   readonly handed_off_to: string | null
@@ -245,6 +255,7 @@ export class Desk {
       thread: content.thread,
       received_at: iso(row.receivedAt),
       relay: row.relay,
+      ...(row.relay === LOCAL_RELAY ? { via: 'local' as const } : {}),
       trust: { root: chain.root, chain_hops: env.auth.length, caveats: chain.caveats, verified: true },
       handed_off_to: this.handedOffTo(content.thread.id),
       reply: { to: [chain.principal], thread: { id: content.thread.id, prev: [env.id] } },

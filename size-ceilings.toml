@@ -59,7 +59,10 @@ ceiling = 12863 # earlier 9386, 8417, 7623, 6884, 6237, 6201, 5241, 4759, 3550, 
 
 [mcp]
 path = 'packages/mcp/src'
-# Raised 2026-11-12 from 8690 to 12895 by a decision entry (the measured figure plus 10 percent, decision 92's integration raise, Dilip's word 'merge the service, raise mcp' of 18:17 UTC):
+# Raised 2026-11-13 from 12895 to 14276 by a decision entry (the measured figure plus 10 percent, rounded up; decision 103, seamless local pairing, Dilip's word 'raise mcp'):
+# fix/local-seamless measures packages/mcp/src at 12978 at its end (items 2 to 8 and C1 to C4, f9e35016), and 12978 times 1.1 is 14275.8, rounded up.
+# First set to 14295 on the estimate of about 12995 (32e65969), then to the measured figure's 14276.
+# Earlier: raised 2026-11-12 from 8690 to 12895 by a decision entry (the measured figure plus 10 percent, decision 92's integration raise, Dilip's word 'merge the service, raise mcp' of 18:17 UTC):
 # build/bag-service 968b85dc measures packages/mcp/src at 11722, from main's 8081: the mailbox side +330 (build/svc-mail), the bindings +907 (build/svc-bind),
 # the service core and its wiring +2166 (build/svc-wiring), the agent opening +215 (build/svc-wiring-2), the shim's consent bridge +21 (build/omp-service)
 # and the docs head's drain test +2 (build/svc-docs); 11722 times 1.1 is 12894.2, rounded up.
@@ -69,7 +72,7 @@ path = 'packages/mcp/src'
 # Earlier: raised 2026-10-30 from 5312 to 6257 by a decision entry (the measured figure plus 10 percent): the multi-identity change (one MCP server holding many identities, after a trim to one per-identity unit and one tool guard) measured packages/mcp/src at 5688, and 5688 times 1.1 is 6256.8, rounded up.
 # Earlier: raised 2026-10-29 from 4417 to 5312 by a decision entry (the measured figure plus 10 percent): the pairing change measured packages/mcp/src at 4829, and 4829 times 1.1 is 5311.9, rounded up.
 # Earlier: raised 2026-10-28 from 3910 to 4417 by a decision entry (the measured figure plus 10 percent): the many-sessions change measured packages/mcp/src at 4015, and 4015 times 1.1 is 4416.5, rounded up.
-ceiling = 12895 # earlier 8690, 7738, 6939, 6257, 5312, 4417 and 3910; raised 2026-10-27 from 3300 by 15 percent (the recommended 3,400 plus 15%); earlier 3300 (2026-10-26, from 2800); measured 2399, then 2363
+ceiling = 14276 # earlier 12895, 8690, 7738, 6939, 6257, 5312, 4417 and 3910; raised 2026-10-27 from 3300 by 15 percent (the recommended 3,400 plus 15%); earlier 3300 (2026-10-26, from 2800); measured 2399, then 2363
 
 [enterprise-client]
 path = 'packages/enterprise-client/src'

@@ -19,6 +19,7 @@ import {
   RelayError,
   RelayTurns,
   type Rng,
+  type SendInput,
   startTelemetry,
   startTelemetrySender,
   stopTelemetry,
@@ -90,6 +91,10 @@ export const HELD_RETRY_MAX_MS = 30_000
 export const PARENT_CHECK_MS = 2000
 
 export interface ServerDeps {
+  /** The bag service's sender of a local row's receipt (open.ts localSend). */
+  readonly localSend?: (input: SendInput) => Promise<unknown>
+  /** The bag service's local roots of this identity, from its reconciled table (open.ts localRoots). */
+  readonly localRoots?: () => readonly string[]
   readonly clock: Clock
   readonly rng: Rng
   readonly relay: RelayClient
@@ -258,6 +263,8 @@ export class Unit {
     const { config } = this
     const delay = deps.resubscribeDelayMs ?? (this.#multi ? jitteredDelay(rng) : undefined)
     const opened = openIdentity(config, {
+      ...(deps.localSend === undefined ? {} : { localSend: deps.localSend }),
+      ...(deps.localRoots === undefined ? {} : { localRoots: deps.localRoots }),
       clock,
       rng,
       relay: deps.relay,

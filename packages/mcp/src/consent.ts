@@ -18,6 +18,8 @@ import { join } from 'node:path'
 //   and the person types the six digits the peer reads out, returned in answer.code, which the server verifies against
 //   its own computation.
 // - pair-invite-show: a pure "shown to the peer" confirm, code the invite code to show, a boolean answer.
+// A local pair's dialog (spec/SPEC.md 9.2) never uses these files: on omp the bag service asks over the extension's own
+// registered link (service.ts, service/consent-ask), never through a file a command could write.
 // The server completes the pairing only with the peer and root from ITS request, never from the answer, which may carry
 // only v, id, accepted, code and answered_at.
 
@@ -37,6 +39,12 @@ export interface ConsentPeer {
 
 /** The request kinds: paste the peer's code, accept/confirm a peer (digits), or confirm an invite code was shown. */
 export type ConsentKind = 'pair-accept-code' | 'pair-accept' | 'pair-invite-show'
+
+/** A local act's dialog words (a local pair, a hide or a show): its title and message, built by the service. */
+export interface ConsentWords {
+  readonly title: string
+  readonly message: string
+}
 
 /**
  * The longest pasted invite or code a pair-accept-code answer may carry, in characters (after trimming). An invite

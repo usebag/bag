@@ -30,14 +30,14 @@ Name the version and the program every time. Define a shell function once per te
 below:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.0 bag "$@"; }
-c --version                            # prints: bag 0.4.0 <the commit it was built from>
-npm view @usebag/bag@0.4.0 gitHead     # prints the commit npm records for 0.4.0
+c() { npx --yes --package=@usebag/bag@0.4.1 bag "$@"; }
+c --version                            # prints: bag 0.4.1 <the commit it was built from>
+npm view @usebag/bag@0.4.1 gitHead     # prints the commit npm records for 0.4.1
 c help                                 # prints every command
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance, and
-`npm view @usebag/bag@0.4.0 gitHead` names that commit. The two commits above must be the same, and must be the
+`npm view @usebag/bag@0.4.1 gitHead` names that commit. The two commits above must be the same, and must be the
 published commit of this release, which the agent route's page names; if they differ, or `npm view` fails (`E404`
 among the errors), stop and do not use the package. The first run fetches the package into npm's cache, `$HOME/.npm`,
 so it needs the network once.
@@ -349,7 +349,7 @@ request reaches A on the same one, A's side prints `second request <address>: th
 
 ## 5c. Connect your agent host
 
-### With the bag service (bag 0.4.0 and later)
+### With the bag service (bag v0.4.0 and later)
 
 The bag service ([bag-service.md](bag-service.md)) holds every identity of your home; each host session starts the bag
 shim, which talks to it, and you give a window an identity by typing `use` and its name. One command per host wires the
@@ -377,7 +377,7 @@ token and drive the service as any identity, dialogs included. The Keychain stop
 
 ### One identity per folder (the way back)
 
-What follows is the per-folder form of earlier releases, kept in 0.4.0 as the way back and for any other MCP host
+What follows is the per-folder form of earlier releases, kept in v0.4.0 as the way back and for any other MCP host
 ([one-identity-per-folder.md](one-identity-per-folder.md)). The CLI and the MCP server are two ways to be one identity. An MCP server (`packages/mcp`, the package's `bag-mcp`)
 puts your address and mailbox inside an agent host, as tools. Use one receiver per identity: if a host runs the MCP
 server for `me`, do not also run `c inbox --watch --as me`; whichever starts second is refused as busy. A host that

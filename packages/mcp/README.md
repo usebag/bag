@@ -212,7 +212,28 @@ body that holds another identity's exact address (`ed25519:<64 hex>` or the bare
 passes it. An identity that failed to open, busy in another server for example, is still known to the guards: the
 server reads its address from the public half its home keeps (the key file, the keychain pointer or the agent
 pointer), never from the keychain item, so a locked keychain hides nothing. Only an identity whose home has no
-readable entry for its key (none of the three, or a damaged one) is not.
+readable entry for its key (none of the three, or a damaged one) is not. In the bag service this holds for an
+identity not opened yet too (a keychain identity before its first bind): its pointer's address is what the guards see.
+
+**Delivery between identities of one home (bag service, 0.4.1).** `to-own-identity` is lifted for one case only: the
+home word is on (`<home>/run/local.json`, on with no file; `bag local-delivery off` is the brake, `on` asks a terminal
+y; only a 0600 regular file of the user is read) and both identities are visible (`hide` keeps one apart) and neither is
+an agent or a grant identity. `status.home` lists the others with address, relays, open and the pair's state. The
+first send, ask or handoff of a pair holds the message (at most 10; past that `local-pair-pending`) and asks once, in
+the recipient's speaking window at its next tool call, in words from the two labels; Yes allows both ways and delivers
+the held mail in order, No drops it (`failed-local` for the sender) and refuses for 24 hours (`local-declined`). Only
+your own No declines; no answer leaves the request waiting: a dialog closed or timed out, a cancelled call or an aborted
+omp confirm asks again at a later tool call, until the 7-day expiry. With the word off or either identity hidden the
+request is neither asked nor answered; it waits. The record is `<home>/run/local-peers.json` (0600), never `trust.json`, the name book, an accept-from or a published
+record; a change the service did not write is audited and told, and a row it did not write, whatever its state, is
+asked again; a row naming no identity of the home is dropped.
+Local mail is the same signed and sealed envelope a wire send builds, handed to the recipient's own receive path under
+the origin `local:` only the service sets; it carries `via: "local"` and `from_own`, makes no outbox entry and calls no
+relay; a read receipt goes back the same way when the reader's setting allows. To a recipient not open yet the sealed
+bytes wait in its `state/<name>/local-spool/`; a refused drain is reported to the sender (`status(id)`). Still
+refused, word on or off: a mix of own and wire recipients, `delegate` or `lookup` of an own identity, and more than 20
+local sends a minute or 200 a day from one sender (to-own-identity with the case in its detail). A local pair joins
+two contexts: mail from one reaches the other as mail it may act on.
 
 **One failure stops no other.** Each identity is `starting`, `running` or `failed`. An identity that fails to open or
 start (a missing key, a refused custody or trust file, a policy that fails, another server holding it: `busy`) is
@@ -251,7 +272,7 @@ custody, never handed over a socket or from the old process, and never written a
 - **file**: `<home>/keys/<name>.json`, mode 0600 in a 0700 directory. The default on Linux, and with
   `keygen --custody file` anywhere.
 - **keychain**: one generic password item `bag:<name>` in a macOS keychain, which `<home>/keychain/<name>.json` (no
-  seed) points to. From bag 0.4.0 the default of `keygen` on macOS for a person at a terminal when the account has a default keychain
+  seed) points to. From bag v0.4.0 the default of `keygen` on macOS for a person at a terminal when the account has a default keychain
   (a script, CI or an agent's shell gets a key file unless it passes `--custody keychain`). The item is
   read through `/usr/bin/security`, once per process: under the prompt access (the default) macOS shows a dialog at
   that read asking to allow `security` to use the item; the person answers Allow. Always Allow adds `security` to the
@@ -729,7 +750,7 @@ honoured there. A cycle that re-signed or found nothing due is then `incomplete-
 words, until a cycle finds every relay holding it. A relay that could not be reached may hold the same list already;
 the line says only that it did not take this record.
 
-### In the bag service: several windows, the ring, keep-alive and the audit (bag 0.4.0)
+### In the bag service: several windows, the ring, keep-alive and the audit (bag v0.4.0)
 
 The bag service (`docs/bag-service.md`) holds each identity's one desk (`desk.ts`), however many connections are
 bound to it: one edge, so one relay cursor and one acknowledgement per message, and one returned set, so a message
@@ -880,7 +901,7 @@ identity to trust (`node packages/cli/src/main.ts address <name>`).
 package:
 
 ```sh
-npx --yes --package=@usebag/bag@0.4.0 bag host install claude-code --as alice --relay <relay> --project <dir>
+npx --yes --package=@usebag/bag@0.4.1 bag host install claude-code --as alice --relay <relay> --project <dir>
 ```
 
 It first stages the package once per version in `<home>/package/versions/<version>/` (printing `wrote

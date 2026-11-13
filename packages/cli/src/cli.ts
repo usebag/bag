@@ -24,6 +24,7 @@ import { inbox } from './commands/inbox.ts'
 import { init, restore } from './commands/init.ts'
 import { keygen } from './commands/keygen.ts'
 import { keys } from './commands/keys.ts'
+import { localDelivery } from './commands/local.ts'
 import { login } from './commands/login.ts'
 import { logout } from './commands/logout.ts'
 import { lookup } from './commands/lookup.ts'
@@ -128,7 +129,12 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       the one way a root leaves: on a terminal, after one y, removes it from <home>/trust.json and from
       the newest accept-from of <name> (re-signed, max_bytes and ttl kept, published at each relay);
       refused accept-all under a held *, not-trusted when neither holds it. A root that onboard's cron
-      line types in --accept comes back on its next run unless dropped there
+      line types in --accept comes back on its next run unless dropped there. For an own identity paired
+      locally with <name>, it drops that local pair (run/local-peers.json) and calls no relay
+  local-delivery on|off|hide <name>|show <name> [--dir <home>]
+      the home word (<home>/run/local.json, on with no file) that lets this home's own identities message each
+      other on this machine, never through a relay; off at once refuses them again (to-own-identity); hide <name>
+      keeps one apart at once; on and show ask one y on a terminal
   identity relays <name> --relay <url>... [--dir <home>]
       on a terminal after one y: the relays of a bag service identity, its entry in <home>/identities.json
   identity remove <name> --relay <url>... [--to <dir>] [--project <dir>] [--dir <home>]
@@ -351,6 +357,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ['pair', pair],
   ['peer', peer],
   ['unpair', unpair],
+  ['local-delivery', localDelivery],
   ['identity', identity],
   ['pairings', pairings],
   ['record', record],

@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import type { Clock } from '@usebag/edge'
+import { type Clock, HomeCustody } from '@usebag/edge'
 import {
   endLinks,
   enterpriseDeps,
@@ -12,6 +12,7 @@ import {
   systemPorts,
   tick,
 } from '@usebag/enterprise-client'
+import { dropLocalPair } from './local.ts'
 import type { Logger } from './log.ts'
 import { Names } from './names.ts'
 import { codeOf, pairingsFor, type ToolContext } from './tools.ts'
@@ -60,13 +61,22 @@ export async function consolePass(d: ConsoleDeps): Promise<void> {
   if (commands === null) return
   const profile = join(d.home, 'orgs', s.domain) // the profile's own home (enterprise-client session.ts)
   const now = (): number => d.clock.now()
+  // The session identity's address, read from its custody entry (no key, no dialog): a removed peer that is an own
+  // identity of this home loses its local pair with it too (spec/SPEC.md 9.2), and the spooled mail between them.
+  let self: string | null = null
+  try {
+    self = new HomeCustody(d.home).entry(s.name).address
+  } catch {}
   const ports: Omit<PairingPorts, 'invite'> = {
     write: (peer, name) => {
       // The book as it is now, as pair_invite's write reads it; save checks the name first.
       Names.read(d.home).save(name, peer, now())
       addTrust(d.home, peer, now())
     },
-    remove: async (peer) => void removeTrust(d.home, peer),
+    remove: async (peer) => {
+      removeTrust(d.home, peer)
+      if (self !== null && dropLocalPair(d.home, self, peer)) d.log.log('info', 'console-local-unpaired', {})
+    },
     now,
     sleep: d.sleep ?? wait,
   }

@@ -147,7 +147,15 @@ With the service the bridge directory is the session's own, `<home>/run/shim/<om
 service at the window's start and gone when the session ends; only the service writes the questions there, and the
 request and answer files are the same as below. The invite code shows only in omp's own dialog, never in a tool
 result: a person who closes that dialog before copying the code asks the agent to cancel the pairing (`pair_cancel`)
-and invite again, and the new dialog shows the new code.
+and invite again, and the new dialog shows the new code. Between two identities of one home (0.4.1) there is no
+code: the first message from one to another asks once, in the recipient's speaking window, "<a> on this machine wants
+to message <b>. Allow both ways?", and hiding or showing an identity asks the same way. In omp these prompts come over
+the extension's own connection to the bag service, registered for this omp process, never through a file, so they
+need the extension of 0.4.1 or later: run `bag host install omp` again and restart omp (a running omp keeps the
+extension it started with); without it the tool answers `no-elicitation` and says so. No answer is not a No: only your
+own No declines the pair; a prompt that times out (after 25 seconds, under omp's 30-second limit on a tool call), is
+taken off the screen or is aborted leaves the request waiting, asked again later. One limit: omp's yes-or-no prompt
+cannot tell Esc from No, so Esc on this prompt counts as No.
 
 
 - someone pairs with you: a Yes/No dialog, `bag: <peer> asks to pair as <name>` with the check digits to compare

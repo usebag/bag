@@ -254,7 +254,9 @@ describe('bag-shim between a host and the service', () => {
       params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'omp', version: '18' } },
     })
     await host.byId(0)
-    expect(svc.hellos[0]?.client_capabilities).toEqual({ experimental: { 'bag.dev/consent-bridge': {} } })
+    expect(svc.hellos[0]?.client_capabilities).toEqual({
+      experimental: { 'bag.dev/consent-bridge': { pid: expect.any(Number) } }, // the omp pid (item 7)
+    })
     expect(await postBridge(home, [process.pid])).toBe(folder)
     host.child.kill('SIGTERM')
     expect(await host.exited).toBe(0)

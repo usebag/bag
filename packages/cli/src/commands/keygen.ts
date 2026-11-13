@@ -5,6 +5,7 @@ import { CliError, type Parsed, parse, str, UsageError } from '../args.ts'
 import { homeCustody, homeDir, loadKeys } from '../home.ts'
 import type { Io } from '../io.ts'
 import { addToServiceHome, refuseReserved } from '../service-home.ts'
+import { readWord, visibleLine } from './local.ts'
 
 /** keygen's one stderr line: its identity has no second copy. */
 export const NO_RECOVERY = 'keygen: no recovery copy; for sessions and tests (people: ac init)'
@@ -115,6 +116,9 @@ export function keygen(args: readonly string[], io: Io): number {
   // The bag service serves <home>/identities.json: the new identity goes in it (service-home.ts); stdout stays the address.
   const added = addToServiceHome(home, name)
   if (added !== null) io.err(added)
+  // C4: an identity the bag service now serves is, with the word on, visible to the home's others: say how to hide it.
+  const word = readWord(home)
+  if (added !== null && word.on && !word.hidden.includes(name)) io.err(visibleLine(name))
   io.out(keys.signing.address)
   return 0
 }

@@ -1,5 +1,6 @@
 import {
   type AcRecord,
+  buildEnvelope,
   type ChainResult,
   checkChainShape,
   DEFAULT_WINDOW,
@@ -7,10 +8,12 @@ import {
   generateSigningKey,
   groupCaveat,
   type Hop,
+  newThread,
   parseEnvelope,
   replyThread,
   serializeRecord,
   signFetchAuth,
+  type Thread,
   type TimeWindow,
   verifyChain,
 } from '@usebag/core'
@@ -40,8 +43,8 @@ import {
   type SessionKeys,
   type SpawnHook,
 } from './ports.ts'
-import { RECEIPT_SPREAD_S, Receipts } from './receipts.ts'
-import { Receiver } from './receiver.ts'
+import { askingReceipt, RECEIPT_SPREAD_S, Receipts } from './receipts.ts'
+import { LOCAL_RELAY, Receiver } from './receiver.ts'
 import { Resolver, recorded } from './resolver.ts'
 import { Router } from './router.ts'
 import { coreRng, Sender, type SendInput, type SendResult, type WaitingSend } from './sender.ts'
@@ -117,6 +120,10 @@ export interface EdgeOptions {
   readonly receiptSpreadS?: number
   /** The hooks and bounds of the org's outbound gate, which every send goes through when `policy.members` is set. */
   readonly gate?: Pick<GateOptions, 'breakers' | 'maxHeld' | 'domainOf' | 'recipientPolicy'>
+  /** Roots the receiver trusts for a LOCAL_RELAY row only, read at each such row (receiver.ts). */
+  readonly localRoots?: () => readonly string[]
+  /** Sends a LOCAL_RELAY row's receipt on this machine (the bag service); absent, a local row is answered by none. */
+  readonly localSend?: (input: SendInput) => Promise<unknown>
 }
 
 /** A known peer's relays: those its accepted messages came by. */
@@ -161,6 +168,8 @@ export class Edge {
   readonly receiver: Receiver
   readonly #o: EdgeOptions
   readonly #receipts: Receipts
+  /** The recipients of each envelope sealed here (local sends), for their receipts: kept in memory only. */
+  readonly #sealedTo = new Map<string, readonly string[]>()
   /** The org's outbound gate: send, sendOrWait and reply go through it when policy.members is set. */
   readonly #gate: Gate
   /**
@@ -244,6 +253,7 @@ export class Edge {
       // A group's mailbox answers no one: a receipt there would tell one member about another.
       to: () => (this.#atGroup ? [] : (options.receiptsTo?.() ?? [])),
       send: (i) => this.sendOrWait(i),
+      sealed: (id) => this.#sealedTo.get(id),
       onError: (e) => options.onError?.(e),
     })
     this.receiver = new Receiver({
@@ -258,8 +268,11 @@ export class Edge {
       ...(options.flushEveryMs === undefined ? {} : { retryEveryMs: options.flushEveryMs }),
       ...(options.resubscribeDelayMs === undefined ? {} : { resubscribeDelayMs: options.resubscribeDelayMs }),
       ...(options.doorbell === undefined ? {} : { doorbell: options.doorbell }),
+      ...(options.localRoots === undefined ? {} : { localRoots: options.localRoots }),
       accepted: (row) => {
-        this.#receipts.answer(row)
+        // A local row's receipt goes back on this machine only, never on the wire (decision 103).
+        const local = row.relay === LOCAL_RELAY
+        if (!local || options.localSend) this.#receipts.answer(row, local ? options.localSend : undefined)
         options.accepted?.(row)
       },
       ...(options.onError === undefined ? {} : { onError: options.onError }),
@@ -395,7 +408,7 @@ export class Edge {
   peers(): readonly PeerRelays[] {
     const peers = new Map<string, Set<string>>()
     for (const row of this.#o.store.inboxList(['routed', 'queued', 'acked'])) {
-      if (row.content === null) continue
+      if (row.content === null || row.relay === LOCAL_RELAY) continue
       // An accepted row's principal: the chain's last hop's iss, else `from`, as verifyChain names it.
       const env = parseEnvelope(row.bytes)
       const address = env.auth.at(-1)?.iss ?? env.from
@@ -423,6 +436,32 @@ export class Edge {
       thread: replyThread(message.thread, [message.id]),
       relays: [message.relay, ...(input.relays ?? [])],
     })
+  }
+
+  /**
+   * Builds one envelope to `recipients` as a send does (signed, sealed to each sealing key, the session's thread bound)
+   * and returns its bytes: no resolver, no outbox, no relay. The bag service delivers it between identities of one
+   * home (spec/SPEC.md 9.2).
+   */
+  seal(
+    input: Omit<SendInput, 'to'>,
+    recipients: readonly { readonly address: string; readonly sealingKey: Uint8Array }[],
+  ): { readonly id: string; readonly thread: Thread; readonly bytes: Uint8Array } {
+    const { clock, keys, rng } = this.#o
+    const thread = input.thread ?? newThread(coreRng(rng))
+    const { envelope, bytes } = buildEnvelope({
+      from: keys.signing,
+      to: [...recipients],
+      auth: this.#chain.auth,
+      type: input.type,
+      thread,
+      body: input.receipt === true ? askingReceipt(input.body) : input.body,
+      ts: clock.now(),
+      rng: coreRng(rng),
+    })
+    this.#sealedTo.set(envelope.id, envelope.to)
+    if (input.session !== undefined) this.router.bind(thread.id, input.session)
+    return { id: envelope.id, thread, bytes }
   }
 
   /** Publishes a failed envelope's exact bytes again. */
