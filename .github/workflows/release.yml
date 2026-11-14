@@ -12,6 +12,9 @@
 # The jobs, in order:
 #   staged    what to release: the version, the commit (a public cut on main at that version), the staging run's stage
 #             id and sha256; it prints what the maintainer does next.
+#   telemetry-listed  reads only: https://telemetry.bag.dev/v1/health must list the version with the commit's
+#             TELEMETRY_SCHEMA_COMMIT (60 minutes); no token, no secret, no environment. The maintainers deploy the
+#             Worker by hand from the infrastructure repository once the cut is on main (docs/release.md, step 5).
 #   approval  runs in the environment npm-release, whose required reviewer is the maintainer, and does nothing but wait
 #             for the click (a workflow waits up to 30 days on an environment approval). Click only after approving
 #             the version on npmjs.com: the npm approval itself needs the maintainer's two-factor authentication and
@@ -136,8 +139,48 @@ jobs:
           IN_VERSION: ${{ inputs.version }}
           IN_COMMIT: ${{ inputs.commit }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  approval:
+  telemetry-listed:
+    # Read-only: the public https://telemetry.bag.dev/v1/health must list the version with the commit's
+    # TELEMETRY_SCHEMA_COMMIT before anyone can approve it. No token, no secret, no environment: it triggers nothing
+    # anywhere; the maintainers deploy the Worker by hand from the infrastructure repository (docs/release.md, step 5).
     needs: staged
+    if: needs.staged.outputs.go == 'yes'
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: the commit's client schema commit
+        id: client
+        run: |
+          B="$RUNNER_TEMP/bag"
+          git init -q "$B" && git -C "$B" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git -C "$B" fetch -q --filter=blob:none --depth=1 origin "$COMMIT"
+          SC="$(git -C "$B" show "$COMMIT:packages/edge/src/telemetry-schema.ts" |
+            sed -n "s/^export const TELEMETRY_SCHEMA_COMMIT = '\([0-9a-f]\{40\}\)'$/\1/p")"
+          [ -n "$SC" ] || { echo "no TELEMETRY_SCHEMA_COMMIT in packages/edge/src/telemetry-schema.ts at $COMMIT"; exit 1; }
+          echo "schema_commit=$SC" >> "$GITHUB_OUTPUT"
+        env:
+          COMMIT: ${{ needs.staged.outputs.commit }}
+      - name: the Worker lists the version (read only; the deploy is the maintainers' hand run)
+        # 60 reads of at most 15 s and 59 sleeps of 60 s between them: at most 74 minutes, under the 80, so the step
+        # always prints its own "deploy it by hand, then re-run" line before GitHub would stop it.
+        timeout-minutes: 80
+        run: |
+          listed() {
+            curl -fsS --max-time 15 https://telemetry.bag.dev/v1/health |
+              jq -e --arg v "$VERSION" --arg sc "$SC" '.ok == true and .schema_commit == $sc and (.builds | index($v)) != null' >/dev/null
+          }
+          for i in $(seq 1 60); do
+            if listed; then echo "https://telemetry.bag.dev/v1/health lists $VERSION with $SC (read $i)"; exit 0; fi
+            echo "read $i of 60: /v1/health does not list $VERSION with $SC yet: deploy the Worker by hand (docs/release.md, step 5)"
+            [ "$i" -lt 60 ] && sleep 60
+          done
+          echo "after 60 reads (about an hour) /v1/health does not list $VERSION with $SC: deploy it by hand, then re-run this job"
+          exit 1
+        env:
+          VERSION: ${{ needs.staged.outputs.version }}
+          SC: ${{ steps.client.outputs.schema_commit }}
+  approval:
+    needs: [staged, telemetry-listed]
     if: needs.staged.outputs.go == 'yes'
     runs-on: ubuntu-24.04
     environment:
