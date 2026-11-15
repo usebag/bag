@@ -1321,8 +1321,13 @@ MAY still deliver mail between two of its own identities without that link ever 
    opened by a send: the sealed bytes wait in its own state (the reference: `<home>/state/<name>/local-spool/`) and are
    handed to its receive path when it opens. One that no longer unseals there (its key rotated since) is kept (the
    reference: `<id>.env.failed` in the spool) and logged, never dropped silently, and every refused drain is reported
-   to the sender's own record. Unpairing drops the pair (the next message asks again); removing an identity drops its
-   pairs and its waiting mail.
+   to the sender's own record. Unpairing drops the pair (the next message asks again). Removing an identity drops its
+   pairs. Its held mail, waiting in either side's spool for a pair's Allow (the reference: `local-spool/held/`), is
+   reported to each sender that is still an identity of the home as a refused local delivery with the reason
+   `identity removed` (the reference: `publish reject`, `delivery failed-local`, in the sender's own audit log, which
+   `status` reads; by the bag service when it holds the identity, else by the remove itself), and deleted; mail the
+   removed identity sent is deleted, with no report left in the home, its sender being gone. The rest of its spool
+   leaves the home with its state.
 
 ## 10. Security considerations
 
@@ -1827,8 +1832,8 @@ local: it is never on the wire, and the table is §13's own, not a row of §2.4.
   `sub` as an address (§3.2) before it signs anything for it.
 - **`op`**: a non-empty string naming the operation: `sign` (§13.4), `open` or `register` (§13.8). An op outside this
   set is refused `bad-shape`; the agent never treats an unknown op as a request to sign (§13.6), and a session frame
-  naming a non-session op is `bad-shape` too (`server.ts`: the two newest ops are taken only from a frame with no
-  `session`). `resign` (§13.7), `grant` (§13.5), `logout` (§13.3), `device-grant` and `group-key` (both below) are
+  naming a non-session op is `bad-shape` too (`server.ts`: the three newest ops are taken only from a frame with no
+  `session`). `resign` (§13.7), `grant` (§13.5), `logout` (§13.3), `device-grant`, `group-key` and `revoke` (all below) are
   **not** session requests: each is a non-session client's, authenticated by the uid floor alone and carrying no
   `ac/agent/1` signature.
 - **`argsHash`**: `sha256hex(utf8(canonical(args)))` (§2.3) of the operation's canonical argument list. For `sign`,
@@ -1863,6 +1868,18 @@ and a window holds at most 32 groups (`rate-limited`; Appendix B 87). **Two resi
 principal opened and is not `group-key.v1`, which a `bad-sig` or `open-failed` does not; (b) no rate cap on the
 principal's `group-key` frames, each of which writes one audit line (§13.11). The cap of 32 is a cap on groups held,
 refused `rate-limited` only when a frame would add a thirty-third group; it is not a cap on frames.
+
+**`revoke`.** A uid-only op that ends one session's authority in this window: the args are `[session]` (`bad-shape`
+otherwise), and it answers `agent-locked` with no open window. Every grant-set entry whose subject is that session
+leaves the grant-set (its first grant and any hop signed for it), so the session's next request, and that of any chain
+rooted at the same first grant, fails §13.2's grant-set test as `not-in-grant` (that test takes the grant from the
+chain's first hop under the held key, not from its last: `agent.ts`, `#authority`); a request already past that test
+completes. A hop the agent signed for another subject at the session's request is that subject's own grant-set entry
+and is not revoked with the session: revoke that subject too. It asks no `y`, since it only removes authority, and it is idempotent: the reply `{ok: true, op: "revoke",
+grants: n}` counts the entries removed, 0 for an unknown or already revoked session. It writes one `revoke` line
+(§13.11). A client that renews a grant under a new key SHOULD send it for the old session, so that a copy of the old
+key taken before the swap stops at once instead of at its hop's `exp`; an agent that predates it answers `bad-shape`,
+and the client keeps the intent. Any same-uid process may send it, as it may send `logout`.
 
 Position 0 is the string tag `ac/agent/1`, so a session-key signature made for the agent can never stand as an envelope
 id, a hop, a fetch proof (`ac/fetch/1`) or a subscribe proof (`ac/sub/1`); §2.4 points here for the tag. A session's
@@ -2027,8 +2044,12 @@ put a hop in the grant-set and close both refusals.
 **The first grant (`ac grant`).** `grant` is a non-session operation, authenticated by the uid floor alone, carrying no
 `ac/agent/1` signature: a session cannot send it for itself, because it names a `session` other than the caller and
 carries a human confirmation the socket cannot supply. `ac grant` passes the session's address, the `caveats` and an
-`exp`. The agent prints that session, those caveats and that `exp` on its own terminal and, only after a `y` is typed
-there, signs exactly one hop
+`exp`, and may pass a fourth argument, a **note** of 1 to 240 characters (`bad-shape` otherwise): the requester's own
+words on why it asks (the bag service names the identity, the host and "after the grant ended" when it asks again).
+The agent prints the note first, as `note from the requester: <JSON text>`, escaped as a caveat is, and never signs it:
+it is in neither the hop nor the prompt's code, and an agent that predates it ignores a fourth argument. The agent
+prints that session, those caveats and that `exp` on its own terminal and, only after a `y` is typed there, signs
+exactly one hop
 
 | object | preimage | signed by |
 |---|---|---|
@@ -2199,12 +2220,14 @@ request refused before that writes no audit line.
 | `device` | `accept` / `reject` | the device hop's digest | null | the principal | `{tag: "ac/hop/1", sub: <D>, exp, caveats: <count>}` |
 | `rotate` | `accept` / `reject` | the envelope id, or null for a replayed body | the envelope's `from`, or null | the principal | on `accept` `{group, generation, sealing_key, hop_exp, kept: "new" \| "renewed" \| "held" \| "dropped"}` (the public key, never the private one); on `reject` empty |
 | `pair` | `accept` / `reject` / `queue` | null | the peer, or null | null | `{step, name}` or `{step, code}`; never S, the six digits or a key |
+| `revoke` | `accept` | null | null | the principal | `{sub: <the session>, grants: <count>}` |
 
 `reason` is the refusing code; on an `accept`, `"ok"`; on a `declined` event, `"declined"`. The `detail`
 never names key material, the sealed `type`, or a thread id.
 
-**`device` and `rotate`.** The agent's own events are now `sign`, `open`, `declined`, `device` and `rotate`
-(`AgentAuditEvent`). `device` is written by `device-grant`: `accept` once the `y` signs the hop, `reject` for
+**`device` and `rotate`.** The agent's own events are now `sign`, `open`, `declined`, `device`, `rotate` and `revoke`
+(`AgentAuditEvent`; `revoke`, 2026-11-15, is written by the uid-only `revoke` op, `accept` only, with no signature
+check, like `device`). `device` is written by `device-grant`: `accept` once the `y` signs the hop, `reject` for
 `exp-not-monotone`, `agent-locked`, `not-authorized` or `declined` (a malformed ask, `bad-address` or `bad-shape`, names
 nothing and writes no line). `rotate` is written by `group-key`, `accept` or `reject <code>`; it is also the edge's own
 event name (§9 item 8). Both are uid-only frames with no signature, so, like `declined`, they are written without the

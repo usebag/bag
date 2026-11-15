@@ -33,7 +33,8 @@ async function world(...answers: boolean[]) {
   io.tty = true
   io.answers.push(...answers)
   const dir = join(tmp.dir, `home-${n++}`)
-  const key = async (name: string, home: string) => (await cli(io, 'keygen', name, '--dir', home)).out[0]
+  const key = async (name: string, home: string) =>
+    (await cli(io, 'keygen', '--new', name, '--dir', home)).out[0]
   const jane = (await key('jane', dir)) as string
   const bob = (await key('bob', join(tmp.dir, `bob-${n++}`))) as string
   const carol = (await key('carol', join(tmp.dir, `carol-${n++}`))) as string
@@ -90,7 +91,7 @@ describe('unpair <root> --as <name> --relay <url>...: a root leaves both places 
     expect(USAGE).toContain('  unpair <address|domain:<host>> --as <name> --relay <url>... [--dir <home>]\n')
   })
 
-  it('lifts a held max_bytes of exactly 65,536 to the envelope cap, and keeps 32,768 (W9)', async () => {
+  it('lifts a held max_bytes of exactly 65,536 to the envelope cap, and keeps 32,768', async () => {
     for (const [size, signed] of [
       [65_536, MAX_ENVELOPE_BYTES],
       [32_768, 32_768],
@@ -323,7 +324,7 @@ describe('unpair <root> --as <name> --relay <url>...: a root leaves both places 
 describe("unpair in a home that holds other identities: trust.json is the whole home's", () => {
   /** kim, a second identity of jane's home, whose accept-from copy names `roots`, as kim's own pairing leaves it. */
   async function kim(w: World, roots: readonly string[]) {
-    const address = (await cli(w.io, 'keygen', 'kim', '--dir', w.dir)).out[0] as string
+    const address = (await cli(w.io, 'keygen', '--new', 'kim', '--dir', w.dir)).out[0] as string
     const file = join(w.dir, `kim-${n++}.json`)
     const given = roots.flatMap((r) => ['--root', r])
     const args = ['--max-bytes', '4096', '--ttl', '3600', '--out', file, '--dir', w.dir]
@@ -351,7 +352,7 @@ describe("unpair in a home that holds other identities: trust.json is the whole 
   it("(s4) after jane unpairs a shared peer, it still reaches kim: kim's inbox admits it from trust.json", async () => {
     const w = await world(true)
     const peerHome = join(tmp.dir, `peer-${n++}`)
-    const peer = (await cli(w.io, 'keygen', 'peer', '--dir', peerHome)).out[0] as string
+    const peer = (await cli(w.io, 'keygen', '--new', 'peer', '--dir', peerHome)).out[0] as string
     addTrust(w.dir, peer, T0)
     await hold(w, [peer])
     const k = await kim(w, [peer])
@@ -408,7 +409,7 @@ describe("unpair in a home that holds other identities: trust.json is the whole 
   it('(s5) after jane unpairs the shared peer, its message to jane is refused at the relay', async () => {
     const w = await world(true)
     const peerHome = join(tmp.dir, `peer-${n++}`)
-    const peer = (await cli(w.io, 'keygen', 'peer', '--dir', peerHome)).out[0] as string
+    const peer = (await cli(w.io, 'keygen', '--new', 'peer', '--dir', peerHome)).out[0] as string
     addTrust(w.dir, peer, T0)
     await hold(w, [peer, w.carol])
     await kim(w, [peer])

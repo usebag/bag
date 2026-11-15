@@ -27,6 +27,8 @@ export interface SessionAgent {
   readonly probe: () => void
   /** A renewal: the grant again, its caveats, its first life from now (halved while the window is shorter). */
   readonly renew: () => Promise<readonly Hop[]>
+  /** The earliest time the next renewal is allowed (the last one plus the pace); before it renew is rate-limited. */
+  readonly allowedAt: () => number
   readonly close: () => void
 }
 
@@ -152,11 +154,15 @@ export function sessionAgent(
       if (now - renewed < pace) {
         throw new AcError('rate-limited', `a session renews at most every ${pace} s`)
       }
-      // The window's end is not known to a session: ask for now + life and, while it is past the end, for half.
+      // The window's end is not known to a session: ask for now + life and, while it is past the end, for half, and
+      // stop at the first life the agent takes. Never search upward toward the end: every accepted ask is a real hop
+      // signed by the held key, so a search would mint several grants for one renewal. The last grant may end short
+      // of the window (by up to one pace); the window still ends when the person said.
       const hop = await clampLife(life, (l) => client().sign(key.address, first.caveats, now + l))
       renewed = now
       return [hop]
     },
+    allowedAt: () => renewed + pace,
     close: () => conn?.close(),
   }
   for (const thread of options.replay ?? []) {

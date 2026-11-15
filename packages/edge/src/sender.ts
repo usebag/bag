@@ -57,7 +57,7 @@ import type { Router } from './router.ts'
 // bytes the edge's own relays serve (it signs nothing), and only the address record: an accept-from record is its
 // owner's to publish at its own relays. No outcome of that publish fails the envelope. Waiting
 // sendOrWait keeps a send whose recipient does not resolve in the store, plaintext, since it cannot be sealed
-// yet, and flush tries it again, after a restart too, to the same `until` (last mile, ruling 1 (b)). Its row leaves in the
+// yet, and flush tries it again, after a restart too, to the same `until`. Its row leaves in the
 // transaction that adds its envelope to the outbox, so a crash leaves it in one of the two: it goes out once, under one id.
 // A recipient may be a handle (spec/SPEC.md §12.4): Resolver.recipient binds it to its address, checked
 // against its org's revoked list, and reads that address's records at the org record's relays first.
@@ -492,7 +492,7 @@ export class Sender {
           status: outcome.status,
           next_at: t.nextAt,
           ...(t.state === 'retired' ? { retired: true } : {}),
-          ...(unreachable ? { cause: UNREACHABLE } : {}),
+          ...(unreachable ? { cause: outcome.stopped ?? UNREACHABLE } : {}),
         },
       })
     } else {

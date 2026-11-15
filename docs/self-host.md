@@ -807,23 +807,13 @@ project, so no real Claude Code configuration was touched.
 showed both relays with `"state":"subscribed"`. In Claude Code, start a session in the project directory, approve
 the bag server, and ask for the bag status.
 
-### The agent install and `bag-install.env`
+### The agent install and its relays
 
-The install page at [bag.dev/install](https://bag.dev/install), which a coding agent follows, writes a settings file,
-`$HOME/bag-install.env`, in its step 2, and every later step reads it. Two of its lines choose the relays:
-
-```sh
-RELAYS="https://relay1.example.org https://relay2.example.org"
-RENDEZVOUS="https://relay1.example.org"
-```
-
-`RELAYS` is every relay the identity lists, passed to each command as `--relay` by the file's `relays` function;
-`RENDEZVOUS` is the relay pairing codes meet at, passed to `host install` as `--rendezvous`. The page writes the two
-public relays there and tells the agent to use only those. To install against your own relays, change the two lines
-after step 2 writes the file and before step 3 makes the identity, and run the page's commands yourself, or use the
-command-line route above. With a settings file naming two local relays, the page's commands for steps 2c (`c health`
-on each relay), 3 (`c keygen`, `c keys rotate`) and 6 (`c host install ... $(relays) --rendezvous "$RENDEZVOUS"`) ran
-and printed what this section shows. **Not verified:** an agent following the page with the changed file.
+The install page at [bag.dev/install](https://bag.dev/install), which a coding agent follows, writes no settings file.
+Its relays are the ones the agent passes to the `identity_create` tool after the restart, as `relays`, and the page
+tells the agent to use only the two public relays. To install against your own relays, give your relay URLs to that
+tool yourself (the dialog shows every relay whole before your Yes), or use the command-line route above.
+**Not verified:** an agent following the page with other relays.
 
 ### The rendezvous relay, for pairing
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { P, T0, type TestServer } from './support/fixtures.ts'
 import { type AgentHome, agentHome, grantedSession } from './support/sessions.ts'
 
-// A renewal asks for now + life, and the window's end is not known to a session (r11 red team 7): a grant clamped to
+// A renewal asks for now + life, and the window's end is not known to a session: a grant clamped to
 // the window once must not be refused exp-not-monotone for good when the window runs out; the renewal asks for less.
 
 let h: AgentHome

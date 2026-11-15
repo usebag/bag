@@ -10,15 +10,13 @@ import {
   isAcError,
   isAddress,
   MAX_ADDRESS_TTL,
-  parseRecord,
-  recordSigner,
   type SigningKey,
   serializeRecord,
   signRecord,
   toHex,
-  verifyRecord,
 } from '@usebag/core'
 import {
+  type Audit,
   acceptCopy,
   addressCopy,
   continueFrom,
@@ -30,15 +28,18 @@ import {
   readRecoveryState,
   writeRecoveryState,
 } from '@usebag/edge'
+import { auditedPublish, newestAccept, ownRecord } from '@usebag/home'
 import { CliError, flag, int, list, type Parsed, parse, relayUrl, str, UsageError } from '../args.ts'
 import { EPOCH_EARLY, epochDue, healed, offerKey, rotateEpoch } from '../epochs.ts'
-import { checkNoWindow, homeDir, loadKeys, renewing, windowOf } from '../home.ts'
+import { checkNoWindow, cliAudit, homeDir, loadKeys, renewing, windowOf } from '../home.ts'
 import { keyOf, readIdentities } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { stableMains } from '../packaged.ts'
 import { confirmed, needTty } from '../policy.ts'
 import { crontabLine, launchdJob } from './keep-schedule.ts'
 import { undate } from './login.ts'
+
+export { newestAccept }
 
 // record address and record accept-from: a record signed by the identity's key at the clock's now, written to stdout
 // or to --out. Records are public by design (spec/SPEC.md §7), so the file is written with the default mode. record
@@ -133,7 +134,7 @@ async function addressRecord(args: readonly string[], io: Io): Promise<number> {
     rotated_from: previous?.address ?? null,
   })
   undate(io, home, self, r.revoked)
-  // A record signed by hand replaces the list: never silently, since an entry left out is readmitted (ruling 4).
+  // A record signed by hand replaces the list: never silently, since an entry left out is readmitted.
   const copy = addressCopy(home, p.positionals[0] as string, self)
   const left = (copy?.revoked ?? []).filter((a) => !r.revoked.includes(a))
   if (left.length > 0) {
@@ -353,7 +354,7 @@ async function renew(
   signer: SigningKey,
   kept: Kept,
 ): Promise<Republished> {
-  const cycle = await republish(io, client, relays, signer, kept)
+  const cycle = await republish(io, client, relays, signer, kept, cliAudit(home, name, io))
   if (cycle.took) keepAddressCopy(home, name, cycle.kept.address)
   const key = await offerKey(io, client, home, { signing: signer }, relays)
   if (key === null || cycle.failure !== null) return cycle
@@ -489,50 +490,16 @@ export async function newest(
 }
 
 /**
- * The newest accept-from record of `own` at the relays, each checked by the core (ownRecord); null when none
- * holds one. For a reader with no address record to keep (onboard, after a lapse swept it).
+ * Signs both records again with one newer iat and publishes each at every relay, one line per republish, and each
+ * publish one line in `audit` (auditedPublish).
  */
-export async function newestAccept(
-  client: RelayClient,
-  relays: readonly string[],
-  own: string,
-): Promise<AcceptFromRecord | null> {
-  let accept: AcceptFromRecord | null = null
-  for (const url of relays) {
-    const f = (await ownRecord(client, url, own, 'accept-from')) as AcceptFromRecord | null
-    if (f !== null && f.iat > (accept?.iat ?? -1)) accept = f
-  }
-  return accept
-}
-
-/** The record of `kind` that `own` signed, at one relay, checked by the core; null when the relay holds none. */
-async function ownRecord(
-  client: RelayClient,
-  url: string,
-  own: string,
-  kind: 'address' | 'accept-from',
-): Promise<AcRecord | null> {
-  const bytes = await client.fetchRecord(url, own, kind)
-  if (bytes === null) return null
-  const parsed = parseRecord(bytes)
-  // At its own iat a record is neither early nor expired, so this checks its form and its signature.
-  const r = verifyRecord(parsed, parsed.iat)
-  if (r.kind !== kind || recordSigner(r) !== own) {
-    throw new AcError(
-      'bad-record',
-      `${url} answered the ${r.kind} record of ${recordSigner(r)} for the ${kind} record of ${own}`,
-    )
-  }
-  return r
-}
-
-/** Signs both records again with one newer iat and publishes each at every relay, one line per republish. */
 async function republish(
   io: Io,
   client: RelayClient,
   relays: readonly string[],
   signer: SigningKey,
   kept: Kept,
+  audit: Pick<Audit, 'record'>,
 ): Promise<Republished> {
   const { address: a, accept: f } = kept
   const iat = Math.max(io.clock.now(), a.iat + 1, (f?.iat ?? 0) + 1)
@@ -563,7 +530,7 @@ async function republish(
   for (const url of relays) {
     for (const r of accept === null ? [address] : [address, accept]) {
       try {
-        await client.publish(url, serializeRecord(r))
+        await auditedPublish(audit, r.kind, url, () => client.publish(url, serializeRecord(r)))
         io.out(`republished ${r.kind} ${signer.address} iat ${iat} ${url}`)
         if (r === address) took = true
       } catch (e) {

@@ -29,14 +29,22 @@ the service does not replace it: `chmod 700` it, or move the folder to `~/.Trash
 - `service.sock`: the socket the shims connect to (mode 0600).
 - `service.token`: a launch token, new at every start of the service; a shim presents it, and a connection without it
   is refused `bad-auth`.
-- `service.json`: the running service's pid, start time, version and package directory, for `status` and the CLI.
+- `service.json`: the running service's pid, start time, version and package directory, for `status` and the CLI,
+  and what runs now: `pairings`, the pairings running in any window; `lends`, the identities lent to a `bag` command
+  or held for an act in a window; `asking`, the questions waiting on your answer in any window. It is rewritten as
+  these change, so a restart can tell what it would cut. The counts hold only while that pid runs.
 
 - `service.log`: the service's log, JSON lines of events, codes and labels, never a key, a token or a message body
   (mode 0600, readable by you alone). It is not rotated: it grows by a few lines per start, connection and drain, and
   you may empty it at any time with `: > ~/.bag/run/service.log`.
 - `shim/`: one small file per window while it uses an identity (`<host pid>.bound`, the names it uses) and its last
-  ring (`<host pid>.ring`), which the wake hooks read; and, for an omp window, the folder where the service writes a
-  pairing's questions for omp's extension. The service is the only writer of those questions.
+  ring (`<host pid>.ring`), which the wake hooks read; omp's questions come over its extension's own link, not a file
+  (0.4.2). Codex runs one server
+  process for all of its windows, so a Codex window's files carry its Codex session id as well
+  (`<host pid>-<session id>.bound` and `.ring`, keyed from the session id of the window's first tool call); its Stop
+  hook finds them by the `session_id` of its input, so each window wakes for its own identity's mail only. Codex's
+  SessionEnd hook (a window closed or quit, or `/new`, about a minute late) releases that session's binding and
+  removes its files; the shim stays and connects again unbound.
 
 The service's list of identities is `<home>/identities.json`; it serves only the identities listed there. `bag keygen`,
 `bag init` and `bag restore` add a new identity to it (with the relays they know), `bag host migrate` adds the
@@ -77,12 +85,14 @@ There is no word that takes an identity back from a window: closing the window e
 A pairing's dialogs (the code, the check digits) open in the window that started it, and only there. Another window
 that uses the same identity is not interrupted and cannot answer them; it sees the new peer in the name book once the
 pairing is done. Closing the window that started a pairing ends it, and nothing is written. `pair_cancel` works from
-that window only.
+that window only. If the agent's host gives up on the call that starts a pairing (omp's own timeout, for example), that
+pairing ends too, and the next call starts afresh. While a pairing runs, a new one in its window is answered `busy` with
+a token to go on with the running one; another window is told only where it runs.
 
 ## The login agent
 
 The login agent is what keeps the service running while you are logged in. `bag host install service` prints it, for
-the platform it runs on, and you load it yourself (the bag 0.4.0 install page's step 6c, "The bag service, started at login"), in your own terminal; bag never touches launchd or systemd on its own. It:
+the platform it runs on, and you load it yourself (the install page's step 6c, "The bag service, started at login": there the `service` tool writes it and you run the one line it returns), in your own terminal; bag never touches launchd or systemd on its own. It:
 
 - starts the service when you log in, from the copy of bag in `<home>/package/`;
 - restarts it if it stops or crashes;
@@ -173,9 +183,22 @@ to keep bag from running at all, take the shim out of your hosts as well (the ba
   service's open of it and one for the window's own grant; each later window meets one. A window acts with its own
   grant under the agent's hop, never with the principal's key. The identity is reachable from a `login` until about 24
   hours after that login began, when its address and key records lapse; the service keeps none of them alive, and
-  running `login` again refreshes them. In 0.4.0 a send from such a window under an organisation's members record is
-  refused `not-authorized`, and a lost or revoked grant answers `not-authorized` until the window binds again or the
-  service restarts.
+  running `login` again refreshes them. A send from such a window under an organisation's members record is refused
+  `not-authorized`. The service renews the identity's grant through the agent before it ends, with no `y`; a window's
+  own grant renews while the window is bound, idle or not, pauses while the identity is lent or held for an act, and
+  tries once when it comes back. A grant that ends with the agent's login is used to its end with no `y` before it.
+  When a grant is revoked (a logout) or has ended, nothing is asked on a timer: the next send answers `grant-pending`
+  with the agent's request code, one `y` per grant (the identity's, and each window's own) grants a fresh key, and the
+  window carries on with its threads; the grant stays lost until that `y`. The agent's prompt carries a note written by
+  the service: the identity, the kind of window and the reason. A `no` at the agent holds until you type `use` and the
+  name again. After a regrant the old session key is deleted and revoked at the agent, at once or, when the agent could
+  not take it, at the next start or regrant; an older agent, which has no revoke, leaves the old key signing to its
+  grant's end. The grant events are in the identity's audit log, or the service's log while the identity is not open.
+  Limits: a service restart ends the identity's session, so the first bind after it asks again and its threads start
+  afresh; near the agent's window end a send can ask one `y` up to 5 minutes early (a renewal waits for the agent's
+  pace, so the last grant can end up to one pace before the login, never after it); a grant the agent signed for
+  another key at the old key's request, and an old window key, are not revoked and last to their grant's end (at most
+  8 hours).
 - Names ending in `.service`, `.session` or `.signin` are kept for the service's own files; bag refuses them as
   identity names.
 - Where the host's sandbox denies `<home>/run/` to the model, the worst a model can do through bag is ask: giving a

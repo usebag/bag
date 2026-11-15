@@ -5,8 +5,9 @@ A step-by-step install and first exchange for the bag reference implementation. 
 and contributing.
 
 This guide is the route by hand. The agent route, [bag.dev/install](https://bag.dev/install), is a page for a coding
-agent (Claude Code, Codex or omp): it installs the npm package and makes or reuses an identity, and leaves pairing,
-wiring the host and starting the bag service to you. The package, which section 1a runs, has its page on the npm registry:
+agent (Claude Code, Codex or omp): you run two lines that fetch and check the npm package and wire your host, and
+after the restart the agent makes or reuses an identity and writes the login agent through bag's tools; pairing and
+loading the login agent stay yours. The package, which section 1a runs, has its page on the npm registry:
 [npmjs.com/package/@usebag/bag](https://www.npmjs.com/package/@usebag/bag).
 
 This guide takes you from a clean machine to a working identity, a relay, published records, a message sent and
@@ -30,17 +31,18 @@ Name the version and the program every time. Define a shell function once per te
 below:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.1 bag "$@"; }
-c --version                            # prints: bag 0.4.1 <the commit it was built from>
-npm view @usebag/bag@0.4.1 gitHead     # prints the commit npm records for 0.4.1
-c help                                 # prints every command
+cd "$(mktemp -d)"                                     # a fresh folder: the file's path is new to npx's cache
+P="$PWD/$(npm pack @usebag/bag@0.4.2 | tail -n 1)"   # fetches the package as one file, running none of its code
+shasum -a 256 "$P"                                    # must print the sha256 in the release's notes
+c() { npx --yes --package="$P" bag "$@"; }
+c --version                                           # prints: bag 0.4.2 <the commit it was built from>
+c help                                                # prints every command
 ```
 
-The package is published from a commit of this repository by a workflow with npm provenance, and
-`npm view @usebag/bag@0.4.1 gitHead` names that commit. The two commits above must be the same, and must be the
-published commit of this release, which the agent route's page names; if they differ, or `npm view` fails (`E404`
-among the errors), stop and do not use the package. The first run fetches the package into npm's cache, `$HOME/.npm`,
-so it needs the network once.
+The package is published from a commit of this repository by a workflow with npm provenance. Run it only from the file
+you checked: the sha256 that `shasum` prints must be the one in this release's notes, and the commit `c --version`
+prints must be the published commit of this release, which the agent route's page names. If either differs, or
+`npm pack` fails (`E404` among the errors), stop and do not use the package.
 
 The package holds three programs: `bag`, the command line, which `c` runs; `bag-mcp`, the MCP server (section 5c);
 and `bag-a2a`, the A2A bridge, which this guide does not use. Run `c` outside any project that has a `bag` command of
@@ -110,14 +112,15 @@ c keys list             # one line per identity: <name> <address> <custody> <cre
 Where things live. The home is `--dir <home>`, else `$AC_HOME`, else `$HOME/.bag`. With none of the three, a
 command fails with a usage error. Under the home:
 
-- `keys/` holds one key file per identity, mode 0600 in a directory of mode 0700. `keygen` never overwrites an existing
-  file and refuses a name already in use.
+- `keys/` holds the key file of each identity in file custody (below), mode 0600 in a directory of mode 0700. `keygen`
+  never overwrites an existing file and refuses a name already in use.
 - `state/<name>/` holds that identity's `edge.sqlite`, its `audit.jsonl` and its `doorbell`; the directory is made 0700,
   the audit log and doorbell 0600.
 - `names.json` and `trust.json`, when they exist, are 0600.
 
-On macOS, `keygen --custody keychain` keeps both keys in one keychain item instead of a file. `keys list` shows which
-custody each identity uses and never prints a key.
+On macOS, `keygen` run by a person at a terminal keeps both keys in one keychain item instead of a file, when the
+account has a default keychain; a script, CI or an agent's shell gets a key file. `--custody file` or `keychain`
+chooses. `keys list` shows which custody each identity uses and never prints a key.
 
 Never copy, send, commit or paste anything under `keys/`, and never give anyone your home directory. Share addresses and
 records: they are public by design. Back up `keys/` yourself, offline; there is no recovery for a lost key file.
@@ -232,8 +235,9 @@ a crash. To keep it standing, run it under a supervisor you already use (a syste
 launchd agent with `KeepAlive`, or a process manager); if it is down for more than your `ttl`, your address record
 lapses, and the fix is `c record keep --as alice --relay "$R" --once`: it re-signs the copy this home keeps, with its
 rotation key and revoked list. Do not sign a new one with `c record address`, which replaces the revoked list. `c keys
-rotate alice --relay "$R" --accept-loss` is for a home that has lost that copy, and starts both empty. This repository
-ships no unit file or installer for it.
+rotate alice --relay "$R" --accept-loss` is for a home that has lost that copy, and starts both empty. For a job that
+runs `--once` four times a day instead, `--plist` (macOS) or `--crontab` prints a launchd job or a crontab line and
+writes nothing: you install it (`packages/cli/src/commands/keep-schedule.ts`). It refuses a keychain identity.
 
 ## 5. Sending and receiving
 
@@ -554,7 +558,8 @@ by address or by a name in your name book, and use a `domain:` root as above.
   names them. Section 3 still applies if you want your own.
 - The internal notes that code comments cite (design notes, studies, plans, an operations guide, review rounds, drafts)
   are not included. A comment that points to a file you do not have is a note; nothing here needs it to build or run.
-- No installer or service files for the relay or `record keep`. The packaged forms are the relay's container image
+- No installer or service files for the relay or `record keep` (whose `--plist` and `--crontab` only print a job,
+  section 4). The packaged forms are the relay's container image
   (`docs/self-host.md`, "Run it with Docker") and the npm package `@usebag/bag` (the command line, the MCP server and
   the A2A bridge, section 1a).
 - No `ac` or `bag` on your PATH: use the `c` function of your route, section 1a or 1b.

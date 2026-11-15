@@ -32,7 +32,7 @@ async function bob(): Promise<{
   const relay = new MemoryRelay()
   const io = testIo(relay)
   const dir = join(tmp.dir, `home-${n++}`)
-  const address = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
+  const address = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
   expect((await cli(io, 'keys', 'rotate', 'bob', '--relay', RELAY, '--dir', dir)).code).toBe(0)
   return { io, relay, dir, address, state: join(dir, 'state', 'bob') }
 }
@@ -82,17 +82,18 @@ describe('record keep beside a server: it stands aside', () => {
   })
 })
 
-describe('what a keep audits goes to a file of its own (section 5)', () => {
+describe('what a keep audits goes to a file of its own', () => {
   it('writes each rotation to cli-audit.jsonl, its own chain, and leaves audit.jsonl to the edge', async () => {
     const h = await bob()
     h.io.time.now += 13 * 3600
     expect((await keep(h.io, h.dir)).code).toBe(0)
     expect(existsSync(join(h.state, 'audit.jsonl'))).toBe(false)
+    // keys rotate's rotation, then keep's rotation and its republish of the address record.
     const lines = readAuditLines(join(h.state, CLI_AUDIT))
-    expect(lines).toHaveLength(2)
+    expect(lines).toHaveLength(3)
     expect(verifyAuditLog(lines).ok).toBe(true)
     const verified = await cli(h.io, 'audit', 'verify', join(h.state, CLI_AUDIT))
-    expect([verified.code, verified.out]).toEqual([0, ['ok 2 lines']])
+    expect([verified.code, verified.out]).toEqual([0, ['ok 3 lines']])
   })
 
   it('audit verify reads the whole anchored set: an edge log, and the file beside it', async () => {
@@ -142,7 +143,7 @@ describe('record keep --identities: every identity of the file', () => {
     const homes = [join(base, 'a'), join(base, 'b')] as const
     const made = []
     for (const dir of homes) {
-      const address = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
+      const address = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
       expect((await cli(io, 'keys', 'rotate', 'bob', '--relay', RELAY, '--dir', dir)).code).toBe(0)
       made.push(address)
     }
@@ -245,7 +246,7 @@ describe('the job a person installs: text on stdout, nothing written, nothing to
 describe('record address by hand says what it leaves out', () => {
   it('names a revoked entry of the kept copy that the new record drops', async () => {
     const h = await bob()
-    const gone = (await cli(h.io, 'keygen', 'gone', '--dir', h.dir)).out[0] as string
+    const gone = (await cli(h.io, 'keygen', '--new', 'gone', '--dir', h.dir)).out[0] as string
     const out = join(h.dir, 'r.json')
     const at = ['--relay', RELAY, '--dir', h.dir]
     h.io.time.now = T0 + 1

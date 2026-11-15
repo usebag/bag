@@ -1682,7 +1682,7 @@ function domainsFile(cast: Cast): J {
   const owner = generateSigningKey(rng)
   const other = pick(cast.signers).address
   controlOk('W7 base', recordVerdict(recordBytes(acceptFrom(owner, ['domain:example.com']))))
-  // W7's six named shapes first, then further malformed hosts the same rule refuses (W7: bad-record).
+  // Case group W7: its six named shapes first, then further malformed hosts the same rule refuses (each bad-record).
   const refused: [string, string | string[]][] = [
     ['ip-literal', 'domain:127.0.0.1'],
     ['trailing-dot', 'domain:example.com.'],

@@ -38,7 +38,7 @@ async function world(): Promise<World> {
   const dir = join(tmp.dir, `home-${n++}`)
   const [alice, bob, carol] = await Promise.all(
     ['alice', 'bob', 'carol'].map(
-      async (who) => (await cli(io, 'keygen', who, '--dir', dir)).out[0] as string,
+      async (who) => (await cli(io, 'keygen', '--new', who, '--dir', dir)).out[0] as string,
     ),
   )
   const file = join(dir, 'bob.address.json')
@@ -557,7 +557,7 @@ describe('names: send --to a name from the book, inbox labels the addresses the 
 describe("send --auth and inbox --honor: a session that signs under its principal's chain", () => {
   /** alice-session's keys in the same home, a chain from alice to it under `caveats`, and alice's address record. */
   async function delegated(w: World, caveats: readonly string[], record = true) {
-    const session = (await cli(w.io, 'keygen', 'alice-session', '--dir', w.dir)).out[0] as string
+    const session = (await cli(w.io, 'keygen', '--new', 'alice-session', '--dir', w.dir)).out[0] as string
     const chain = join(w.dir, 'session.chain.json')
     const flags = caveats.flatMap((c) => ['--caveat', c])
     const args = [
@@ -672,7 +672,7 @@ describe("send --auth and inbox --honor: a session that signs under its principa
     }
     const [k1, k2] = await Promise.all(
       ['org-acme', 'org-acme-2', 'org-acme-3'].map(
-        async (k) => (await cli(w.io, 'keygen', k, '--dir', w.dir)).out[0] as string,
+        async (k) => (await cli(w.io, 'keygen', '--new', k, '--dir', w.dir)).out[0] as string,
       ),
     )
     const trust = ['--trust-root', 'acme.test', '--honor', 'coding']

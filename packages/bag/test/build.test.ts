@@ -91,6 +91,8 @@ describe('the build', () => {
       'vite',
       'express',
       'hono',
+      // The SDK's HTTP server pulls hono's adapter too (@hono/node-server); the whole scope stays out of the bundle.
+      '@hono',
     ])
       expect(names.some((n) => n === dev || n.startsWith(`${dev}/`))).toBe(false)
     const third = readFileSync(join(out, 'THIRD-PARTY.md'), 'utf8')

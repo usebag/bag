@@ -5,6 +5,7 @@ import { type AddressInfo, connect } from 'node:net'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { setTelemetry, systemRng } from '@usebag/edge'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import {
   CLI_MAIN,
@@ -95,7 +96,7 @@ describe('e2e scenario 58: behind a corporate proxy', () => {
     const R = w.url
     const relayHost = new URL(R).host
     const home = join(w.dir, 'alice-home')
-    expect((await cliProcess(['keygen', 'alice', '--dir', home])).code).toBe(0)
+    expect((await cliProcess(['keygen', '--new', 'alice', '--dir', home])).code).toBe(0)
     expect((await cliProcess(['keys', 'rotate', 'alice', '--relay', R, '--dir', home])).code).toBe(0)
     const net = await proxyAndEndpoint()
     const viaProxy = envWith({ DO_NOT_TRACK: '1', HTTP_PROXY: net.proxy, HTTPS_PROXY: net.proxy })
@@ -138,13 +139,15 @@ describe('e2e scenario 58: behind a corporate proxy', () => {
     await client.close()
     await sleep(1_000)
 
-    // Telemetry takes the same path: a due day goes to the (loopback) endpoint by a CONNECT through the proxy. Its two
-    // CLI processes take at most 30 s each, so the day is read a minute clear of 01:05 UTC and of midnight.
+    // Telemetry takes the same path: a due day goes to the (loopback) endpoint by a CONNECT through the proxy. It is
+    // turned on as `telemetry on` does after a person's y (the edge's setTelemetry; the verb asks on a terminal, which
+    // this scenario has not); its CLI process takes at most 30 s, so the day is read a minute clear of 01:05 UTC and of
+    // midnight.
     const { due, yesterday } = await telemetryDay(60)
     const machine = join(w.dir, 'machine')
     const tel = envWith({ HOME: machine, AC_TELEMETRY_URL: net.endpoint, HTTP_PROXY: net.proxy })
     for (const name of ['DO_NOT_TRACK', 'CI', 'AC_TELEMETRY', 'AC_HOME']) delete tel[name]
-    expect((await cliIn(tel, 'telemetry', 'on')).code).toBe(0)
+    setTelemetry(join(machine, '.bag'), 'on', systemRng)
     mkdirSync(join(machine, '.bag'), { recursive: true })
     const line = JSON.stringify({ v: 1, day: yesterday, counts: { pairing: { ok: 1 } } })
     writeFileSync(join(machine, '.bag', 'telemetry-counts.jsonl'), `${line}\n`, { flag: 'a' })

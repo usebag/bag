@@ -116,10 +116,10 @@ describe('epochDue', () => {
     const store = epochStore(dir)
     const seal = (b: number) => sealingKeyFromSeed(new Uint8Array(32).fill(b))
     store.put(address, 1, seal(1), T0 - 2 * EPOCH_DUE, T0 - EPOCH_DUE + DAY)
-    store.markPublished(address, 1) // a published epoch (fs/edge 8c976aa4: put keeps it unpublished)
+    store.markPublished(address, 1) // a published epoch (the store's put keeps it unpublished)
     expect(epochDue(dir, address, T0)).toBe(true) // only an old epoch is held
     store.put(address, 2, seal(2), T0, T0 + DAY)
-    store.markPublished(address, 2) // a published epoch (fs/edge 8c976aa4: put keeps it unpublished)
+    store.markPublished(address, 2) // a published epoch (the store's put keeps it unpublished)
     expect(epochDue(dir, address, T0)).toBe(false) // just issued: the newest is epoch 2, not epoch 1
     expect(epochDue(dir, address, T0 + EPOCH_DUE - 1)).toBe(false)
     expect(epochDue(dir, address, T0 + EPOCH_DUE)).toBe(true)

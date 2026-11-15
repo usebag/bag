@@ -5,18 +5,22 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { signInSecrets, signInThroughAgent } from './agent-sign-in.ts'
 import { connect } from './connect.ts'
 import { type EnterpriseDeps, enterpriseStatus } from './flow.ts'
-import { type EnterprisePorts, enterpriseDeps, VERSION } from './ports.ts'
+import { type EnterprisePorts, enterpriseDeps, type HomeReads, VERSION } from './ports.ts'
 
 // The enterprise client as a stdio MCP server, so a person in an MCP host pastes the console's connect code into the
 // chat and the agent connects itself (nothing else typed). Three tools, nothing else: `connect` (the code, the
 // command's own parse, pin, guard and redeem path: connect.ts), `sign_in` (no code: the domain and the console origin,
-// the device flow a person approves, agent-sign-in.ts) and `status` (the command's status). A result holds only the
+// the device flow a person approves, agent-sign-in.ts) and `status` (the command's status). No sign_out: its revoke is
+// for good, and this server has no dialog to ask the person first (the bag service's window asks, or bag sign-out). A result holds only the
 // public lines the commands print; the code given is never echoed (every result is scrubbed of it as well). The SDK is
 // the one bag's MCP server uses, at its pin; its low-level Server takes plain JSON Schema, so no schema library is
 // added.
 //
 // The honest limit: the code reaches this server as a tool argument, so it sits in the MCP host's transcript. Its
 // defences are its life (15 minutes by default) and its single use: once redeemed, the string opens nothing.
+//
+// With the home's reads given (the CLI passes packages/home's) it also offers `identities`, and `status` leads with bag's version, the home's identities and its relays' health, so
+// an agent in a window with no identity learns what the machine holds without the CLI or a page. It changes nothing.
 
 export const MCP_TOOLS = [
   {
@@ -59,7 +63,82 @@ export const MCP_TOOLS = [
   },
 ]
 
+/**
+ * What `identities` shows a window that acts as no identity: 'count', how many, with their names left to the person's
+ * bind dialog (the default), or 'labels', their names and nothing else. Changing the default is this one line.
+ */
+export const UNBOUND_LISTING: 'count' | 'labels' = 'count'
+
+/** The identities tool, offered when the home's reads are given. */
+export const IDENTITIES_TOOL = {
+  name: 'identities',
+  description:
+    "Lists the bag identities this machine holds. This window acts as none of them, so it shows how many there are and not their names (unless this build lists names): your person picks one by typing use and its name in a window that runs the bag service. It reads only this machine's identities file: no relay, no network, nothing changed.",
+  inputSchema: { type: 'object' as const, properties: {}, additionalProperties: false },
+}
+
+/** The status tool's description when the home's reads are given: the home's facts first, then the enterprise session. */
+const HOME_STATUS =
+  "Shows this machine's bag: the version, how many identities it holds, and how many of the relays they name answer a health probe (those relays' URLs only when names are listed); then its bag enterprise session, if it has one (the organisation, the agent, its state and clocks, and the relay round trip), the most recently connected unless org names one. It changes nothing."
+
+/** The tools over these ports: the three enterprise tools, and identities when the home's reads are given. */
+export function toolsOf(ports: EnterprisePorts): typeof MCP_TOOLS {
+  if (ports.home === undefined) return MCP_TOOLS
+  return [
+    ...MCP_TOOLS.map((t) => (t.name === 'status' ? { ...t, description: HOME_STATUS } : t)),
+    IDENTITIES_TOOL,
+  ] as typeof MCP_TOOLS
+}
+
 type Result = { content: { type: 'text'; text: string }[]; isError?: boolean }
+
+/** The identities tool's answer, as JSON text: a count by default, the labels when the switch says so. */
+export function identitiesAnswer(
+  labels: readonly string[],
+  listing: 'count' | 'labels' = UNBOUND_LISTING,
+): Record<string, unknown> {
+  if (labels.length === 0)
+    return {
+      bound: false,
+      identities: listing === 'count' ? 0 : [],
+      note: 'no identity on this machine yet.',
+    }
+  if (listing === 'labels')
+    return {
+      bound: false,
+      identities: labels.map((label) => ({ label })),
+      note: 'these are the identities on this machine; your person types use and a name in a window that runs the bag service to act as one. Addresses show once a window is bound.',
+    }
+  const n = labels.length
+  return {
+    bound: false,
+    identities: n,
+    note: `${n === 1 ? 'one identity is' : `${n} identities are`} on this machine; your person picks one by name when a window that runs the bag service binds it (they type use and its name). The names are not shown here.`,
+  }
+}
+
+/**
+ * status's leading lines from the home's reads: the version, the identities' count, and the relays' health. Under
+ * 'count' the relays are a count and how many answered, never their URLs, since a person's own relay would tell an
+ * unbound model what the names would; under 'labels' each relay's URL and answer.
+ */
+export async function homeLines(
+  reads: HomeReads,
+  home: string,
+  listing: 'count' | 'labels' = UNBOUND_LISTING,
+): Promise<string[]> {
+  const ids = reads.identities(home)
+  const relays = [...new Set(ids.flatMap((i) => i.relays))]
+  const health = await reads.relaysHealth(relays)
+  const ok = health.filter((h) => h.ok).length
+  const shown =
+    health.length === 0
+      ? ['relays none listed']
+      : listing === 'count'
+        ? [`relays ${health.length}, ok ${ok}`]
+        : health.map((h) => `relay ${h.relay} ${h.ok ? 'ok' : 'unreachable'}`)
+  return [`bag ${VERSION}`, `identities ${ids.length}`, ...shown]
+}
 
 /** The commands' deps over these ports, with every line collected instead of printed (stdout is the MCP transport). */
 function collecting(ports: EnterprisePorts, home: string, lines: string[]): EnterpriseDeps {
@@ -127,21 +206,34 @@ async function callTool(
   }
   if (name === 'status') {
     try {
+      // With the home's reads, its facts lead, and no enterprise session is no error: most homes have none.
+      if (ports.home !== undefined) lines.push(...(await homeLines(ports.home, home)))
       const org = typeof args.org === 'string' && args.org !== '' ? { org: args.org } : {}
       const note = (line: string) => lines.push(line.replace(/^bag: /, ''))
       const exit = await enterpriseStatus({ ...collecting(ports, home, lines), note, ...org })
+      // Exit 1 is a live session whose relay probe failed: an error with or without the home's reads.
       return result(lines, exit === 1, null)
     } catch (e) {
-      return result([...lines, failure(e)], true, null)
+      // enterpriseStatus throws signed-out when there is no session: with the home's reads that is a fact, not an error.
+      const signedOut = (e as { code?: unknown } | null)?.code === 'signed-out'
+      return result([...lines, failure(e)], !(signedOut && ports.home !== undefined), null)
+    }
+  }
+  if (name === 'identities' && ports.home !== undefined) {
+    try {
+      const labels = ports.home.identities(home).map((i) => i.label)
+      return result([JSON.stringify(identitiesAnswer(labels))], false, null)
+    } catch (e) {
+      return result([failure(e)], true, null)
     }
   }
   return result([`usage: no tool ${JSON.stringify(name)}`], true, null)
 }
 
-/** The MCP server over `ports` and the bag home: the three tools. */
+/** The MCP server over `ports` and the bag home: the three tools, and identities with the home's reads. */
 export function createMcpServer(ports: EnterprisePorts, home: string): Server {
   const server = new Server({ name: 'bag', version: VERSION }, { capabilities: { tools: {} } })
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: MCP_TOOLS }))
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolsOf(ports) }))
   server.setRequestHandler(CallToolRequestSchema, async (req) =>
     callTool(ports, home, req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>),
   )

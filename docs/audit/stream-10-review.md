@@ -13,7 +13,7 @@ The protocol's security model and its residuals are in the companion `docs/audit
 ## 0. The two rounds, in one paragraph
 
 **Round 1** was a four-head pre-launch review across the public relay, recovery, local trust-anchor writes, and the
-many-sessions front desk. **The FS red-team pass** was a focused adversarial pass over the forward-secrecy scheme on
+many-sessions front desk. **The FS review** was a focused adversarial pass over the forward-secrecy scheme on
 the final launch assembly. Round 1 surfaced exactly one launch blocker, and it is a **deploy-verify, not a code
 defect**. The FS pass confirmed the scheme's core invariants and left one bounded residual (P2), since **mitigated**
 (merged 2026-10-29; section 2.2). No code defect blocks launch at the launch assembly.
@@ -124,7 +124,7 @@ every equal-caveat session (`packages/edge/src/agent/front-desk.ts:26`-`33`; `sp
 
 ---
 
-## 2. FS red-team pass (over the launch assembly)
+## 2. FS review (an adversarial pass over the launch assembly)
 
 ### 2.1 Confirmed
 

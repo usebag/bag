@@ -19,7 +19,7 @@ async function home(): Promise<{ dir: string; io: ReturnType<typeof testIo>; rel
   const relay = new MemoryRelay()
   const io = testIo(relay)
   const dir = join(tmp.dir, `home-${n++}`)
-  expect((await cli(io, 'keygen', 'bob', '--dir', dir)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).code).toBe(0)
   return { dir, io, relay }
 }
 
@@ -33,7 +33,7 @@ function log(dir: string, entries: readonly AuditEntry[]): string {
   return file
 }
 
-// A retry line in the older shape, before 8b14775 added the mailbox (receiver.ts 328 and 338 now write one; status
+// A retry line in the older shape, before its detail carried the mailbox (receiver.ts 328 and 338 now write one; status
 // ignores it), and an end with the edge's detail, or another one.
 const retry = {
   event: 'subscribe',

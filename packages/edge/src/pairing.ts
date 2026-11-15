@@ -282,7 +282,7 @@ async function ownAddress(p: PairingPorts, relays: Relays, k: EdgeKeys, fs: bool
  * set is the relay's, healed from the home copy when a relay holds none or an older one (continueFromAccept), so a
  * rotation that stranded the relay copy never reads as no roots and the add or rollback keeps the roots held. The
  * published record is kept as the home copy (keepAccept). Returns the held roots it read: the rollback the inviter
- * restores on a no-answer, [owner] only when neither a relay nor the home copy held one (a first pairing, ruling 9).
+ * restores on a no-answer, [owner] only when neither a relay nor the home copy held one (a first pairing).
  */
 async function admit(p: PairingPorts, at: Relays, k: EdgeKeys, peer: string | Relays): Promise<Relays> {
   const owner = k.signing.address

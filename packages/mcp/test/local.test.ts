@@ -1,9 +1,11 @@
-import { mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { buildEnvelope, newThread } from '@usebag/core'
 import { KeyEpochStore, keepAddressCopy } from '@usebag/edge'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { relayUrl } from '../src/config.ts'
 import {
+  dropLocalPair,
   LOCAL_DELIVERY_DEFAULT,
   type LocalPair,
   localDelivery,
@@ -24,7 +26,7 @@ import {
   writeLocalWord,
   writePairs,
 } from '../src/local.ts'
-import { addressRecord, P, tempDir } from './support/fixtures.ts'
+import { addressRecord, P, saveKeys, seededRng, T0, tempDir } from './support/fixtures.ts'
 
 // The bag service's local files (spec/SPEC.md 9.2): the home word, the local trust table (M1: never trust.json), the
 // spool (M6) and the recipient's sealing key from the home's own files.
@@ -74,7 +76,7 @@ describe('the home word', () => {
   })
 })
 
-describe('the word file (C1) and hidden (decision 103)', () => {
+describe('the word file (C1) and hidden (spec/SPEC.md 9.2 item 1)', () => {
   it('reads only a 0600 regular file: another mode or a symlink is off, with why', () => {
     word('{"version":2,"local_delivery":"on"}', 0o644)
     expect(localWord(home)).toMatchObject({ on: false, set: true, why: expect.stringContaining('0600') })
@@ -226,5 +228,67 @@ describe('the sealing key of a local recipient', () => {
 describe('LOCAL_RELAY (M2)', () => {
   it('is no relay URL: --relay local: is refused, so no configured relay can equal it', () => {
     expect(() => relayUrl('local:')).toThrow('is not an http or https URL')
+  })
+})
+
+describe("the console's drop of a local pair (console.ts dropLocalPair)", () => {
+  /** An envelope from alice to carol, spooled for carol (her unit not open). */
+  const spooledForCarol = (text: string): string => {
+    const rng = seededRng(`console-drop-${text}`)
+    const { envelope, bytes } = buildEnvelope({
+      from: P.alice.keys.signing,
+      to: [{ address: P.carol.address, sealingKey: P.carol.keys.sealing.publicKey }],
+      auth: [],
+      type: 'chat.v1',
+      thread: newThread((n) => rng.bytes(n)),
+      body: { text },
+      ts: T0,
+      rng: (n) => rng.bytes(n),
+    })
+    spool(home, 'carol', envelope.id, bytes)
+    return envelope.id
+  }
+
+  it('tells the sender of each spooled envelope, failed-local unpaired, in its own audit, then deletes it', () => {
+    saveKeys(home, P.alice)
+    saveKeys(home, P.carol)
+    const row = {
+      a: 'personal',
+      b: 'research',
+      a_addr: P.alice.address,
+      b_addr: P.carol.address,
+      added_at: 1,
+    }
+    writePairs(home, [{ ...row, state: 'allowed' }])
+    const ids = [spooledForCarol('one'), spooledForCarol('two')]
+    expect(dropLocalPair(home, P.alice.address, P.carol.address)).toBe(true)
+    expect(localPairs(home)).toEqual([])
+    for (const id of ids) expect(existsSync(join(spoolDir(home, 'carol'), `${id}.env`))).toBe(false)
+    const lines = readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(lines.map((l) => [l.event, l.decision, l.id, JSON.parse(String(l.detail))])).toEqual(
+      ids.map((id) => [
+        'publish',
+        'reject',
+        id,
+        { relay: 'local:', delivery: 'failed-local', reason: 'unpaired', to: 'research' },
+      ]),
+    )
+  })
+
+  it('keeps an envelope whose sender could not be told', () => {
+    saveKeys(home, P.alice)
+    saveKeys(home, P.carol)
+    const id = spooledForCarol('kept')
+    const told: string[] = []
+    const refuse = (m: { id: string }) => {
+      told.push(m.id)
+      throw new Error('busy: its store is in use')
+    }
+    expect(dropLocalPair(home, P.alice.address, P.carol.address, refuse)).toBe(false)
+    expect(told).toEqual([id])
+    expect(existsSync(join(spoolDir(home, 'carol'), `${id}.env`))).toBe(true)
   })
 })

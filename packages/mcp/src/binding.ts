@@ -1,14 +1,5 @@
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  realpathSync,
-  renameSync,
-  rmdirSync,
-  unlinkSync,
-} from 'node:fs'
-import { basename, join } from 'node:path'
+import { existsSync, lstatSync, readdirSync, rmdirSync, unlinkSync } from 'node:fs'
+import { join } from 'node:path'
 import type {
   CallToolResult,
   ElicitRequestFormParams,
@@ -16,11 +7,12 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js'
 import type { Logger } from './log.ts'
 import { NAME } from './names.ts'
-import { FAST_ANSWER_MS, type Pairings } from './pairing.ts'
-import type { ConnectionGrant } from './session.ts'
+import { FAST_ANSWER_MS, type Pairings, shortAddress } from './pairing.ts'
+import type { GrantSlot } from './regrant.ts'
+import { type ConnectionGrant, type WindowGrant, windowGrant } from './session.ts'
 import { type ToolContext, ToolError } from './tools.ts'
 
-// The binding table of the bag service (docs/bag-service.md sections 5 and 5a, design section 14): which identity each
+// The binding table of the bag service (docs/bag-service.md, "How a window gets its identity"): which identity each
 // socket connection acts as. A binding belongs to its connection and dies with it; nothing re-attaches one by any id,
 // so a reconnecting shim starts unbound. The ways into bound are two: the person's typed word (a host input hook caught
 // "use X" and the shim sent service/use via typed, on a connection whose token-checked hello declared input_hook), or
@@ -28,20 +20,18 @@ import { type ToolContext, ToolError } from './tools.ts'
 // or the last-used identity of this host kind in this cwd only presets the dialog's default. A dialog that did not
 // reach the person (the host's decline, a close, a failure, two minutes) is cancelled, never their No; only an explicit
 // No in the dialog is declined. Every call re-checks the binding's custody class from the service's in-memory record
-// (keys are read at open, never per call) against the contract's tool set per class (toolAllowed); a principal of an
-// enterprise grant is never bindable (unknown-identity).
+// (keys are read at open, never per call) against the tool set per class (TOOLS_BY_CUSTODY, toolAllowed); a principal
+// of an enterprise grant is never bindable (unknown-identity).
 // The stdio server (no connection) is unchanged: nothing here runs for it.
 
-// The seam with svc-core: ServiceConnection, ServiceHome and Custody are MIRRORED from build/svc-core 16b7307f
-// (docs/bag-service.md section 5a), declared here only because socket.ts and service.ts are not on this branch; the
-// integration merge replaces them with an import from socket.ts and service.ts. The omp consent bridge folder is the
-// service's own (bridgeOf), made for a hello that announces experimental["bag.dev/consent-bridge"]; svc-core returns
-// its path in the hello reply as bridgeDir.
+// The seam with the service: ServiceConnection and ServiceHome are kept in step with the service's own definitions in
+// socket.ts and service.ts, declared here with only the members the table reads; binding.ts imports neither file
+// (service.ts imports this one, and takes Custody from here).
 
-/** A binding's custody class (contract section 5a). */
+/** A binding's custody class: where its authority lives (a home key file, a keychain item, an agent, a grant). */
 export type Custody = 'home-key' | 'keychain' | 'agent' | 'grant'
 
-/** One accepted socket connection (mirrored from svc-core 16b7307f, socket.ts). */
+/** One accepted socket connection (kept in step with the service's own definition in socket.ts). */
 export interface ServiceConnection {
   readonly handle: string
   readonly host: string
@@ -67,21 +57,20 @@ export interface HomeIdentity {
   readonly custody: Custody
 }
 
-/** The part of svc-core's ServiceHome (16b7307f, service.ts) the table reads. */
+/** The part of the service's ServiceHome (service.ts) the table reads. */
 export interface ServiceHome {
   readonly home: string
   identities(): readonly HomeIdentity[]
   readonly draining: boolean
 }
 
-/** A home's custody class in the contract's words (mirrored from build/svc-keychain 15839c04, @usebag/edge). */
+/** A home's custody class as the service names it (kept in step with packages/edge/src/custody/home.ts). */
 export type ServiceCustody = 'home-key' | 'keychain' | 'agent'
 
 /**
- * serviceCustody, MIRRORED from build/svc-keychain 15839c04 (packages/edge/src/custody/home.ts), which is not on this
- * branch; the integration merge replaces it with the import from @usebag/edge. The class of `name` from which pointer
- * exists (keys/, keychain/ or agent/<name>.json), never a key or a keychain read, so it is cheap per call. Throws, as
- * HomeCustody.custodyOf does, for none (ENOENT) or two (EEXIST).
+ * serviceCustody, kept in step with serviceCustody in packages/edge/src/custody/home.ts (@usebag/edge). The class of
+ * `name` from which pointer exists (keys/, keychain/ or agent/<name>.json), never a key or a keychain read, so it is
+ * cheap per call. Throws, as HomeCustody.custodyOf does, for none (ENOENT) or two (EEXIST).
  */
 export function serviceCustody(home: string, name: string): ServiceCustody {
   if (!NAME.test(name)) throw Object.assign(new Error(`bad name ${name}`), { code: 'EINVAL' })
@@ -96,14 +85,15 @@ export function serviceCustody(home: string, name: string): ServiceCustody {
   return 'home-key'
 }
 
-/** What the wake router needs of a connection (mirrored from build/svc-mail 6f7b85b4, wake-router.ts Ringable). */
+/** What the wake router needs of a connection (kept in step with Ringable in wake-router.ts). */
 export interface Ringable {
   readonly handle: string
+  readonly subagent?: boolean
   notify(method: `service/${string}`, params: Readonly<Record<string, unknown>>): void
 }
 
 /**
- * The part of svc-mail's WakeRouter the table calls (mirrored from 6f7b85b4, wake-router.ts): a bind makes the
+ * The part of the wake router (WakeRouter, wake-router.ts) the table calls, kept in step with it: a bind makes the
  * connection the speaking one for its identity, an unbind or close takes it out.
  */
 export interface BindRouter {
@@ -112,7 +102,7 @@ export interface BindRouter {
 }
 
 /**
- * svc-mail's markUsed(home, name, now) from @usebag/edge (mirrored from 22225a40, keep-alive-table.ts): async, called
+ * markUsed(home, name, now) from @usebag/edge (kept in step with packages/edge/src/keep-alive-table.ts): async, called
  * when a binding ends, off the close path; it rejects busy after 2 s.
  */
 export type MarkUsed = (home: string, name: string, now: number) => Promise<void>
@@ -142,11 +132,13 @@ export interface Binding {
   readonly granted: Granted
 }
 
-/** The custody tool table of the contract (16b7307f section 5, service/bound), as allow-lists: a tool no list names is
- * refused for every class, so a tool added later is not-authorized until the table names it. */
-// lookup is a read for every bindable class (coordinator's ruling; W2's contract row, additive in v1, follows).
-const READS = ['status', 'facts', 'inbox', 'wait', 'receipts', 'lookup']
+/** The tools each custody class may run (the class service/bound tells a window), as allow-lists: a tool no list
+ * names is refused for every class, so a tool added later is not-authorized until the table names it. */
+// lookup is a read for every bindable class (additive in v1).
+const READS = ['status', 'facts', 'inbox', 'wait', 'receipts', 'lookup', 'identities']
 const ACTS = ['send', 'ask', 'handoff']
+// The acts on the home a person confirms in the window (tools.ts): only a window whose identity holds its own key.
+const HOME_ACTS = ['identity_remove', 'identity_relays', 'keep_alive', 'local_delivery', 'unpair', 'names']
 const KEYED = [
   'pair_invite',
   'pair_accept',
@@ -154,16 +146,97 @@ const KEYED = [
   'delegate',
   'connect',
   'sign_in',
+  'sign_out',
   'enterprise_status',
 ]
+// The machine's own setting, no identity's: every window runs it, bound or not (on still asks its person first).
+const MACHINE = ['telemetry']
 export const TOOLS_BY_CUSTODY: Readonly<Record<Custody, readonly string[]>> = {
-  'home-key': [...READS, ...ACTS, ...KEYED],
-  keychain: [...READS, ...ACTS, ...KEYED],
-  agent: [...READS, ...ACTS],
-  grant: [...READS, ...ACTS, 'enterprise_status'],
+  'home-key': [...READS, ...ACTS, ...KEYED, ...HOME_ACTS, ...MACHINE],
+  keychain: [...READS, ...ACTS, ...KEYED, ...HOME_ACTS, ...MACHINE],
+  agent: [...READS, ...ACTS, ...MACHINE],
+  grant: [...READS, ...ACTS, 'enterprise_status', ...MACHINE],
 }
 
-/** Whether a binding of `custody` may run `tool`: only when the contract's list for that class names it. */
+/**
+ * The tools a window bound to no identity runs (the onboarding set; bound() checks it): status says how to bind, use
+ * opens the bind dialog, identities lists the home's identities with short addresses (unboundAddress), identity_create
+ * makes one after the person's Yes (neither bound nor wired by it), and telemetry is the machine's switch (on asked
+ * first; a bound window of any class runs it too, TOOLS_BY_CUSTODY). Every other tool answers not-bound there: an unbound window can be any folder, and raises no other act's
+ * dialog. host_wire wires a host in the window's own folder for the identity the person types (or one this window made),
+ * and with action unwire takes bag's wiring out of it again; service writes the bag service's login agent after a Yes. On a home with no identity these are the only tools that answer
+ * anything but not-bound.
+ */
+export const UNBOUND_TOOLS: readonly string[] = [
+  'status',
+  'use',
+  'identities',
+  'identity_create',
+  'telemetry',
+  'host_wire',
+  'service',
+]
+
+/**
+ * The identities each window made with identity_create, as label and address pairs (never the label alone, so a label
+ * removed and made again elsewhere is not this window's): in memory, for that connection's life only, written only at
+ * identity_create's success and exposed by no tool's answer. host_wire reads it (createdIn), each pair checked against
+ * the home at its question.
+ */
+const CREATED = new WeakMap<ServiceConnection, Set<string>>()
+
+/** Records that `window` made `label` at `address`, until it closes: only identity_create's success calls it. */
+export function recordCreated(window: ServiceConnection, label: string, address: string): void {
+  if (window.closed) return
+  let made = CREATED.get(window)
+  if (made === undefined) {
+    const fresh = new Set<string>()
+    made = fresh
+    CREATED.set(window, fresh)
+    window.onClose(() => CREATED.delete(window))
+  }
+  made.add(`${label}\0${address}`)
+}
+
+/** The (label, address) pairs `window` made through identity_create while open, as a copy: nothing writes through it. */
+export const createdIn = (window: ServiceConnection): [string, string][] =>
+  [...(CREATED.get(window) ?? [])].map((k) => k.split('\0') as [string, string])
+
+/** Whether `window` made `label` at `address` through identity_create while it has been open. */
+export const createdHere = (window: ServiceConnection, label: string, address: string): boolean =>
+  CREATED.get(window)?.has(`${label}\0${address}`) ?? false
+
+/** The question of the one-time Yes, in a window bound to no identity, to the full addresses (its own act): 2 lines. */
+export const FULL_ACT = 'identities-full'
+export const FULL_TITLE = 'Yes: show the full addresses here'
+export const FULL_QUESTION = "Show the full addresses of this machine's\nidentities to this window?"
+
+/** The windows whose person said Yes to FULL_QUESTION: in memory, for that connection's life only. */
+const FULL = new WeakSet<ServiceConnection>()
+
+/** Records the person's Yes to FULL_QUESTION in `window`, until it closes: only identities' dialog calls it. */
+export function showFull(window: ServiceConnection): void {
+  if (FULL.has(window) || window.closed) return
+  FULL.add(window)
+  window.onClose(() => FULL.delete(window))
+}
+
+/** Whether `window` holds the person's Yes to FULL_QUESTION. */
+export const fullShown = (window: ServiceConnection): boolean => FULL.has(window)
+
+/**
+ * An identity's address as a window bound to no identity is shown it: the short form (shortAddress: ed25519:, its
+ * first 8 and last 4 hex), which is no address, unless that window holds the person's Yes to FULL_QUESTION.
+ */
+export function unboundAddress(
+  identity: { readonly address: string | null },
+  window: ServiceConnection | undefined,
+): string | null {
+  if (identity.address === null) return null
+  return window !== undefined && FULL.has(window) ? identity.address : shortAddress(identity.address)
+}
+
+/** Whether a binding of `custody` may run `tool`: only when TOOLS_BY_CUSTODY's list for that class names it. */
 export function toolAllowed(custody: Custody, tool: string): boolean {
   return TOOLS_BY_CUSTODY[custody].includes(tool)
 }
@@ -175,6 +248,8 @@ export const NO_AGAIN_MS = 300_000
 interface Row {
   /** Each agent-class binding's own grant from the agent, asked at its bind, for this connection only (M3). */
   readonly grants: Map<string, Promise<ConnectionGrant>>
+  /** Each agent-class binding's regrant slot (regrant.ts), when the service gives the table a slot maker. */
+  readonly slots: Map<string, Promise<GrantSlot<WindowGrant>>>
   asking: boolean
   readonly bound: Map<string, Binding>
   /** Each label the person said No to in a bind dialog here, at the mono time of the No. */
@@ -192,10 +267,15 @@ export class Bindings {
   readonly #markers = new Map<string, string>()
   readonly #last = new Map<string, string>()
   readonly #ends: ((label: string, conn: ServiceConnection) => void)[] = []
-  /** Identities lent to the CLI (service/lend), by label: the verb it runs. */
-  readonly #lent = new Map<string, string>()
+  /** Identities lent (service/lend, or held quiet for a window's act), by label: the verb, and to whom. */
+  readonly #lent = new Map<string, { readonly verb: string; readonly by: string }>()
   readonly #router: BindRouter | null
   readonly #grant: ((conn: ServiceConnection, label: string) => Promise<ConnectionGrant>) | null
+  readonly #slot:
+    | ((conn: ServiceConnection, label: string, first: WindowGrant) => GrantSlot<WindowGrant>)
+    | null
+  readonly #before: ((label: string) => Promise<unknown> | undefined) | null
+  readonly #person: ((label: string, channel: 'use' | 'dialog') => void) | null
   readonly #markUsed: MarkUsed
   readonly #log: Logger | null
 
@@ -211,19 +291,28 @@ export class Bindings {
       readonly custody?: (label: string) => Custody | null
       readonly mono?: () => number
       readonly now?: () => number
-      /** svc-mail's WakeRouter and markUsed, which svc-core wires; none in a test that does not ask. */
+      /** The wake router (wake-router.ts) and markUsed, which service.ts wires; none in a test that does not ask. */
       readonly router?: BindRouter
       readonly markUsed?: MarkUsed
       /** Where a markUsed that failed is logged (busy). */
       readonly log?: Logger
       /**
        * Asks the agent for an agent-class binding's own grant (session.ts connectionGrant): once per bind, per
-       * connection, never cached across connections. svc-core wires it and signs that connection's acts with it.
+       * connection, never cached across connections. service.ts wires it and signs that connection's acts with it.
        */
       readonly grant?: (conn: ServiceConnection, label: string) => Promise<ConnectionGrant>
+      /** Wraps a window's first grant in its regrant slot (svc-core gives the ports); none keeps the grant as it is. */
+      readonly slot?: (conn: ServiceConnection, label: string, first: WindowGrant) => GrantSlot<WindowGrant>
+      /** Runs before a window's act takes its grant: the unit's own grant brought back first (service.ts). */
+      readonly before?: (label: string) => Promise<unknown> | undefined
+      /** The person's typed use or dialog Yes for an agent label, for the unit's slot (service.ts). */
+      readonly person?: (label: string, channel: 'use' | 'dialog') => void
     } = {},
   ) {
     this.#grant = o.grant ?? null
+    this.#slot = o.slot ?? null
+    this.#before = o.before ?? null
+    this.#person = o.person ?? null
     this.#router = o.router ?? null
     this.#markUsed = o.markUsed ?? (async () => {})
     this.#log = o.log ?? null
@@ -231,7 +320,7 @@ export class Bindings {
     this.#custody =
       o.custody ??
       ((label) => {
-        // The in-memory record, never a read per call (the ruling); the pointers only where a record gives no class.
+        // The in-memory record, never a read per call; the pointers only where a record gives no class.
         const record = home.identities().find((i) => i.label === label) as { custody?: Custody } | undefined
         if (record === undefined) return null
         if (record.custody !== undefined) return record.custody
@@ -262,11 +351,11 @@ export class Bindings {
   }
 
   /**
-   * The CLI borrows `label` (service/lend; svc-core refuses the lend while any window is bound to it or pairs it, so
-   * nothing here cancels): until it is returned, a bind of it answers busy naming the lend.
+   * The CLI borrows `label` (service/lend; the service (service.ts) refuses the lend while any window is bound to it or
+   * pairs it, so nothing here cancels): until it is returned, a bind of it answers busy naming the lend.
    */
-  lend(label: string, verb: string): void {
-    this.#lent.set(label, verb)
+  lend(label: string, verb: string, by = 'the bag command line'): void {
+    this.#lent.set(label, { verb, by })
   }
 
   /** The CLI gave `label` back (service/return). An identity removed meanwhile is unknown to the next bind. */
@@ -279,10 +368,19 @@ export class Bindings {
     this.#markers.set(cwd, label)
   }
 
-  /** The identity a bind dialog presets: the cwd's marker, else this host kind's last bind in this cwd; never binds. */
+  /** Every folder marker at once, in place of the ones held: the service's read of the home's proposals. */
+  marks(rows: readonly (readonly [cwd: string, label: string])[]): void {
+    this.#markers.clear()
+    for (const [cwd, label] of rows) this.mark(cwd, label)
+  }
+
+  /**
+   * The identity a bind dialog presets: the cwd's marker, else this host kind's last bind in this cwd; never binds,
+   * and never one lent or with no class (removed).
+   */
   propose(conn: ServiceConnection): string | null {
     const label = this.#markers.get(conn.cwd) ?? this.#last.get(`${conn.host}\0${conn.cwd}`) ?? null
-    return label !== null && this.#custody(label) !== null ? label : null
+    return label !== null && this.#custody(label) !== null && !this.#lent.has(label) ? label : null
   }
 
   /** The bindable identities' labels, for the host's own choice dialog only (never a tool result). */
@@ -294,8 +392,8 @@ export class Bindings {
   }
 
   /**
-   * The person's typed word, which svc-core calls for service/use via typed: accepted only on a connection whose
-   * hello declared an input hook. The word is the person's act, so no dialog.
+   * The person's typed word, which the service (service.ts) calls for service/use via typed: accepted only on a
+   * connection whose hello declared an input hook. The word is the person's act, so no dialog.
    */
   bindByWord(conn: ServiceConnection, label: string): Binding {
     if (!conn.capabilities.inputHook)
@@ -408,7 +506,15 @@ export class Bindings {
 
   /** The grant this connection's agent-class binding of `label` was given (rejects with the agent's refusal). */
   grantOf(conn: ServiceConnection, label: string): Promise<ConnectionGrant> {
+    const slot = this.#rows.get(conn)?.slots.get(label)
+    if (slot !== undefined)
+      return Promise.resolve(this.#before?.(label)).then(() => slot.then((s) => s.forAct()))
     return this.#rows.get(conn)?.grants.get(label) ?? Promise.reject(new ToolError('not-bound', NOT_BOUND))
+  }
+
+  /** A window's regrant slot for `label`, when the service gives one (tools.ts checks it before each signature). */
+  slotOf(conn: ServiceConnection, label: string): Promise<GrantSlot<WindowGrant>> | undefined {
+    return this.#rows.get(conn)?.slots.get(label)
   }
 
   /** The one label a connection is bound to, or null (unbound, asking only, or several): a refusal's `as`. */
@@ -424,17 +530,24 @@ export class Bindings {
     for (const l of gone) {
       bound?.delete(l)
       this.#rows.get(conn)?.grants.delete(l)
+      // The window's slot ends with its binding: an ask in flight is closed at the agent, so no prompt outlives it.
+      this.#rows
+        .get(conn)
+        ?.slots.get(l)
+        ?.then(
+          (s) => s.cancel(),
+          () => {},
+        )
+      this.#rows.get(conn)?.slots.delete(l)
       this.#router?.unbind(conn.handle, l)
-      // svc-mail 6f7b85b4: keep-alive's 24 hours start when a binding ends.
-      // Never awaited and never thrown out of an unbind or a close handler (svc-mail 22225a40): logged busy.
+      // Keep-alive's 24 hours start when a binding ends (markUsed, packages/edge/src/keep-alive-table.ts).
+      // Never awaited and never thrown out of an unbind or a close handler: logged busy.
       const now = this.#now()
       void Promise.resolve()
         .then(() => this.#markUsed(this.#home.home, l, now))
         .catch((e: unknown) => this.#log?.log('warn', 'keep-alive', { outcome: 'busy', detail: String(e) }))
       for (const fn of this.#ends) fn(l, conn)
     }
-    // The last binding gone: its omp bridge folder goes with it (made again if the window binds and pairs again).
-    if (gone.length > 0 && bound?.size === 0) dropBridge(conn)
     return gone
   }
 
@@ -442,7 +555,13 @@ export class Bindings {
   #row(conn: ServiceConnection): Row {
     let row = this.#rows.get(conn)
     if (row === undefined) {
-      const made: Row = { grants: new Map(), asking: false, bound: new Map(), refused: new Map() }
+      const made: Row = {
+        grants: new Map(),
+        slots: new Map(),
+        asking: false,
+        bound: new Map(),
+        refused: new Map(),
+      }
       row = made
       this.#rows.set(conn, made)
       conn.onClose(() => {
@@ -455,15 +574,12 @@ export class Bindings {
 
   /** busy naming the lend while the CLI holds `label`: the verb and that it is the CLI, never a handle. */
   #notLent(label: string): void {
-    const verb = this.#lent.get(label)
-    if (verb !== undefined)
-      throw new ToolError(
-        'busy',
-        `${label} is lent to the bag command line (${verb}): try again when it is done`,
-      )
+    const lent = this.#lent.get(label)
+    if (lent !== undefined)
+      throw new ToolError('busy', `${label} is lent to ${lent.by} (${lent.verb}): try again when it is done`)
   }
 
-  /** A label the home has and a window may bind, while no drain runs and it is not lent; else the contract's refusal. */
+  /** A label the home has and a window may bind, while no drain runs and it is not lent; else its refusal code. */
   #check(conn: ServiceConnection, label: string): void {
     if (this.#home.draining) throw new ToolError('draining', 'the service is restarting')
     if (conn.closed) throw new ToolError('cancelled', 'this window has closed')
@@ -474,21 +590,55 @@ export class Bindings {
     this.#notLent(label)
   }
 
+  /** A window's first grant from the agent (one y), and its slot when the service gives a slot maker. */
+  #first(conn: ServiceConnection, label: string, row: Row): Promise<GrantSlot<WindowGrant>> {
+    // A refusal here is handled: #bind drops the promise when the table has no slot maker.
+    const none = (): Promise<GrantSlot<WindowGrant>> => {
+      const p = Promise.reject<GrantSlot<WindowGrant>>(new ToolError('not-bound', NOT_BOUND))
+      p.catch(() => {})
+      return p
+    }
+    const grant = this.#grant
+    if (grant === null) return none()
+    const asked = grant(conn, label)
+    asked.catch(() => {})
+    row.grants.set(label, asked)
+    const make = this.#slot
+    if (make === null) return none()
+    const slot = asked.then((g) => make(conn, label, windowGrant(g)))
+    slot.catch(() => {})
+    row.slots.set(label, slot)
+    return slot
+  }
+
   #bind(conn: ServiceConnection, label: string, granted: Granted): Binding {
     const found = this.#home.identities().find((i) => i.label === label)
     const custody = this.#custody(label) as Custody
     const b: Binding = { label, address: found?.address ?? null, custody, granted }
     const row = this.#row(conn)
     row.bound.set(label, b)
-    // ServiceHome.identities() never holds a principal (svc-core's test of it), so an agent class here is a window's
-    // identity that signs through the agent: it gets its own grant, asked now, for this connection alone.
+    // ServiceHome.identities() never holds a principal (service.test.ts checks it), so an agent class here is a
+    // window's identity that signs through the agent: it gets its own grant, asked now, for this connection alone.
     if (custody === 'agent' && this.#grant !== null) {
-      const asked = this.#grant(conn, label)
-      asked.catch(() => {})
-      row.grants.set(label, asked)
+      const held = row.slots.get(label)
+      if (held !== undefined) {
+        // #bind runs only for the person's typed use or the dialog's Yes. On a window already bound, the slot
+        // asks only if its grant is lost, expired or declined; a slot whose first grant failed asks afresh.
+        const channel = granted === 'typed' ? 'use' : 'dialog'
+        this.#person?.(label, channel)
+        const next = held.then(
+          (s) => {
+            s.person(channel).catch(() => {})
+            return s
+          },
+          () => this.#first(conn, label, row),
+        )
+        next.catch(() => {})
+        row.slots.set(label, next)
+      } else this.#first(conn, label, row)
     }
     this.#last.set(`${conn.host}\0${conn.cwd}`, label)
-    // A bind counts as the person's typing for the speaking window (svc-mail): this connection speaks for label.
+    // A bind counts as the person's typing for the speaking window (wake-router.ts): this connection speaks for label.
     this.#router?.bind(label, conn)
     const at = new Date(this.#now() * 1000).toISOString()
     conn.notify('service/bound', { as: label, address: b.address, custody, granted, at })
@@ -496,7 +646,7 @@ export class Bindings {
   }
 }
 
-/** The service methods this lane owns (contract section 5), for svc-core's onServiceRequest. */
+/** The binding table's service methods (service/identities, service/use, service/unbind), for onServiceRequest. */
 export function serviceMethods(
   table: Bindings,
 ): Record<string, (conn: ServiceConnection, params: Readonly<Record<string, unknown>>) => Promise<object>> {
@@ -527,7 +677,7 @@ export function serviceMethods(
   }
 }
 
-/** The tables of the service homes in this process, by home path: svc-core registers one at service start. */
+/** The tables of the service homes in this process, by home path: service.ts registers one at service start. */
 const TABLES = new Map<string, Bindings>()
 
 export function serveBindings(table: Bindings, home: string): void {
@@ -540,6 +690,23 @@ export function tableFor(home: string): Bindings | null {
 
 /** The service's Pairings, one per identity across its connections (busy is per identity), per table, by label. */
 const PAIRINGS = new WeakMap<Bindings, Map<string, Pairings>>()
+/** Who hears each pairing's start, end or drop in a table: its service, which rewrites service.json. */
+const CHANGED = new WeakMap<Bindings, () => void>()
+
+/** Calls `fn` after each start, end or drop of any pairing in `table`, whichever window runs it. */
+export function onPairingChange(table: Bindings, fn: () => void): void {
+  CHANGED.set(table, fn)
+}
+
+/** The pairings running in `table` now, over every identity and window: each one started and not yet ended. */
+export function livePairings(table: Bindings): number {
+  return [...(PAIRINGS.get(table)?.values() ?? [])].filter((p) => p.busy(true)).length
+}
+
+/** Every identity's Pairings of the service of `table` (servicePairings), for the drain's cancel and the lend's check. */
+export function pairingsOfTable(table: Bindings): Pairings[] {
+  return [...(PAIRINGS.get(table)?.values() ?? [])]
+}
 
 /**
  * The Pairings of identity `c` in the service: made once per table, and told when a connection's binding of it ends.
@@ -555,90 +722,30 @@ export function servicePairings(c: ToolContext, table: Bindings | null, make: ()
   if (found !== undefined) return found
   const p = make()
   all.set(key, p)
+  p.watch(() => CHANGED.get(table)?.())
   table.onEnd((l, conn) => {
     if (l === label) p.endFor(conn)
   })
   return p
 }
 
-/** The bridge directory each connection was given (bridgeOf), for the pair tools. */
-const BRIDGES = new WeakMap<ServiceConnection, string>()
-
-/** The capability an omp shim announces its consent bridge with (svc-shim 4779b1c6); its value is ignored. */
-export const BRIDGE_CAPABILITY = 'bag.dev/consent-bridge'
-
-/** The service's own bridge folder of a connection: <home>/run/shim/<handle>.consent. */
-const bridgePath = (home: string, handle: string): string => join(home, 'run', 'shim', `${handle}.consent`)
-
-/**
- * The omp consent bridge of `conn`, service-derived (coordinator's ruling): when its hello announced
- * experimental["bag.dev/consent-bridge"], the service makes <home>/run/shim/<handle>.consent, 0700, and the hello
- * reply carries this path as bridgeDir (svc-core); any path the shim sent is ignored. As defence the folder is used
- * only when its realpath is that path under the home's realpath, no component below the home is a symlink, and it is
- * a directory of this uid with mode 0700; else null (an omp pairing answers no-elicitation). It goes on the unbind of
- * the connection's last binding and on its close (dropBridge).
- */
-export function bridgeOf(
-  conn: ServiceConnection,
-  home: string,
-  uid = process.getuid?.() ?? -1,
-): string | null {
-  const known = BRIDGES.get(conn)
-  if (known !== undefined) return known
-  const experimental = conn.capabilities.raw.experimental as Record<string, unknown> | undefined
-  if (experimental?.[BRIDGE_CAPABILITY] === undefined || !/^[A-Za-z0-9]{1,64}$/.test(conn.handle)) return null
-  const dir = bridgePath(home, conn.handle)
-  try {
-    // A folder already there with anything in it is not this connection's new folder: refused, never adopted.
-    if (existsSync(dir) && readdirSync(dir).length > 0) return null
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    const parts = [join(home, 'run'), join(home, 'run', 'shim'), dir]
-    const st = lstatSync(dir)
-    const ok =
-      realpathSync(dir) === bridgePath(realpathSync(home), conn.handle) &&
-      parts.every((p) => !lstatSync(p).isSymbolicLink()) &&
-      st.isDirectory() &&
-      st.uid === uid &&
-      (st.mode & 0o777) === 0o700
-    if (!ok) return null
-  } catch {
-    return null
-  }
-  BRIDGES.set(conn, dir)
-  conn.onClose(() => dropBridge(conn))
-  return dir
-}
-
-/**
- * Takes a connection's bridge folder away: moved, never deleted, to <home>/run/shim/.gone/ (0700), with whatever the
- * extension or the shim left in it. A later bridgeOf of the same connection makes it again.
- */
-export function dropBridge(conn: ServiceConnection): void {
-  const dir = BRIDGES.get(conn)
-  if (dir === undefined) return
-  BRIDGES.delete(conn)
-  try {
-    const gone = join(dir, '..', '.gone')
-    mkdirSync(gone, { recursive: true, mode: 0o700 })
-    renameSync(dir, join(gone, `${basename(dir)}.${Date.now()}`))
-  } catch {
-    // Already gone, or the home is unwritable: nothing to move.
-  }
-}
+// Generation one's omp consent bridge folders (<home>/run/shim/<handle>.consent) are gone since 0.4.2: the service asks
+// over the extension's registered link (service.ts #consent). A 0.4.1 service moved each folder it dropped to
+// run/shim/.gone/; sweepGone empties those for 0.4.2 only, and goes in 0.4.3.
 
 /** How long a moved bridge folder stays in run/shim/.gone/ before sweepGone, in ms: a day. */
 export const GONE_KEEP_MS = 86_400_000
 
 /**
- * The bridge folder's known files, the only ones sweepGone deletes: a consent request this service writes
- * (consent.ts: <16 hex>.json), the answer the extension writes beside it (<16 hex>.answer.json, left by a dialog cut
- * mid-way), and the extension's .bridge presence file. Anything else keeps the folder.
+ * The bridge folder's known files, the only ones sweepGone deletes: a consent request a 0.4.1 service wrote
+ * (<16 hex>.json), the answer the extension wrote beside it (<16 hex>.answer.json, left by a dialog cut mid-way), and
+ * the extension's .bridge presence file. Anything else keeps the folder.
  */
 const KNOWN_FILE = /^(?:[0-9a-f]{16}(?:\.answer)?\.json|\.bridge)$/
 
 /**
- * Sweeps run/shim/.gone/ (svc-core calls it at service start and on a daily timer): of each folder moved there more
- * than GONE_KEEP_MS before `nowMs` (by the time dropBridge put in its name), the known bridge files (KNOWN_FILE) are
+ * Sweeps run/shim/.gone/ (the service calls it at service start, service.ts): of each folder moved there more
+ * than GONE_KEEP_MS before `nowMs` (by the time a 0.4.1 service put in its name), the known bridge files (KNOWN_FILE) are
  * deleted, and the folder is removed once that leaves it empty; a folder with anything else in it stays.
  * Nothing is removed recursively. Returns the number of folders removed.
  */
@@ -669,12 +776,7 @@ export function sweepGone(home: string, nowMs: number): number {
   return removed
 }
 
-/** The bridge bridgeOf gave `conn`, for the pair tools; undefined for none. */
-export function bridgeDirOf(conn: ServiceConnection): string | undefined {
-  return BRIDGES.get(conn)
-}
-
-/** The calling connection, from ToolContext.connection (svc-core's entry): absent in the stdio mode. */
+/** The calling connection, from ToolContext.connection (set by the service, service.ts): absent in the stdio mode. */
 export function connectionOf(ctx: ToolContext): ServiceConnection | undefined {
   return (ctx as { readonly connection?: ServiceConnection }).connection
 }
@@ -694,9 +796,9 @@ export function refusalResult(e: unknown, as: string | null): CallToolResult {
 }
 
 /**
- * Runs one of this lane's tools on a connection: stdio (no connection) runs `run` with the call's own `as`, unchanged;
- * on a connection, the binding is required first (not-bound, usage, not-authorized), the call acts as the bound label,
- * and the result carries `as`.
+ * Runs one of the tools (tools.ts) on a connection: stdio (no connection) runs `run` with the call's own `as`,
+ * unchanged; on a connection, the binding is required first (not-bound, usage, not-authorized), the call acts as the
+ * bound label, and the result carries `as`.
  */
 export async function bound(
   ctx: ToolContext,
@@ -711,11 +813,12 @@ export async function bound(
   try {
     if (table === null) throw new ToolError('not-bound', NOT_BOUND)
     b = table.require(conn, tool, asked)
-    bridgeOf(conn, table.home)
   } catch (e) {
-    // status is the one tool that answers unbound (contract): bound false and how to bind, no label, no address.
+    // The unbound tools answer unbound (contract): status bound false and how to bind, no label, no address;
+    // identities its short list. Each acts as no identity, so its result carries as null.
     const unbound = table === null || table.state(conn) !== 'bound'
-    if (tool === 'status' && unbound && e instanceof ToolError && e.code === 'not-bound') {
+    if (UNBOUND_TOOLS.includes(tool) && unbound && e instanceof ToolError && e.code === 'not-bound') {
+      if (tool !== 'status') return withAs(await run(undefined, conn), null)
       const value = { bound: false, note: NOT_BOUND, as: null }
       return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
     }

@@ -17,11 +17,11 @@ import { launchCommand } from '../src/service.ts'
 import { DIALOG_META, runPaths } from '../src/socket.ts'
 
 // The bag service as the login agent starts it, offline: the bundle built into <home>/package/versions/<v>/, a launcher
-// at <home>/package/bag-mcp.js (the CLI lane's facts: it imports versions/<current>/bag-mcp.js in its own process, keeps
-// argv, and refuses a current with a slash or dot-dot), two identities made with the bundle's own keygen, the scrubbed
-// launch. A fake shim binds by the typed word, calls a tool, and with a loopback ac-relay (target/release/ac-relay, or
-// AC_RELAY_CMD) one identity sends to the other and the bound window is rung. SIGTERM drains: run/ is cleaned and the
-// lock released. The home is a short directory under /tmp, removed after the test.
+// at <home>/package/bag-mcp.js (as packages/cli/src/stage.ts writes it: it imports versions/<current>/bag-mcp.js in its
+// own process, keeps argv, and refuses a current with a slash or dot-dot), two identities made with the bundle's own
+// keygen, the scrubbed launch. A fake shim binds by the typed word, calls a tool, and with a loopback ac-relay
+// (target/release/ac-relay, or AC_RELAY_CMD) one identity sends to the other and the bound window is rung. SIGTERM
+// drains: run/ is cleaned and the lock released. The home is a short directory under /tmp, removed after the test.
 
 type Json = Record<string, unknown>
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -54,7 +54,7 @@ function nodeEval(code: string): string {
   })
 }
 
-/** The launcher the CLI lane stages, as its facts give it: Node built-ins only, in-process, argv kept. */
+/** The launcher packages/cli/src/stage.ts stages (launcherText): Node built-ins only, in-process, argv kept. */
 const LAUNCHER = `#!/usr/bin/env node
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -143,11 +143,13 @@ describe('the service started through the launcher, as the login agent starts it
         stdio: ['ignore', 'pipe', 'pipe'],
       }).trim()
     writeFileSync(join(home, 'zone.txt'), '')
-    const alice = bag('keygen', 'alice', '--custody', 'file').split('\n').at(-1) as string
-    const bob = bag('keygen', 'bob', '--custody', 'file').split('\n').at(-1) as string
+    const alice = bag('keygen', '--new', 'alice', '--custody', 'file').split('\n').at(-1) as string
+    const bob = bag('keygen', '--new', 'bob', '--custody', 'file').split('\n').at(-1) as string
     // A peer outside the service, in a home of its own: the one that sends (a service refuses a send to its own).
     const peerHome = join(home, 'peer')
-    const carol = bagIn(peerHome, 'keygen', 'carol', '--custody', 'file').split('\n').at(-1) as string
+    const carol = bagIn(peerHome, 'keygen', '--new', 'carol', '--custody', 'file')
+      .split('\n')
+      .at(-1) as string
     const url = await relay()
     const relays = [url ?? 'http://127.0.0.1:9']
     if (url !== null)

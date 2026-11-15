@@ -26,7 +26,7 @@ describe('e2e scenario 44: the doorbell moves on delivery, not on a refused mess
     const home = join(w.dir, 'cli-home')
     const dir = ['--dir', home]
     const names = ['alice', 'bob', 'team', 'cold', 'carol']
-    const made = await Promise.all(names.map((name) => cli('keygen', name, ...dir)))
+    const made = await Promise.all(names.map((name) => cli('keygen', '--new', name, ...dir)))
     for (const m of made) expect([m.code, m.err]).toEqual([0, []])
     const keys = made.map((m) => m.out[0] as string)
     const [alice, bob, team, cold, carol] = keys as [string, string, string, string, string]

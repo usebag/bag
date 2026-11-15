@@ -79,7 +79,7 @@ describe('H1 to H3, H9, H10: the publish order, dedup and tombstones', () => {
     const refusedEarly = [
       { status: 400, body: { error: 'bad-json' }, retryAfter: null },
       { status: 422, body: { error: 'bad-id' }, retryAfter: null },
-      // The refusal names the relay's cap, an additive field (W9).
+      // The refusal names the relay's cap, an additive field.
       {
         status: 413,
         body: { error: 'envelope-too-large', max_envelope_bytes: MAX_ENVELOPE_BYTES },

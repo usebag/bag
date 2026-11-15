@@ -15,7 +15,7 @@ import { ConfigError } from './config.ts'
 import type { Logger } from './log.ts'
 import { ToolError } from './tools.ts'
 
-// The bag service's socket side (docs/bag-service.md, sections 2 to 5): the run directory, the single-service lock,
+// The bag service's socket side (docs/bag-service.md, "What runs"): the run directory, the single-service lock,
 // the socket path guard, the newline-delimited JSON-RPC framing, the hello, and one ServiceConnection per accepted
 // connection with its dialogs. MCP messages pass through to a per-connection MCP server (service.ts) unchanged.
 
@@ -31,6 +31,8 @@ export const MAX_CONNECTIONS = 256
 export const LOCK_RETRY_MS = 1000
 /** The key a dialog's handle travels under in `_meta`. */
 export const DIALOG_META = 'bag.dev/dialog'
+/** The key a sub-agent's shim sets true in a forwarded call's `_meta` (packages/shim/src/wire.ts SUBAGENT_META). */
+export const SUBAGENT_META = 'bag.dev/subagent'
 
 const HELLO_KEYS = ['contract', 'token', 'host', 'cwd', 'client_capabilities', 'input_hook', 'shim']
 
@@ -178,7 +180,7 @@ export interface Hello {
   readonly inputHook: boolean
 }
 
-/** One accepted connection, from its hello to its close (docs/bag-service.md, section 5a). */
+/** One accepted connection, from its hello to its close. */
 export interface ServiceConnection {
   readonly handle: string
   readonly host: string
@@ -195,8 +197,6 @@ export interface ServiceConnection {
     options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number },
   ): Promise<ElicitResult>
   notify(method: `service/${string}`, params: Readonly<Record<string, unknown>>): void
-  /** The omp consent bridge directory the service made for this connection (hello's bridge_dir); absent without one. */
-  readonly bridgeDir?: string | undefined
 }
 
 /** A refusal on the stream: a bag code and a detail, with extra data. */
@@ -220,6 +220,19 @@ const RPC_CODE: Readonly<Record<string, number>> = {
 
 type Rpc = Record<string, unknown>
 const isObject = (v: unknown): v is Rpc => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * Whether a forwarded tools/call comes from a sub-agent: its shim's SUBAGENT_META true, or, on a Codex connection,
+ * Codex's own sessionId and threadId differing (a window's are equal), which covers a shim that sends no field.
+ */
+export function subagentCall(host: string, params: unknown): boolean {
+  const meta = isObject(params) && isObject(params._meta) ? params._meta : null
+  if (meta === null) return false
+  if (meta[SUBAGENT_META] === true) return true
+  if (host !== 'codex') return false
+  const { sessionId, threadId } = meta
+  return typeof sessionId === 'string' && typeof threadId === 'string' && sessionId !== threadId
+}
 
 /** The JSON-RPC error a refusal is answered with. */
 export function rpcError(id: unknown, e: StreamError): Rpc {
@@ -251,7 +264,7 @@ export interface ConnectionHost {
   closed(conn: Connection): void
   /** A service/ notification (service/typed); counted only after a token-checked hello. */
   notification?(conn: Connection, method: string, params: Rpc): void
-  /** What the service makes for a connection at its hello (the consent bridge), merged into the hello result. */
+  /** The service's work for a connection at its hello (0.4.2: the omp pid recorded), merged into the hello result. */
   prepare?(conn: Connection): Rpc
   /** The service's own facts for the hello result. */
   facts(): Rpc
@@ -268,7 +281,6 @@ interface Pending {
 /** One socket connection: the framing, the hello, the dialogs, and the MCP transport. */
 export class Connection implements ServiceConnection {
   readonly handle = randomBytes(16).toString('hex')
-  bridgeDir: string | undefined = undefined
   #hello: Hello | null = null
   #closed = false
   #listeners = new Set<() => void>()
@@ -277,6 +289,7 @@ export class Connection implements ServiceConnection {
   #queue: (() => void)[] = []
   #seq = 0
   #helloTimer: ReturnType<typeof setTimeout> | null
+  #subagent = false
 
   readonly socket: Socket
   readonly host_: ConnectionHost
@@ -314,6 +327,13 @@ export class Connection implements ServiceConnection {
   }
   get hello(): Hello | null {
     return this.#hello
+  }
+  /** True once a call on this connection came from a sub-agent: it never speaks for an identity. Never cleared. */
+  get subagent(): boolean {
+    return this.#subagent
+  }
+  markSubagent(): void {
+    this.#subagent = true
   }
 
   onClose(listener: () => void): () => void {

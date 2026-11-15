@@ -105,7 +105,7 @@ class Rig {
     io.tty = true
     io.time.now = this.now
     const p: Party = { io, dir: join(tmp.dir, `${name}-${n++}`), name, address: '' }
-    p.address = (await step(p, hand, 'keygen', 'keygen', name)).out[0] as string
+    p.address = (await step(p, hand, 'keygen', 'keygen', '--new', name)).out[0] as string
     this.all.push(p)
     return p
   }

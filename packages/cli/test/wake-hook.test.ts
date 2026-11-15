@@ -59,7 +59,7 @@ interface World {
 async function world(): Promise<World> {
   const io = testIo(new MemoryRelay())
   const dir = join(tmp.dir, `home-${n++}`)
-  expect((await cli(io, 'keygen', 'bob', '--dir', dir)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).code).toBe(0)
   io.stdout.length = 0 // keygen prints the new address; the tests read only what wake-hook prints
   io.stderr.length = 0
   const bell = join(dir, 'state', 'bob', 'doorbell')
@@ -594,7 +594,7 @@ describe('wake-hook --session auto: the name is read from the session file the M
   }
   /** Makes the identity `name`, and clears what keygen printed. */
   async function make(w: World, name: string): Promise<void> {
-    expect((await cli(w.io, 'keygen', name, '--dir', w.dir)).code).toBe(0)
+    expect((await cli(w.io, 'keygen', '--new', name, '--dir', w.dir)).code).toBe(0)
     w.io.stdout.length = 0
     w.io.stderr.length = 0
   }
@@ -785,7 +785,7 @@ describe('wake-hook --session auto:codex: the name is made from the session_id o
   }
   /** Makes the identity `name` (what the server's first tool call does) and rings its doorbell at `seconds`. */
   async function bound(w: World, name: string, seconds?: number): Promise<string> {
-    expect((await cli(w.io, 'keygen', name, '--dir', w.dir)).code).toBe(0)
+    expect((await cli(w.io, 'keygen', '--new', name, '--dir', w.dir)).code).toBe(0)
     w.io.stdout.length = 0
     w.io.stderr.length = 0
     const bell = join(w.dir, 'state', name, 'doorbell')
@@ -924,7 +924,7 @@ describe('wake-hook --identities: every identity of the file, each by its own do
     const identities = []
     for (const [label, key] of ids) {
       const home = join(base, label)
-      expect((await cli(io, 'keygen', key, '--dir', home)).code).toBe(0)
+      expect((await cli(io, 'keygen', '--new', key, '--dir', home)).code).toBe(0)
       state[label] = join(home, 'state', key)
       identities.push({ label, key, home, relays: ['http://127.0.0.1:9'] })
     }

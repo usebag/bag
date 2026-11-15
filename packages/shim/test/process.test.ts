@@ -1,9 +1,8 @@
 // The shim as a process, between a fake MCP host on its stdio and a fake service on a real unix socket.
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { postBridge } from '../src/channel.ts'
 import { frame, Lines, type Message } from '../src/frames.ts'
 import { dropHome, FakeService, shortHome } from './fake-service.ts'
 
@@ -239,14 +238,10 @@ describe('bag-shim between a host and the service', () => {
     expect(await runHook(home, JSON.stringify({ prompt: 'use omp' }))).toEqual({ code: 0, out: '' })
   })
 
-  it('gives an omp extension the bridge folder the service named, only after the hello reply', async () => {
-    const folder = join(home, 'run', 'shim', 'c-9.consent')
-    mkdirSync(folder, { recursive: true, mode: 0o700 })
-    svc.bridgeDir = folder
+  it('an omp hello carries the omp pid capability, and no bridge folder is made (0.4.2)', async () => {
     host = new FakeHost(home, { OMPCODE: '1' }, ['--input-hook'])
     const index = join(home, 'run', 'shim', `${process.pid}.json`)
     for (let i = 0; i < 100 && !existsSync(index); i++) await new Promise((r) => setTimeout(r, 20))
-    expect(await postBridge(home, [process.pid])).toBeNull()
     host.send({
       jsonrpc: '2.0',
       id: 0,
@@ -257,7 +252,7 @@ describe('bag-shim between a host and the service', () => {
     expect(svc.hellos[0]?.client_capabilities).toEqual({
       experimental: { 'bag.dev/consent-bridge': { pid: expect.any(Number) } }, // the omp pid (item 7)
     })
-    expect(await postBridge(home, [process.pid])).toBe(folder)
+    expect(readdirSync(join(home, 'run', 'shim')).filter((f) => f.endsWith('.consent'))).toEqual([])
     host.child.kill('SIGTERM')
     expect(await host.exited).toBe(0)
   })

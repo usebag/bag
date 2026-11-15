@@ -4,8 +4,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { byVersion, currentVersion, pruneVersions, versionsDir } from '../src/packaged.ts'
 import { tempDir } from './support/io.ts'
 
-// The versioned package directories the bag service starts from (docs/bag-service.md, section 9): the installer stages
-// <home>/package/versions/<version>/ and the current pointer (stage.ts, the CLI lane's); pruneVersions removes only what
+// The versioned package directories the bag service starts from: the installer stages
+// <home>/package/versions/<version>/ and the current pointer (stage.ts, in the CLI); pruneVersions removes only what
 // no running service and no pointer names, and never a staging directory whose process lives.
 
 let tmp: ReturnType<typeof tempDir>

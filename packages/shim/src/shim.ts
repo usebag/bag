@@ -32,6 +32,7 @@ import {
   USE,
   withHandle,
   withoutBagMeta,
+  withSubagent,
 } from './wire.ts'
 
 /** The MCP protocol versions the shim can answer an initialize with on its own (the SDK 1.32.2 list). */
@@ -69,12 +70,12 @@ export interface ShimDeps {
   readonly start?: () => boolean
   /** Passes one ring on to the host's waiter (ring.ts writeRing), speaking or not. */
   readonly ring?: (ring: Ring) => void
-  /** True for an omp host whose dialogs the service writes into its bridge folder (adds the capability). */
+  /** True for an omp host, whose dialogs the service asks over its extension's registered link (adds the capability). */
   readonly consentBridge?: boolean
   /** The host's pid (omp's), named in the bridge capability: the service asks that omp's registered extension. */
   readonly hostPid?: number
   readonly newToken?: () => string
-  /** How long a start is waited for, in milliseconds (the contract's 5 s). */
+  /** How long a start is waited for, in milliseconds (5 s by default). */
   readonly startWaitMs?: number
   /** The wait before reconnect attempt n (0 first), in milliseconds. */
   readonly retryMs?: (attempt: number) => number
@@ -85,10 +86,14 @@ export interface ShimDeps {
   readonly inputHook?: boolean
   /** Whether the service of that pid still owns the home (wire.ts ownsHome); checked before each dialog is shown. */
   readonly owner?: (servicePid: number) => boolean
-  /** The bridge folder a hello reply names, checked (bridge.ts bridgeDirOf), or null. */
-  readonly bridgeDirOf?: (given: unknown) => string | null
   /** Called with the connection's bound identities whenever they change (an empty list: none). */
   readonly boundChanged?: (labels: readonly string[]) => void
+  /**
+   * Codex only: called with the window's session id from each tools/call's _meta (sessionId, else threadId), before
+   * the call goes on, so the .bound file a bind writes is keyed by the window (channel.ts sessionKey). subagent is
+   * the connection's mark: once true, true for the rest of the connection's life.
+   */
+  readonly windowSeen?: (sessionId: string, subagent: boolean) => void
 }
 
 /** Backoff: 100 ms, doubling, at most 5 s. */
@@ -181,8 +186,9 @@ export class Shim {
   #as: string[] = []
   #servicePid = 0
   #ringSeq = 0
-  #bridgeDir: string | null = null
   #inputHook = false
+  /** A Codex sub-agent's connection: set at its first such call, never cleared (the service is told on each call). */
+  #subagent = false
 
   constructor(deps: ShimDeps) {
     this.#d = deps
@@ -199,11 +205,6 @@ export class Shim {
     return this.#phase
   }
   /** The identity the service last said this connection is bound to, or null. */
-  /** The current connection's omp bridge folder, from the hello reply; null before it or after a loss. */
-  get bridgeDir(): string | null {
-    return this.#bridgeDir
-  }
-
   /** The identities the service said this connection is bound to, in bind order. */
   get bound(): readonly string[] {
     return this.#as
@@ -240,6 +241,15 @@ export class Shim {
       this.#kind = hostKind(this.#d.env, typeof info.name === 'string' ? info.name : '')
       this.#connect()
       return
+    }
+    if (this.#kind === 'codex' && isRequest(m) && m.method === 'tools/call') {
+      const meta = m.params?._meta as { sessionId?: unknown; threadId?: unknown } | undefined
+      const id = meta?.sessionId ?? meta?.threadId
+      // A sub-agent's shim: the window's sessionId with a threadId of its own (a window's are equal).
+      // The mark is one-way: a later call with no _meta, or with the window's own, keeps it.
+      if (typeof meta?.sessionId === 'string' && typeof meta.threadId === 'string' && meta.threadId !== id)
+        this.#subagent = true
+      if (typeof id === 'string') this.#d.windowSeen?.(id, this.#subagent)
     }
     if (isRequest(m) && this.#isResume(m)) {
       this.#resume(m)
@@ -301,6 +311,18 @@ export class Shim {
     const c = this.#conn
     this.#conn = null
     c?.close()
+  }
+
+  /**
+   * Ends the service connection and connects again, unbound: the service drops the binding and cancels the
+   * connection's pairings as at a close, but the host keeps a working server (Codex's SessionEnd, wake-hook --end).
+   */
+  release(): void {
+    const c = this.#conn
+    if (this.#phase !== 'up' || c === null) return
+    this.#d.log('release', {})
+    this.#lost(null)
+    c.close()
   }
 
   // --- the connection ------------------------------------------------------------------------------------------
@@ -409,10 +431,6 @@ export class Shim {
     }
     const pid = (r.result as { service?: { pid?: unknown } } | undefined)?.service?.pid
     this.#servicePid = typeof pid === 'number' ? pid : 0
-    // The contract's spelling (docs/bag-service.md, the hello result): bridge_dir.
-    const given = (r.result as { bridge_dir?: unknown } | undefined)?.bridge_dir
-    this.#bridgeDir = given === undefined ? null : (this.#d.bridgeDirOf?.(given) ?? null)
-    if (given !== undefined && this.#bridgeDir === null) this.#d.log('bridge-dir-refused', {})
     const init = this.#init as Message
     let ir: Message
     try {
@@ -450,8 +468,9 @@ export class Shim {
   }
 
   /**
-   * The client capabilities for the hello: the host's, plus experimental["bag.dev/consent-bridge"] for an omp host
-   * without elicitation, whose pairing consents the service writes into the folder it names in the hello reply.
+   * The client capabilities for the hello: the host's, plus experimental["bag.dev/consent-bridge"] = {pid} for an omp
+   * host without elicitation: the omp pid, by which the service finds that omp's registered consent link (0.4.2: it
+   * carries nothing else, and the hello reply names no folder).
    */
   #capabilities(): Params {
     const caps = { ...((this.#init?.params?.capabilities ?? {}) as Params) }
@@ -510,7 +529,6 @@ export class Shim {
     this.#epoch++
     if (this.#phase === 'closed') return
     this.#d.log('service-lost', { code: error?.code ?? null, in_flight: this.#pending.size })
-    this.#bridgeDir = null
     this.#setBound([])
     for (const reject of this.#internal.values())
       reject({ jsonrpc: '2.0', id: null, error: { code: -1, message: '' } })
@@ -580,7 +598,8 @@ export class Shim {
         this.#pending.delete(k)
       }
     }
-    conn.send(m)
+    if (!this.#subagent || m.method !== 'tools/call') conn.send(m)
+    else conn.send({ ...m, params: withSubagent(m.params) })
   }
 
   /** Answers locally while the service is out of reach: one readable error for every tool. */

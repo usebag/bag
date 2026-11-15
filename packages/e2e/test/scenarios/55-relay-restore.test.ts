@@ -145,8 +145,8 @@ describe('e2e scenario 55: a relay restored from an older copy issues used curso
       return run.out
     }
     const [alice, bob] = [
-      (await cli('keygen', 'alice', ...dir))[0],
-      (await cli('keygen', 'bob', ...dir))[0],
+      (await cli('keygen', '--new', 'alice', ...dir))[0],
+      (await cli('keygen', '--new', 'bob', ...dir))[0],
     ] as [string, string]
     const [address, accept] = [join(w.dir, 'address.json'), join(w.dir, 'accept.json')]
     await cli('record', 'address', 'bob', '--relay', w.url, '--sealing-key', '--out', address, ...dir)

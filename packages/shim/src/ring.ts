@@ -1,12 +1,13 @@
 // A ring from the service turned into what the host's waiter reads. On a service connection the shim writes
-// <home>/run/shim/<host pid>.ring for every host kind, beside the .bound file (channel.ts), and never moves the
-// identity's doorbell (<home>/state/<name>/doorbell): that file is per identity, so moving it would wake every window
-// bound to the identity, not the one speaking window the service chose (the coordinator's ruling, 2026-11-12). The
-// CLI lane's wake hook (Claude Code, Codex) and omp's wake extension wake from this file while a .bound file exists;
-// with no .bound file (the per-folder stdio mode, the rollback) nothing changes. Shape:
+// <home>/run/shim/<host pid>.ring (a Codex window: <host pid>-<session id>.ring) for every host kind, beside the .bound
+// file (channel.ts), and never moves the identity's doorbell (<home>/state/<name>/doorbell): that file is per identity,
+// so moving it would wake every window bound to the identity, not the one speaking window the service chose. The CLI's
+// wake hook (packages/cli/src/commands/wake-hook.ts; Claude Code, Codex) and omp's wake extension wake from this file
+// while a .bound file exists; with no .bound file (the per-folder stdio mode, the rollback) nothing changes. Shape:
 // {"v":1,"n":<sequence>,"as":"omp","unread":3,"speaking":true,"at":"<the service's at>","shim":<shim pid>}, with
 // "requests":<n> only while local pair requests wait for the identity's person (the ring's own count), 0600,
-// written beside and renamed over, removed at exit only while it names this shim. Reader rules: packages/shim/README.md.
+// written beside and renamed over, removed at exit only while it names this shim. Reader rules:
+// packages/shim/README.md.
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -27,19 +28,38 @@ export interface Ring {
   readonly at: string | null
 }
 
-export const ringOf = (home: string, hostPid: number): string => join(home, 'run', 'shim', `${hostPid}.ring`)
+/** <home>/run/shim/<key>.ring, the key the host pid or a Codex window's `<host pid>-<session id>` (channel.ts sessionKey). */
+export const ringOf = (home: string, key: number | string): string => join(home, 'run', 'shim', `${key}.ring`)
+
+/**
+ * Whether a Codex window's file (a string key, `<host pid>-<session id>`) names another shim that is alive: then this
+ * shim writes no file there (a second shim with the window's session id, a sub-agent's, must never take the window's
+ * wake files). A host pid key keeps "the newest shim writes" (Claude Code, omp: one shim per process).
+ */
+export function heldByOther(file: string, key: number | string, shimPid: number): boolean {
+  if (typeof key !== 'string') return false
+  try {
+    const other = (JSON.parse(readFileSync(file, 'utf8')) as { shim?: unknown }).shim
+    if (typeof other !== 'number' || other === shimPid) return false
+    process.kill(other, 0)
+    return true
+  } catch (e) {
+    return (e as { code?: unknown }).code === 'EPERM'
+  }
+}
 
 /** Writes the ring file (the directory is the channel's, made 0700 by writeBound or the channel). */
-export function writeRing(home: string, hostPid: number, shimPid: number, ring: Ring): void {
-  const file = ringOf(home, hostPid)
+export function writeRing(home: string, key: number | string, shimPid: number, ring: Ring): void {
+  const file = ringOf(home, key)
+  if (heldByOther(file, key, shimPid)) return
   const tmp = `${file}.${shimPid}.tmp`
   writeFileSync(tmp, JSON.stringify({ v: 1, ...ring, shim: shimPid }), { mode: 0o600 })
   renameSync(tmp, file)
 }
 
 /** Removes the ring file only while it still names this shim (a newer shim of the same host may own it). */
-export function removeRing(home: string, hostPid: number, shimPid: number): void {
-  const file = ringOf(home, hostPid)
+export function removeRing(home: string, key: number | string, shimPid: number): void {
+  const file = ringOf(home, key)
   try {
     const doc = JSON.parse(readFileSync(file, 'utf8')) as { shim?: unknown }
     if (doc.shim === shimPid) rmSync(file, { force: true })

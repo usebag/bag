@@ -19,14 +19,14 @@ import {
 } from './harness.ts'
 import { exited, terminal } from './terminal.ts'
 
-// Delivery between identities of one home (spec/SPEC.md 9.2, decision 98), the red team's proof (host-design-review
-// intra-home-0-4-1, section 5) end to end: the real bag service process (packages/mcp/src/main.ts --service) over a
-// home with two key-file identities, personal and research, on the real release relay; the home word written by the
-// real CLI on a pseudo-terminal after a y; windows on the service socket as a host's shim speaks to it, the person's
-// dialogs answered there. The relay's request log (its JSON lines on stderr, one `publish` line per envelope with its
-// id) shows no request for any local envelope id. The negatives: word off, a mixed recipient set, delegate, an
-// envelope of personal's key over the relay to research, a local send after unpair. A Keychain recipient's spool is
-// proved in packages/mcp/test/service-local.test.ts with a key reader stand-in (no Keychain from tests).
+// Delivery between identities of one home (spec/SPEC.md 9.2), end to end: the real bag service process
+// (packages/mcp/src/main.ts --service) over a home with two key-file identities, personal and research, on the real
+// release relay; the home word written by the real CLI on a pseudo-terminal after a y; windows on the service socket as
+// a host's shim speaks to it, the person's dialogs answered there. The relay's request log (its JSON lines on stderr,
+// one `publish` line per envelope with its id) shows no request for any local envelope id. The negatives: word off, a
+// mixed recipient set, delegate, an envelope of personal's key over the relay to research, a local send after unpair. A
+// Keychain recipient's spool is proved in packages/mcp/test/service-local.test.ts with a key reader stand-in (no
+// Keychain from tests).
 
 type Json = Record<string, unknown>
 
@@ -153,7 +153,7 @@ describe('e2e intra-home: delivery between identities of one home', () => {
     const a = await window(home, 'personal')
     const own = { error: 'to-own-identity' }
 
-    // Word off (the brake; with no file it is on, decision 104): every guard as today.
+    // Word off (the brake; with no file it is on, spec/SPEC.md 9.2 item 1): every guard as today.
     writeFileSync(join(home, 'run', 'local.json'), '{"version":2,"local_delivery":"off","hidden":[]}', {
       mode: 0o600,
     })
@@ -177,8 +177,8 @@ describe('e2e intra-home: delivery between identities of one home', () => {
     const b1 = await window(home, 'research')
     const b2 = await window(home, 'research')
     const ids: string[] = []
-    // The first touch (decision 104): the message is held, and only research's speaking window asks, once, in the
-    // words of the two labels; its Yes allows both ways and delivers it. Nothing else is written.
+    // The first touch (spec/SPEC.md 9.2 item 1): the message is held, and only research's speaking window asks, once,
+    // in the words of the two labels; its Yes allows both ways and delivers it. Nothing else is written.
     const one = await a.call('send', { to: [carol.address], type: 'chat.v1', body: { text: 'one' } })
     expect(one).toMatchObject({ delivery: 'local', pairing: 'requested' })
     ids.push(one.id as string)

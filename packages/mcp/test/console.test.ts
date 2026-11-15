@@ -21,11 +21,10 @@ import {
 } from './support/fixtures.ts'
 import { MemoryRelay } from './support/relay.ts'
 
-// The console's pairings in the MCP server (decision 38c, console.ts): a faked instance holds the commands and takes
-// the events, a stubbed invite stands for the edge's ceremony. A pair runs once and is written to the name book and
-// the trust file; an unpair of a kept link takes the root out; no live session, or an identity this server does not
-// hold, makes no call; a failing pass is one log line and the next pass runs; the stop (and the server's close) ends
-// the interval.
+// The console's pairings in the MCP server (console.ts): a faked instance holds the commands and takes the events, a
+// stubbed invite stands for the edge's ceremony. A pair runs once and is written to the name book and the trust file;
+// an unpair of a kept link takes the root out; no live session, or an identity this server does not hold, makes no
+// call; a failing pass is one log line and the next pass runs; the stop (and the server's close) ends the interval.
 
 const DOMAIN = 'acme.example'
 const ORIGIN = 'https://bag.acme.example'

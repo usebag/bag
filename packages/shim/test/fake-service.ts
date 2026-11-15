@@ -50,8 +50,6 @@ export class FakeService {
   })
   helloError: Record<string, unknown> | null = null
   initError: Record<string, unknown> | null = null
-  /** The bridge folder the hello reply names (the service makes it), or none. */
-  bridgeDir: string | null = null
   /** A hello result to answer with as it is, in place of the fake's own (the service's exact shape). */
   helloResult: Record<string, unknown> | null = null
   /** A service/use reply to send as it is (its result or error member), in place of useAnswer. */
@@ -190,7 +188,6 @@ export class FakeService {
           connection: 'c-1',
           dialog_capable: true,
           draining: false,
-          ...(this.bridgeDir === null ? {} : { bridge_dir: this.bridgeDir }),
         },
       })
       return

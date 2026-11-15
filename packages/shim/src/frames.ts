@@ -21,7 +21,7 @@ export const isNotification = (m: Message): boolean => typeof m.method === 'stri
 export const isResponse = (m: Message): boolean =>
   m.method === undefined && m.id !== undefined && ('result' in m || 'error' in m)
 
-/** The longest line either side may send, in bytes (the contract's 4 MiB): past it the stream is closed. */
+/** The longest line either side may send, in bytes (4 MiB, as on the service): past it the stream is closed. */
 export const MAX_LINE = 4 * 1024 * 1024
 
 /** Thrown by a Lines whose buffered line passed MAX_LINE. */

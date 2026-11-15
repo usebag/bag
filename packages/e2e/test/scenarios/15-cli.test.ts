@@ -16,10 +16,12 @@ describe('e2e scenario 15: the CLI end to end, in child processes', () => {
     const w = await world('s15')
     const home = join(w.dir, 'cli-home')
     const dir = ['--dir', home]
-    const made = await Promise.all(['alice', 'bob', 'carol'].map((name) => cli('keygen', name, ...dir)))
+    const made = await Promise.all(
+      ['alice', 'bob', 'carol'].map((name) => cli('keygen', '--new', name, ...dir)),
+    )
     for (const m of made) expect([m.code, m.out.length, isAddress(m.out[0]), m.err]).toEqual([0, 1, true, []])
     const [alice, bob, carol] = made.map((m) => m.out[0] as string) as [string, string, string]
-    const again = await cli('keygen', 'alice', ...dir)
+    const again = await cli('keygen', '--new', 'alice', ...dir)
     expect([again.code, again.out]).toEqual([1, []])
     expect(again.err).toEqual([
       expect.stringMatching(/^bag: EEXIST: file already exists, open '.*alice\.json'$/),

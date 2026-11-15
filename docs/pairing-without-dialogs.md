@@ -3,8 +3,8 @@
 Pairing is a person's act. Inside an MCP host, the two approvals are form dialogs (elicitation) the model never sees and
 your host shows you. Some hosts cannot show them: a client with no elicitation support (omp is one) refuses
 `no-elicitation`, and at least one editor extension answers every dialog as "declined". There are two paths for those
-hosts. If the host runs a bag extension that bridges pairing into the session (section 5), you pair in the session, the
-extension asking you to paste the code, read the digits and press Yes, with no terminal. Otherwise the model cannot
+hosts. If the host runs a bag extension with its own link to the bag service (omp, section 5), you pair in the session,
+the extension asking you to paste the code, read the digits and press Yes, with no terminal. Otherwise the model cannot
 pair, and it tells you what to change in your host so that it can (section 3); or you run this guide's `pair`, one
 guided step once per peer, in your own terminal.
 
@@ -76,14 +76,15 @@ digits out; do not send them the same way you sent the code.
 ## 3. What the model tells you when it cannot pair
 
 When your host cannot show the pairing dialog, the `pair_invite` and `pair_accept` tools do not fail silently. They
-return `no-elicitation` with what to change in your host, never a terminal command (since 2026-11-12; before, they
-named a `pair` line). The same answer comes when the host answers the first dialog in under 250 ms, sooner than a
-person can (`codex exec` declines every dialog at once), and from a Codex older than 0.113.0. For Codex it names the
-interactive `codex` TUI rather than `codex exec`, Codex 0.113.0 or later, and an approval policy that lets MCP servers
-ask (`on-request`, the default, is enough); for omp, its interactive session with bag's extension; for another host,
-its interactive form and the setting that lets MCP servers ask you. The model should tell you which to change and wait;
-it cannot pair for you. If a dialog did appear and you closed it, ask it to try again. Where your host cannot show
-dialogs at all, run `pair` yourself as section 2 describes.
+return `no-elicitation` with what to change in your host, never a terminal command (since 2026-11-12; before, they named
+a `pair` line). The same answer comes when the host answers the first dialog in under 250 ms, sooner than a person can
+(`codex exec` declines every dialog at once), and from a Codex older than 0.113.0. For Codex it names the interactive
+`codex` TUI rather than `codex exec`, Codex 0.113.0 or later, and an approval policy that lets MCP servers ask
+(`on-request`, the default, is enough); for omp, an interactive session that uses the bag service through bag's
+extension (a per-folder bag server cannot pair); for another host, its interactive form and the setting that lets MCP
+servers ask you. The model should tell you which to change and wait; it cannot pair for you. If a dialog did appear and
+you closed it, ask it to try again. Where your host cannot show dialogs at all, run `pair` yourself as section 2
+describes.
 
 One pairing runs at a time. To start over (an invite for another address, say), tell the model to cancel: its
 `pair_cancel` tool ends the running invite or accept and writes nothing, and an invite no one has used yet is withdrawn,
@@ -113,23 +114,25 @@ but your mailbox stopped admitting it), re-publish your accept-from with that ro
 relays. `record accept-from` refuses to drop a root held in your home copy unless you confirm it at the terminal, so a
 re-publish that lists the trusted root again cannot be narrowed by accident.
 
-## 5. Pairing inside the session, through a host extension (the consent bridge)
+## 5. Pairing inside the session, through a host extension (omp)
 
-A host with no dialogs can still let you pair without a terminal if it runs a bag extension that bridges the pairing into
-the session. The extension writes a small presence file, `<home>/state/<name>/consent/.bridge`, while you have a session
-with a user interface; the bag MCP server sees it and, instead of handing the model the `pair` command, asks you through
-the extension. Nothing changes for you but where you answer: you still paste the code, read the six digits out and press
-Yes, and the model never sees the code or the digits.
+A host with no dialogs can still let you pair without a terminal if it runs a bag extension with its own link to the
+bag service. In omp's interactive session the extension opens its own connection to the bag service and registers it
+for that omp process; the service asks you over it, never through a file, and only in the window that started the
+pairing. It needs the bag service (`bag host install omp --user`). Nothing changes for you but where you answer: you
+still paste the code, read the six digits out and press Yes, and the model never sees the code or the digits.
 
-- **Accepting a peer's code.** The host asks you to paste the invite or code your peer sent (up to 512 characters); then
-  it shows the six check digits for you to read out to your peer, and you press Yes to send the request.
-- **Inviting a peer.** The host shows you the one-use code to hand to your peer out of band; then, when the peer's
-  request arrives, it asks you to type the six digits the peer reads back to you.
-- **Timing.** Each question stands for 120 seconds. If you do not answer in time it counts as No, and the model is told
-  the pairing was not accepted; a late answer is never taken. Only you answer; the model cannot, and a sub-session with
-  no user interface never answers for you.
+- **Accepting a peer's code.** The host asks you to paste the invite or code your peer sent (one line, up to 512
+  characters); then, during the agent's next call, it shows the six check digits for you to read out to your peer,
+  and you press Yes to send the request.
+- **Inviting a peer.** The host shows you the one-use code to hand to your peer out of band, until the pairing ends;
+  then, when the peer's request arrives, it asks you to type the six digits the peer reads back to you.
+- **Timing.** Each question stands for up to 120 seconds (omp's timeout for the call less 10 seconds: 20 under omp's
+  own 30-second default). No answer is not a No: the question is withdrawn and asked again on the agent's next call,
+  until the invite ends; only your No declines. A late answer is never taken. Only you answer; the model cannot, and a
+  sub-session with no user interface never answers for you.
 
-The bridge needs a current session with a user interface: with none (a background or piped run, or no extension), the
-server falls back to the `pair` command of sections 1 to 4. The pairing it writes is the same either way — the name
-book, the trust file and the accept-from record — so a peer paired through the bridge is paired exactly as one paired at
-a terminal.
+The link needs a current session with a user interface: with none (a background or piped run, no extension, or the
+per-folder form without the bag service), the pair tools answer `no-elicitation` (section 3) and you run `pair`
+yourself (section 2). The pairing it writes is the same either way: the name book, the trust file and the
+accept-from record — so a peer paired in the session is paired exactly as one paired at a terminal.

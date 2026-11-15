@@ -1,6 +1,6 @@
 import { MAX_ENVELOPE_BYTES } from '@usebag/core'
 
-// The accept-from max_bytes lift (W9, Dilip's decision of 2026-11-11). Every accept-from record signed before the
+// The accept-from max_bytes lift (in effect from 2026-11-11). Every accept-from record signed before the
 // envelope cap rose carries max_bytes 65,536, the old cap and the old default, and every re-sign path kept it: the
 // peer's admit (pairing.ts), onboard, the MCP server's keepalive, record keep and unpair. Each now passes the held
 // value through liftMaxBytes, so an identity takes the new default on its next re-sign (record keep re-signs at least

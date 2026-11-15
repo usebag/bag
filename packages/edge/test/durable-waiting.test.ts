@@ -22,7 +22,7 @@ import {
 import { closedPort } from './support/http.ts'
 import { MemoryRelay } from './support/relays.ts'
 
-// The durable waiting send (last mile, ruling 1 (b)): a send whose recipient does not resolve is kept on the sender's
+// The durable waiting send: a send whose recipient does not resolve is kept on the sender's
 // disk, plaintext, under the identity's state directory, and survives a restart to the same `until`. A restart here
 // closes the store and opens a new store and a new Edge on the same file, as a new process does; the crash cases drop
 // the old Edge with a publish still hanging, so nothing after the write it stopped at ever runs.
@@ -131,7 +131,7 @@ describe('a waiting send says why it waits', () => {
   })
 })
 
-describe('a waiting send outlives a restart (ruling 1 (b))', () => {
+describe('a waiting send outlives a restart', () => {
   it('reloads it with its key, thread and backoff, and sends it on the same thread and session', async () => {
     const relay = new MemoryRelay()
     const first = open(P.jane.keys, stateDir('jane'), relay)

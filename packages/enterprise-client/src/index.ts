@@ -68,7 +68,7 @@ export {
   readPairings,
   runPairing,
 } from './pairings.ts'
-export { type EnterprisePorts, enterpriseDeps, systemPorts, VERSION } from './ports.ts'
+export { type EnterprisePorts, enterpriseDeps, type HomeReads, systemPorts, VERSION } from './ports.ts'
 export {
   ACCEPT_MAX_BYTES,
   ACCEPT_TTL,

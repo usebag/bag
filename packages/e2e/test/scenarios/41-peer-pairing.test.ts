@@ -39,7 +39,7 @@ import {
 // as each child ending by itself within 5 s of its `paired` line; one that does not is recorded, given a Ctrl-D (EOF)
 // so that every other clause is still measured, and fails the test at its end, after the MEASURE line.
 //
-// Forward secrecy (pairing ruling of 2026-10-29): each side pairs with its current key record, so
+// Forward secrecy: each side pairs with its current key record, so
 // its first line is rotateEpoch's. The setup publishes address records that still name a sealing key (a record made
 // with --sealing-key), so each side's epoch 1 is a key record and the address record re-signed with none; the code is
 // over the key record's sealing key; after the pairing neither address record names a sealing key, and each side's
@@ -196,9 +196,9 @@ describe('e2e scenario 41: the peer pairing ceremony end to end', () => {
       string,
     ]
     const made = await Promise.all([
-      cli('keygen', 'alice', '--dir', home1),
-      cli('keygen', 'bob', '--dir', home2),
-      cli('keygen', 'carol', '--dir', home3),
+      cli('keygen', '--new', 'alice', '--dir', home1),
+      cli('keygen', '--new', 'bob', '--dir', home2),
+      cli('keygen', '--new', 'carol', '--dir', home3),
     ])
     for (const m of made) expect([m.code, m.err]).toEqual([0, []])
     const [alice, bob, carol] = made.map((m) => m.out[0] as string) as [string, string, string]

@@ -183,7 +183,7 @@ fi
 if address="$(c address "$key" 2>/dev/null)"; then
   state=existing
 else
-  address="$(c keygen "$key")"
+  address="$(c keygen "$key" --new)" # the org key is this run's own new identity, on a home that may hold others
   state=new
 fi
 echo "key $key $address $state"

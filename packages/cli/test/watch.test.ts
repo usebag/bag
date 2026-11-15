@@ -53,7 +53,7 @@ async function world(): Promise<World> {
   const dir = join(tmp.dir, `home-${n++}`)
   const [alice, bob] = await Promise.all(
     ['alice', 'bob', 'carol'].map(
-      async (who) => (await cli(senders, 'keygen', who, '--dir', dir)).out[0] as string,
+      async (who) => (await cli(senders, 'keygen', '--new', who, '--dir', dir)).out[0] as string,
     ),
   )
   const file = join(dir, 'bob.address.json')

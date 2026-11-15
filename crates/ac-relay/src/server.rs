@@ -179,8 +179,9 @@ impl Admission {
         slot
     }
 
-    /// A place for one more subscription of a direct `client`, whose connection holds its place already: a limit below
-    /// the cap leaves the rest to its calls (ruling 8). Over it none, and the upgrade is refused `rate-limited`.
+    /// A place for one more subscription of a direct `client`, whose connection holds its place already: the limit sits
+    /// below the cap by the connection reserve, so subscriptions leave the client's calls their places. Over it none,
+    /// and the upgrade is refused `rate-limited`.
     pub(crate) fn subscription(&self, client: IpAddr) -> Option<Slot> {
         let (limit, slot) =
             (self.subscription_limit, self.subscribers.take(bucket(client), self.subscription_limit));

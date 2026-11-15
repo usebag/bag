@@ -27,7 +27,7 @@ import {
   systemRng,
   trackPairs,
 } from '@usebag/edge'
-import { FrontDesk, type SessionNameOptions } from '@usebag/edge/agent'
+import { FrontDesk, type SessionNameOptions, seedFromStore } from '@usebag/edge/agent'
 import type { EnterprisePorts } from '@usebag/enterprise-client'
 import type { SessionAgent } from './agent.ts'
 import { ChainKeeper, type ChainSource, type Env, loadChain, type RunCommand, runShell } from './chain.ts'
@@ -125,7 +125,10 @@ export interface ServerDeps {
 }
 
 /** An --identities server's ports: a server's, with a relay client made for each identity. */
-export type ManyDeps = Omit<ServerDeps, 'relay'> & { readonly relayFor: (config: Config) => RelayClient }
+export type ManyDeps = Omit<ServerDeps, 'relay'> & {
+  /** A relay client per identity; the service passes `signal`, which its stop aborts every request with. */
+  readonly relayFor: (config: Config, signal?: AbortSignal) => RelayClient
+}
 
 /** A started server: its MCP server (not yet connected), desk, identity and keepers, and how to stop it. */
 export interface Running {
@@ -186,6 +189,10 @@ export class Unit {
   desk: Desk | null = null
   records: RecordKeeper | null = null
   chain: ChainKeeper | null = null
+  /** A relay's refusal of this unit's subscription, by code (the service marks an agent unit's grant lost). */
+  onRefused: ((code: string) => void) | null = null
+  /** An agent unit's threads, registered again at its next open after a regrant, as the stdio regrant does. */
+  threads: readonly string[] = []
   /** Why it is not open (state failed). */
   get failure(): unknown {
     return this.#failure
@@ -289,6 +296,7 @@ export class Unit {
       },
       onSubscriptionError: (relay, e) => {
         this.subscriptions.failed(relay, e, codeOf(e))
+        this.onRefused?.(codeOf(e))
         extra.onSubscriptionError?.(relay, e)
       },
       onLink: (relay, link) => {
@@ -451,6 +459,7 @@ export class Unit {
               deps: {
                 ...(keys === undefined ? {} : { keys }),
                 ...(auth === undefined ? {} : { auth }),
+                ...(sessionLock ? { threads: this.threads } : {}),
                 ...lock,
               },
             },
@@ -749,6 +758,7 @@ export async function startServer(given: Config, deps: ServerDeps): Promise<Runn
           onDesk: retryWaiting,
           now: () => clock.now(),
           onError: (e) => log.log('warn', 'desk', coded(e)),
+          seed: () => seedFromStore(join(session.deskDir, 'edge.sqlite')),
         })
   const instructions = config.push.includes('channel') ? `${INSTRUCTIONS} ${CHANNEL_NOTE}` : INSTRUCTIONS
   const mcp = new McpServer({ name: 'bag', version: SERVER_VERSION }, { instructions })
@@ -844,7 +854,9 @@ export async function startServer(given: Config, deps: ServerDeps): Promise<Runn
     })
     // Under agent custody the grant of --auth is renewed by the agent, not read again from its file.
     const renewal: ChainSource | null =
-      o.agent !== null && config.auth !== null ? { kind: 'agent', renew: o.agent.renew } : chainSource(config)
+      o.agent !== null && config.auth !== null
+        ? { kind: 'agent', renew: o.agent.renew, allowedAt: o.agent.allowedAt }
+        : chainSource(config)
     if (renewal !== null) {
       unit.chain = new ChainKeeper({
         source: renewal,
@@ -1043,8 +1055,8 @@ export interface ProcessIo {
   readonly stderr: { write(text: string): unknown }
   readonly clock: Clock
   readonly rng: Rng
-  /** A relay client; an --identities server makes one per identity, each with its own reconnect wait. */
-  readonly relay: (reconnectDelayMs?: (attempt: number) => number) => RelayClient
+  /** A relay client; an --identities server makes one per identity, each with its own reconnect wait and signal. */
+  readonly relay: (reconnectDelayMs?: (attempt: number) => number, signal?: AbortSignal) => RelayClient
   readonly records?: (client: RelayClient) => RecordSource
   readonly timers: Timers
   readonly pid: number
@@ -1098,8 +1110,12 @@ export function processIo(): ProcessIo {
     stderr: process.stderr,
     clock: systemClock,
     rng: systemRng,
-    relay: (reconnectDelayMs) =>
-      createRelayClient(reconnectDelayMs === undefined ? { turns } : { turns, reconnectDelayMs }),
+    relay: (reconnectDelayMs, signal) =>
+      createRelayClient({
+        turns,
+        ...(reconnectDelayMs === undefined ? {} : { reconnectDelayMs }),
+        ...(signal === undefined ? {} : { signal }),
+      }),
     timers: realTimers,
     pid: process.pid,
     alive: pidAlive,
@@ -1113,6 +1129,12 @@ export function processIo(): ProcessIo {
       execArgv: process.execArgv,
       chdir: (d) => process.chdir(d),
       signals: process,
+      // stderr may be a pipe, written asynchronously on macOS: exit once the hard exit's line is flushed, or after 1 s.
+      exit: (status) => {
+        setTimeout(() => process.exit(status), 1000)
+        process.stderr.write('', () => process.exit(status))
+      },
+      open: () => process.getActiveResourcesInfo(),
     },
   }
 }
@@ -1128,7 +1150,7 @@ type MaybeTerminal = Readable & { readonly isTTY?: boolean; setRawMode?(raw: boo
 /**
  * A stdin that may be a terminal. enter puts it in raw mode and ends the run on Ctrl-C (0x03) or Ctrl-D (0x04); undo
  * restores its mode. Until enter it stays canonical, so the terminal still turns Ctrl-C into SIGINT while the server
- * starts (the red team's read, 2026-11-11: a start that hangs on a relay could otherwise not be stopped from it).
+ * starts (a start that hangs on a relay could otherwise not be stopped from it).
  */
 interface RawTerminal {
   enter(end: () => void): void
@@ -1251,7 +1273,7 @@ export async function serve(io: ProcessIo): Promise<number> {
       alive: io.alive,
       log,
       env: io.env,
-      relayFor: () => io.relay(jitteredDelay(io.rng)),
+      relayFor: (_c: Config, signal?: AbortSignal) => io.relay(jitteredDelay(io.rng), signal),
       reread: rereadOf(file, config, config.service),
       // The versioned package directory this bundle was loaded from, by its own URL: a launcher at
       // <home>/package/bag-mcp.js imports versions/<v>/bag-mcp.js in-process, so argv[1] names the launcher.

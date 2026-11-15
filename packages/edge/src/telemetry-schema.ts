@@ -1,15 +1,17 @@
-// The telemetry report's closed schema, the client's copy (spec/SPEC.md Appendix B 111): the values of
-// deploy/telemetry/src/schema.ts and src/builds.ts at TELEMETRY_SCHEMA_COMMIT, and MAX_BYTES of its src/index.ts. The
-// public cut carries packages/ and never deploy/telemetry/ (cut/MANIFEST), so the edge holds a copy, and
-// test/telemetry-report.test.ts imports the Worker's files wherever the checkout holds them and fails on any
-// difference. This is the clients' one copy: the edge maps every value outside these sets to `other` before it
+// The telemetry report's closed schema, the client's copy (spec/SPEC.md Appendix B 111): the values of the Worker's
+// src/schema.ts and src/builds.ts at TELEMETRY_SCHEMA_COMMIT, and MAX_BYTES of its src/index.ts. The Worker lives in
+// usebag/infra at workers/telemetry since 0.4.2 (in this repository's deploy/telemetry before), so the edge holds a
+// copy: test/telemetry-report.test.ts compares it with the Worker's files where TELEMETRY_WORKER_SRC names them, and
+// usebag/infra's deploy-telemetry workflow compares this file, as text, before every deploy (its agree.mjs); a copied
+// block must stay as the Worker writes it. This is the clients' one copy: the edge maps every value outside these sets to `other` before it
 // stores or builds anything.
 
 /**
- * The commit whose deploy/telemetry/src/schema.ts, builds.ts and index.ts these values copy (the package versions
- * 0.1.0, 0.1.1, 0.1.2, 0.2.0, 0.2.1, 0.2.2, 0.2.3, 0.3.0, 0.4.0 and 0.4.1 as builds, and `version` as a command).
+ * The commit (of this repository up to 0.4.1, of usebag/infra from 0.4.2) whose Worker src/schema.ts, builds.ts and
+ * index.ts these values copy (the package versions 0.1.0, 0.1.1, 0.1.2, 0.2.0, 0.2.1, 0.2.2, 0.2.3, 0.3.0, 0.4.0, 0.4.1
+ * and 0.4.2 as builds, and `version` as a command).
  */
-export const TELEMETRY_SCHEMA_COMMIT = 'a3be93daa38c8968b41858039882339b1c2d03db'
+export const TELEMETRY_SCHEMA_COMMIT = 'c0e571765d96dbeb5079a5b84e34e72409002b93'
 
 /**
  * The builds a report's `build` may name (builds.ts): the published versions of the npm package @usebag/bag, and the
@@ -26,6 +28,7 @@ export const BUILDS: readonly string[] = [
   '0.3.0',
   '0.4.0',
   '0.4.1',
+  '0.4.2',
 ]
 
 /** The largest count a report may carry: 2^19. Every count is 0 or a power of two up to it. */
@@ -35,7 +38,7 @@ export const MAX_COUNT = 2 ** 19
 export const MAX_AGE_DAYS = 8
 
 /** The largest report, in bytes (index.ts). */
-export const MAX_BYTES = 4096
+export const MAX_BYTES = 4352
 
 const words = (text: string): readonly string[] => text.trim().split(/\s+/)
 
@@ -57,10 +60,15 @@ export const SETS = {
     record-keep peer-invite peer-accept host-install-claude-code host-install-codex keys-rotate other
   `),
   exit: words('0 1 2 3 other'),
-  // packages/mcp/src/tools.ts, TOOL_NAMES; `other` takes the cells a family's cap merges (MAX_CELLS).
-  tool: words(
-    'send inbox wait delegate ask handoff status facts lookup receipts pair_invite pair_accept other',
-  ),
+  // Every tool the MCP server registers: packages/mcp/src/tools.ts's TOOL_NAMES in its order, then
+  // packages/mcp/src/enterprise.ts's ENTERPRISE_TOOLS, then use (registered on its own); `other` takes the cells a
+  // family's cap merges (MAX_CELLS). A name may come before its tool is registered: the client's drift test lists it
+  // as pending until it is.
+  tool: words(`
+    send inbox wait delegate ask handoff status facts lookup receipts pair_invite pair_accept pair_cancel identities
+    identity_remove identity_relays keep_alive local_delivery unpair names identity_create telemetry host_wire service
+    sign_out connect sign_in enterprise_status use other
+  `),
   // packages/a2a/src/protocol.ts: METHODS' names, and `ok` or ERRORS' names as a request's outcome.
   method: words(`
     SendMessage SendStreamingMessage GetTask ListTasks CancelTask SubscribeToTask CreateTaskPushNotificationConfig
@@ -103,7 +111,7 @@ export const SETS = {
   `),
   // The buckets of a duration, in the order a histogram lists them.
   duration: words('under-100ms under-1s under-10s under-60s 60s-or-more'),
-  // The machine's peers at the day's end by age, and of each, those sent to in the 7 days before (W6). No `other`: the
+  // The machine's peers at the day's end by age, and of each, those sent to in the 7 days before. No `other`: the
   // family's cap is the set, so the client never merges a cell.
   pairs: words('under-7d under-7d-sending 7d-or-more 7d-or-more-sending'),
 }
@@ -147,7 +155,7 @@ export const MEMBERS: Readonly<Record<string, Member>> = {
   // The audit lines (event, decision, reason), the reason `ok` or a code.
   audit: { kind: 'counts', keys: ['event', 'decision', 'code'] },
   pairing: { kind: 'counts', keys: ['code'] },
-  // The peers of the machine's homes, summed over homes (opt-in at consent version 2; the red team's ruling, W6).
+  // The peers of the machine's homes, summed over homes (opt-in at consent version 2).
   pairs: { kind: 'counts', keys: ['pairs'] },
   relay_errors: { kind: 'counts', keys: ['relay', 'code'] },
   // How long each CLI command and each MCP tool call took.
@@ -158,7 +166,7 @@ export const MEMBERS: Readonly<Record<string, Member>> = {
 /**
  * The most cells (counted leaves) each count family may carry. With every family at its cap, each duration family at
  * MAX_KEYS and a cut commit for the build, a report fits MAX_BYTES with at least 256 bytes to spare
- * (deploy/telemetry/test/worker.test.ts measures it). The client's rule (telemetry-report.ts): a family over its cap
+ * (the Worker's test/worker.test.ts measures it). The client's rule (telemetry-report.ts): a family over its cap
  * keeps its largest cells, one fewer than the cap, and sums the rest into the family's `other` cell, `other` at every
  * level, bucketed as any count is. The Worker refuses a family over its cap. relays and sessions are capped at their
  * sets' sizes.

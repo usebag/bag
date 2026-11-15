@@ -1,21 +1,47 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
+import { createServer as createHttpServer } from 'node:http'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
-import { parseEnvelope, serializeRecord, signHop } from '@usebag/core'
-import { type EdgeKeys, generateEdgeKeys, HomeCustody, openIdentityKeys, setKeepAlive } from '@usebag/edge'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { NOT_BOUND } from '../src/binding.ts'
+import { parseEnvelope, serializeRecord, signHop, signRecord, toHex } from '@usebag/core'
+import {
+  type EdgeKeys,
+  generateEdgeKeys,
+  HomeCustody,
+  openIdentityKeys,
+  type RelayClient,
+  RelayError,
+  STOP_ABORT,
+  setKeepAlive,
+  setTelemetry,
+  telemetryEraseId,
+  telemetryId,
+} from '@usebag/edge'
+import { OFF_USE_FORGET } from '@usebag/home'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { askListeners, askPerson } from '../src/ask.ts'
+import { createdHere, NOT_BOUND, pairingsOfTable, tableFor, UNBOUND_TOOLS } from '../src/binding.ts'
 import { parseServerConfig, type ServerConfig } from '../src/config.ts'
 import { Names } from '../src/names.ts'
+import { type PairExtra, type Pairings, shortAddress } from '../src/pairing.ts'
 import {
   launchAgentPlist,
   launchCommand,
   lockName,
   proxyOmitted,
+  rereadOf,
   Service,
   type ServiceDeps,
   scrubbedEnv,
@@ -23,6 +49,7 @@ import {
   serveService,
 } from '../src/service.ts'
 import { DIALOG_META, runPaths, type ServiceConnection } from '../src/socket.ts'
+import { ACT_QUESTIONS, SHORT_NOTE, TOOL_NAMES, type ToolContext } from '../src/tools.ts'
 import {
   acceptFrom,
   FakeClock,
@@ -91,6 +118,8 @@ function deps(more: Partial<ServiceDeps> = {}): ServiceDeps {
     timers,
     pid: 4242,
     alive: () => false,
+    // The registering extension is the omp it names (socket-owner.ts peerIs answers match); a test changes it.
+    peer: async () => 'match',
     log,
     resubscribeDelayMs: () => 0,
     helloMs: 300,
@@ -437,32 +466,31 @@ describe('dialogs', () => {
   })
 })
 
-describe('the omp consent bridge', () => {
-  it('is a directory the service makes per connection, 0700 under run/shim, whatever path the client names', async () => {
-    const s = await start()
+describe('the omp pid in the hello (0.4.2: no bridge folder)', () => {
+  it('a hello with the capability gets no bridge_dir and makes no folder; its pid is advertised (L2)', async () => {
+    // The registering connection is not omp 4242's own (peerIs answers other).
+    const s = await start(undefined, { peer: async () => 'other' })
     const planted = join(home, 'planted')
     const l = await connect(s)
     const r = await l.request(
       'service/hello',
       helloOf(s, {
         host: 'omp',
-        client_capabilities: { experimental: { 'bag.dev/consent-bridge': { dir: planted } } },
+        client_capabilities: { experimental: { 'bag.dev/consent-bridge': { pid: 4242, dir: planted } } },
       }),
     )
     const result = r.result as Json
-    const dir = join(home, 'run', 'shim', `${result.connection as string}.consent`)
-    expect(result.bridge_dir).toBe(dir)
-    expect(lastConn(s).bridgeDir).toBe(dir)
+    expect(result.bridge_dir).toBeUndefined()
+    expect(existsSync(join(home, 'run', 'shim', `${result.connection as string}.consent`))).toBe(false)
     expect(existsSync(planted)).toBe(false)
-    expect(
-      execFileSync('stat', ['-f', '%Lp', join(home, 'run', 'shim'), dir])
-        .toString()
-        .split('\n')
-        .slice(0, 2),
-    ).toEqual(['700', '700'])
-    // A hello without the capability gets no bridge.
-    const plain = await connect(s)
-    expect(((await plain.request('service/hello', helloOf(s))).result as Json).bridge_dir).toBeUndefined()
+    // L2: the pid named in a hello takes no first registration afterwards from any process but omp 4242 itself;
+    // the refused connection is closed.
+    const ext = await connect(s)
+    await ext.request('service/hello', helloOf(s, { host: 'omp' }))
+    const reg = await ext.request('service/consent-register', { pid: 4242 })
+    expect((reg.error as Json).data).toMatchObject({ code: 'not-authorized' })
+    await ext.closed
+    expect(existsSync(join(home, 'run', 'consent-4242.json'))).toBe(false)
   })
 })
 
@@ -499,7 +527,7 @@ describe('the identities the service holds', () => {
 })
 
 describe('a tool call runs inside its connection', () => {
-  it("names its connection after the handler awaits, through the mail lane's withConnection", async () => {
+  it("names its connection after the handler awaits, through the mail hooks' withConnection", async () => {
     const als = new AsyncLocalStorage<string>()
     const seen: (string | undefined)[] = []
     // The relay records the scope it is called in, after a wait of its own, deep in the lookup tool's awaits.
@@ -623,7 +651,7 @@ describe('the CLI lend and return', () => {
     expect(existsSync(lockFile(P.alice))).toBe(false)
     expect(s.lent('personal')).toBe('pair')
     expect(codeOf(await cli.request('service/lend', { label: 'personal', verb: 'keys' }))).toBe('busy')
-    // A bind of that identity answers busy naming the lend while it is lent (W1's table hears the lend).
+    // A bind of that identity answers busy naming the lend while it is lent (the binding table, binding.ts, hears it).
     const r = await win.request('service/use', { label: 'personal', via: 'dialog' })
     expect(codeOf(r)).toBe('busy')
     expect(JSON.stringify(r)).toContain('lent to the bag command line (pair)')
@@ -673,6 +701,39 @@ describe('the CLI lend and return', () => {
     expect(s.lent('personal')).toBe('pair')
     cliAlive = false
     expect((await cli.request('service/return', { label: 'personal' })).result).toMatchObject({ open: true })
+  })
+
+  it("names the holder (#lentWhy): a window's quiet to a lend, a CLI lend to a quiet, and a CLI lend at the return's deadline", async () => {
+    let cliAlive = true
+    const s = await start(
+      [
+        ['personal', P.alice],
+        ['research', P.carol],
+      ],
+      { alive: (pid) => pid === 999 && cliAlive },
+    )
+    const cli = await hello(s, { host: 'cli' })
+    const end = await s.quiet('personal', 'unpair')
+    const refused = await cli.request('service/lend', { label: 'personal', verb: 'pair' })
+    expect(codeOf(refused)).toBe('busy')
+    expect(String(((refused.error as Json).data as Json).detail)).toContain(
+      'personal is held for unpair in a window: try again when it is done',
+    )
+    await end()
+    expect((await cli.request('service/lend', { label: 'research', verb: 'pair' })).result).toMatchObject({
+      lent: true,
+    })
+    await expect(s.quiet('research', 'unpair')).rejects.toThrow('research is lent to the CLI for pair')
+    // The CLI holds on to its lock: the return runs to its deadline, which names the CLI's lend.
+    mkdirSync(join(home, 'state', 'carol'), { recursive: true })
+    writeFileSync(lockFile(P.carol), JSON.stringify({ pid: 999, started_at: new Date().toISOString() }))
+    const held = await cli.request('service/return', { label: 'research' })
+    expect(codeOf(held)).toBe('busy')
+    expect(String(((held.error as Json).data as Json).detail)).toContain(
+      'research is lent to the CLI for pair, which still holds it: return again once it has closed it',
+    )
+    cliAlive = false
+    expect((await cli.request('service/return', { label: 'research' })).result).toMatchObject({ open: true })
   })
 
   it('returns by itself when the lending connection closes, and retries on the lock until the CLI frees it (L7)', async () => {
@@ -765,6 +826,170 @@ describe('the drain', () => {
     expect(relay.subs.size).toBe(0)
     await drained
     live.splice(live.indexOf(s), 1)
+  })
+})
+
+/** The publish lines of `id` in alice's audit log, each with its detail (a JSON string in the line) parsed. */
+function publishAudit(id: string): Json[] {
+  return readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8')
+    .split('\n')
+    .filter((x) => x !== '')
+    .map((x) => JSON.parse(x) as Json)
+    .filter((x) => x.event === 'publish' && x.id === id)
+    .map((x) => ({ ...x, detail: JSON.parse(String(x.detail)) as Json }))
+}
+
+describe('the drain ends the process within a bounded time', () => {
+  /**
+   * The memory relay, with each envelope publish held open while `hold.on`: it never answers, and ends only when the
+   * service's signal aborts it (as the HTTP client does, its reason in the detail), or never when `hold.deaf`.
+   */
+  const hold = { on: false, deaf: false, held: 0 }
+  const holding = (_c: unknown, signal?: AbortSignal): RelayClient =>
+    new Proxy(relay, {
+      get(target, key, receiver) {
+        const v = Reflect.get(target, key, receiver) as unknown
+        if (key === 'publish')
+          return (url: string, bytes: Uint8Array) => {
+            if (!hold.on || 'kind' in (JSON.parse(Buffer.from(bytes).toString()) as Json))
+              return target.publish(url, bytes)
+            hold.held++
+            return new Promise((_, no) => {
+              if (hold.deaf) return
+              signal?.addEventListener('abort', () => {
+                const e = new RelayError(null, 0, null, `${url}: ${(signal.reason as Error).message}`)
+                no(Object.assign(e, { stopped: STOP_ABORT }))
+              })
+            })
+          }
+        return typeof v === 'function' ? v.bind(target) : v
+      },
+    })
+  const sendOn = (l: Line): void =>
+    l.send({
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: { name: 'send', arguments: { to: [P.bob.address], type: 'chat.v1', body: 'held' } },
+    })
+  beforeEach(async () => {
+    Object.assign(hold, { on: false, deaf: false, held: 0 })
+    await publishAddress(relay, P.bob)
+    await relay.publish(RELAY, serializeRecord(acceptFrom(P.bob)))
+  })
+
+  it('aborts a never-answered relay request while the stores are open: relay-aborted at stop, kept', async () => {
+    const s = await start([['personal', P.alice]], { relayFor: holding })
+    const a = await bound(s)
+    hold.on = true
+    sendOn(a)
+    await until(() => s.relayCalls().length === 1)
+    expect(s.relayCalls()).toEqual(['personal publish'])
+    const began = Date.now()
+    await s.drain()
+    live.splice(live.indexOf(s), 1)
+    // drainCallsMs 200, then the abort: the drain ends well inside the calls' wait plus ABORT_SETTLE_MS (1 s).
+    expect(Date.now() - began).toBeLessThan(1500)
+    expect(s.relayCalls()).toEqual([])
+    const events = log.lines.map((x) => x.event)
+    expect(log.lines.find((x) => x.event === 'drain-abort')?.fields).toMatchObject({
+      calls: ['personal publish'],
+    })
+    expect(log.lines.find((x) => x.event === 'relay-aborted')?.fields).toMatchObject({
+      label: 'personal',
+      call: 'publish',
+      at: 'stop',
+    })
+    // Aborted while the stores were open: before the units stop and the service lock is released.
+    expect(events.indexOf('relay-aborted')).toBeLessThan(events.indexOf('service-stop'))
+    expect(events.indexOf('relay-aborted')).toBeLessThan(events.indexOf('stop'))
+    // The send's answer came back before the connection closed: its target waits for a retry in the outbox.
+    // H1: the window is answered with the retry line, never an error, so the model does not send it again.
+    const result = (await a.next((m) => m.id === 7)).result as { isError?: boolean; structuredContent: Json }
+    expect(result.isError).toBeUndefined()
+    const answer = result.structuredContent
+    expect(answer).toMatchObject({ retrying: true, targets: [{ status: 'retry', reason: 'unreachable' }] })
+    // H2: the identity's audit line for that try names the stop.
+    expect(publishAudit(String(answer.id))).toMatchObject([
+      { decision: 'retry', reason: 'unreachable', detail: { status: 0, cause: STOP_ABORT } },
+    ])
+    // The next owner finds it in the outbox, due at its retry: the aborted send is not lost.
+    const next = await start([['personal', P.alice]], { lockRetryMs: 0 })
+    const store = next.unit('personal')?.opened?.store
+    expect(store?.outboxTargets(String(answer.id))).toMatchObject([{ state: 'retry', reason: 'unreachable' }])
+    const at = Number((answer.targets as Json[])[0]?.next_at)
+    expect(store?.outboxDue(at).map((d) => d.target.id)).toContain(answer.id)
+  })
+
+  it('exits hard after the grace when a request ignores the abort, naming what was still open', async () => {
+    hold.deaf = true
+    const file = fileOf([['personal', P.alice]])
+    const on = new Map<string, () => void>()
+    const exits: number[] = []
+    const served = serveService(configOf(file), deps({ relayFor: holding, exitGraceMs: 100 }), {
+      env: {},
+      execArgv: ['--disable-sigusr1'],
+      chdir: () => {},
+      signals: { once: (event, listener) => on.set(event, listener) },
+      exit: (status) => exits.push(status),
+      open: () => ['TCPSocketWrap', 'Timeout'],
+    })
+    await until(() => existsSync(runPaths(home).token), 5000)
+    const token = Buffer.from(readFileSync(runPaths(home).token, 'utf8'), 'hex')
+    const l = await connect({ paths: runPaths(home) } as Service)
+    const hi = await l.request('service/hello', helloOf({ token } as Service, { input_hook: true }))
+    expect(hi.result, JSON.stringify(hi)).toBeDefined()
+    const use = await l.request('service/use', { label: 'personal', via: 'typed' })
+    expect(use.result, JSON.stringify(use)).toMatchObject({ bound: true })
+    hold.on = true
+    sendOn(l)
+    await until(() => hold.held === 1)
+    ;(on.get('SIGTERM') as () => void)()
+    expect(await served).toBe(0)
+    expect(exits).toEqual([])
+    await until(() => exits.length === 1)
+    expect(exits).toEqual([0])
+    expect(log.lines.find((x) => x.event === 'service-exit-hard')?.fields).toMatchObject({
+      status: 0,
+      open: ['TCPSocketWrap', 'Timeout'],
+      relay_calls: ['personal publish'],
+    })
+  })
+
+  it("a second service takes the free lock during the first's grace and still answers after the first's hard exit", async () => {
+    const file = fileOf([['personal', P.alice]])
+    const io = (on: Map<string, () => void>, exits: number[]) => ({
+      env: {},
+      execArgv: ['--disable-sigusr1'],
+      chdir: () => {},
+      signals: { once: (event: string, listener: () => void) => on.set(event, listener) },
+      exit: (status: number) => exits.push(status),
+      open: () => [],
+    })
+    const [on1, exits1] = [new Map<string, () => void>(), [] as number[]]
+    const first = serveService(configOf(file), deps({ exitGraceMs: 400 }), io(on1, exits1))
+    await until(() => existsSync(runPaths(home).token), 5000)
+    const oldToken = readFileSync(runPaths(home).token, 'utf8')
+    ;(on1.get('SIGTERM') as () => void)()
+    expect(await first).toBe(0) // drained: the lock is free, the first's hard exit still pending
+    expect(exits1).toEqual([])
+    const [on2, exits2] = [new Map<string, () => void>(), [] as number[]]
+    const second = serveService(configOf(file), deps({ pid: 5151 }), io(on2, exits2))
+    await until(
+      () => existsSync(runPaths(home).token) && readFileSync(runPaths(home).token, 'utf8') !== oldToken,
+      5000,
+    )
+    const hello = async () => {
+      const token = Buffer.from(readFileSync(runPaths(home).token, 'utf8'), 'hex')
+      const l = await connect({ paths: runPaths(home) } as Service)
+      return await l.request('service/hello', helloOf({ token } as Service, { input_hook: true }))
+    }
+    expect((await hello()).result).toBeDefined()
+    await until(() => exits1.length === 1, 5000) // the first's grace ends while the second serves
+    expect((await hello()).result).toBeDefined()
+    expect(JSON.parse(readFileSync(runPaths(home).json, 'utf8'))).toMatchObject({ pid: 5151 })
+    ;(on2.get('SIGTERM') as () => void)()
+    expect(await second).toBe(0)
   })
 })
 
@@ -997,7 +1222,10 @@ describe('bag-mcp --service as a process', () => {
   const MAIN = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main.ts')
 
   /** Launches the real entry through the scrubbed launch; resolves its exit status, its stderr kept. */
-  function launch(file: string): { exit: Promise<number | null>; err: () => string; pid: number } {
+  function launch(
+    file: string,
+    more: string[] = [],
+  ): { exit: Promise<number | null>; err: () => string; pid: number } {
     const cmd = launchCommand({
       node: process.execPath,
       main: MAIN,
@@ -1005,7 +1233,7 @@ describe('bag-mcp --service as a process', () => {
       identities: file,
       env: { HOME: home },
     })
-    const child = spawn(cmd.file, cmd.args, {
+    const child = spawn(cmd.file, [...cmd.args, ...more], {
       cwd: cmd.cwd,
       env: cmd.env,
       stdio: ['ignore', 'ignore', 'pipe'],
@@ -1053,6 +1281,117 @@ describe('bag-mcp --service as a process', () => {
       expect(existsSync(runPaths(home).sock)).toBe(false)
     }
   }, 60_000)
+
+  it('ends within the grace of its lock release while a relay never answers, aborted at the stop', async () => {
+    // A relay that answers bob's records and never answers an envelope's publish (the proof run's SIGSTOPped relay).
+    // The envelope is large, so its request's own timeout (timeoutFor: 10 s plus 1 s per 16 KiB) outlasts the drain's
+    // 10 s wait for calls: without the abort the process lived on to that timeout after releasing its lock.
+    const now = Math.floor(Date.now() / 1000)
+    let url = ''
+    const records = (): Map<string, Uint8Array> =>
+      new Map([
+        [
+          'address',
+          serializeRecord(
+            signRecord(P.bob.keys.signing, {
+              kind: 'address',
+              key: P.bob.address,
+              sealing_key: toHex(P.bob.keys.sealing.publicKey),
+              relays: [url],
+              rotation_key: null,
+              revoked: [],
+              ttl: 86_400,
+              iat: now - 60,
+              rotated_from: null,
+            }),
+          ),
+        ],
+        [
+          'accept-from',
+          serializeRecord(
+            signRecord(P.bob.keys.signing, {
+              kind: 'accept-from',
+              owner: P.bob.address,
+              roots: ['*'],
+              max_bytes: 196_608,
+              ttl: 86_400,
+              iat: now - 60,
+            }),
+          ),
+        ],
+      ])
+    let held = 0
+    const mute = createHttpServer((req, res) => {
+      const chunks: Buffer[] = []
+      req.on('data', (b: Buffer) => chunks.push(b))
+      req.on('end', () => {
+        const record = /^\/v0\/fetch\/record\/([^/]+)\/([a-z-]+)$/.exec(req.url ?? '')
+        if (record !== null) {
+          const bytes = record[1] === P.bob.address ? records().get(record[2] as string) : undefined
+          res.writeHead(bytes === undefined ? 404 : 200).end(bytes ?? '{"error":"not-found"}')
+        } else if (
+          req.method === 'POST' &&
+          'kind' in (JSON.parse(Buffer.concat(chunks).toString()) as Json)
+        ) {
+          res.writeHead(200).end('{"ok":true}')
+        } else if (req.method === 'POST') held++
+        else res.writeHead(404).end('{}')
+      })
+    })
+    mute.on('upgrade', () => {})
+    servers.push(mute as unknown as Server)
+    await new Promise<void>((r) => mute.listen(0, '127.0.0.1', () => r()))
+    url = `http://127.0.0.1:${(mute.address() as { port: number }).port}`
+    mkdirSync(runPaths(home).dir, { recursive: true, mode: 0o700 })
+    saveKeys(home, P.alice)
+    const file = join(home, 'identities.json')
+    const ids = [{ label: 'personal', key: 'alice', home, relays: [url], trust_roots: [P.bob.address] }]
+    writeFileSync(file, JSON.stringify({ version: 1, identities: ids }), { mode: 0o600 })
+    const first = launch(file, ['--allow-private-relays'])
+    await until(() => existsSync(runPaths(home).token), 15_000)
+    const token = readFileSync(runPaths(home).token, 'utf8')
+    const l = await connect({ paths: runPaths(home) } as Service)
+    const hi = await l.request('service/hello', {
+      contract: 1,
+      token,
+      host: 'codex',
+      cwd: '/',
+      input_hook: true,
+    })
+    expect(hi.result, JSON.stringify(hi)).toBeDefined()
+    const use = await l.request('service/use', { label: 'personal', via: 'typed' })
+    expect(use.result, JSON.stringify(use)).toMatchObject({ bound: true })
+    l.send({
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: { name: 'send', arguments: { to: [P.bob.address], type: 'chat.v1', body: 'x'.repeat(70_000) } },
+    })
+    await until(() => held === 1, 10_000)
+    const term = Date.now()
+    process.kill(first.pid, 'SIGTERM')
+    let released = 0
+    await until(() => {
+      if (released === 0 && first.err().includes('"service-stop"')) released = Date.now()
+      return released > 0
+    }, 20_000)
+    expect(await first.exit).toBe(0)
+    const ended = Date.now()
+    const lines = first.err().split('\n')
+    // Within the grace (3 s) of the lock's release, and of the drain's 10 s wait plus the 1 s settle.
+    expect(ended - released).toBeLessThan(3_500)
+    expect(ended - term).toBeLessThan(10_000 + 1_000 + 3_000 + 1_000)
+    expect(lines.find((x) => x.includes('"drain-abort"'))).toContain('"calls":["personal publish"]')
+    expect(lines.find((x) => x.includes('"relay-aborted"'))).toContain('"call":"publish","at":"stop"')
+    // H1: the window was answered before the connection closed with the retry line, never an error.
+    const result = (await l.next((m) => m.id === 7)).result as { isError?: boolean; structuredContent: Json }
+    expect(result.isError).toBeUndefined()
+    expect(result.structuredContent).toMatchObject({ retrying: true, targets: [{ status: 'retry' }] })
+    // H2: the real HTTP client marks the try its signal aborted; the audit line names the stop.
+    expect(publishAudit(String(result.structuredContent.id))).toMatchObject([
+      { decision: 'retry', reason: 'unreachable', detail: { status: 0, cause: STOP_ABORT } },
+    ])
+  }, 60_000)
 })
 
 /** A tool's answer on a line client: its structured value. */
@@ -1078,7 +1417,7 @@ function person(l: Line): void {
   void loop().catch(() => {})
 }
 
-describe('the wiring head: W1 table, mail hooks and the identities file in the service', () => {
+describe('the wiring: the binding table, mail hooks and the identities file in the service', () => {
   it("I1: two windows on one identity; B closes while A pairs; A's pairing runs on and only A cancels it", async () => {
     const s = await start([['personal', P.alice]], { pairPollMs: 2 })
     const a = await bound(s, 'personal', { cwd: '/w/a' })
@@ -1097,7 +1436,69 @@ describe('the wiring head: W1 table, mail hooks and the identities file in the s
     expect(await call(a, 'pair_cancel')).toEqual({ cancelled: true, was: 'invite', as: 'personal' })
   })
 
-  it('an unbound connection: status answers bound false with how to bind; the other fifteen not-bound; no label', async () => {
+  it("the drain ends every window's pairing, of every identity, as the service: each audited as a close", async () => {
+    const s = await start(
+      [
+        ['personal', P.alice],
+        ['research', P.carol],
+      ],
+      { pairPollMs: 2 },
+    )
+    const a = await bound(s, 'personal', { cwd: '/w/a' })
+    person(a)
+    const b = await bound(s, 'research', { cwd: '/w/b' })
+    person(b)
+    expect(await call(a, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true, as: 'personal' })
+    expect(await call(b, 'pair_invite', { name: 'jane' })).toMatchObject({
+      invite_open: true,
+      as: 'research',
+    })
+    await s.drain()
+    live.splice(live.indexOf(s), 1)
+    for (const [name, window] of [
+      ['alice', '/w/a'],
+      ['carol', '/w/b'],
+    ]) {
+      const ends = readFileSync(join(home, 'state', name as string, 'audit.jsonl'), 'utf8')
+        .split('\n')
+        .filter((x) => x !== '')
+        .map((x) => JSON.parse(x) as Json)
+        .filter((x) => x.event === 'pair' && x.decision === 'reject')
+        .map((x) => JSON.parse(String(x.detail)) as Json)
+      expect([name, ends]).toEqual([
+        name,
+        [expect.objectContaining({ code: 'cancelled', reason: 'close', window: `claude-code ${window}` })],
+      ])
+    }
+  })
+
+  it("a lend refused for a running pairing names the pairing's own window, not the first window open", async () => {
+    const s = await start(
+      [
+        ['personal', P.alice],
+        ['research', P.carol],
+        ['lab', P.jane],
+      ],
+      { pairPollMs: 2 },
+    )
+    // research's window opens first; personal's window, opened after it, runs the pairing.
+    await bound(s, 'research', { cwd: '/w/first' })
+    const a = await bound(s, 'personal', { cwd: '/w/pairing' })
+    person(a)
+    expect(await call(a, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true, as: 'personal' })
+    const cli = await hello(s, { host: 'cli' })
+    const refused = await cli.request('service/lend', { label: 'lab', verb: 'pair' })
+    expect(codeOf(refused)).toBe('busy')
+    const detail = String(((refused.error as Json).data as Json).detail)
+    expect(detail).toContain('/w/pairing')
+    expect(detail).not.toContain('/w/first')
+    expect(await call(a, 'pair_cancel')).toEqual({ cancelled: true, was: 'invite', as: 'personal' })
+    expect((await cli.request('service/lend', { label: 'lab', verb: 'pair' })).result).toMatchObject({
+      lent: true,
+    })
+  })
+
+  it('an unbound connection: status answers bound false with how to bind, identities its short list; every other not-bound; no label', async () => {
     const file = fileOf([['personal', P.alice]], { allow_delegate: true })
     const s = await Service.start(configOf(file), home, deps())
     live.push(s)
@@ -1116,18 +1517,120 @@ describe('the wiring head: W1 table, mail hooks and the identities file in the s
       pair_accept: { name: 'carol' },
       connect: { code: 'not-a-code' },
       sign_in: { domain: 'example.com', instance: 'https://127.0.0.1' },
+      identity_remove: { name: 'personal' },
+      identity_relays: { relays: [RELAY] },
+      keep_alive: { word: 'on' },
+      local_delivery: { word: 'status' },
+      unpair: { root: P.bob.address },
+      names: { verb: 'list' },
+      identity_create: { label: 'Not a label', relays: [RELAY] },
+      telemetry: { word: 'status' },
+      host_wire: { host: 'claude-code', folder: '/nowhere/else' },
+      service: {},
     }
     const names = tools.map((t) => t.name).filter((t) => t !== 'use')
-    expect(names).toHaveLength(16)
-    for (const tool of names) {
+    expect(names).toHaveLength(28)
+    const ids = await call(l, 'identities')
+    expect(ids).toEqual({
+      identities: [{ label: 'personal', address: shortAddress(P.alice.address) }],
+      full: false,
+      note: SHORT_NOTE,
+      as: null,
+    })
+    for (const tool of names.filter((t) => t !== 'identities')) {
       const v = await call(l, tool, CALLS[tool] ?? {})
+      // identity_create and telemetry run unbound: here each refuses its argument (a bad label; no HOME) as usage.
       const want =
         tool === 'status'
           ? { bound: false, note: NOT_BOUND, as: null }
-          : { error: 'not-bound', detail: NOT_BOUND, as: null }
+          : ['identity_create', 'telemetry', 'host_wire', 'service'].includes(tool)
+            ? { error: 'usage', detail: expect.any(String), as: null }
+            : { error: 'not-bound', detail: NOT_BOUND, as: null }
       expect([tool, v]).toEqual([tool, want])
       expect(JSON.stringify(v)).not.toMatch(/personal|ed25519:/)
     }
+  })
+
+  /** An agent identity research (carol's keys in the agent), its fakes recording every y asked of the agent. */
+  async function agentHome(opening: boolean) {
+    new HomeCustody(home).agent.create('carol', P.carol.keys)
+    const rng = seededRng('agent-quiet')
+    const hopTo = (sub: string, caveats: readonly string[], exp: number) =>
+      signHop(P.carol.keys.signing, sub, [...caveats], exp)
+    const asked: string[] = []
+    const agentConnect = () => ({
+      grant: async (session: string, caveats: readonly string[], exp: number) => {
+        asked.push(session)
+        return { ok: true as const, hop: hopTo(session, caveats, exp) }
+      },
+      close: () => {},
+    })
+    const agentOpening = async () => {
+      asked.push('opening')
+      const keys = generateEdgeKeys(rng)
+      return { keys, hop: hopTo(keys.signing.address, ['type=chat.*'], T0 + 3600) }
+    }
+    // A fake agent on <home>/agent.sock: any request the default agent opening makes of it is recorded.
+    const ops: string[] = []
+    const agent = createServer((sock) => {
+      sock.write(`${JSON.stringify({ nonce: '00'.repeat(32) })}\n`)
+      createInterface({ input: sock }).on('line', (line) => {
+        ops.push(String((JSON.parse(line) as Json).op))
+        sock.write(`${JSON.stringify({ ok: true })}\n`)
+      })
+    })
+    agent.listen(join(home, 'agent.sock'))
+    await new Promise((r) => agent.once('listening', r))
+    servers.push(agent)
+    const file = fileOf([['research', P.carol]], { grant_caveats: ['type=chat.*'] })
+    // A give-back wait of 30 s: no loaded run reaches the deadline branch by timing; the outcome alone is asserted.
+    const more = {
+      ...(opening ? { agentConnect, agentOpening } : { agentConnect }),
+      returnWaitMs: 30_000,
+    } as Partial<ServiceDeps>
+    const s = await Service.start(configOf(file), home, deps(more))
+    live.push(s)
+    await s.opening
+    return { s, asked, ops }
+  }
+  const returned = (label: string): boolean =>
+    log.lines.some((l) => l.event === 'return' && l.fields.label === label && l.fields.removed === false)
+
+  it("an agent identity that has opened, held quiet for a window's act, is given back open at once, its hold named as the window's", async () => {
+    const { s } = await agentHome(true)
+    await bound(s, 'research')
+    await until(() => s.unit('research')?.opened !== null)
+    const end = await s.quiet('research', 'unpair')
+    // Every suspend from here on is recorded (the quiet's own suspend, before, is not among them); the clean path may
+    // make none.
+    const unit = s.unit('research') as NonNullable<ReturnType<typeof s.unit>>
+    const suspend = vi.spyOn(unit, 'suspend')
+    await end()
+    const seen = suspend.mock.calls.map(([why]) => String((why as Error | undefined)?.message ?? why))
+    suspend.mockRestore()
+    // Opened again (open: true), by the return path, not its deadline.
+    expect(returned('research')).toBe(true)
+    expect(s.unit('research')?.opened).not.toBeNull()
+    expect(s.lent('research')).toBeNull()
+    expect(seen.every((m) => m.includes('research is held for unpair in a window'))).toBe(true)
+    expect(seen.some((m) => m.includes('lent to the CLI'))).toBe(false)
+  })
+
+  it('an agent identity never opened, held quiet and given back, goes back to opening at its bind at once: no y asked', async () => {
+    const { s, asked, ops } = await agentHome(false)
+    expect(s.unit('research')?.opened).toBeNull()
+    const end = await s.quiet('research', 'unpair')
+    await end()
+    // The return path, not the deadline (which logs no return and goes on to a reopen that would ask the agent).
+    expect(returned('research')).toBe(true)
+    expect(s.lent('research')).toBeNull()
+    // opens_at bind: not opened, and answering that it opens at its bind.
+    expect(s.unit('research')?.opened).toBeNull()
+    expect(String((s.unit('research')?.failure as Error | undefined)?.message)).toContain(
+      'research opens when a window binds to it (its agent asks for a y then)',
+    )
+    expect([asked, ops]).toEqual([[], []])
+    expect(log.lines.some((l) => l.event === 'agent-preflight')).toBe(false)
   })
 
   it('two connections on one agent identity get their own grants, each asked once, under the same caveats', async () => {
@@ -1175,7 +1678,7 @@ describe('the wiring head: W1 table, mail hooks and the identities file in the s
       }),
       close: () => {},
     })
-    // The unit's own opening (W1's session opening when wired): a fresh key under carol's hop.
+    // The unit's own opening (session.ts openAgentUnit when wired): a fresh key under carol's hop.
     const agentOpening = async () => {
       const keys = generateEdgeKeys(rng)
       return { keys, hop: hopTo(keys.signing.address, ['type=chat.*'], T0 + 3600) }
@@ -1301,7 +1804,7 @@ describe('the lock an identity holds', () => {
       expect(lockName(c, 'carol')).toBe('carol')
   })
 
-  /** A stale session key as openAgentUnit leaves it: the key file with W1's mark (principal `principal`). */
+  /** A stale session key as openAgentUnit leaves it: the key file marked kind session-key, principal `principal`. */
   const staleSession = (x: string, key: typeof P.bob, principal = x): void => {
     new HomeCustody(home).agent.create(x, P.jane.keys)
     saveKeys(home, key, key.keys, `${x}.service`)
@@ -1414,7 +1917,7 @@ describe('--print-login-agent', () => {
       'LimitCORE=0',
       'UMask=0077',
       'Restart=on-failure',
-      `WorkingDirectory="${home}/run"`,
+      `WorkingDirectory=${home}/run`,
     ])
       expect(linux.out).toContain(line)
     expect(linux.out).toContain('Environment="http_proxy=http://proxy:8080"')
@@ -1427,11 +1930,611 @@ describe('--print-login-agent', () => {
     for (const args of [
       ['--dir', home],
       ['--dir', home, '--platform', 'win32'],
+      ['--dir', `${home}\nx`, '--platform', 'linux'],
+      ['--dir', `${home}\u0001x`, '--platform', 'darwin'],
       ['--dir', home, '--x'],
     ]) {
       const r = run(...args)
       expect([args, r.status, r.out]).toEqual([args, 2, ''])
       expect(r.err).toContain('usage')
     }
+  })
+})
+
+describe("service.json's live counts: pairings, lends and asking", () => {
+  /** service.json as any reader sees it: the file alone, with no window of the test's own. */
+  const status = (): Json => JSON.parse(readFileSync(runPaths(home).json, 'utf8')) as Json
+
+  it('adds the three counts after draining, all 0 at the start, and keeps started_at at every rewrite', async () => {
+    const clock = new FakeClock()
+    const s = await start([['personal', P.alice]], { clock })
+    const first = status()
+    expect(Object.keys(first)).toEqual([
+      'pid',
+      'started_at',
+      'contract',
+      'version',
+      'package_dir',
+      'draining',
+      'pairings',
+      'lends',
+      'asking',
+    ])
+    expect(first).toMatchObject({ pid: 4242, contract: 1, draining: false, pairings: 0, lends: 0, asking: 0 })
+    clock.t += 3600
+    const cli = await hello(s, { host: 'cli' })
+    await cli.request('service/lend', { label: 'personal', verb: 'pair' })
+    expect(status()).toMatchObject({ lends: 1, started_at: first.started_at })
+  })
+
+  it('lends: 1 while lent, 0 at the return and at the give-back of a closed lender; a refused lend leaves the file as it was', async () => {
+    const s = await start()
+    const cli = await hello(s, { host: 'cli' })
+    await cli.request('service/lend', { label: 'personal', verb: 'pair' })
+    expect(status()).toMatchObject({ lends: 1 })
+    const ino = statSync(runPaths(home).json).ino
+    expect(codeOf(await cli.request('service/lend', { label: 'personal', verb: 'keys' }))).toBe('busy')
+    expect(statSync(runPaths(home).json).ino).toBe(ino)
+    expect((await cli.request('service/return', { label: 'personal' })).result).toMatchObject({
+      returned: true,
+    })
+    expect(status()).toMatchObject({ lends: 0 })
+    await cli.request('service/lend', { label: 'personal', verb: 'pair' })
+    expect(status()).toMatchObject({ lends: 1 })
+    cli.socket.destroy()
+    await cli.closed
+    await until(() => s.lent('personal') === null)
+    expect(status()).toMatchObject({ lends: 0 })
+  })
+
+  it('pairings counts every window of the service: started in A it reads 1 with no window, 2 with B, down at the cancel and the close', async () => {
+    const s = await start(
+      [
+        ['personal', P.alice],
+        ['research', P.carol],
+      ],
+      { pairPollMs: 2 },
+    )
+    const a = await bound(s, 'personal', { cwd: '/w/a' })
+    person(a)
+    const b = await bound(s, 'research', { cwd: '/w/b' })
+    person(b)
+    expect(status()).toMatchObject({ pairings: 0 })
+    expect(await call(a, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true, as: 'personal' })
+    expect(status()).toMatchObject({ pairings: 1 })
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true, as: 'research' })
+    expect(status()).toMatchObject({ pairings: 2 })
+    expect(await call(a, 'pair_cancel')).toEqual({ cancelled: true, was: 'invite', as: 'personal' })
+    expect(status()).toMatchObject({ pairings: 1 })
+    b.socket.destroy()
+    await b.closed
+    await until(() => status().pairings === 0)
+  })
+
+  it('asking counts an ask of this home from before its dialog until its answer', async () => {
+    await start()
+    let answer: (r: Json) => void = () => {}
+    const conn = {
+      handle: 'w-ask',
+      host: 'claude-code',
+      cwd: '/w',
+      capabilities: { elicitation: true, inputHook: false, raw: {} },
+      elicit: () =>
+        new Promise<Json>((r) => {
+          answer = r
+        }),
+    } as unknown as ServiceConnection
+    const ctx = {
+      config: { home },
+      clock: { now: () => T0 },
+      mono: () => 0,
+      log: { log: () => {} },
+      opened: null,
+    } as unknown as ToolContext
+    const extra = { signal: new AbortController().signal } as unknown as PairExtra
+    const asked = askPerson(
+      ctx,
+      extra,
+      { act: 'test-act', kind: 'confirm', title: 'Yes', message: 'Do it?' },
+      conn,
+    )
+    expect(status()).toMatchObject({ asking: 1 })
+    answer({ action: 'cancel' })
+    expect(await asked).toEqual({ said: 'none' })
+    expect(status()).toMatchObject({ asking: 0 })
+  })
+
+  /**
+   * A window whose root context was read for pairings before its first pair call (the lend's check reads every
+   * window's), then bound to the home's one identity: its pair tools must use the service's counted Pairings.
+   */
+  async function readBeforePairing(s: Service): Promise<Line> {
+    const a = await hello(s, { input_hook: true, cwd: '/w/a' })
+    const cli = await hello(s, { host: 'cli' })
+    await cli.request('service/lend', { label: 'personal', verb: 'pair' })
+    expect((await cli.request('service/return', { label: 'personal' })).result).toMatchObject({
+      returned: true,
+    })
+    const r = await a.request('service/use', { label: 'personal', via: 'typed' })
+    expect(r.result, JSON.stringify(r)).toMatchObject({ bound: true, as: 'personal' })
+    person(a)
+    return a
+  }
+
+  it('a pairing started after a lend and its return, in a one-identity window, is counted: pairings 1', async () => {
+    const s = await start([['personal', P.alice]], { pairPollMs: 2 })
+    const a = await readBeforePairing(s)
+    expect(await call(a, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true, as: 'personal' })
+    expect(status()).toMatchObject({ pairings: 1 })
+  })
+
+  it("such a window's close ends its pairing: pairings 0, and another window pairs at once", async () => {
+    const s = await start([['personal', P.alice]], { pairPollMs: 2 })
+    const a = await readBeforePairing(s)
+    expect(await call(a, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true })
+    expect(status()).toMatchObject({ pairings: 1 })
+    a.socket.destroy()
+    await a.closed
+    await until(() => status().pairings === 0)
+    const b = await bound(s, 'personal', { cwd: '/w/b' })
+    person(b)
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true, as: 'personal' })
+  })
+
+  it("the drain's cancel ends a window's pairing: it counts 0 while the drain runs, and the close at its end removes the file", async () => {
+    let free: () => void = () => {}
+    const held = new Promise<void>((r) => {
+      free = r
+    })
+    const s = await start([['personal', P.alice]], { pairPollMs: 2, mail: { drain: () => held } })
+    const a = await bound(s, 'personal', { cwd: '/w/a' })
+    person(a)
+    expect(await call(a, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true })
+    const drained = s.drain('stop')
+    await until(() => log.lines.some((x) => x.event === 'drain-pairings'))
+    await new Promise((r) => setTimeout(r, 30))
+    // The drain ends each window's pairing as the service (Pairings.drainStop), past pair_cancel's window check, so
+    // none runs on while the drain waits.
+    await until(() => status().pairings === 0)
+    expect(status()).toMatchObject({ draining: true, pairings: 0 })
+    free()
+    await drained
+    live.splice(live.indexOf(s), 1)
+    expect(existsSync(runPaths(home).json)).toBe(false)
+  })
+
+  it("the drain ends the console's own ceremony too, which runs in no window: it counts 0 while the drain runs, ended as a close", async () => {
+    let free: () => void = () => {}
+    const held = new Promise<void>((r) => {
+      free = r
+    })
+    const s = await start([['personal', P.alice]], { pairPollMs: 2, mail: { drain: () => held } })
+    const a = await bound(s, 'personal', { cwd: '/w/a' })
+    // personal's Pairings in the service, made at its first pair call (none runs yet: nothing is cancelled).
+    expect(await call(a, 'pair_cancel')).toMatchObject({ cancelled: false })
+    const p = pairingsOfTable(s.table)[0] as Pairings
+    const ceremony = p.consoleInvite({ ttl: 600, opened: () => {}, ask: async () => false })
+    ceremony.catch(() => {})
+    await until(() => status().pairings === 1)
+    expect(p.runningIn()).toBeNull()
+    const drained = s.drain('stop')
+    await until(() => status().pairings === 0)
+    expect(status()).toMatchObject({ draining: true, pairings: 0 })
+    await expect(ceremony).rejects.toBeDefined()
+    free()
+    await drained
+    live.splice(live.indexOf(s), 1)
+    const ends = readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter((x) => x !== '')
+      .map((x) => JSON.parse(x) as Json)
+      .filter((x) => x.event === 'pair' && x.decision === 'reject')
+      .map((x) => JSON.parse(String(x.detail)) as Json)
+    expect(ends).toEqual([expect.objectContaining({ code: 'cancelled', reason: 'close' })])
+  })
+
+  it("a start refused busy never hears the home's asks; the drain stops the live one hearing them", async () => {
+    const s = await start()
+    expect(askListeners(home)).toBe(1)
+    await expect(
+      Service.start(configOf(fileOf([['personal', P.alice]])), home, deps({ lockRetryMs: 0 })),
+    ).rejects.toThrow('busy')
+    expect(askListeners(home)).toBe(1)
+    await s.drain()
+    live.splice(live.indexOf(s), 1)
+    expect(askListeners(home)).toBe(0)
+  })
+
+  it("a window's act held quiet counts as a lend: lends 1 while quiet holds it, 0 after its end", async () => {
+    const s = await start()
+    const end = await s.quiet('personal', 'unpair')
+    expect(status()).toMatchObject({ lends: 1 })
+    await end()
+    expect(s.lent('personal')).toBeNull()
+    expect(status()).toMatchObject({ lends: 0 })
+  })
+
+  it("a start refused busy in the same process leaves the live service's table: its pair tools and pairings still work", async () => {
+    const s = await start([['personal', P.alice]], { pairPollMs: 2 })
+    const a = await bound(s, 'personal', { cwd: '/w/a' })
+    person(a)
+    await expect(
+      Service.start(configOf(fileOf([['personal', P.alice]])), home, deps({ lockRetryMs: 0 })),
+    ).rejects.toThrow('busy')
+    expect(tableFor(home)).toBe(s.table)
+    expect(await call(a, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true, as: 'personal' })
+    expect(status()).toMatchObject({ pairings: 1 })
+    expect(await call(a, 'pair_cancel')).toEqual({ cancelled: true, was: 'invite', as: 'personal' })
+    expect(status()).toMatchObject({ pairings: 0 })
+  })
+
+  it('while draining: draining true with the lend still counted and started_at kept; after the drain no file', async () => {
+    const clock = new FakeClock()
+    let free: () => void = () => {}
+    const held = new Promise<void>((r) => {
+      free = r
+    })
+    const s = await start([['personal', P.alice]], { clock, mail: { drain: () => held } })
+    const at = status().started_at
+    const cli = await hello(s, { host: 'cli' })
+    await cli.request('service/lend', { label: 'personal', verb: 'pair' })
+    clock.t += 3600
+    const drained = s.drain('upgrade')
+    await until(() => status().draining === true)
+    expect(status()).toMatchObject({ draining: true, lends: 1, started_at: at })
+    free()
+    await drained
+    live.splice(live.indexOf(s), 1)
+    expect(existsSync(runPaths(home).json)).toBe(false)
+  })
+})
+
+describe('an empty home: the service starts with no identity and serves only the unbound tools', () => {
+  /** A service of a home with no identities file, its reread the file identity_create writes. */
+  async function empty(): Promise<Service> {
+    const file = join(home, 'identities.json')
+    const config = configOf(file)
+    const s = await Service.start(config, home, deps({ reread: rereadOf(file, config, home) }))
+    live.push(s)
+    await s.opening
+    return s
+  }
+
+  /** Answers the next dialog of `l` with `content` (a Yes), and returns its message. */
+  async function yes(l: Line, content: Json): Promise<string> {
+    const req = await l.next((m) => m.method === 'elicitation/create')
+    const params = req.params as Json
+    const handle = (params._meta as Json)[DIALOG_META]
+    l.send({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: { action: 'accept', content, _meta: { [DIALOG_META]: handle } },
+    })
+    return String(params.message)
+  }
+
+  it('T1: starts on a home with no identity, serves a window, and status answers with no identity, no throw', async () => {
+    const s = await empty()
+    expect(s.units.size).toBe(0)
+    expect(log.lines.find((l) => l.event === 'service-start')?.fields).toMatchObject({ identities: 0 })
+    const l = await hello(s, { input_hook: true })
+    expect(await call(l, 'status')).toEqual({ bound: false, note: NOT_BOUND, as: null })
+    expect(await call(l, 'identities')).toEqual({ identities: [], full: false, note: SHORT_NOTE, as: null })
+    expect(tableFor(home)?.state(lastConn(s))).toBe('unbound')
+  })
+
+  it('an identities.json that lists none is an empty home too: the service starts on it, serving the unbound tools', async () => {
+    const file = join(home, 'identities.json')
+    writeFileSync(file, JSON.stringify({ version: 1, identities: [] }), { mode: 0o600 })
+    const config = configOf(file)
+    expect(config.identities).toEqual([])
+    const s = await Service.start(config, home, deps({ reread: rereadOf(file, config, home) }))
+    live.push(s)
+    await s.opening
+    expect(s.units.size).toBe(0)
+    const l = await hello(s, { input_hook: true })
+    expect(await call(l, 'status')).toEqual({ bound: false, note: NOT_BOUND, as: null })
+    expect(log.lines.filter((x) => x.event === 'identities-reread')).toEqual([])
+    // identity_create on it serves the new one at once, through the same reread.
+    const made = call(l, 'identity_create', { label: 'jane', relays: [RELAY] })
+    await yes(l, { confirm: true })
+    expect(await made).toMatchObject({ as: null })
+    // The unit attaches through the reread after the answer, as in T3: wait for it.
+    await until(() => s.unit('jane') !== null)
+    expect(s.unit('jane')).not.toBeNull()
+  })
+
+  it('a hello to a home with no identities file logs no identities-reread warn', async () => {
+    const s = await empty()
+    await hello(s, { input_hook: true })
+    await hello(s, { input_hook: true })
+    expect(log.lines.filter((x) => x.event === 'identities-reread')).toEqual([])
+  })
+
+  it('T2: every registered tool name, driven once (the full list): outside UNBOUND_TOOLS each answers not-bound; none reaches the null opened', async () => {
+    const s = await empty()
+    // No dialog on this host, so an unbound act refuses at once rather than waiting on a person.
+    const l = await hello(s, { input_hook: true, client_capabilities: {} })
+    const tools = ((await l.request('tools/list')).result as { tools: { name: string }[] }).tools
+    const names = tools.map((t) => t.name).sort()
+    // The full list: every tool but delegate (no identity allows it), and use.
+    expect(names).toEqual([...TOOL_NAMES.filter((t) => t !== 'delegate'), 'use'].sort())
+    const ARGS: Record<string, Json> = {
+      send: { to: [P.bob.address], type: 'chat.v1', body: 'hi' },
+      wait: { timeout_s: 0 },
+      ask: { to: P.bob.address, body: 'q', timeout_s: 0 },
+      handoff: { to: P.bob.address, threads: ['a'.repeat(64)] },
+      lookup: { address: P.bob.address },
+      receipts: { id: 'x' },
+      pair_invite: { name: 'bob' },
+      pair_accept: { name: 'carol' },
+      connect: { code: 'not-a-code' },
+      sign_in: { domain: 'example.com', instance: 'https://127.0.0.1' },
+      identity_remove: { name: 'personal' },
+      identity_relays: { relays: [RELAY] },
+      keep_alive: { word: 'on' },
+      local_delivery: { word: 'status' },
+      unpair: { root: P.bob.address },
+      names: { verb: 'list' },
+      identity_create: { label: 'jane', relays: [RELAY] },
+      telemetry: { word: 'status' },
+      host_wire: { host: 'claude-code', folder: '/nowhere/else' },
+    }
+    const answers: [string, Json][] = []
+    for (const tool of names) answers.push([tool, await call(l, tool, ARGS[tool] ?? {})])
+    for (const [tool, v] of answers) {
+      // A dereference of the null opened would be a TypeError, answered internal: never.
+      expect([tool, v.error]).not.toEqual([tool, 'internal'])
+      expect([tool, v.as]).toEqual([tool, null])
+      if (!UNBOUND_TOOLS.includes(tool))
+        expect([tool, v]).toEqual([tool, { error: 'not-bound', detail: NOT_BOUND, as: null }])
+    }
+    // The unbound ones answer their own way: status how to bind, identities none, the acts no dialog on this host.
+    const of = new Map(answers)
+    expect(of.get('status')).toEqual({ bound: false, note: NOT_BOUND, as: null })
+    expect(of.get('identities')).toMatchObject({ identities: [] })
+    expect(of.get('use')).toMatchObject({ error: 'no-elicitation' })
+    expect(of.get('identity_create')).toMatchObject({ error: 'no-elicitation' })
+    expect(of.get('telemetry')).toMatchObject({ error: 'usage' })
+    expect(of.get('host_wire')).toMatchObject({ error: 'usage' })
+    expect(of.get('service')).toMatchObject({ error: 'usage' })
+    expect(
+      await call(l, 'host_wire', { host: 'omp', folder: '/nowhere/else', action: 'unwire' }),
+    ).toMatchObject({ error: 'usage', as: null })
+    expect(existsSync(join(home, 'identities.json'))).toBe(false)
+  })
+
+  it('T3: identity_create after the Yes, then the reread serves the unit live and use binds it in the same window', async () => {
+    const s = await empty()
+    const l = await hello(s, { input_hook: true })
+    const pending = call(l, 'identity_create', { label: 'jane', relays: [RELAY] })
+    expect(await yes(l, { confirm: true })).toBe(
+      (ACT_QUESTIONS.create('jane', ['http://relay.test']) as { message: string }).message,
+    )
+    const made = await pending
+    expect(made).toMatchObject({ as: null })
+    const address = (made.lines as string[])[0] as string
+    expect(address).toMatch(/^ed25519:[0-9a-f]{64}$/)
+    // Served at once: a unit, open, by the same address; this window is still bound to none.
+    await until(() => {
+      const u = s.unit('jane')
+      return u !== null && u.opened !== null
+    })
+    expect(s.unit('jane')?.address).toBe(address)
+    expect(tableFor(home)?.state(lastConn(s))).toBe('unbound')
+    expect(await call(l, 'status')).toEqual({ bound: false, note: NOT_BOUND, as: null })
+    // use opens the bind dialog in this window, and only the Yes there binds it.
+    const use = call(l, 'use', { name: 'jane' })
+    await yes(l, { bind: true })
+    expect(await use).toMatchObject({ bound: true, as: 'jane', granted: 'dialog' })
+    expect(await call(l, 'status')).toMatchObject({ as: 'jane', address })
+  })
+
+  it('T19: identity_create and telemetry on ask over an omp link too, in the same words; only the Yes writes', async () => {
+    const machine = join(home, 'machine')
+    const file = join(home, 'identities.json')
+    const config = configOf(file)
+    const s = await Service.start(
+      config,
+      home,
+      deps({ reread: rereadOf(file, config, home), env: { HOME: machine } }),
+    )
+    live.push(s)
+    await s.opening
+    const ext = await connect(s)
+    await ext.request('service/hello', helloOf(s, { host: 'omp' }))
+    expect((await ext.request('service/consent-register', { pid: 777 })).result).toBeDefined()
+    const w = await hello(s, {
+      host: 'omp',
+      input_hook: true,
+      client_capabilities: { experimental: { 'bag.dev/consent-bridge': { pid: 777 } } },
+    })
+    const answer = async (accepted: boolean): Promise<Json> => {
+      const ask = (await ext.next((m) => m.method === 'service/consent-ask')).params as Json
+      await ext.request('service/consent-answer', { id: ask.id, accepted })
+      return ask
+    }
+    const made = call(w, 'identity_create', { label: 'jane', relays: [RELAY] })
+    expect(await answer(true)).toMatchObject(ACT_QUESTIONS.create('jane', ['http://relay.test']) ?? {})
+    expect(await made).toMatchObject({
+      lines: expect.arrayContaining([expect.stringMatching(/^ed25519:/)]),
+      as: null,
+    })
+    const no = call(w, 'telemetry', { word: 'on' })
+    expect(await answer(false)).toMatchObject(ACT_QUESTIONS.telemetryOn)
+    expect(await no).toMatchObject({ error: 'declined', as: null })
+    expect(existsSync(join(machine, '.bag', 'telemetry.json'))).toBe(false)
+    const on = call(w, 'telemetry', { word: 'on' })
+    await answer(true)
+    const lines = (await on).lines as string[]
+    expect(lines[0]).toMatch(/^telemetry on reason=file choice=on id=set spool=/)
+    expect(JSON.stringify(lines)).not.toMatch(/[0-9a-f]{32}/)
+  })
+
+  it('T15, T16: telemetry on asks in the window; off and status ask nothing, and off runs while on is asked', async () => {
+    const machine = join(home, 'machine')
+    const s = await Service.start(
+      configOf(join(home, 'identities.json')),
+      home,
+      deps({ env: { HOME: machine } }),
+    )
+    live.push(s)
+    await s.opening
+    const l = await hello(s, { input_hook: true })
+    expect(await call(l, 'telemetry', { word: 'status' })).toEqual({
+      lines: ['telemetry off reason=no-file choice=none id=none spool=0 sent=none'],
+      as: null,
+    })
+    const on = call(l, 'telemetry', { word: 'on' })
+    const req = await l.next((m) => m.method === 'elicitation/create')
+    expect((req.params as Json).message).toBe(ACT_QUESTIONS.telemetryOn.message)
+    // While that question is open, off answers at once and asks nothing.
+    expect(await call(l, 'telemetry', { word: 'off' })).toEqual({
+      lines: ['telemetry off reason=file choice=off id=none spool=0 sent=none'],
+      as: null,
+    })
+    const handle = ((req.params as Json)._meta as Json)[DIALOG_META]
+    l.send({ jsonrpc: '2.0', id: req.id, result: { action: 'cancel', _meta: { [DIALOG_META]: handle } } })
+    expect(await on).toMatchObject({ error: 'cancelled', as: null })
+    expect(await call(l, 'telemetry', { word: 'status' })).toEqual({
+      lines: ['telemetry off reason=file choice=off id=none spool=0 sent=none'],
+      as: null,
+    })
+    // After a Yes, off removes the id and says how to have the reports already sent erased.
+    const yes = call(l, 'telemetry', { word: 'on' })
+    const again = await l.next((m) => m.method === 'elicitation/create')
+    l.send({
+      jsonrpc: '2.0',
+      id: again.id,
+      result: {
+        action: 'accept',
+        content: { confirm: true },
+        _meta: { [DIALOG_META]: ((again.params as Json)._meta as Json)[DIALOG_META] },
+      },
+    })
+    // No answer of the tool carries the install id (it would reach the model and its provider): id=set, and off
+    // names forget, the act that also erases the reports already sent.
+    const onAnswer = await yes
+    expect((onAnswer.lines as string[])[0]).toMatch(/^telemetry on reason=file choice=on id=set spool=/)
+    const status = await call(l, 'telemetry', { word: 'status' })
+    expect((status.lines as string[])[0]).toMatch(/^telemetry on reason=file choice=on id=set spool=/)
+    const off = await call(l, 'telemetry', { word: 'off' })
+    expect(off.lines).toEqual([
+      'telemetry off reason=file choice=off id=none spool=0 sent=none',
+      OFF_USE_FORGET,
+    ])
+    for (const v of [onAnswer, status, off]) expect(JSON.stringify(v)).not.toMatch(/[0-9a-f]{32}/)
+  })
+
+  it('forget through the tool asks nothing, turns off, then erases at the endpoint; a failure keeps the id; no id shown', async () => {
+    const machine = join(home, 'machine')
+    let status = 503
+    const bodies: string[] = []
+    const fetch = async (_url: string, init: RequestInit): Promise<Response> => {
+      bodies.push(String(init.body))
+      return new Response(null, { status })
+    }
+    const s = await Service.start(
+      configOf(join(home, 'identities.json')),
+      home,
+      deps({ env: { HOME: machine }, enterprise: { fetch } }),
+    )
+    live.push(s)
+    await s.opening
+    // A window with no dialog: forget needs none.
+    const l = await hello(s, { input_hook: true, client_capabilities: {} })
+    expect(await call(l, 'telemetry', { word: 'forget' })).toMatchObject({ error: 'not-found', as: null })
+    // Turned on outside the tool (it would ask), as the command line does.
+    setTelemetry(join(machine, '.bag'), 'on', seededRng('forget'))
+    const id = telemetryId(join(machine, '.bag')) as string
+    const failed = await call(l, 'telemetry', { word: 'forget' })
+    expect(failed).toMatchObject({ error: 'http-503', as: null })
+    expect(String(failed.detail)).toContain('sending is off; ')
+    expect(JSON.stringify(failed)).not.toMatch(/[0-9a-f]{32}/)
+    expect(telemetryEraseId(join(machine, '.bag'))).toBe(id)
+    status = 204
+    const done = await call(l, 'telemetry', { word: 'forget' })
+    expect(done).toEqual({
+      lines: [
+        'telemetry off reason=file choice=off id=none spool=0 sent=none',
+        "telemetry forget: the erasure of this machine's id was accepted; telemetry off",
+      ],
+      as: null,
+    })
+    expect(JSON.stringify(done)).not.toMatch(/[0-9a-f]{32}/)
+    expect(bodies).toEqual([JSON.stringify({ id }), JSON.stringify({ id })])
+    expect(telemetryId(join(machine, '.bag'))).toBeNull()
+  })
+
+  it("forget through the tool: off is on disk before the endpoint is called; the failure's answer says retry, with no id", async () => {
+    const machine = join(home, 'machine')
+    const dir = join(machine, '.bag')
+    let status = 502
+    // The fake endpoint reads the consent file as it stands when the erasure is asked for.
+    const seen: unknown[] = []
+    const fetch = async (): Promise<Response> => {
+      seen.push(JSON.parse(readFileSync(join(dir, 'telemetry.json'), 'utf8')))
+      return new Response(null, { status })
+    }
+    const s = await Service.start(
+      configOf(join(home, 'identities.json')),
+      home,
+      deps({ env: { HOME: machine }, enterprise: { fetch } }),
+    )
+    live.push(s)
+    await s.opening
+    const l = await hello(s, { input_hook: true, client_capabilities: {} })
+    setTelemetry(dir, 'on', seededRng('forget-order'))
+    const id = telemetryId(dir) as string
+    const failed = await call(l, 'telemetry', { word: 'forget' })
+    expect(failed).toMatchObject({
+      error: 'http-502',
+      detail:
+        "sending is off; the erasure of this machine's id failed, so the id is kept: run forget again to retry",
+      as: null,
+    })
+    expect(JSON.stringify(failed)).not.toContain(id)
+    expect(seen).toEqual([{ version: 2, telemetry: 'off', erase: id }])
+    expect([telemetryId(dir), telemetryEraseId(dir)]).toEqual([null, id])
+    expect(await call(l, 'telemetry', { word: 'status' })).toEqual({
+      lines: ['telemetry off reason=file choice=off id=none spool=0 sent=none'],
+      as: null,
+    })
+    status = 204
+    const done = await call(l, 'telemetry', { word: 'forget' })
+    expect(seen).toEqual([
+      { version: 2, telemetry: 'off', erase: id },
+      { version: 2, telemetry: 'off', erase: id },
+    ])
+    expect(done).toEqual({
+      lines: [
+        'telemetry off reason=file choice=off id=none spool=0 sent=none',
+        "telemetry forget: the erasure of this machine's id was accepted; telemetry off",
+      ],
+      as: null,
+    })
+    expect([telemetryId(dir), telemetryEraseId(dir)]).toEqual([null, null])
+  })
+
+  it("the created record: this connection's (label, address) pairs only, in no tool's answer, gone at its close", async () => {
+    const s = await empty()
+    const a = await hello(s, { input_hook: true })
+    const conn = lastConn(s)
+    const b = await hello(s, { input_hook: true })
+    const other = lastConn(s)
+    const pending = call(a, 'identity_create', { label: 'jane', relays: [RELAY] })
+    await yes(a, { confirm: true })
+    const address = ((await pending).lines as string[])[0] as string
+    expect(createdHere(conn, 'jane', address)).toBe(true)
+    // By the pair, never the label alone; and another window made nothing.
+    expect(createdHere(conn, 'jane', P.bob.address)).toBe(false)
+    expect(createdHere(other, 'jane', address)).toBe(false)
+    // No tool's answer shows it: the window that made jane answers as the one that did not.
+    for (const tool of ['status', 'identities'])
+      expect([tool, await call(a, tool)]).toEqual([tool, await call(b, tool)])
+    a.socket.destroy()
+    await a.closed
+    await until(() => s.connections.size === 1)
+    expect(createdHere(conn, 'jane', address)).toBe(false)
   })
 })

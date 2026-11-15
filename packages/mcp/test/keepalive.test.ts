@@ -270,7 +270,7 @@ describe('the keep-alive of its own records (--keep-alive-records)', () => {
     expect(verifyRecord(next, half)).toEqual(next)
     expect({ ...next, iat: 0, sig: '' }).toEqual({ ...first, sealing_key: null, iat: 0, sig: '' })
     expect(next.iat).toBe(half)
-    // Its max_bytes of 65,536, the old default, takes the envelope cap (W9's lift).
+    // Its max_bytes of 65,536, the old default, takes the envelope cap (the automatic lift, docs/message-size.md).
     expect(stored('accept-from')).toEqual(accept(P.alice, half, MAX_ENVELOPE_BYTES))
     expect(await keepAlive(s)).toEqual({
       next_at: at(half + TTL / 2),
@@ -288,7 +288,7 @@ describe('the keep-alive of its own records (--keep-alive-records)', () => {
     expect(sent.value).toMatchObject({ targets: [{ status: 'published' }] })
   })
 
-  it('keeps a held max_bytes of 32,768 at the re-sign: only exactly 65,536 is lifted (W9)', async () => {
+  it('keeps a held max_bytes of 32,768 at the re-sign: only exactly 65,536 is lifted', async () => {
     await put(address(P.alice))
     await put(accept(P.alice, T0, 32_768))
     const s = await alice()

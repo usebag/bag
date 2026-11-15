@@ -329,9 +329,17 @@ describe('e2e scenario 23-mcp: host-safe waits, chain renewal and record keep-al
         expect(delta).toBeLessThan(20)
         expect(verifyRecord(next as never, next.iat as number)).toEqual(next)
         expect({ ...next, iat: 0, sig: '' }).toEqual({ ...carolRecord, iat: 0, sig: '' })
-        const accept = await relayRecord(w.url, C, 'accept-from')
-        expect((accept.iat as number) > carolAccept.iat).toBe(true)
-        // The keep-alive's re-sign lifts the old default max_bytes (65,536, as published) to the envelope cap (W9).
+        // The keeper publishes the re-signed address record first and the accept-from after it (keepalive.ts #resign),
+        // so a read right after the new address record can still find the old accept-from (earlier gates
+        // went red on that one read): wait for it as for the address record, then check both carry the one new iat.
+        let accept: Json = {}
+        for (let i = 0; i < 100; i++) {
+          accept = await relayRecord(w.url, C, 'accept-from')
+          if ((accept.iat as number) > carolAccept.iat) break
+          await sleep(50)
+        }
+        expect(accept.iat).toBe(next.iat)
+        // The keep-alive's re-sign lifts the old default max_bytes (65,536, as published) to the envelope cap.
         expect(carolAccept.max_bytes).toBe(65_536)
         expect({ ...accept, iat: 0, sig: '' }).toEqual({
           ...carolAccept,

@@ -5,7 +5,7 @@ Description=dev.bag.service
 [Service]
 Type=simple
 ExecStart="/opt/homebrew/bin/node" "--disable-sigusr1" "/Users/x/.bag/package/bag-mcp.js" "--service" "--dir" "/Users/x/.bag" "--identities" "/Users/x/.bag/identities.json"
-WorkingDirectory="/Users/x/.bag/run"
+WorkingDirectory=/Users/x/.bag/run
 Environment="PATH=/usr/bin:/bin:/usr/sbin:/sbin"
 Environment="HOME=/Users/x"
 Environment="USER=x"

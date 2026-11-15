@@ -42,12 +42,14 @@ const isObject = (v: unknown): v is Entry => typeof v === 'object' && v !== null
  * Reads and checks the file at `file`: its identities, each with the server-wide values, and the default label.
  * `platform` decides how homes not made yet compare (realHome); tests pass it. With `home` (the bag service's, one
  * service per home) every identity must live in that home, each under its own key name, in place of a home each.
+ * With `empty` (the service's start and reread) an empty list reads as no identity rather than usage.
  */
 export function readIdentities(
   file: string,
   wide: ServerWide,
   platform: NodeJS.Platform = process.platform,
   home?: string,
+  empty = false,
 ): Pick<ServerConfig, 'identities' | 'defaultLabel'> {
   if (!isAbsolute(file)) throw usage(`${JSON.stringify(file)} is not an absolute path`)
   const doc = fileOf(file)
@@ -55,6 +57,8 @@ export function readIdentities(
   for (const k of Object.keys(doc)) if (!TOP.includes(k)) throw usage(`unknown member ${JSON.stringify(k)}`)
   if (doc.version !== 1) throw usage(`version is ${show(doc.version)}; this server reads version 1`)
   const entries = doc.identities
+  // The bag service's own file (`empty`): a list of none is an empty home, as no file is.
+  if (empty && Array.isArray(entries) && entries.length === 0) return { identities: [], defaultLabel: '' }
   if (!Array.isArray(entries) || entries.length === 0 || entries.length > MAX_IDENTITIES)
     throw usage(`identities is a list of 1 to ${MAX_IDENTITIES} identities`)
   const identities = entries.map((e, i) => identityOf(e, i, wide))
@@ -67,14 +71,21 @@ export function readIdentities(
 }
 
 /**
- * The file's parsed JSON (undefined when it is not JSON), through one fd: a regular file only (a FIFO or /dev/stdin
- * would eat the server's stdin; O_NONBLOCK keeps the open from waiting on a FIFO's writer), of mode 0600.
+ * The file's parsed JSON (undefined when it is not JSON), through one fd: a regular file only, never through a
+ * symbolic link (a FIFO or /dev/stdin would eat the server's stdin; O_NONBLOCK keeps the open from waiting on a FIFO's
+ * writer), of mode 0600.
  */
 function fileOf(file: string): unknown {
   let fd = -1
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK)
+    // O_NOFOLLOW, as the home's reader (packages/home identities.ts): a link at the path is refused, never followed.
+    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
   } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ELOOP')
+      throw usage(
+        `${file} is a symbolic link; it must be a regular file (it lists every identity together): replace the link ` +
+          'with a 0600 copy of the file it points to',
+      )
     throw usage(`${file} cannot be read (${(e as NodeJS.ErrnoException).code})`)
   }
   try {

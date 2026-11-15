@@ -13,7 +13,6 @@ import { execFileSync } from 'node:child_process'
 import {
   type FSWatcher,
   mkdirSync,
-  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -34,7 +33,10 @@ export const SETTLE_MS = 300
 /** How often a pending wake looks for the session to go idle after a turn, in milliseconds. */
 export const IDLE_MS = 250
 
-/** How often the host facts are written while the session lives, in milliseconds (W4's schema: at least every 5 min). */
+/**
+ * How often the host facts are written while the session lives, in milliseconds (docs/agent-facts.md: at least every
+ * 5 min).
+ */
 export const FACTS_MS = 240_000
 
 /**
@@ -284,7 +286,10 @@ export function targetOf(cwd: string, env: NodeJS.ProcessEnv = process.env): Tar
   return home === undefined ? null : { name, home: resolve(home) }
 }
 
-/** The holder of an identity's server, from its mcp.lock (W3's JSON; pid first, the rest optional). */
+/**
+ * The holder of an identity's server, from its mcp.lock (the JSON packages/mcp/src/open.ts writes; pid first, the rest
+ * optional).
+ */
 export interface Holder {
   readonly pid: number
   readonly ppid?: number
@@ -340,7 +345,7 @@ export function refusal(mode: string | undefined, kind: string | undefined): str
   return null
 }
 
-/** The facts W4's reader takes from <home>/state/<name>/host-facts.json, schema v1. */
+/** The facts the MCP server's facts tool reads from <home>/state/<name>/host-facts.json (docs/agent-facts.md), v1. */
 export interface Facts {
   readonly host_version?: string | null
   readonly host_pid?: number | null
@@ -372,79 +377,24 @@ export function writeFacts(state: string, facts: Facts, now = new Date()): void 
   renameSync(tmp, file)
 }
 
-// The pairing consent bridge (decision 83h, the extension side): omp announces no MCP elicitation, so when the bag server
-// needs the person's word it writes a request into <home>/state/<name>/consent/, and this extension asks the person in
-// the TUI and writes the answer beside it. The .bridge file tells the server a person can answer here.
+// The consent questions (bag 0.4.2): omp announces no MCP elicitation, so the bag service asks
+// the person over this extension's own registered link (consentLink, below), never through a file. Generation one's
+// file bridge (the consent folder, .bridge, request and answer files) is gone.
 
-/** How often the consent directory is looked at besides its fs events, in milliseconds. */
-export const CONSENT_POLL_MS = 2000
-
-/** The status line key and text while a request waits for the person. */
+/** The widget and footer key of the consent questions and the invite code's show. */
 export const CONSENT_STATUS = 'bag-consent'
 export const PENDING_TEXT = 'bag: pairing request pending'
+/** The widget key of an open text question's message (omp's input shows only its title). */
+export const ASK_WIDGET = 'bag-consent-ask'
 
-/** The longest invite or code a request shows or a pair-accept-code answer carries. */
+/** The longest pasted invite or code a text answer carries (the service's MAX_PASTE). */
 export const MAX_PASTED = 512
 
-/** A consent request as the server writes it (decision 83h's seam): <id>.json in the consent directory. */
-export interface ConsentRequest {
-  readonly v: 1
-  readonly id: string
-  readonly kind: 'pair-accept' | 'pair-invite-show' | 'pair-accept-code'
-  /** Null for pair-accept-code only: the invite the person pastes names the peer. */
-  readonly peer: { readonly name: string | null; readonly address: string; readonly root: string } | null
-  readonly code: string | null
-  readonly relay: string
-  readonly asked_at: string
-  readonly expires_at: string
-}
-
-/** The request in `text` when it is one of the seam's shape and names `id`, else null. */
-export function requestOf(text: string, id: string): ConsentRequest | null {
-  let v: Record<string, unknown>
-  try {
-    v = JSON.parse(text) as Record<string, unknown>
-  } catch {
-    return null
-  }
-  const peer = v.peer as Record<string, unknown> | null | undefined
-  const ok =
-    v.v === 1 &&
-    v.id === id &&
-    /^[0-9a-f]{16}$/.test(id) &&
-    (v.kind === 'pair-accept-code'
-      ? peer === null && v.code === null
-      : v.kind === 'pair-invite-show'
-        ? // The invite code as the server shows it: a word code such as 760-dimly-straw-cough, or an invite string.
-          typeof v.code === 'string' && v.code.length > 0 && v.code.length <= MAX_PASTED
-        : v.kind === 'pair-accept' &&
-          typeof peer === 'object' &&
-          peer !== null &&
-          (peer.name === null || typeof peer.name === 'string') &&
-          typeof peer.address === 'string' &&
-          typeof peer.root === 'string' &&
-          // The check digits as the edge prints them, 227 500: six once the spaces are gone.
-          (v.code === null || (typeof v.code === 'string' && /^\d{6}$/.test(v.code.replace(/\s/g, ''))))) &&
-    typeof v.relay === 'string' &&
-    typeof v.asked_at === 'string' &&
-    typeof v.expires_at === 'string' &&
-    !Number.isNaN(Date.parse(v.expires_at))
-  if (!ok) return null
-  const r = v as unknown as ConsentRequest
-  return r.kind === 'pair-accept' && r.code !== null ? { ...r, code: r.code.replace(/\s/g, '') } : r
-}
-
-/** The peer as the person knows it: its petname, else its address. */
-const peerLabel = (r: ConsentRequest): string => r.peer?.name ?? r.peer?.address ?? 'a peer'
-
-/** Six digits as the CLI prints them, 123 456. */
-const spaced = (code: string): string => `${code.slice(0, 3)} ${code.slice(3)}`
-
-/** The parts of omp's ctx.ui the bridge uses (18.17.0, verified live: confirm is a Yes/No selector). */
+/** The parts of omp's ctx.ui the link uses (18.17.0, verified live: confirm is a Yes/No selector; 18.20.0: input). */
 export interface ConsentUi {
   /**
    * omp's confirm opens on the option at initialIndex (Yes, 0, by default), and its TUI timeout picks the highlighted
-   * one, so a timed-out confirm would answer Yes (pi-tui hook-selector.ts:258, 294-309): the bridge always passes
+   * one, so a timed-out confirm would answer Yes (pi-tui hook-selector.ts:258, 294-309): ompConfirm always passes
    * initialIndex 1 (No) and expires a dialog by its signal, which resolves false in every mode, never by the timeout.
    */
   confirm(
@@ -452,193 +402,20 @@ export interface ConsentUi {
     message: string,
     options?: { initialIndex?: number; signal?: AbortSignal },
   ): Promise<boolean>
-  input(title: string, placeholder?: string, options?: { signal?: AbortSignal }): Promise<string | undefined>
+  /** omp's text input (18.20.0 showHookInput): its timeout shows a countdown and resolves undefined, as a cancel does. */
+  input(
+    title: string,
+    placeholder?: string,
+    options?: { signal?: AbortSignal; timeout?: number },
+  ): Promise<string | undefined>
   setStatus(key: string, text: string | undefined): void
   setWidget(key: string, content: string[] | undefined): void
-}
-
-/** What ConsentLoop needs from the world. */
-export interface ConsentDeps {
-  readonly name: string
-  readonly ui: ConsentUi
-  /** The request files' ids now in the directory (<id>.json, not answers, temps or the bridge). */
-  readonly ids: () => string[]
-  readonly read: (id: string) => string | null
-  readonly answer: (id: string, accepted: boolean, code: string | null) => void
-  /** Removes an expired request and any answer to it. */
-  readonly drop: (id: string) => void
-  readonly now: () => number
-}
-
-/**
- * The bridge's state machine: `look()` on every fs event and poll takes each new request once, in order, one at a time
- * (omp queues dialogs anyway), asks the person, and writes the answer. An expired request is dropped unasked; a dialog
- * times out at the request's expiry, and an answer past it is not written (the server has stopped waiting).
- */
-export class ConsentLoop {
-  readonly #d: ConsentDeps
-  readonly #seen = new Set<string>()
-  #busy = false
-  /** The request a dialog is open for, and the abort that closes it when the server withdraws the request. */
-  #open: { id: string; withdraw: AbortController } | null = null
-
-  constructor(deps: ConsentDeps) {
-    this.#d = deps
-  }
-
-  /** Whether a request waits for the person now. */
-  get busy(): boolean {
-    return this.#busy
-  }
-
-  async look(): Promise<void> {
-    // The server withdraws a request (a newer one replaces it, or the pairing ended): its dialog closes, refused.
-    if (this.#open !== null && !this.#d.ids().includes(this.#open.id)) this.#open.withdraw.abort()
-    if (this.#busy) return
-    for (const id of this.#d.ids().sort()) {
-      if (this.#seen.has(id)) continue
-      const text = this.#d.read(id)
-      if (text === null) continue
-      this.#seen.add(id)
-      const r = requestOf(text, id)
-      if (r === null) continue
-      if (Date.parse(r.expires_at) <= this.#d.now()) {
-        this.#d.drop(id)
-        continue
-      }
-      this.#busy = true
-      try {
-        await this.#ask(r)
-      } finally {
-        this.#busy = false
-        this.#d.ui.setStatus(CONSENT_STATUS, undefined)
-      }
-    }
-  }
-
-  async #ask(r: ConsentRequest): Promise<void> {
-    const { ui, name } = this.#d
-    const left = () => Math.max(0, Date.parse(r.expires_at) - this.#d.now())
-    // Only confirm and input: they are answered at this terminal alone, where select, askDialog, approve and editor
-    // may be answered by a collab guest (the omp UI research).
-    const withdraw = new AbortController()
-    this.#open = { id: r.id, withdraw }
-    const signal = () => AbortSignal.any([AbortSignal.timeout(left()), withdraw.signal])
-    const confirm = (title: string, message: string) =>
-      ui.confirm(title, message, { initialIndex: 1, signal: signal() })
-    // input has no pattern check, and Enter on an empty field submits "": a value that fails `ok` is asked once more.
-    const ask = async (title: string, placeholder: string, ok: (v: string) => string | null) => {
-      for (let i = 0; i < 2 && left() > 0 && !withdraw.signal.aborted; i++) {
-        const v = ok(await ui.input(title, placeholder, { signal: signal() }).then((t) => t ?? ''))
-        if (v !== null) return v
-      }
-      return null
-    }
-    const show = (lines: string[] | undefined) => ui.setWidget(CONSENT_STATUS, lines)
-    ui.setStatus(CONSENT_STATUS, PENDING_TEXT)
-    let accepted = false
-    let code: string | null = null
-    try {
-      if (r.kind === 'pair-accept-code') {
-        // The invite travels from the peer to the person, never through the model: the person pastes it here.
-        show([`bag: a pairing for ${name}: paste the invite you received from your peer`])
-        code = await ask(
-          `bag: paste the invite or code you received to pair as ${name}`,
-          'invite or code',
-          (t) => {
-            const pasted = t.trim()
-            return pasted.length > 0 && pasted.length <= MAX_PASTED ? pasted : null
-          },
-        )
-        accepted = code !== null
-      } else if (r.kind === 'pair-invite-show') {
-        show([
-          `bag: your invite code: ${r.code ?? '(none)'}`,
-          'give it to them yourself (read it out or send it), never through an agent',
-        ])
-        accepted = await confirm('bag: your invite code is shown above', 'was it given to your peer?')
-      } else {
-        const check =
-          r.code === null ? null : `check digits ${spaced(r.code)}: do they match what ${peerLabel(r)} reads?`
-        show([
-          `bag: ${peerLabel(r)} (${r.peer?.address ?? ''}) asks to pair as ${name}`,
-          ...(check === null ? [] : [check]),
-        ])
-        accepted = await confirm(
-          `bag: ${peerLabel(r)} asks to pair as ${name}`,
-          `${check === null ? '' : `${check} `}accept?`,
-        )
-        if (accepted && r.code === null) {
-          code = await ask(`bag: the six digits ${peerLabel(r)} reads to you`, '123 456', (t) => {
-            const digits = t.replace(/\s/g, '')
-            return /^\d{6}$/.test(digits) ? digits : null
-          })
-          accepted = code !== null
-        }
-      }
-    } finally {
-      show(undefined)
-      this.#open = null
-    }
-    if (left() > 0 && !withdraw.signal.aborted) this.#d.answer(r.id, accepted, accepted ? code : null)
-  }
-}
-
-/** The consent directory's files, read and written as decision 83h's seam says. */
-export function consentFiles(dir: string, now = () => Date.now()): Omit<ConsentDeps, 'name' | 'ui'> {
-  const REQUEST = /^([0-9a-f]{16})\.json$/
-  return {
-    ids: () => {
-      try {
-        return readdirSync(dir).flatMap((f) => REQUEST.exec(f)?.[1] ?? [])
-      } catch {
-        return []
-      }
-    },
-    read: (id) => {
-      try {
-        return readFileSync(join(dir, `${id}.json`), 'utf8')
-      } catch {
-        return null
-      }
-    },
-    answer: (id, accepted, code) => {
-      const file = join(dir, `${id}.answer.json`)
-      const tmp = `${file}.${process.pid}.tmp`
-      const body = { v: 1, id, accepted, code, answered_at: new Date(now()).toISOString() }
-      rmSync(tmp, { force: true })
-      writeFileSync(tmp, JSON.stringify(body), { flag: 'wx', mode: 0o600 })
-      renameSync(tmp, file)
-    },
-    drop: (id) => {
-      for (const f of [`${id}.json`, `${id}.answer.json`]) rmSync(join(dir, f), { force: true })
-    },
-    now,
-  }
-}
-
-/** Writes the .bridge presence file (JSON, 0600, renamed over), which the server reads as "a person can answer here". */
-export function writeBridge(dir: string, now = new Date(), make = true): void {
-  // The service's folder (make false) is never made here: a folder it moved away must not come back empty.
-  if (make) mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const file = join(dir, '.bridge')
-  const tmp = `${file}.${process.pid}.tmp`
-  const body = {
-    v: 1,
-    pid: process.pid,
-    host: 'omp',
-    mode: 'tui',
-    at: now.toISOString(),
-  }
-  rmSync(tmp, { force: true })
-  writeFileSync(tmp, JSON.stringify(body), { flag: 'wx', mode: 0o600 })
-  renameSync(tmp, file)
 }
 
 // The bag service (packages/shim/README.md): omp's bag
 // server is the shim, which writes <home>/run/shim/<host pid>.json (its channel), .bound and .ring; omp's own pid is
 // the host pid. The extension cannot import packages/shim (check-imports), so it repeats the few lines it needs.
-// With none of these files (the per-folder stdio mode, the rollback) everything above runs as before.
+// With none of these files (the per-folder stdio mode, the rollback) the wake runs as before, and there is no link.
 
 /** How long a channel request waits for its shim, in milliseconds: a dead shim never holds the person's prompt. */
 export const CHANNEL_MS = 2000
@@ -658,7 +435,7 @@ export function typedName(prompt: string): string | null {
 /**
  * The home of the shim entry (args naming bag-shim.js) omp runs, else null. The user-level mcp.json wins: a project's
  * .omp/mcp.json (a cloned repository's, or one the session's own model wrote) never points the extension at another
- * home's channel and bridge folder. With no user-level shim entry, a project entry counts only when its --dir is the
+ * home's channel and service. With no user-level shim entry, a project entry counts only when its --dir is the
  * default home, AC_HOME or $HOME/.bag.
  */
 export function shimHomeOf(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
@@ -700,7 +477,7 @@ function shimDoc(file: string): Record<string, unknown> | null {
   }
 }
 
-/** The labels of a valid <home>/run/shim/<pid>.bound, or null when there is none to go by (5a). */
+/** The labels of a valid <home>/run/shim/<pid>.bound, or null when there is none to go by. */
 export function boundIn(home: string, pid = process.pid): string[] | null {
   const as = shimDoc(shimFile(home, 'bound', pid))?.as
   return Array.isArray(as) ? as.filter((l): l is string => typeof l === 'string') : null
@@ -727,7 +504,10 @@ export function ringIn(home: string, pid = process.pid): RingDoc | null {
   return { n: d.n as number, as: d.as, unread, ...requests, speaking: d.speaking, shim: d.shim as number }
 }
 
-/** The last ring handled, `<shim pid> <n>` in <pid>.ring-seen (the CLI lane's wake hook writes the same). */
+/**
+ * The last ring handled, `<shim pid> <n>` in <pid>.ring-seen (the CLI's wake hook,
+ * packages/cli/src/commands/wake-hook.ts, writes the same).
+ */
 export interface RingSeen {
   readonly shim: number
   readonly n: number
@@ -883,40 +663,126 @@ export function askShim(
 
 /** How often a lost consent link to the bag service is opened again, in milliseconds. */
 export const RELINK_MS = 2000
+/** Each refused registration in a row doubles the wait (2, 4, 8 ... s) up to this; a link taken resets it to RELINK_MS. */
+export const RELINK_MAX_MS = 60_000
+
+/** What the link renders: a confirm, a line of text, and the widget of a show (lines; undefined clears it). */
+export interface LinkUi {
+  confirm(title: string, message: string, ms: number, withdrawn: AbortSignal): Promise<boolean | null>
+  /** `message`: the question's text; omp's input shows only a title, so the extension shows it in a widget. */
+  input?(
+    title: string,
+    placeholder: string,
+    ms: number,
+    withdrawn: AbortSignal,
+    message?: string,
+  ): Promise<string | null>
+  show?(lines: string[] | undefined): void
+}
+
+/** omp's default MCP request timeout (bundle source packages/coding-agent/src/mcp/timeout.ts), in milliseconds. */
+export const OMP_MCP_DEFAULT_MS = 30_000
 
 /**
- * Item 7 (O1, with the red team's C2): this extension's own connection to the bag service, opened at load in the main
- * interactive session and registered for this omp process (service/consent-register {pid}). The service sends its
- * consent questions for this omp's windows here (service/consent-ask {id, title, message, ms}) and takes the person's
- * answer only on this connection (service/consent-answer {id, accepted}: true, false, or null for no answer), never
- * from a file. service/consent-withdraw {id} dismisses that ask's confirm, and no answer is sent for it. The first registration
+ * omp's effective MCP request timeout for the bag server, in ms, as omp computes it in this process: a valid
+ * OMP_MCP_TIMEOUT_MS wins over every server's value; else the user-level mcp.json's mcpServers.bag.timeout (which
+ * bag host install omp --user writes, 130000); else omp's default. 0 is none. Sent at register as call_ms.
+ */
+export function ompCallMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = (v: unknown): number | null => {
+    const x = typeof v === 'string' && v.trim() !== '' ? Number(v.trim()) : v
+    return typeof x === 'number' && Number.isFinite(x) && x >= 0 ? Math.floor(x) : null
+  }
+  const forced = n(env.OMP_MCP_TIMEOUT_MS)
+  if (forced !== null) return forced
+  const agent =
+    env.PI_CODING_AGENT_DIR ?? (env.HOME === undefined ? undefined : join(env.HOME, '.omp', 'agent'))
+  try {
+    if (agent !== undefined) {
+      const doc = JSON.parse(readFileSync(join(agent, 'mcp.json'), 'utf8')) as {
+        mcpServers?: { bag?: { timeout?: unknown } }
+      }
+      const t = doc.mcpServers?.bag?.timeout
+      if (typeof t === 'number') return n(t) ?? OMP_MCP_DEFAULT_MS
+    }
+  } catch {
+    // no user-level entry: omp's default
+  }
+  return OMP_MCP_DEFAULT_MS
+}
+
+/**
+ * Item 7, widened in 0.4.2: this extension's own connection to the bag service, opened at
+ * load in the main interactive session and registered for this omp process (service/consent-register {pid, kinds,
+ * call_ms}). The service sends its questions for this omp's windows here (service/consent-ask {id, kind, title,
+ * message, ms, placeholder?, max?, lines?}: kind confirm, the default; text, a line of text; show, the widget's lines
+ * until withdrawn) and takes the person's answer only on this connection (service/consent-answer {id, accepted, text?}:
+ * true, false, or null for no answer), never from a file. service/consent-withdraw {id} dismisses that ask's dialog,
+ * or clears its show, and no answer is sent for it; a closed link clears the widget too. The first registration
  * answers a secret, kept in this process's memory only; a registration after a service restart presents it, so a
- * command the model runs cannot take the link over. A lost link is opened again every RELINK_MS.
+ * command the model runs cannot take the link over. A lost link is opened again after RELINK_MS; the service closes a
+ * refused one, and after each refusal in a row the wait doubles, to RELINK_MAX_MS at most; a busy one waits RELINK_MS.
  */
 export function consentLink(
   home: string,
   pid: number,
-  ask: (title: string, message: string, ms: number, withdrawn: AbortSignal) => Promise<boolean | null>,
+  ui: LinkUi | LinkUi['confirm'],
+  callMs: number = ompCallMs(),
 ): { close(): void } {
+  const u: LinkUi = typeof ui === 'function' ? { confirm: ui } : ui
+  const kinds = [
+    'confirm',
+    ...(u.input === undefined ? [] : ['text']),
+    ...(u.show === undefined ? [] : ['show']),
+  ]
   let secret: string | null = null
   let sock: ReturnType<typeof createConnection> | null = null
-  /** The asks whose confirm is open, by id: a withdraw aborts one. */
+  /** The asks whose dialog is open, by id: a withdraw aborts one. */
   const asking = new Map<string, AbortController>()
+  /** The show on screen now, by its id. */
+  let shown: string | null = null
+  const clear = (id?: string): void => {
+    if (shown === null || (id !== undefined && id !== shown)) return
+    shown = null
+    u.show?.(undefined)
+  }
   let closed = false
+  /** Refused registrations in a row, and the wait before the next open. */
+  let refused = 0
+  let timer: ReturnType<typeof setTimeout> | null = null
+  /** busy: the lookups were full, so the next open is after RELINK_MS whatever the refusals before it. */
+  const later = (busy = false): void => {
+    if (closed || timer !== null) return
+    timer = setTimeout(
+      () => {
+        timer = null
+        open()
+      },
+      busy ? RELINK_MS : Math.min(RELINK_MS * 2 ** Math.max(0, refused - 1), RELINK_MAX_MS),
+    )
+    timer.unref()
+  }
   const open = (): void => {
     if (closed || sock !== null) return
     let token: string
     try {
       token = readFileSync(join(home, 'run', 'service.token'), 'utf8').trim()
     } catch {
+      later()
       return
     }
     const c = createConnection({ path: join(home, 'run', 'service.sock') })
     sock = c
+    /**
+     * The registration's answer on this connection: none yet, taken, busy, or refused (an error, or a close first).
+     * Busy says only that the service's peer lookups were all in use, so it never lengthens the wait: else any
+     * process could fill them and keep this omp's dialog away for a minute at a time.
+     */
+    let answer: 'none' | 'sent' | 'busy' | 'taken' = 'none'
     let buf = ''
     const send = (m: Record<string, unknown>): unknown =>
       c.write(`${JSON.stringify({ jsonrpc: '2.0', ...m })}\n`)
-    const register = { pid, ...(secret === null ? {} : { secret }) }
+    const register = { pid, ...(secret === null ? {} : { secret }), kinds, call_ms: callMs }
     c.setEncoding('utf8')
     c.on('connect', () =>
       send({
@@ -934,41 +800,90 @@ export function consentLink(
         } catch {}
         buf = buf.slice(i + 1)
         const r = m.result as Record<string, unknown> | undefined
-        if (m.id === 1 && r !== undefined)
+        if (m.id === 1 && r !== undefined) {
+          answer = 'sent'
           send({ id: 2, method: 'service/consent-register', params: register })
-        if (m.id === 2 && typeof r?.secret === 'string') secret = r.secret
-        const q = m.params as { id?: unknown; title?: unknown; message?: unknown; ms?: unknown } | undefined
-        // The service withdraws an ask (its tool call ended, or its wait ran out): its confirm is dismissed, unanswered.
-        if (m.method === 'service/consent-withdraw') asking.get(String(q?.id))?.abort()
-        if (
-          m.method === 'service/consent-ask' &&
-          typeof q?.title === 'string' &&
-          typeof q.message === 'string'
-        ) {
-          const id = String(q.id)
-          const withdrawn = new AbortController()
-          asking.set(id, withdrawn)
-          void ask(q.title, q.message, Number(q.ms) || 25_000, withdrawn.signal).then((accepted) => {
-            asking.delete(id)
-            if (!withdrawn.signal.aborted)
-              send({ id: `a${id}`, method: 'service/consent-answer', params: { id: q.id, accepted } })
-          })
         }
+        if (m.id === 2 && r !== undefined) {
+          answer = 'taken'
+          refused = 0
+        }
+        if (m.id === 2 && (m.error as { data?: { code?: unknown } } | undefined)?.data?.code === 'busy')
+          answer = 'busy'
+        if (m.id === 2 && typeof r?.secret === 'string') secret = r.secret
+        const q = m.params as
+          | {
+              id?: unknown
+              kind?: unknown
+              title?: unknown
+              message?: unknown
+              ms?: unknown
+              placeholder?: unknown
+              lines?: unknown
+            }
+          | undefined
+        // The service withdraws an ask (its tool call ended, or its wait ran out): its dialog is dismissed, unanswered;
+        // a show's widget is cleared.
+        if (m.method === 'service/consent-withdraw') {
+          asking.get(String(q?.id))?.abort()
+          clear(String(q?.id))
+        }
+        if (
+          m.method !== 'service/consent-ask' ||
+          typeof q?.title !== 'string' ||
+          typeof q.message !== 'string'
+        )
+          continue
+        const id = String(q.id)
+        const kind = q.kind === undefined ? 'confirm' : q.kind
+        if (kind === 'show') {
+          const lines = Array.isArray(q.lines)
+            ? q.lines.filter((l): l is string => typeof l === 'string')
+            : []
+          shown = id
+          u.show?.(lines.length > 0 ? lines : [q.message])
+          continue
+        }
+        const ms = Number(q.ms) || 25_000
+        const withdrawn = new AbortController()
+        asking.set(id, withdrawn)
+        const placeholder = typeof q.placeholder === 'string' ? q.placeholder : ''
+        const asked: Promise<{ accepted: boolean | null; text?: string }> =
+          kind === 'text' && u.input !== undefined
+            ? u
+                .input(q.title, placeholder, ms, withdrawn.signal, q.message)
+                .then((t) => (t === null ? { accepted: null } : { accepted: true, text: t }))
+            : kind === 'confirm'
+              ? u.confirm(q.title, q.message, ms, withdrawn.signal).then((accepted) => ({ accepted }))
+              : Promise.resolve({ accepted: null })
+        void asked.then((a) => {
+          asking.delete(id)
+          if (!withdrawn.signal.aborted)
+            send({ id: `a${id}`, method: 'service/consent-answer', params: { id: q.id, ...a } })
+        })
       }
     })
     c.on('error', () => undefined)
     c.on('close', () => {
       sock = null
+      clear()
+      // A closed link takes no answer: its open dialogs close at once, never left up to their ms.
+      for (const a of asking.values()) a.abort()
+      asking.clear()
+      // A registration that closed with no link taken was refused (the service closes a refused one): wait longer.
+      if (answer === 'sent') refused++
+      later(answer === 'busy')
     })
   }
   open()
-  const timer = setInterval(open, RELINK_MS)
-  timer.unref()
   return {
     close: () => {
       closed = true
-      clearInterval(timer)
+      if (timer !== null) clearTimeout(timer)
       sock?.destroy()
+      clear()
+      for (const a of asking.values()) a.abort()
+      asking.clear()
     },
   }
 }
@@ -978,7 +893,7 @@ export function consentLink(
  * answer). omp's confirm resolves false for No and for Esc alike (Esc gives undefined, and confirm returns result ===
  * "Yes"), so an Esc cannot be told from a No here and stays a No. A confirm that throws is no answer.
  *
- * An abort of omp's session-handler signal is no answer too (falsifier 9b). omp attaches that signal to every dialog
+ * An abort of omp's session-handler signal is no answer too. omp attaches that signal to every dialog
  * of the captured ctx (runner.ts attachHandlerSignal) and never shows it to the extension; but session_start returns at
  * once here, and a settled handler's signal never aborts afterwards, so it can only be aborted already when the confirm
  * opens (a handler that once ran past omp's 30 s budget), and then the confirm resolves false at once. So a false
@@ -1003,6 +918,37 @@ export async function ompConfirm(
 
 /** A confirm answered No faster than this (ms) was answered by no person (as the service's FAST_ANSWER_MS). */
 export const OMP_FAST_MS = 250
+
+/**
+ * One line of text over the link: omp's input (answered at this terminal alone, never by a collab guest), with its
+ * countdown (`timeout`), dismissed by the service's withdraw. Enter on an empty field submits "" and input has no
+ * pattern check, so an empty or over-long answer is asked once more, then null. A cancel (Esc), a timeout, a withdraw,
+ * a throw or an answer faster than any person (OMP_FAST_MS) is null: no answer, never a value. Never `secret`: the
+ * person must see what they pasted.
+ */
+export async function ompInput(
+  ui: Pick<ConsentUi, 'input'>,
+  title: string,
+  placeholder: string,
+  ms: number,
+  withdrawn?: AbortSignal,
+  now: () => number = () => performance.now(),
+): Promise<string | null> {
+  const t0 = now()
+  const end = t0 + ms
+  for (let i = 0; i < 2; i++) {
+    const left = Math.floor(end - now())
+    if (left <= 0 || withdrawn?.aborted === true) return null
+    const timed = AbortSignal.timeout(left)
+    const signal = withdrawn === undefined ? timed : AbortSignal.any([timed, withdrawn])
+    const asked = now()
+    const t = await ui.input(title, placeholder, { signal, timeout: left }).catch(() => undefined)
+    if (t === undefined || signal.aborted || now() - asked < OMP_FAST_MS) return null
+    const v = t.trim()
+    if (v.length > 0 && v.length <= MAX_PASTED) return v
+  }
+  return null
+}
 
 // The parts of omp's ExtensionAPI (@oh-my-pi/pi-coding-agent, 18.17.0) this extension uses, typed here: the package is
 // not a dependency of bag.
@@ -1032,18 +978,27 @@ const log = (line: string): void => {
   process.stderr.write(`${line}\n`)
 }
 
+/**
+ * The text questions opened in this omp process, over every session and link: only the newest one's end clears
+ * ASK_WIDGET. It never starts again, so a question from a session that has ended cannot pass for the newest one and
+ * clear the words of the next session's question on the same screen.
+ */
+let asks = 0
+/**
+ * The link whose questions set the footer's pending line, while it stands. A question still open when its session
+ * ends settles later, and by then the next session may have set the line for its own question on the same screen: a
+ * link clears the line only while it is still the one that set it.
+ */
+let pendingFor: { close(): void } | null = null
+
 /** The extension factory omp calls once per session it binds. */
 export default function bagWake(pi: Pi): void {
   let watcher: FSWatcher | null = null
   let ringWatcher: FSWatcher | null = null
-  let consentWatcher: FSWatcher | null = null
-  let bridge: string | null = null
   let link: { close(): void } | null = null
   let facts: (() => void) | null = null
   let loop: WakeLoop | null = null
   let rings: RingLoop | null = null
-  // Asks the shim for this connection's bridge folder (null: no bridge yet); set by a session that may answer.
-  let askBridge: (() => void) | null = null
   // The person's last input in this session (Unix seconds): what came before it they have seen (loopLines).
   let personAt = 0
   let warned = false
@@ -1064,12 +1019,10 @@ export default function bagWake(pi: Pi): void {
       // Not awaited: the service learns the speaking window, and the prompt never waits for it.
       void askShim(ch, { kind: 'typed' }).then((a) => {
         if (a === null) warn('typed')
-        askBridge?.()
       })
       return undefined
     }
     return askShim(ch, { kind: 'use', name }).then((a) => {
-      askBridge?.()
       if (a === null) {
         warn('use')
         return undefined
@@ -1200,81 +1153,51 @@ export default function bagWake(pi: Pi): void {
       ringLoop.ring()
     }, RING_POLL_MS)
     ringLoop.ring()
-    // The consent bridge: only a session a person sees answers for the identity (hasUI; the guard above already keeps
-    // print, rpc, json and subagents out).
-    // hasUI is true in rpc and acp even when nothing answers there: tui only (the omp research).
+    // The consent link: only a session a person sees answers for the identity (hasUI; the guard above already keeps
+    // print, rpc, json and subagents out). hasUI is true in rpc and acp even when nothing answers there: tui only (the
+    // omp research). Item 7: the questions over this extension's own registered connection, a confirm opening on No.
     if (ctx.mode === 'tui' && ctx.agent?.kind === 'main' && ctx.hasUI === true && ctx.ui !== undefined) {
       const ui = ctx.ui
-      let consent: { dir: string; ask: ConsentLoop; make: boolean } | null = null
-      const look = () => {
-        consent?.ask.look().catch(() => undefined)
-      }
-      const refresh = () => {
-        try {
-          if (consent !== null) writeBridge(consent.dir, new Date(), consent.make)
-        } catch {
-          // a later refresh tries again; the server reads a bridge older than 600 s as absent
+      // The questions open on this session's link, and the link they came over, for the footer's pending line.
+      let open = 0
+      let mine: { close(): void } | null = null
+      const pending = <T>(p: Promise<T>): Promise<T> => {
+        if (open++ === 0) {
+          pendingFor = mine
+          ui.setStatus(CONSENT_STATUS, PENDING_TEXT)
         }
-      }
-      // Moves the bridge to `dir` (null: none); the service's folder (make false) is used only as it stands.
-      const use = (dir: string | null, make: boolean) => {
-        if (consent?.dir === dir) return
-        consentWatcher?.close()
-        consentWatcher = null
-        if (bridge !== null) rmSync(bridge, { force: true })
-        bridge = null
-        consent = null
-        if (dir === null) return
-        const name = boundIn(home)?.join(', ') || target?.name || 'this session'
-        consent = { dir, ask: new ConsentLoop({ name, ui, ...consentFiles(dir) }), make }
-        try {
-          writeBridge(dir, new Date(), make)
-          bridge = join(dir, '.bridge')
-        } catch {
-          bridge = null
-        }
-        try {
-          consentWatcher = watch(dir, () => look())
-          consentWatcher.on('error', () => undefined)
-        } catch {
-          consentWatcher = null
-        }
-        // Never a dialog inside an event handler (a non-tool handler dies at its 30 s budget): the first look runs after.
-        ctx.setTimeout(look, 0)
-      }
-      // With a channel the folder is the connection's, named by the service; with none, the identity's, as before.
-      let asked = 0
-      let saidNone = false
-      askBridge = () => {
-        const ch = channelOf(home)
-        if (ch === null) {
-          if (target !== null) use(join(target.home, 'state', target.name, 'consent'), true)
-          return
-        }
-        const mine = ++asked
-        void askShim(ch, { kind: 'bridge' }).then((a) => {
-          if (mine !== asked) return
-          const dir = typeof a?.bridge === 'string' ? a.bridge : null
-          if (dir === null && !saidNone)
-            log('bag: no consent bridge for this session yet; asking again next turn')
-          saidNone = dir === null
-          use(dir, false)
+        return p.finally(() => {
+          if (--open !== 0 || pendingFor !== mine) return
+          pendingFor = null
+          ui.setStatus(CONSENT_STATUS, undefined)
         })
       }
-      askBridge()
-      // Item 7: the consent questions over this extension's own registered connection, opening on No.
-      const confirm = (title: string, message: string, ms: number, withdrawn: AbortSignal) =>
-        ompConfirm(ui, title, message, ms, withdrawn)
-      link ??= consentLink(home, process.pid, confirm)
-      ctx.setInterval(refresh, FACTS_MS)
-      ctx.setInterval(look, CONSENT_POLL_MS)
+      if (link === null) {
+        mine = consentLink(home, process.pid, {
+          confirm: (title, message, ms, withdrawn) => pending(ompConfirm(ui, title, message, ms, withdrawn)),
+          // omp's input has a title and a placeholder only: the question's message (the tries left, the peer's
+          // address, the name) stands in its own widget while the input is open, apart from the invite code's show.
+          // Only the newest question clears it: a withdrawn one settling late leaves the next one's words up.
+          input: (title, placeholder, ms, withdrawn, message) => {
+            const n = ++asks
+            ui.setWidget(
+              ASK_WIDGET,
+              message === undefined || message === '' ? undefined : message.split('\n'),
+            )
+            return pending(ompInput(ui, title, placeholder, ms, withdrawn)).finally(() => {
+              if (n === asks) ui.setWidget(ASK_WIDGET, undefined)
+            })
+          },
+          show: (lines) => ui.setWidget(CONSENT_STATUS, lines),
+        })
+        link = mine
+      }
     }
   })
   pi.on('agent_end', () => {
     facts?.()
     loop?.idle()
     rings?.idle()
-    askBridge?.()
   })
   pi.on('session_shutdown', () => {
     facts?.()
@@ -1282,13 +1205,8 @@ export default function bagWake(pi: Pi): void {
     watcher = null
     ringWatcher?.close()
     ringWatcher = null
-    consentWatcher?.close()
-    consentWatcher = null
     link?.close()
     link = null
-    if (bridge !== null) rmSync(bridge, { force: true })
-    bridge = null
-    askBridge = null
     loop = null
     rings = null
   })

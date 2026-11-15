@@ -1,13 +1,23 @@
 import { lstatSync, readFileSync } from 'node:fs'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { CliError, shq, UsageError } from '../args.ts'
-import { applyChange, View } from '../changes.ts'
-import type { Io } from '../io.ts'
-import { stableNode } from '../packaged.ts'
-import type { Staged } from '../stage.ts'
-import { addGroup, bagLink, child, TABLE, WAKE_MAX, WAKE_TIMEOUT } from './host-install.ts'
-import { CODEX_STOP_TIMEOUT, CODEX_STOP_WAIT } from './wake-hook.ts'
+import { applyChange, View } from './changes.ts'
+import {
+  addGroup,
+  bagLink,
+  CODEX_STOP_TIMEOUT,
+  CODEX_STOP_WAIT,
+  child,
+  type Host,
+  type HostProcess,
+  type Json,
+  shq,
+  TABLE,
+  WAKE_MAX,
+  WAKE_TIMEOUT,
+} from './host-common.ts'
+import { HomeError } from './ports.ts'
+import type { Staged } from './stage.ts'
 
 // host install <host> --user with no --as: the user-scope wiring of the bag service (docs/bag-service.md), one shim
 // entry per host that serves every identity of the home, and its hooks; the per-folder stdio mode (--project) stays as
@@ -15,10 +25,11 @@ import { CODEX_STOP_TIMEOUT, CODEX_STOP_WAIT } from './wake-hook.ts'
 // the first write. What each host supports at user scope, verified 2026-11-12:
 // Claude Code 2.1.322 `claude mcp add --scope user` writes top-level mcpServers of ~/.claude.json, and user hooks live in
 // ~/.claude/settings.json (with CLAUDE_CONFIG_DIR, <dir>/.claude.json and <dir>/settings.json: claudeFiles); omp 18.18 reads <agentDir>/mcp.json (default ~/.omp/agent, PI_CODING_AGENT_DIR) at user
-// level; Codex has one user table, [mcp_servers.bag] of ~/.codex/config.toml, and ~/.codex/hooks.json.
+// level; Codex has one user table, [mcp_servers.bag] of ~/.codex/config.toml, and ~/.codex/hooks.json. The files are
+// found from the caller's environment (HOME, CLAUDE_CONFIG_DIR, PI_CODING_AGENT_DIR), and the node written is the
+// caller's (HostProcess).
 
-type Json = Record<string, unknown>
-export type Host = 'claude-code' | 'codex' | 'omp'
+type Env = Readonly<Record<string, string | undefined>>
 
 /**
  * The shim's stdio entry (packages/shim: `bag-shim [--dir <home>] [--input-hook]`): it reads the launch token itself.
@@ -42,12 +53,12 @@ export function shimOf(have: unknown): { home: string } | null {
 }
 
 /** The wake hook through the shim: wake-hook --session service, the identity this session's shim is bound to. */
-export const serviceWake = (m: Staged, home: string, flags: readonly string[]): string =>
-  [stableNode(), m.cli, 'wake-hook', '--session', 'service', '--dir', home, ...flags].map(shq).join(' ')
+export const serviceWake = (node: string, m: Staged, home: string, flags: readonly string[]): string =>
+  [node, m.cli, 'wake-hook', '--session', 'service', '--dir', home, ...flags].map(shq).join(' ')
 
 /** The typed-word hook (packages/shim: `bag-shim hook [--dir <home>]`). */
-export const typedHook = (m: Staged, home: string): string =>
-  [stableNode(), m.shim, 'hook', '--dir', home].map(shq).join(' ')
+export const typedHook = (node: string, m: Staged, home: string): string =>
+  [node, m.shim, 'hook', '--dir', home].map(shq).join(' ')
 
 /** Whether a hook group runs bag's service hook of the same kind as `command` (any version, any home). */
 function sameKind(g: unknown, command: string): boolean {
@@ -64,7 +75,7 @@ function putEntry(doc: Json, entry: Json, file: string, home: string): boolean {
   if (isDeepStrictEqual(have, entry)) return false
   const shim = have === undefined ? null : shimOf(have)
   if (have !== undefined && (shim === null || shim.home !== home)) {
-    throw new CliError(
+    throw new HomeError(
       'exists',
       `${file} has mcpServers.bag for ${shim === null ? 'one identity (the per-folder form)' : `the home ${shim.home}`}: run host migrate, or edit or remove it first`,
     )
@@ -95,16 +106,16 @@ function putHooks(events: Json, hooks: Record<string, Json>): boolean {
 /** Adds `items` to the array at `key` of `parent` that lacks them; true when it added one. */
 function merge(parent: Json, key: string, items: readonly string[]): boolean {
   const have = parent[key] ?? []
-  if (!Array.isArray(have)) throw new CliError('host-file-invalid', `"${key}" is not a list`)
+  if (!Array.isArray(have)) throw new HomeError('host-file-invalid', `"${key}" is not a list`)
   const more = items.filter((x) => !have.includes(x))
   parent[key] = [...have, ...more]
   return more.length > 0
 }
 
 /** The user's HOME, which every user-scope file is under. */
-function userHome(io: Io): string {
-  if (!io.env.HOME) throw new UsageError('no HOME: --user writes under $HOME')
-  return io.env.HOME
+function userHome(env: Env): string {
+  if (!env.HOME) throw new HomeError('usage', 'no HOME: --user writes under $HOME')
+  return env.HOME
 }
 
 /**
@@ -113,48 +124,57 @@ function userHome(io: Io): string {
  * else ~/.claude.json and ~/.claude/settings.json. A relative CLAUDE_CONFIG_DIR is refused: which folder it names
  * depends on where Claude Code starts, so no install can know.
  */
-export function claudeFiles(io: Io): { file: string; settings: string } {
-  const dir = io.env.CLAUDE_CONFIG_DIR
+export function claudeFiles(env: Env): { file: string; settings: string } {
+  const dir = env.CLAUDE_CONFIG_DIR
   if (dir) {
     if (!isAbsolute(dir)) {
-      throw new UsageError(
+      throw new HomeError(
+        'usage',
         `CLAUDE_CONFIG_DIR is ${JSON.stringify(dir)}, a relative path: set it to the absolute folder your Claude Code reads, then run this again`,
       )
     }
     return { file: join(dir, '.claude.json'), settings: join(dir, 'settings.json') }
   }
-  const HOME = userHome(io)
+  const HOME = userHome(env)
   return { file: join(HOME, '.claude.json'), settings: join(HOME, '.claude', 'settings.json') }
 }
 
 /** omp's agent directory: PI_CODING_AGENT_DIR, else ~/.omp/agent (omp 18.18's hook documentation). */
-export const ompAgentDir = (io: Io): string =>
-  io.env.PI_CODING_AGENT_DIR ?? join(userHome(io), '.omp', 'agent')
+export const ompAgentDir = (env: Env): string =>
+  env.PI_CODING_AGENT_DIR ?? join(userHome(env), '.omp', 'agent')
 
 /**
  * The user-scope changes for `host`, nothing written. Claude Code: the shim entry in ~/.claude.json, the shim's
  * SessionStart and Stop hooks (asyncRewake; the shim's hook answers at once for an unbound session, so no session
  * holds a day-long wait for nothing) and its UserPromptSubmit hook (the typed word) in ~/.claude/settings.json, and the
- * sandbox rule of contract section 5: permissions.deny Read and Edit of <home>/run, and sandbox.filesystem denyRead and
+ * sandbox rule (docs/bag-service.md): permissions.deny Read and Edit of <home>/run, and sandbox.filesystem denyRead and
  * denyWrite of it, merged into what is there; sandbox.enabled only with `sandbox` (the person's word: it confines
  * every Bash command of every session). Codex: the shim table in ~/.codex/config.toml and its Stop hook. omp: the shim
- * entry in <agentDir>/mcp.json.
+ * entry in <agentDir>/mcp.json. `node` is the node the entries and hooks run.
  */
-export function userChanges(view: View, io: Io, m: Staged, home: string, host: Host, sandbox = false): void {
-  const HOME = userHome(io)
-  const entry: Json = { type: 'stdio', command: stableNode(), args: shimArgs(m, home, host) }
+export function userChanges(
+  view: View,
+  env: Env,
+  node: string,
+  m: Staged,
+  home: string,
+  host: Host,
+  sandbox = false,
+): void {
+  const HOME = userHome(env)
+  const entry: Json = { type: 'stdio', command: node, args: shimArgs(m, home, host) }
   const run = join(home, 'run')
   const pkg = join(home, 'package')
   if (host === 'claude-code') {
-    const { file, settings } = claudeFiles(io)
+    const { file, settings } = claudeFiles(env)
     view.json(file, `${file}: mcpServers.bag, the bag service's shim`, (d) => putEntry(d, entry, file, home))
     const wake = (): Json => ({
       type: 'command',
-      command: serviceWake(m, home, ['--max', String(WAKE_MAX)]),
+      command: serviceWake(node, m, home, ['--max', String(WAKE_MAX)]),
       timeout: WAKE_TIMEOUT,
       asyncRewake: true,
     })
-    const typed: Json = { type: 'command', command: typedHook(m, home), timeout: 10 }
+    const typed: Json = { type: 'command', command: typedHook(node, m, home), timeout: 10 }
     const note = `${settings}: the shim's SessionStart, Stop and UserPromptSubmit hooks; deny rules for ${run}${sandbox ? '; sandbox.enabled true' : ''}`
     view.json(settings, note, (d) => {
       const hooks = putHooks(child(d, 'hooks'), {
@@ -183,15 +203,18 @@ export function userChanges(view: View, io: Io, m: Staged, home: string, host: H
       return hooks || denied || boxed || enabled
     })
   } else if (host === 'omp') {
-    const file = join(ompAgentDir(io), 'mcp.json')
-    view.json(file, `${file}: mcpServers.bag, the bag service's shim`, (d) => putEntry(d, entry, file, home))
+    const file = join(ompAgentDir(env), 'mcp.json')
+    // omp's per-server MCP timeout (ms; omp's default is 30 s): a consent question over the extension's link may stand
+    // 120 s inside its tool call, plus a 10 s margin. Never 0: a hung call must still end.
+    const omp = { ...entry, timeout: 130000 }
+    view.json(file, `${file}: mcpServers.bag, the bag service's shim`, (d) => putEntry(d, omp, file, home))
     // The wake extension at user level, <agentDir>/hooks/pre/bag-wake.js, a link to the launcher
-    // <home>/package/bag-omp-wake.js (from source, omp-wake.ts): it finds the home from the shim entry's --dir (W1).
-    const dir = join(ompAgentDir(io), 'hooks', 'pre')
+    // <home>/package/bag-omp-wake.js (from source, omp-wake.ts): it finds the home from the shim entry's --dir.
+    const dir = join(ompAgentDir(env), 'hooks', 'pre')
     const link = join(dir, `bag-wake${extname(m.omp)}`)
     const foreign = userLinks(dir).filter((l) => !bagLink(l))
     if (foreign.length > 0) {
-      throw new CliError(
+      throw new HomeError(
         'exists',
         `${foreign.join(', ')} is not bag's wake link: move it away first, then run this again`,
       )
@@ -202,14 +225,14 @@ export function userChanges(view: View, io: Io, m: Staged, home: string, host: H
     view.set({ path: link, link: m.omp, note: `${link} -> ${m.omp}: the wake extension` })
   } else {
     const file = join(HOME, '.codex', 'config.toml')
-    const toml = `[mcp_servers.bag]\ncommand = ${JSON.stringify(stableNode())}\nargs = ${JSON.stringify(shimArgs(m, home, host))}\n`
+    const toml = `[mcp_servers.bag]\ncommand = ${JSON.stringify(node)}\nargs = ${JSON.stringify(shimArgs(m, home, host))}\n`
     const was = view.text(file) ?? ''
     if (!was.includes(toml)) {
       const old = tableOf(was)
       const shim =
         old !== null && /bag-shim\.js|shim\/src\/main\.ts/.test(old) && old.includes(JSON.stringify(home))
       if (old !== null && !shim) {
-        throw new CliError(
+        throw new HomeError(
           'exists',
           `${file} has [mcp_servers.bag] of one identity, or of another home: run host migrate, or edit or remove it first`,
         )
@@ -226,11 +249,16 @@ export function userChanges(view: View, io: Io, m: Staged, home: string, host: H
     const hooks = join(HOME, '.codex', 'hooks.json')
     const stop: Json = {
       type: 'command',
-      command: serviceWake(m, home, ['--max', String(CODEX_STOP_WAIT), '--no-idle-wake']),
+      command: serviceWake(node, m, home, ['--max', String(CODEX_STOP_WAIT), '--no-idle-wake']),
       timeout: CODEX_STOP_TIMEOUT,
       statusMessage: 'bag: waiting for mail',
     }
-    view.json(hooks, `${hooks}: the shim's Stop hook`, (d) => putHooks(child(d, 'hooks'), { Stop: stop }))
+    // SessionEnd (a window closed or quit, or /new): the ended session's binding is released (wake-hook --end).
+    // Codex 0.167 clamps a SessionEnd hook's timeout to 3 s, as a run showed; the hook takes milliseconds.
+    const ended: Json = { type: 'command', command: serviceWake(node, m, home, ['--end']), timeout: 3 }
+    view.json(hooks, `${hooks}: the shim's Stop and SessionEnd hooks`, (d) =>
+      putHooks(child(d, 'hooks'), { Stop: stop, SessionEnd: ended }),
+    )
   }
 }
 
@@ -242,11 +270,11 @@ export function tableOf(text: string): string | null {
 }
 
 /** The lines after a user-scope install of `host`: the restart, the sandbox's state, the host's limits. */
-export function userNotes(io: Io, home: string, host: Host, sandbox: boolean): string[] {
+export function userNotes(env: Env, home: string, host: Host, sandbox: boolean): string[] {
   const run = join(home, 'run')
   if (host === 'claude-code') {
     // Under a config dir, where Claude Code reads settings.json is its layout, not a live check: the person checks once.
-    const check = io.env.CLAUDE_CONFIG_DIR
+    const check = env.CLAUDE_CONFIG_DIR
       ? [
           `check once in Claude Code: /permissions should list bag's deny rules for ${join(home, 'keys')} and ${run}; if it does not, say so at bag.dev`,
         ]
@@ -260,11 +288,11 @@ export function userNotes(io: Io, home: string, host: Host, sandbox: boolean): s
     ]
   }
   if (host === 'codex') {
-    const roots = codexRoots(io)
+    const roots = codexRoots(env)
     const under = (p: string) => roots.filter((r) => `${p}/`.startsWith(`${r.replace(/\/$/, '')}/`))
     const covered = [...new Set([...under(run), ...under(join(home, 'package'))])]
     return [
-      'the bag service is wired for Codex; Codex binds by dialog only (it has no input hook). Trust the Stop hook with /hooks in Codex',
+      'the bag service is wired for Codex; Codex binds by dialog only (it has no input hook). Trust the Stop and SessionEnd hooks with /hooks in Codex',
       `Codex has no deny-read entry: the model's tools can read ${run}, so on Codex the launch token protects nothing against the session's own model; keep ${join(home, 'identities.json')}, ${run} and ${join(home, 'package')} out of the model's writable roots`,
       ...(covered.length === 0
         ? []
@@ -276,14 +304,14 @@ export function userNotes(io: Io, home: string, host: Host, sandbox: boolean): s
   return [
     'the bag service is wired for every omp session of this user; a project .omp/mcp.json with a bag server shadows it: run host migrate',
     `omp has no sandbox or path-deny setting: the model's shell can read and write ${run}, and write ${join(home, 'identities.json')}, which the service serves from`,
-    `the wake extension (${join(ompAgentDir(io), 'hooks', 'pre')}/bag-wake) starts a turn on a ring in the main interactive omp session, as in a wired folder`,
+    `the wake extension (${join(ompAgentDir(env), 'hooks', 'pre')}/bag-wake) starts a turn on a ring in the main interactive omp session, as in a wired folder`,
   ]
 }
 
 /** writable_roots of ~/.codex/config.toml, read as plain strings (no TOML parser: the bundle has no dependency). */
-function codexRoots(io: Io): string[] {
+function codexRoots(env: Env): string[] {
   try {
-    const t = readFileSync(join(userHome(io), '.codex', 'config.toml'), 'utf8')
+    const t = readFileSync(join(userHome(env), '.codex', 'config.toml'), 'utf8')
     const m = /writable_roots\s*=\s*\[([^\]]*)\]/.exec(t)
     return m === null ? [] : [...(m[1] ?? '').matchAll(/"([^"]*)"/g)].map((x) => x[1] as string)
   } catch {
@@ -293,7 +321,8 @@ function codexRoots(io: Io): string[] {
 
 /** host install <host> --user (no --as): the changes written, one line each, and the notes. */
 export function installUser(
-  io: Io,
+  env: Env,
+  p: HostProcess,
   m: Staged,
   home: string,
   host: Host,
@@ -301,14 +330,14 @@ export function installUser(
   out: string[],
 ): void {
   const view = new View()
-  userChanges(view, io, m, home, host, sandbox)
+  userChanges(view, env, p.node, m, home, host, sandbox)
   const changes = view.changes()
   for (const c of changes) {
-    applyChange(c)
+    applyChange(c, p.pid)
     out.push(`wrote ${c.note}`)
   }
   if (changes.length === 0) out.push('nothing to change')
-  out.push(...userNotes(io, home, host, sandbox))
+  out.push(...userNotes(env, home, host, sandbox))
 }
 
 /**
@@ -316,8 +345,8 @@ export function installUser(
  * every other server and hook stays, and so do the deny rules for <home>/run (they protect nothing else and cost
  * nothing). A bag entry that is not this home's shim is left, named.
  */
-export function removeUser(io: Io, home: string, host: Host, out: string[]): void {
-  const HOME = userHome(io)
+export function removeUser(env: Env, pid: number, home: string, host: Host, out: string[]): void {
+  const HOME = userHome(env)
   const view = new View()
   const ours = (have: unknown) => shimOf(have)?.home === home
   const unhook = (events: Json): boolean => {
@@ -344,12 +373,12 @@ export function removeUser(io: Io, home: string, host: Host, out: string[]): voi
       return true
     })
   if (host === 'claude-code') {
-    const { file, settings } = claudeFiles(io)
+    const { file, settings } = claudeFiles(env)
     entry(file)
     view.json(settings, `${settings}: bag's service hooks removed`, (d) => unhook(child(d, 'hooks')))
   } else if (host === 'omp') {
-    entry(join(ompAgentDir(io), 'mcp.json'))
-    for (const l of userLinks(join(ompAgentDir(io), 'hooks', 'pre')).filter(bagLink)) {
+    entry(join(ompAgentDir(env), 'mcp.json'))
+    for (const l of userLinks(join(ompAgentDir(env), 'hooks', 'pre')).filter(bagLink)) {
       view.set({ path: l, gone: true, note: `${l}: bag's wake link removed` })
     }
   } else {
@@ -365,11 +394,11 @@ export function removeUser(io: Io, home: string, host: Host, out: string[]): voi
       })
     } else if (old !== null) out.push(`left ${file}: its [mcp_servers.bag] is not the shim of ${home}`)
     const hooks = join(HOME, '.codex', 'hooks.json')
-    view.json(hooks, `${hooks}: bag's service Stop hook removed`, (d) => unhook(child(d, 'hooks')))
+    view.json(hooks, `${hooks}: bag's service hooks removed`, (d) => unhook(child(d, 'hooks')))
   }
   const changes = view.changes()
   for (const c of changes) {
-    applyChange(c)
+    applyChange(c, pid)
     out.push(`wrote ${c.note}`)
   }
   if (changes.length === 0) out.push('nothing to change')

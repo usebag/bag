@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { setTelemetry, systemRng } from '@usebag/edge'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import {
   CLI_MAIN,
@@ -17,12 +18,12 @@ import {
   world,
 } from '../harness.ts'
 
-// Scenario 57: the client telemetry sender (the W6 design note), with real CLI, MCP server and bridge processes and a
-// fake endpoint on 127.0.0.1 that every process reaches through AC_TELEMETRY_URL (loopback only). Each process gets a
-// machine of its own (HOME), whose spool is seeded by hand with a finished day. Off, nothing reaches the endpoint from
-// any of them. On, the day goes once, exactly as `telemetry preview --date` prints it: from the CLI's detached sender
-// after a command line, and from the MCP server and the bridge at their start. Before 01:05 UTC no day is due, so a
-// run then asserts that nothing is sent at all.
+// Scenario 57: the client telemetry sender (spec/SPEC.md Appendix B item 111), with real CLI, MCP server and bridge
+// processes and a fake endpoint on 127.0.0.1 that every process reaches through AC_TELEMETRY_URL (loopback only). Each
+// process gets a machine of its own (HOME), whose spool is seeded by hand with a finished day. Off, nothing reaches the
+// endpoint from any of them. On, the day goes once, exactly as `telemetry preview --date` prints it: from the CLI's
+// detached sender after a command line, and from the MCP server and the bridge at their start. Before 01:05 UTC no day
+// is due, so a run then asserts that nothing is sent at all.
 
 const MCP_MAIN = join(REPO, 'packages', 'mcp', 'src', 'main.ts')
 const BRIDGE_MAIN = join(REPO, 'packages', 'a2a', 'src', 'main.ts')
@@ -69,6 +70,14 @@ function cliIn(env: NodeJS.ProcessEnv, ...args: string[]): Promise<{ code: numbe
       resolve({ code, out: stdout.split('\n').filter((l) => l !== '') })
     })
   })
+}
+
+/**
+ * Turns the machine's telemetry on as `telemetry on` does after a person's y (the edge's setTelemetry): the CLI
+ * verb asks on a terminal, which a scenario has not; this scenario tests the sender, not the question.
+ */
+function turnOn(home: string): void {
+  setTelemetry(join(home, '.bag'), 'on', systemRng)
 }
 
 /** Seeds the machine's spool by hand with one pairing count on `day`. */
@@ -131,8 +140,9 @@ describe('e2e scenario 57: the client telemetry sender', () => {
     const w = await withSpawnedRelays(() => world('telemetry-sender'))
     const R = w.url
     const identity = join(w.dir, 'alice-home')
-    expect((await cliProcess(['keygen', 'alice', '--dir', identity])).code).toBe(0)
-    const bob = (await cliProcess(['keygen', 'bob', '--dir', join(w.dir, 'bob-home')])).out[0] as string
+    expect((await cliProcess(['keygen', '--new', 'alice', '--dir', identity])).code).toBe(0)
+    const bob = (await cliProcess(['keygen', '--new', 'bob', '--dir', join(w.dir, 'bob-home')]))
+      .out[0] as string
     expect((await cliProcess(['keys', 'rotate', 'alice', '--relay', R, '--dir', identity])).code).toBe(0)
     const fake = await endpoint()
     const serve = ['--as', 'alice', '--dir', identity, '--relay', R]
@@ -160,7 +170,7 @@ describe('e2e scenario 57: the client telemetry sender', () => {
     // On: the CLI's machine. A command line starts the detached sender; a second one starts none.
     const cliOn = join(w.dir, 'cli-on')
     const onCli = machineEnv(cliOn, fake.url)
-    expect((await cliIn(onCli, 'telemetry', 'on')).code).toBe(0)
+    turnOn(cliOn)
     seed(cliOn, yesterday)
     const previewed = (await cliIn(onCli, 'telemetry', 'preview', '--date', yesterday)).out[0] as string
     expect(JSON.parse(previewed)).toMatchObject({ date: yesterday, pairing: { ok: 1 } })
@@ -175,7 +185,7 @@ describe('e2e scenario 57: the client telemetry sender', () => {
     const expected = [previewed]
     for (const home of [mcpOn, bridgeOn]) {
       const env = machineEnv(home, fake.url)
-      expect((await cliIn(env, 'telemetry', 'on')).code).toBe(0)
+      turnOn(home)
       seed(home, yesterday)
       expected.push((await cliIn(env, 'telemetry', 'preview', '--date', yesterday)).out[0] as string)
     }

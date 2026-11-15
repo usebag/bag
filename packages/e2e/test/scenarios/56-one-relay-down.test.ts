@@ -98,7 +98,7 @@ describe('e2e scenario 56: one listed relay down', () => {
     const r2 = await second(w)
     const dir = ['--dir', join(w.dir, 'home')]
     const relays = ['--relay', w.url, '--relay', r2.url]
-    const bob = (await cli('keygen', 'bob', ...dir)).out[0] as string
+    const bob = (await cli('keygen', '--new', 'bob', ...dir)).out[0] as string
     expect((await cli('keys', 'rotate', 'bob', ...relays, ...dir)).code).toBe(0)
     expect(await r2.running().stop()).toBe(0)
 
@@ -129,8 +129,8 @@ describe('e2e scenario 56: one listed relay down', () => {
     const dir = ['--dir', home]
     const relays = ['--relay', w.url, '--relay', r2.url]
     const [bob, gone] = [
-      (await cli('keygen', 'bob', ...dir)).out[0] as string,
-      (await cli('keygen', 'gone', ...dir)).out[0] as string,
+      (await cli('keygen', '--new', 'bob', ...dir)).out[0] as string,
+      (await cli('keygen', '--new', 'gone', ...dir)).out[0] as string,
     ]
     const file = join(home, 'revoking.json')
     await cli('record', 'address', 'bob', ...relays, '--sealing-key', '--revoke', gone, '--out', file, ...dir)

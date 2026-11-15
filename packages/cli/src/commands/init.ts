@@ -18,6 +18,7 @@ import {
   writeRecoveryState,
   zeroSeeds,
 } from '@usebag/edge'
+import { auditedPublish } from '@usebag/home'
 import { CliError, flag, parse, relayUrl, str, UsageError } from '../args.ts'
 import { addressRecords, newestOf, rotateEpoch } from '../epochs.ts'
 import { cliAudit, homeCustody, homeDir } from '../home.ts'
@@ -177,7 +178,7 @@ export async function restore(args: readonly string[], io: Io): Promise<number> 
       a.record({ event: 'restore', decision: 'reject', detail })
       return a
     }
-    // Ruling 2 (a): a record that revokes the address stops the restore; nothing undoes a revocation here.
+    // A record that revokes the address stops the restore; nothing undoes a revocation here.
     const revoking = found.find((f) => f.record.revoked.includes(address))
     if (revoking !== undefined) {
       reject({ revoked: true })
@@ -213,7 +214,7 @@ export async function restore(args: readonly string[], io: Io): Promise<number> 
       io.err('type the last line of the sheet once more, to keep it as the second copy')
       return (await typedBack(io, seeds, sheet.relay)) ? 'sheet' : 'single-copy'
     }
-    // Every revocation any source carries is kept (ruling 3), the copy in this home too, and every relay the records named.
+    // Every revocation any source carries is kept, the copy in this home too, and every relay the records named.
     const known = [...found.map((f) => f.record), ...[addressCopy(home, name, address) ?? []].flat()]
     const revoked = [...new Set(known.flatMap((r) => r.revoked))]
     const relays = held?.relays ?? [given ?? relayUrl(sheet.relay)]
@@ -332,8 +333,10 @@ async function keep(io: Io, k: Keep): Promise<RecoveryState['copy']> {
       rotated_from: null,
     })
     for (const url of k.relays) {
+      const send = () => io.relay({}).publish(url, serializeRecord(record))
       try {
-        await io.relay({}).publish(url, serializeRecord(record))
+        // An init's or a restore's publish is one line in cli-audit.jsonl (auditedPublish), as identity_create writes.
+        await auditedPublish(audit(k.home, k.name, io), 'address', url, send)
       } catch (e) {
         const step = `ac record address ${k.name} --relay ${url} --rotation-key ${rotation.address}, then ac publish, then ac keys rotate ${k.name} --relay ${url}`
         const code = String((e as { code?: unknown }).code ?? 'publish-failed')

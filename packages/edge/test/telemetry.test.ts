@@ -11,6 +11,8 @@ import {
   TELEMETRY_FILE,
   TELEMETRY_NOTICE,
   telemetryDir,
+  telemetryEraseId,
+  telemetryEraseIds,
   telemetryId,
   telemetryNotice,
   telemetryOn,
@@ -171,6 +173,79 @@ describe('setTelemetry and telemetryId: the choice in a 0600 file, an install id
     expect(readdirSync(home)).toEqual([TELEMETRY_FILE])
   })
 
+  it('reads the valid ids of an erase list and skips only an entry that is not one, on and off alike', () => {
+    const a = 'ab'.repeat(16)
+    const b = 'cd'.repeat(16)
+    for (const doc of [
+      { version: 2, telemetry: 'off', erase: [a, 'junk', 7, b, a] },
+      {
+        version: 2,
+        telemetry: 'on',
+        id: 'ef'.repeat(16),
+        since: '2027-01-15',
+        erase: [null, a, b, 'AB'.repeat(16)],
+      },
+    ]) {
+      const home = fresh()
+      writeFileSync(file(home), JSON.stringify(doc))
+      expect(telemetryEraseIds(home), JSON.stringify(doc)).toEqual([a, b])
+    }
+    const home = fresh()
+    writeFileSync(file(home), JSON.stringify({ version: 2, telemetry: 'off', erase: ['junk', 7] }))
+    expect(telemetryEraseIds(home)).toEqual([])
+  })
+
+  it('a failed forget, then on: a new id beside the id still to be erased; off keeps it; only an explicit list drops it', () => {
+    const home = fresh()
+    const T = 1_800_000_000 // 2027-01-15 08:00 UTC
+    setTelemetry(home, 'on', systemRng, T)
+    const id = telemetryId(home) as string
+    // A forget's first write: off, with the id it asks to erase kept.
+    setTelemetry(home, 'off', systemRng, T, [id])
+    expect(JSON.parse(readFileSync(file(home), 'utf8'))).toEqual({ version: 2, telemetry: 'off', erase: id })
+    expect([telemetryId(home), telemetryEraseId(home), telemetryState({}, home).on]).toEqual([
+      null,
+      id,
+      false,
+    ])
+    // An on before that erasure is confirmed draws a new id from the rng, and the id to erase stays beside it.
+    const rng = {
+      bytes: (k: number) => (k === 16 ? new Uint8Array(16).fill(0xcd) : new Uint8Array(k).fill(1)),
+    }
+    setTelemetry(home, 'on', rng, T + 86_400)
+    const next = 'cd'.repeat(16)
+    expect(next).not.toBe(id)
+    expect(JSON.parse(readFileSync(file(home), 'utf8'))).toEqual({
+      version: 2,
+      telemetry: 'on',
+      id: next,
+      since: '2027-01-16',
+      erase: id,
+    })
+    expect([telemetryId(home), telemetryEraseIds(home)]).toEqual([next, [id]])
+    // A second forget's first write keeps both, the pending one first; a confirmed first leaves the second.
+    setTelemetry(home, 'off', systemRng, T, [id, next])
+    expect(JSON.parse(readFileSync(file(home), 'utf8'))).toEqual({
+      version: 2,
+      telemetry: 'off',
+      erase: [id, next],
+    })
+    expect(telemetryEraseIds(home)).toEqual([id, next])
+    setTelemetry(home, 'off', systemRng, T, [next])
+    expect(telemetryEraseIds(home)).toEqual([next])
+    // A plain off keeps the ids still to be erased: only a confirmed erasure drops them.
+    setTelemetry(home, 'off', systemRng)
+    expect(telemetryEraseIds(home)).toEqual([next])
+    setTelemetry(home, 'off', systemRng, T, [])
+    expect(JSON.parse(readFileSync(file(home), 'utf8'))).toEqual({ version: 2, telemetry: 'off' })
+    expect(telemetryEraseId(home)).toBeNull()
+    // An erase that is not 32 hex names none; in a list only that entry is skipped, the valid ids kept.
+    writeFileSync(file(home), JSON.stringify({ version: 2, telemetry: 'off', erase: 'x' }))
+    expect(telemetryEraseIds(home)).toEqual([])
+    writeFileSync(file(home), JSON.stringify({ version: 2, telemetry: 'off', erase: ['x', id] }))
+    expect(telemetryEraseIds(home)).toEqual([id])
+  })
+
   it('draws an id from the rng it is given, never from the home, and replaces a bad file', () => {
     const home = fresh()
     writeFileSync(file(home), '{"version":1,"telemetry":"on"}')
@@ -193,7 +268,7 @@ describe('setTelemetry and telemetryId: the choice in a 0600 file, an install id
 })
 
 describe('telemetryNotice: the notice, once per home, while no choice is made', () => {
-  it('is the fixed notice text, word for word, naming the preview and never ac telemetry on (ruling 13)', () => {
+  it('is the fixed notice text, word for word, naming the preview and never ac telemetry on', () => {
     const words =
       'bag: telemetry is off. It is used to find failures, see which versions, commands and tools are used, and decide what to build. If you turn it on, bag sends one report a day to telemetry.bag.dev: the version, OS, and counts of commands, messages, peers and error codes, under a random id. Never addresses, keys, messages, file paths or your IP address. See the exact report: PREVIEW. Details: bag.dev/privacy'
     const cmd = 'node /x/main.ts telemetry preview'

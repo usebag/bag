@@ -65,7 +65,7 @@ describe('the group commands, an admin and two members on two relays', () => {
   it('setup: five homes, the identities and the members records', async () => {
     for (const k of Object.keys(dirs) as (keyof typeof dirs)[]) dirs[k] = join(tmp.dir, k)
     const keygen = async (name: string, dir: string) =>
-      (await cli(io, 'keygen', name, '--dir', dir)).out[0] as string
+      (await cli(io, 'keygen', '--new', name, '--dir', dir)).out[0] as string
     who.team = await keygen('team', dirs.admin)
     who.solo = await keygen('solo', dirs.admin)
     who.cold = await keygen('cold', dirs.cold)

@@ -80,7 +80,8 @@ describe('S5 (b): a changed member or another statement is never signed through 
     ['ttl', { ttl: 1 }],
     ['rotation', { rotated_from: P.org.address }],
   ]
-  const OTHER = ['rotate', 'rotation', 'record', 'handle', 'policy', 'policy-members', 'gkey', 'revoke']
+  // `revoke` is not here: it is the agent's uid-only session revoke, which signs nothing (its own case below).
+  const OTHER = ['rotate', 'rotation', 'record', 'handle', 'policy', 'policy-members', 'gkey']
 
   it('the keep-alive client: a frame carrying a changed member signs the held record unchanged, or is refused; 0 changed members signed', async () => {
     let served = 0
@@ -134,6 +135,19 @@ describe('S5 (b): a changed member or another statement is never signed through 
       `${OTHER.length} ops, signed ${codes.filter((c) => c === 'signed').length}, bad-shape ${codes.filter((c) => c === 'bad-shape').length}`,
     )
     expect(codes).toEqual(OTHER.map(() => 'bad-shape'))
+    expect(m.records.get('address')).toEqual(last)
+  })
+
+  it('the keep-alive client: a revoke frame revokes no record and signs nothing; the held record is unchanged', async () => {
+    const m = await bootServer(home())
+    const last = held('address')
+    m.records.set('address', last)
+    m.clock.advance(halfOf(last))
+    const [reply] = (await exchange(m.path, () => [
+      JSON.stringify({ op: 'revoke', args: ['address'] }),
+    ])) as Array<Record<string, unknown>>
+    expect(reply).toEqual({ ok: true, op: 'revoke', grants: 0 })
+    expect(reply).not.toHaveProperty('record')
     expect(m.records.get('address')).toEqual(last)
   })
 

@@ -14,7 +14,15 @@ import {
   verifyPreimage,
 } from '@usebag/core'
 import type { Opener, Signer } from '../ports.ts'
-import type { AgentRefusal, AgentReply, DeviceReply, GrantReply, GroupKeyIn, GroupKeyReply } from './agent.ts'
+import type {
+  AgentRefusal,
+  AgentReply,
+  DeviceReply,
+  GrantReply,
+  GroupKeyIn,
+  GroupKeyReply,
+  RevokeReply,
+} from './agent.ts'
 import { type AgentCode, AgentError, type AgentOp, buildRequest } from './model.ts'
 import type { LogoutReply } from './server.ts'
 
@@ -105,14 +113,24 @@ export class AgentClient {
     if (!r.ok) throw refused(r)
   }
 
-  /** `ac grant`: `onCode` gets the code the agent's prompt shows, to match it with the one the user sees. */
+  /**
+   * `ac grant`: `onCode` gets the code the agent's prompt shows, to match it with the one the user sees. `note`, 1 to
+   * NOTE_MAX characters, is printed above the hop as the requester's; an older agent ignores it.
+   */
   grant(
     session: string,
     caveats: readonly string[],
     exp: number,
     onCode?: (code: string) => void,
+    note?: string,
   ): Promise<GrantReply> {
-    return this.#call<GrantReply>(JSON.stringify({ op: 'grant', args: [session, caveats, exp] }), onCode)
+    const args = note === undefined ? [session, caveats, exp] : [session, caveats, exp, note]
+    return this.#call<GrantReply>(JSON.stringify({ op: 'grant', args }), onCode)
+  }
+
+  /** `revoke`, uid-only: the session's grants leave the window; an older agent answers `bad-shape`. */
+  revoke(session: string): Promise<RevokeReply> {
+    return this.#call<RevokeReply>(JSON.stringify({ op: 'revoke', args: [session] }))
   }
 
   /** `ac device grant`, as `grant`: the hop P -> D, signed on a `y` at the agent's terminal. */

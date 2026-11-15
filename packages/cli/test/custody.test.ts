@@ -34,7 +34,7 @@ describe('keygen --custody, and the commands on a keychain identity (fake securi
         'bag: usage: --keychain-access is prompt or security, not "sometimes"',
       ],
     ] as const) {
-      const r = await cli(io, 'keygen', 'alice', ...args, '--dir', dir)
+      const r = await cli(io, 'keygen', '--new', 'alice', ...args, '--dir', dir)
       expect([r.code, r.err[0]]).toEqual([1, err])
     }
     expect(existsSync(dir)).toBe(false)
@@ -43,7 +43,7 @@ describe('keygen --custody, and the commands on a keychain identity (fake securi
   it('refuses the keychain with an io that runs no security, and leaves no pointer behind', async () => {
     const io = testIo(new MemoryRelay())
     const dir = home()
-    const r = await cli(io, 'keygen', 'alice', '--custody', 'keychain', '--dir', dir)
+    const r = await cli(io, 'keygen', '--new', 'alice', '--custody', 'keychain', '--dir', dir)
     expect([r.code, r.err[0]]).toEqual([1, 'bag: ENOENT: keychain: this io runs no /usr/bin/security'])
     expect(existsSync(join(dir, 'keychain', 'alice.json'))).toBe(false)
     expect((await cli(io, 'keys', 'list', '--dir', dir)).out).toEqual([])
@@ -53,16 +53,16 @@ describe('keygen --custody, and the commands on a keychain identity (fake securi
     const fake = new FakeSecurity()
     const io = { ...testIo(new MemoryRelay()), security: fake.run }
     const dir = home()
-    const bob = (await cli(io, 'keygen', 'bob', '--custody', 'keychain', '--dir', dir)).out[0]
+    const bob = (await cli(io, 'keygen', '--new', 'bob', '--custody', 'keychain', '--dir', dir)).out[0]
     expect(fake.calls[0]?.input).toContain(' -T "" -X ')
     expect(fake.calls[0]?.input?.trim().endsWith('"')).toBe(false)
-    expect((await cli(io, 'keygen', 'alice', '--dir', dir)).code).toBe(0)
-    const taken = await cli(io, 'keygen', 'bob', '--dir', dir)
+    expect((await cli(io, 'keygen', '--new', 'alice', '--dir', dir)).code).toBe(0)
+    const taken = await cli(io, 'keygen', '--new', 'bob', '--dir', dir)
     expect([taken.code, taken.err[0]]).toEqual([
       1,
       `bag: EEXIST: bob is held already, by ${join(dir, 'keychain', 'bob.json')}`,
     ])
-    const other = await cli(io, 'keygen', 'alice', '--custody', 'keychain', '--dir', dir)
+    const other = await cli(io, 'keygen', '--new', 'alice', '--custody', 'keychain', '--dir', dir)
     expect([other.code, other.err[0]]).toEqual([
       1,
       `bag: EEXIST: alice is held already, by ${join(dir, 'keys', 'alice.json')}`,
@@ -85,8 +85,8 @@ describe('keygen --custody, and the commands on a keychain identity (fake securi
       '--keychain-access',
       'security',
     ]
-    const alice = (await cli(io, 'keygen', 'alice', ...kc, '--dir', dir)).out[0] as string
-    const bob = (await cli(io, 'keygen', 'bob', ...kc, '--dir', dir)).out[0] as string
+    const alice = (await cli(io, 'keygen', '--new', 'alice', ...kc, '--dir', dir)).out[0] as string
+    const bob = (await cli(io, 'keygen', '--new', 'bob', ...kc, '--dir', dir)).out[0] as string
     const reads = (): number => fake.calls.filter((c) => c.args[0] === 'find-generic-password').length
     const file = join(dir, 'bob.address.json')
     const steps = [
@@ -138,9 +138,9 @@ describe('keygen --custody agent, and the records of a principal whose login win
     const io = testIo(relay)
     const dir = join(tmp.dir, `j${n++}`) // short: a Unix socket path holds about 100 bytes
     mkdirSync(dir, { recursive: true, mode: 0o700 })
-    const address = (await cli(io, 'keygen', 'jane-keys', '--dir', dir)).out[0] as string
+    const address = (await cli(io, 'keygen', '--new', 'jane-keys', '--dir', dir)).out[0] as string
     const agent = ['--custody', 'agent', '--principal', 'jane-keys']
-    const made = await cli(io, 'keygen', 'jane', ...agent, '--dir', dir)
+    const made = await cli(io, 'keygen', '--new', 'jane', ...agent, '--dir', dir)
     return { relay, io, dir, address, made }
   }
   const record = (dir: string, name = 'jane-keys', ...more: string[]) => [
@@ -170,7 +170,8 @@ describe('keygen --custody agent, and the records of a principal whose login win
       ['jane', address, 'agent'],
       ['jane-keys', address, 'file'],
     ])
-    const refuse = async (...args: string[]) => (await cli(io, 'keygen', ...args, '--dir', dir)).err[0]
+    const refuse = async (...args: string[]) =>
+      (await cli(io, 'keygen', '--new', ...args, '--dir', dir)).err[0]
     expect(await refuse('x', '--custody', 'agent')).toBe(
       'bag: usage: --custody agent needs --principal <identity>',
     )
@@ -223,7 +224,7 @@ describe('keygen --custody agent, and the records of a principal whose login win
 
   it('refuses while a listener holds the socket, for the address of the agent pointer only, and not with none', async () => {
     const { io, dir } = await janeHome()
-    await cli(io, 'keygen', 'bob', '--dir', dir)
+    await cli(io, 'keygen', '--new', 'bob', '--dir', dir)
     const server = createServer((c) => c.on('error', () => undefined))
     await new Promise<void>((up) => server.listen(join(dir, 'agent.sock'), up))
     const code = async (name: string) => (await cli(io, ...record(dir, name))).err[0]
@@ -244,7 +245,7 @@ describe('keygen --custody agent, and the records of a principal whose login win
       ['r2', 'none'],
     ] as const) {
       const args = ['--custody', 'agent', '--principal', 'jane-keys', '--recovery', setting]
-      expect((await cli(io, 'keygen', name, ...args, '--dir', dir)).code).toBe(0)
+      expect((await cli(io, 'keygen', '--new', name, ...args, '--dir', dir)).code).toBe(0)
       const pointer = JSON.parse(readFileSync(join(dir, 'agent', `${name}.json`), 'utf8'))
       expect(pointer).toMatchObject({ custody: 'agent', recovery: setting })
     }
@@ -276,7 +277,8 @@ describe('keygen --custody agent, and the records of a principal whose login win
 
   it('refuses --recovery without --custody agent, and a value other than personal or none, as usage with no pointer', async () => {
     const { io, dir } = await janeHome()
-    const refuse = async (...args: string[]) => (await cli(io, 'keygen', 'x', ...args, '--dir', dir)).err[0]
+    const refuse = async (...args: string[]) =>
+      (await cli(io, 'keygen', '--new', 'x', ...args, '--dir', dir)).err[0]
     const agent = ['--custody', 'agent', '--principal', 'jane-keys']
     const both = 'bag: usage: --principal and --recovery go with --custody agent'
     expect(await refuse('--recovery', 'personal')).toBe(both)
@@ -297,12 +299,34 @@ describe('keygen --custody agent, and the records of a principal whose login win
     const fake = new FakeSecurity()
     const io = { ...testIo(new MemoryRelay()), security: fake.run }
     const dir = home()
-    await cli(io, 'keygen', 'bob', '--custody', 'keychain', '--dir', dir)
+    await cli(io, 'keygen', '--new', 'bob', '--custody', 'keychain', '--dir', dir)
     const calls = fake.calls.length
-    const bad = await cli(io, 'keygen', '../x', '--custody', 'agent', '--principal', 'bob', '--dir', dir)
+    const bad = await cli(
+      io,
+      'keygen',
+      '--new',
+      '../x',
+      '--custody',
+      'agent',
+      '--principal',
+      'bob',
+      '--dir',
+      dir,
+    )
     expect([bad.code, bad.err[0]]).toEqual([1, expect.stringContaining('a key name is 1 to 64')])
     expect(fake.calls.length).toBe(calls)
-    const made = await cli(io, 'keygen', 'ab', '--custody', 'agent', '--principal', 'bob', '--dir', dir)
+    const made = await cli(
+      io,
+      'keygen',
+      '--new',
+      'ab',
+      '--custody',
+      'agent',
+      '--principal',
+      'bob',
+      '--dir',
+      dir,
+    )
     expect(made.code).toBe(0)
     expect(fake.calls.filter((c) => c.args[0] === 'find-generic-password')).toHaveLength(1)
   })

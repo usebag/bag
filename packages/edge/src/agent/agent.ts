@@ -100,6 +100,9 @@ export type GrantReply =
   | { readonly ok: false; readonly code: 'declined' }
   | { readonly ok: true; readonly hop: Hop }
 
+/** `revoke`'s answer: how many grant-set entries of the session left the window. */
+export type RevokeReply = AgentRefusal | { readonly ok: true; readonly op: 'revoke'; readonly grants: number }
+
 /** `device-grant`'s answer. The hop never enters a grant-set or a dated map, or P's logout revokes D. */
 export type DeviceReply = Exclude<GrantReply, { ok: true }> | { readonly ok: true; readonly device: Hop }
 
@@ -394,7 +397,7 @@ export class Agent {
       const w = this.#open()
       if (w === null) throw locked()
       const hop = checkGrant(this.held, req, grantLimit(this.#o.clock.now(), w.end))
-      const pending: PendingGrant = { ok: true, hop, lines: grantLines(hop) }
+      const pending: PendingGrant = { ok: true, hop, lines: grantLines(hop, 'grant', req.note) }
       this.#pending.set(pending, { w, hop: { ...hop, caveats: [...hop.caveats] }, device: false })
       return pending
     } catch (e) {
@@ -417,6 +420,33 @@ export class Agent {
       return { ok: false, code: 'declined' }
     }
     return { ok: true, hop: this.#signHop(held.w, held.hop, true, null) }
+  }
+
+  /**
+   * `revoke`, uid-only: every grant-set entry of `session` leaves the window (its first grant and any hop signed for
+   * it), so the session's next sign or open is `not-in-grant`; a request already past #authority completes. No `y`: it
+   * only removes authority. Idempotent: an unknown or revoked session answers 0. One `revoke` line in the agent's log.
+   */
+  revoke(session: string): RevokeReply {
+    const w = this.#open()
+    if (w === null) return refuse('agent-locked')
+    let grants = 0
+    for (const [digest, g] of w.grants) {
+      if (g.sub !== session) continue
+      w.grants.delete(digest)
+      grants++
+    }
+    const detail = { sub: session, grants }
+    this.#o.audit.record({
+      event: 'revoke',
+      decision: 'accept',
+      reason: 'ok',
+      id: null,
+      from: null,
+      root: this.principal,
+      detail,
+    })
+    return { ok: true, op: 'revoke', grants }
   }
 
   /** `device-grant`, uid-only: checkDeviceGrant's codes, `agent-locked`, `not-authorized` on D. */

@@ -18,7 +18,7 @@ import { addTrust, removeTrust } from '../trust.ts'
 import { pairingPorts } from './peer.ts'
 import { deps } from './refresher.ts'
 
-// pairings: the console's pairings for this machine's enterprise agent (decision 38b, packages/enterprise-client
+// pairings: the console's pairings for this machine's enterprise agent (packages/enterprise-client
 // pairings.ts), for an agent with no MCP host to poll them. The OSS ceremony runs here as `peer invite` runs it, with
 // the console's person in the inviter's seat: the code is posted to the instance (and printed), the digits come back
 // typed on the console. A paired peer is named in the book and trusted in trust.json, as `peer invite` writes it; a

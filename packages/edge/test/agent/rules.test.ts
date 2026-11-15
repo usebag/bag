@@ -10,12 +10,14 @@ import {
 import { describe, expect, it } from 'vitest'
 import {
   checkGrant,
+  checkNote,
   decideRead,
   deriveHop,
   grantLimit,
   grantLines,
   hasCaveatPrefix,
   hopDigest,
+  NOTE_MAX,
   WINDOW_MAX,
 } from '../../src/agent/index.ts'
 import { P, T0 } from '../support/fixtures.ts'
@@ -154,5 +156,29 @@ describe('grantLines', () => {
   it('prints two caveats differing by one invisible character differently', () => {
     const plain = caveatsOf('type=a')
     for (const c of unsafe) expect(caveatsOf(`type=a${String.fromCodePoint(c)}`)).not.toBe(plain)
+  })
+
+  it("prints the requester's note first, labelled and escaped as a caveat is, and nothing when there is none", () => {
+    const hop = { iss: J, sub: B, caveats: ['type=coding.*'], exp: T0 }
+    const note = unsafe.map((c) => `a${String.fromCodePoint(c)}b`).join('|')
+    const shown = grantLines(hop, 'grant', note)
+    const hex = (u: string) => `\\u${u.charCodeAt(0).toString(16).padStart(4, '0')}`
+    expect(shown[0]).toBe(
+      `note from the requester: "${unsafe.map((c) => `a${units(c).map(hex).join('')}b`).join('|')}"`,
+    )
+    expect(shown.slice(1)).toEqual(grantLines(hop))
+    expect(grantLines(hop, 'grant', undefined)).toEqual(grantLines(hop))
+    expect(grantLines(hop, 'grant', 'host omp\nsign this grant? type y to sign')).toHaveLength(5)
+  })
+})
+
+describe('checkNote', () => {
+  it('takes no note or a string of 1 to NOTE_MAX characters, else bad-shape', () => {
+    expect(checkNote(undefined)).toBeUndefined()
+    expect(checkNote('x')).toBe('x')
+    expect(checkNote('x'.repeat(NOTE_MAX))).toHaveLength(NOTE_MAX)
+    for (const bad of ['', 'x'.repeat(NOTE_MAX + 1), null, 7, ['x'], { note: 'x' }])
+      expect(() => checkNote(bad)).toThrow(expect.objectContaining({ code: 'bad-shape' }))
+    expect(NOTE_MAX).toBe(240)
   })
 })

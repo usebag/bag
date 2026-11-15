@@ -32,6 +32,19 @@ export interface EnterprisePorts {
   readonly sleep: (ms: number) => Promise<void>
   /** Where the agent's records are published; unset, bag's own HTTP relay client (a test passes a fake). */
   readonly relays?: Publisher
+  /**
+   * The home's reads, for the MCP server's identities tool and status (packages/home through the CLI, which may import
+   * it; this package may not). Unset, the server offers its three enterprise tools only, as before.
+   */
+  readonly home?: HomeReads
+}
+
+/** The reads of a bag home the MCP server shows: its identities with their relays, and the relays' health. */
+export interface HomeReads {
+  identities(home: string): readonly { readonly label: string; readonly relays: readonly string[] }[]
+  relaysHealth(
+    relays: readonly string[],
+  ): Promise<readonly { readonly relay: string; readonly ok: boolean }[]>
 }
 
 /** The flow's deps over `ports` and the bag home: lines go to `say`, the console code comes from `readCode`. */

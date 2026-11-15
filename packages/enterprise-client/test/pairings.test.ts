@@ -19,7 +19,7 @@ import { signedRoots } from '../src/records.ts'
 import { enterpriseDir, type Session, writeJson } from '../src/session.ts'
 import { T0, tempDir } from './support/fixtures.ts'
 
-// The console's pairings, client side (decision 38b): a faked instance holds the commands and takes the events, a
+// The console's pairings, client side: a faked instance holds the commands and takes the events, a
 // faked ceremony stands for the edge's invitePeer. The digits the console's person typed are checked here, three times;
 // a revoke or a term's end takes the peer out; the accept-from signs the paired peers beside the accept list.
 

@@ -28,7 +28,8 @@ const home = (): string => join(tmp.dir, `home-${n++}`)
 /** Makes identities in a home and returns their addresses by name. */
 async function identities(io: ReturnType<typeof testIo>, dir: string, ...names: string[]) {
   const out: Record<string, string> = {}
-  for (const name of names) out[name] = (await cli(io, 'keygen', name, '--dir', dir)).out[0] as string
+  for (const name of names)
+    out[name] = (await cli(io, 'keygen', '--new', name, '--dir', dir)).out[0] as string
   return out
 }
 

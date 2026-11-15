@@ -50,7 +50,7 @@ describe('e2e scenario 59: a message refused for a trust failure is delivered by
     const w = await world('s59')
     const home = join(w.dir, 'cli-home')
     const dir = ['--dir', home]
-    const made = await Promise.all(['alice', 'bob'].map((name) => cli('keygen', name, ...dir)))
+    const made = await Promise.all(['alice', 'bob'].map((name) => cli('keygen', '--new', name, ...dir)))
     for (const m of made) expect([m.code, m.err]).toEqual([0, []])
     const [alice, bob] = made.map((m) => m.out[0] as string) as [string, string]
 

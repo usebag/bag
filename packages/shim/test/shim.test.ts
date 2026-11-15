@@ -1,12 +1,11 @@
-import { mkdirSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { bridgeDirOf } from '../src/bridge.ts'
 import type { Message } from '../src/frames.ts'
 import type { Ring } from '../src/ring.ts'
 import { socketConnect } from '../src/service.ts'
 import { absentText, LOST_TEXT, RESUME_TOOL, Shim, type ShimDeps } from '../src/shim.ts'
-import { readToken, SHIM_VERSION, socketOf, tokenFileOf } from '../src/wire.ts'
+import { readToken, SHIM_VERSION, SUBAGENT_META, socketOf, tokenFileOf } from '../src/wire.ts'
 import { dropHome, FakeService, shortHome } from './fake-service.ts'
 
 const INIT = {
@@ -247,19 +246,10 @@ describe('dialogs', () => {
     h.shim.close()
   })
 
-  it('announces the bridge capability for omp, takes the folder from the reply, and writes no consent file', async () => {
-    const folder = join(home, 'run', 'shim', 'c-1.consent')
-    mkdirSync(folder, { recursive: true, mode: 0o700 })
-    svc.bridgeDir = folder
-    const h = harness(home, {
-      env: { OMPCODE: '1' },
-      consentBridge: true,
-      bridgeDirOf: (g) => bridgeDirOf(home, g),
-    })
+  it('announces the bridge capability for omp (the omp pid only, 0.4.2) and makes no consent folder', async () => {
+    const h = harness(home, { env: { OMPCODE: '1' }, consentBridge: true })
     await up(h, { ...INIT, params: { ...INIT.params, capabilities: {} } })
     expect(svc.hellos[0]?.client_capabilities).toEqual({ experimental: { 'bag.dev/consent-bridge': {} } })
-    // The folder is the service's, read back from the hello reply; the shim named none and writes nothing in it.
-    expect(h.shim.bridgeDir).toBe(folder)
     expect(Object.keys(svc.hellos[0] ?? {})).not.toContain('bridgeDir')
     void svc.ask('elicitation/create', {
       message: 'm',
@@ -268,7 +258,8 @@ describe('dialogs', () => {
     })
     const shown = await h.next((m) => m.method === 'elicitation/create')
     expect(shown.params?._meta).toBeUndefined()
-    expect(readdirSync(folder)).toEqual([])
+    const shimDir = join(home, 'run', 'shim')
+    expect(existsSync(shimDir) ? readdirSync(shimDir).filter((f) => f.endsWith('.consent')) : []).toEqual([])
     h.shim.close()
   })
 
@@ -568,49 +559,22 @@ describe('close', () => {
   })
 })
 
-describe('the bridge folder', () => {
-  it('reads bridge_dir from a hello reply in the service shape (packages/mcp/test/service.test.ts, the omp bridge)', async () => {
-    const connection = 'c-1'
-    const dir = join(home, 'run', 'shim', `${connection}.consent`)
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    // The hello result as packages/mcp/src/service.ts answers an omp hello naming bag.dev/consent-bridge.
+describe('the hello reply (0.4.2)', () => {
+  it('reads no bridge_dir from a hello reply: a 0.4.1 service that still names one is ignored', async () => {
     const reply = {
       contract: 1,
-      service: { version: '0.4.0', pid: process.pid, started_at: '2026-11-12T12:00:00.000Z' },
-      connection,
+      service: { version: '0.4.1', pid: process.pid, started_at: '2026-11-12T12:00:00.000Z' },
+      connection: 'c-1',
       dialog_capable: false,
       draining: false,
-      bridge_dir: dir,
+      bridge_dir: join(home, 'run', 'shim', 'c-1.consent'),
     }
     svc.helloResult = reply
-    const h = harness(home, {
-      env: { OMPCODE: '1' },
-      consentBridge: true,
-      bridgeDirOf: (g) => bridgeDirOf(home, g),
-    })
+    const h = harness(home, { env: { OMPCODE: '1' }, consentBridge: true })
     await up(h, { ...INIT, params: { ...INIT.params, capabilities: {} } })
-    expect(h.shim.bridgeDir).toBe(dir)
+    expect(h.shim.phase).not.toBe('closed')
+    expect(h.logs.some((l) => l.event === 'bridge-dir-refused')).toBe(false)
     h.shim.close()
-  })
-
-  it('refuses a folder the reply names outside the shape, and forgets it when the connection goes', async () => {
-    svc.bridgeDir = '/tmp/elsewhere.consent'
-    const h = harness(home, { env: { OMPCODE: '1' }, bridgeDirOf: (g) => bridgeDirOf(home, g) })
-    await up(h)
-    expect(h.shim.bridgeDir).toBeNull()
-    expect(h.logs.some((l) => l.event === 'bridge-dir-refused')).toBe(true)
-    h.shim.close()
-    const folder = join(home, 'run', 'shim', 'c-2.consent')
-    mkdirSync(folder, { recursive: true, mode: 0o700 })
-    svc.bridgeDir = folder
-    const g = harness(home, { env: { OMPCODE: '1' }, bridgeDirOf: (x) => bridgeDirOf(home, x) })
-    await up(g)
-    expect(g.shim.bridgeDir).toBe(folder)
-    svc.bridgeDir = null
-    await svc.restart()
-    await g.next((m) => m.method === 'notifications/tools/list_changed')
-    expect(g.shim.bridgeDir).toBeNull()
-    g.shim.close()
   })
 })
 
@@ -627,6 +591,163 @@ describe('the bound identities', () => {
     await svc.restart()
     await h.next((m) => m.method === 'notifications/tools/list_changed')
     expect(seen.at(-1)).toEqual([])
+    h.shim.close()
+  })
+})
+
+describe("the Codex window's session id", () => {
+  const sid = '0a1b2c3d-0000-4000-8000-00000000000a'
+  const metaCall = (id: number, meta: Record<string, unknown>): Message => {
+    const m = call(id, 'status')
+    return { ...m, params: { ...m.params, _meta: meta } }
+  }
+
+  it('passes on the sessionId (else the threadId) of each tools/call on Codex, a sub-agent marked, and nothing on another host', async () => {
+    const seen: [string, boolean][] = []
+    const codex = {
+      ...INIT,
+      params: { ...INIT.params, clientInfo: { name: 'codex-mcp-client', version: '1' } },
+    }
+    const h = harness(home, { windowSeen: (s, sub) => seen.push([s, sub]) })
+    await up(h, codex)
+    h.shim.fromHost(metaCall(1, { sessionId: sid, threadId: sid }))
+    // A sub-agent: the window's sessionId with a threadId of its own.
+    h.shim.fromHost(metaCall(2, { sessionId: sid, threadId: 'other' }))
+    h.shim.fromHost(metaCall(3, { threadId: 'thread-only' }))
+    h.shim.fromHost(metaCall(4, { progressToken: 1 }))
+    await h.byId(4)
+    // The mark is the connection's from call 2 on: call 3, with no sessionId, is still a sub-agent's.
+    const want: [string, boolean][] = [
+      [sid, false],
+      [sid, true],
+      ['thread-only', true],
+    ]
+    expect(seen).toEqual(want)
+    h.shim.close()
+    const c = harness(home, { windowSeen: (s, sub) => seen.push([s, sub]) })
+    await up(c)
+    c.shim.fromHost(metaCall(5, { sessionId: sid }))
+    await c.byId(5)
+    expect(seen).toEqual(want)
+    c.shim.close()
+  })
+
+  const codexInit = {
+    ...INIT,
+    params: { ...INIT.params, clientInfo: { name: 'codex-mcp-client', version: '1' } },
+  }
+  const main = { sessionId: sid, threadId: sid }
+  const sub = { sessionId: sid, threadId: '0a1b2c3d-0000-4000-8000-0000000000ff' }
+  const metaCallOf = (
+    id: number,
+    name: string,
+    args: Record<string, unknown>,
+    meta?: Record<string, unknown>,
+  ) => {
+    const m = call(id, name, args)
+    return meta === undefined ? m : { ...m, params: { ...m.params, _meta: meta } }
+  }
+  const forwarded = (id: number) => svc.next((m) => m.id === id && m.method === 'tools/call')
+  const marked = (m: Message): boolean =>
+    (m.params?._meta as Record<string, unknown> | undefined)?.[SUBAGENT_META] === true
+
+  it("marks a sub-agent's connection at its first call, the bind, before that call is forwarded", async () => {
+    const seen: [string, boolean][] = []
+    const h = harness(home, { windowSeen: (s, mark) => seen.push([s, mark]) })
+    await up(h, codexInit)
+    h.shim.fromHost(metaCallOf(1, 'use', { as: 'id-a' }, sub))
+    const m = await forwarded(1)
+    expect(marked(m)).toBe(true)
+    // The host's own _meta members go on unchanged beside the mark.
+    expect(m.params?._meta).toMatchObject(sub)
+    expect(seen).toEqual([[sid, true]])
+    h.shim.close()
+  })
+
+  it('marks a call queued while the connection comes up, when it is sent on', async () => {
+    const h = harness(home)
+    h.shim.fromHost(codexInit)
+    h.shim.fromHost(metaCallOf(1, 'use', { as: 'id-a' }, sub))
+    expect(marked(await forwarded(1))).toBe(true)
+    h.shim.close()
+  })
+
+  it('reads no tool argument for the mark: _meta or thread_source arguments neither set it nor clear it', async () => {
+    const a = harness(home, { pid: 5001 })
+    await up(a, codexInit)
+    a.shim.fromHost(metaCallOf(1, 'status', { _meta: sub, thread_source: 'subagent' }, main))
+    expect(marked(await forwarded(1))).toBe(false)
+    const b = harness(home, { pid: 5002 })
+    await up(b, codexInit)
+    b.shim.fromHost(metaCallOf(2, 'status', {}, sub))
+    b.shim.fromHost(metaCallOf(3, 'status', { _meta: main, thread_source: 'user' }, sub))
+    expect(marked(await forwarded(2))).toBe(true)
+    expect(marked(await forwarded(3))).toBe(true)
+    a.shim.close()
+    b.shim.close()
+  })
+
+  it("keeps the mark for the connection's life: a later call with no _meta or the window's own, and after a reconnect", async () => {
+    const h = harness(home)
+    await up(h, codexInit)
+    h.shim.fromHost(metaCallOf(1, 'use', { as: 'id-a' }, sub))
+    h.shim.fromHost(metaCallOf(2, 'status', {}))
+    h.shim.fromHost(metaCallOf(3, 'status', {}, main))
+    for (const id of [1, 2, 3]) expect(marked(await forwarded(id))).toBe(true)
+    await svc.restart()
+    await h.next((m) => m.method === 'notifications/tools/list_changed')
+    h.shim.fromHost(metaCallOf(4, 'status', {}, main))
+    expect(marked(await forwarded(4))).toBe(true)
+    h.shim.close()
+  })
+
+  it("marks only the sub-agent's connection of two on one window, every call of it and none of the window's", async () => {
+    const pidOf = (c: { hello: Record<string, unknown> | null }) =>
+      (c.hello?.shim as { pid?: unknown } | undefined)?.pid
+    const win = harness(home, { pid: 5001 })
+    const kid = harness(home, { pid: 5002 })
+    await up(win, codexInit)
+    await up(kid, codexInit)
+    win.shim.fromHost(metaCallOf(1, 'use', { as: 'id-a' }, main))
+    kid.shim.fromHost(metaCallOf(2, 'use', { as: 'id-a' }, sub))
+    win.shim.fromHost(metaCallOf(3, 'status', {}, main))
+    kid.shim.fromHost(metaCallOf(4, 'send', { to: 'peer', body: 'hi' }, sub))
+    win.shim.fromHost(metaCallOf(5, 'inbox', {}))
+    kid.shim.fromHost(metaCallOf(6, 'status', {}))
+    await Promise.all([1, 2, 3, 4, 5, 6].map(forwarded))
+    const calls = (pid: number) =>
+      svc.conns.filter((c) => pidOf(c) === pid).flatMap((c) => c.got.filter((m) => m.method === 'tools/call'))
+    expect(calls(5001).map((m) => [m.id, marked(m)])).toEqual([
+      [1, false],
+      [3, false],
+      [5, false],
+    ])
+    expect(calls(5002).map((m) => [m.id, marked(m)])).toEqual([
+      [2, true],
+      [4, true],
+      [6, true],
+    ])
+    win.shim.close()
+    kid.shim.close()
+  })
+})
+
+describe('a release (Codex SessionEnd)', () => {
+  it('ends the connection, reports no binding, and connects again unbound; nothing before the connection is up', async () => {
+    const seen: (readonly string[])[] = []
+    const h = harness(home, { boundChanged: (l) => seen.push(l) })
+    h.shim.release()
+    await up(h)
+    svc.notify('service/bound', { as: 'id-a', granted: 'dialog' })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(h.shim.bound).toEqual(['id-a'])
+    h.shim.release()
+    expect(h.shim.bound).toEqual([])
+    expect(seen).toEqual([['id-a'], []])
+    await new Promise((r) => setTimeout(r, 200))
+    expect(svc.conns.filter((c) => c.closed).length).toBe(1)
+    expect(svc.hellos.length).toBe(2)
+    expect(h.shim.phase).toBe('up')
     h.shim.close()
   })
 })

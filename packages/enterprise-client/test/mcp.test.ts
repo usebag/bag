@@ -5,7 +5,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterAll, describe, expect, it } from 'vitest'
 import { connectCodeOf } from '../src/connect-code.ts'
 import { createMcpServer, MCP_TOOLS, serveMcp } from '../src/mcp.ts'
-import { type EnterprisePorts, VERSION } from '../src/ports.ts'
+import { type EnterprisePorts, type HomeReads, VERSION } from '../src/ports.ts'
 import { readSession } from '../src/session.ts'
 import { FakeInstance } from './support/fake-instance.ts'
 import { FakeRelay } from './support/fake-relay.ts'
@@ -22,7 +22,7 @@ const SECRET = 'connect-test-secret-only-for-these-tests-00'
 let n = 0
 const ROUND_TRIP = /^Connected as acme-example-1; relay round trip \d+ ms$/
 
-async function setup(guard: () => Promise<string | null> = async () => '192.0.2.10') {
+async function setup(guard: () => Promise<string | null> = async () => '192.0.2.10', reads?: HomeReads) {
   const time = { now: T0 }
   const fake = new FakeInstance({ domain: DOMAIN, now: () => time.now })
   const code = connectCodeOf({ instance: fake.origin, domain: DOMAIN }, SECRET)
@@ -40,6 +40,7 @@ async function setup(guard: () => Promise<string | null> = async () => '192.0.2.
     },
     sleep: async () => {},
     relays: new FakeRelay(),
+    ...(reads === undefined ? {} : { home: reads }),
   }
   const [a, b] = InMemoryTransport.createLinkedPair()
   await createMcpServer(ports, home).connect(a)
@@ -96,6 +97,17 @@ describe('the MCP server', () => {
     const again = await w.call('connect', { code: w.code })
     expect(again.text.split('\n')).toEqual([expect.stringMatching(ROUND_TRIP)])
     for (const text of w.said) for (const secret of secrets(w)) expect(text).not.toContain(secret)
+  })
+
+  it("with the home's reads, a live session whose relay probe fails is still an error (exit 1)", async () => {
+    const reads: HomeReads = { identities: () => [], relaysHealth: async () => [] }
+    const w = await setup(undefined, reads)
+    expect((await w.call('connect', { code: w.code })).isError).toBe(false)
+    ;(w.ports.relays as FakeRelay).down.set('https://relay.example.test', 503)
+    const s = await w.call('status')
+    expect(s.text.split('\n').slice(0, 3)).toEqual([`bag ${VERSION}`, 'identities 0', 'relays none listed'])
+    expect(s.text.split('\n').at(-1)).toMatch(/^Connected as acme-example-1, but /)
+    expect(s.isError).toBe(true)
   })
 
   it("a bad code answers its reason, never the code; a refused one the instance's word; no code is usage", async () => {

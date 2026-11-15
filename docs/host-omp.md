@@ -39,12 +39,22 @@ and that the wake extension starts a turn on a ring in the main interactive omp 
 
 ### The per-folder form
 
-The rest of this section is the form of bag 0.3.0, one folder for one identity, which section 5 keeps as the way back:
+The rest of this section is the form of bag 0.3.0, one folder for one identity, which section 5 keeps as the way back.
+In this form omp cannot show pairing dialogs: the pair tools answer `no-elicitation`; pair with `bag pair` in a
+terminal (pairing-without-dialogs.md section 2).
 
 ```sh
 c host install omp --as alice --relay https://relay1.bag.dev --relay https://relay2.bag.dev \
   --rendezvous https://relay1.bag.dev --project /path/to/folder
 ```
+
+From an agent window of the bag service, the `host_wire` tool writes neither of these. After you type, in its dialog,
+the label of an identity, it proposes that identity for the window's own folder: every new window opened there has it
+preset in its bind dialog, and acts as it only after your Yes or your typed `use` and the name, while the bag service
+keeps holding it. With `action: unwire` it takes that proposal out, and the two things below if an earlier bag wrote
+them. The dialog shows the folder whole, so a folder path longer than 60 characters (or one with a character the
+dialog cannot show) is refused there. This command is the way back to a folder's own server, which holds the identity
+apart from the bag service.
 
 `--dir <home>` names a home other than `$AC_HOME`, else `$HOME/.bag`. `--trust-root <domain|address>` is passed to the
 server as for `host install claude-code`. The command writes two things, and prints each:
@@ -137,37 +147,42 @@ from the folder for a side task:
 
 ## 4. Pairing inside the omp session
 
-omp shows no MCP dialogs, so when a pairing needs your word bag asks through the wake extension instead. With the
-service the question goes to the window that started the pairing, and only there; the bridge belongs to that window's
-session, and closing the window ends the pairing. In the per-folder form, in the main interactive session the
-extension writes `<home>/state/<name>/consent/.bridge`, refreshes it every few minutes and removes it when omp ends; the
-server writes a request beside it and the extension asks you in the TUI:
-
-With the service the bridge directory is the session's own, `<home>/run/shim/<omp pid>.consent/`, made by its
-service at the window's start and gone when the session ends; only the service writes the questions there, and the
-request and answer files are the same as below. The invite code shows only in omp's own dialog, never in a tool
-result: a person who closes that dialog before copying the code asks the agent to cancel the pairing (`pair_cancel`)
-and invite again, and the new dialog shows the new code. Between two identities of one home (0.4.1) there is no
-code: the first message from one to another asks once, in the recipient's speaking window, "<a> on this machine wants
-to message <b>. Allow both ways?", and hiding or showing an identity asks the same way. In omp these prompts come over
-the extension's own connection to the bag service, registered for this omp process, never through a file, so they
-need the extension of 0.4.1 or later: run `bag host install omp` again and restart omp (a running omp keeps the
-extension it started with); without it the tool answers `no-elicitation` and says so. No answer is not a No: only your
-own No declines the pair; a prompt that times out (after 25 seconds, under omp's 30-second limit on a tool call), is
-taken off the screen or is aborted leaves the request waiting, asked again later. One limit: omp's yes-or-no prompt
+omp shows no MCP dialogs, so when a pairing needs your word bag asks through the wake extension instead. The questions
+come over the extension's own connection to the bag service, registered for this omp process, never through a file, and
+only to the window that started the pairing; closing the window ends the pairing. They need the bag service: the
+per-folder form (section 1) cannot pair inside omp and answers `no-elicitation`, so pair there with `bag pair` in a
+terminal (pairing-without-dialogs.md section 2). The invite code shows only in omp, above the editor, until the pairing
+ends, never in a tool result: a person who loses it asks the agent to cancel the pairing (`pair_cancel`) and invite
+again, and the new code shows in its place. Between two identities of one home (0.4.1) there is no code: the first
+message from one to another asks once, in the recipient's speaking window, "<a> on this machine wants to message <b>.
+Allow both ways?", and hiding or showing an identity asks the same way. All of these need the extension of 0.4.2 or
+later for pairing (0.4.1 for the local prompts): run `bag host install omp --user` again and restart omp (a running omp
+keeps the extension it started with); without it the tool answers `no-elicitation` and says so. `bag host install omp
+--user` also sets omp's own timeout for the bag server to 130 seconds (`"timeout": 130000` on `mcpServers.bag`), so a
+question can stand for up to 120 seconds inside the call that asks it. No answer is not a No: only your own No declines;
+a prompt that times out (after omp's timeout for the call less 10 seconds, from 15 to 120 seconds: 120 with bag's
+130-second entry, 20 under omp's own 30-second default or an `OMP_MCP_TIMEOUT_MS` of 30000; with an `OMP_MCP_TIMEOUT_MS`
+from 1 to 19999 no question can be asked at all, and 0, omp's no-timeout, gives 120), is taken off the screen or is
+aborted leaves the pairing or request waiting, asked again at the agent's next call. One limit: omp's yes-or-no prompt
 cannot tell Esc from No, so Esc on this prompt counts as No.
 
+- you accept a code: omp asks you to paste it (a text field with a countdown); then, during the agent's next call, a
+  Yes/No dialog shows the six check digits to read out to your peer, and Yes sends the request (arrows and Enter:
+  typing y does not answer it);
+- someone accepts your invite: omp asks you to type the six digits your peer reads to you;
+- you invite someone: the invite code shows above the editor until the pairing ends; give it to them yourself (read
+  it out or send it), never through an agent;
+- no answer is not a No: the agent asks again on its next call, until the invite ends (in any 10 minutes, at most 3
+  answered and 6 unanswered questions of one kind in a window, twice that over all windows of this bag home, and 6
+  never shown in a window because too little of the agent's call was left; at most 6 pairings started in a window and
+  12 over all windows of this bag home; past any of these, `rate-limited`). Only No declines;
+- while a question waits, the footer reads `bag: pairing request pending`.
 
-- someone pairs with you: a Yes/No dialog, `bag: <peer> asks to pair as <name>` with the check digits to compare
-  with what your peer reads out (arrows and Enter: typing y does not answer it). Yes pairs; No, or no answer within
-  two minutes, does not;
-- you invite someone: the invite code shows above the editor, and a Yes/No dialog asks that you gave it to them
-  yourself (read it out or send it; never through an agent);
-- while a request waits, the footer reads `bag: pairing request pending`.
-
-Only the answer goes back to the server, which pairs with the peer of its own request. A session with no dialogs
-(`omp -p`, `--mode rpc` or `json`, a subagent) writes no `.bridge`, so the server answers as it does without
-elicitation: with the `bag pair` command to run in a terminal (pairing-without-dialogs.md).
+Only the answer goes back to the service, which pairs with the peer of its own request. A print session (`omp -p`)
+never binds an identity, since no one is there to answer the binding's question, so its pair tools refuse `not-bound`
+before any question is asked, never `no-elicitation`. A session in `--mode rpc` or `json`, or a subagent, registers no
+link, so the pair tools refuse `no-elicitation`, which names omp's interactive session and how to update the extension
+(pairing-without-dialogs.md, section 3).
 
 ## 5. Moving wired folders, and the way back
 

@@ -41,7 +41,7 @@ async function world(): Promise<World> {
   mkdirSync(project, { recursive: true })
   const relay = new MemoryRelay()
   const io = testIo(relay, { HOME: join(base, 'user') })
-  expect((await cli(io, 'keygen', 'bob', '--dir', dir)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).code).toBe(0)
   return { io, relay, dir, project }
 }
 

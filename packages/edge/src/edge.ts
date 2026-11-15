@@ -270,7 +270,7 @@ export class Edge {
       ...(options.doorbell === undefined ? {} : { doorbell: options.doorbell }),
       ...(options.localRoots === undefined ? {} : { localRoots: options.localRoots }),
       accepted: (row) => {
-        // A local row's receipt goes back on this machine only, never on the wire (decision 103).
+        // A local row's receipt goes back on this machine only, never on the wire (spec/SPEC.md 9.2).
         const local = row.relay === LOCAL_RELAY
         if (!local || options.localSend) this.#receipts.answer(row, local ? options.localSend : undefined)
         options.accepted?.(row)

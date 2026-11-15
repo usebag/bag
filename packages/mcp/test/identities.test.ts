@@ -215,6 +215,19 @@ describe('readIdentities: the file itself', () => {
     }
   })
 
+  it('refuses a symbolic link at the path, even to a 0600 regular file, which is read at its own path', () => {
+    const path = file(JSON.stringify({ version: 1, identities: [] }), 0o600)
+    const link = join(tmp.dir, 'link.json')
+    symlinkSync(path, link)
+    expect(refused(link)).toEqual({
+      code: 'usage',
+      message:
+        `usage: --identities: ${link} is a symbolic link; it must be a regular file (it lists every identity together): ` +
+        'replace the link with a 0600 copy of the file it points to',
+    })
+    expect(refused(path).message).not.toContain('symbolic link')
+  })
+
   it('refuses a file with any group or other bit (0644, 0640, 0604, 0601), before its contents', () => {
     for (const mode of [0o644, 0o640, 0o604, 0o601]) {
       const path = file('not JSON', mode)

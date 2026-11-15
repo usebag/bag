@@ -5,7 +5,7 @@ import { digitsMatch, MAX_DIGIT_TRIES, MAX_INVITE_TTL, type PeerRequest } from '
 import type { Fetch } from './instance.ts'
 import { enterpriseDir, type Session, writeJson } from './session.ts'
 
-// Pairing one of the organisation's agents with someone outside it, started from the console (decision 38b): the
+// Pairing one of the organisation's agents with someone outside it, started from the console: the
 // client pulls GET <instance>/api/v1/agent/pairings with the session's bearer ({ pairings, etag }, 304 on the etag) and
 // answers each by POST <instance>/api/v1/agent/pairings/<id> events. For a `pair` the client mints the OSS invitation
 // on this machine (the edge's invitePeer, under --for when the outside address is known) and posts its code; when a

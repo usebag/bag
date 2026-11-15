@@ -308,10 +308,10 @@ function filesOf(root: string): Map<string, string> {
   return m
 }
 
-// The ruling of 2026-11-12 16:04 UTC: ac login does not lend an identity the bag service serves, because the two never
+// The rule: ac login does not lend an identity the bag service serves, because the two never
 // write the same file. login writes only the principal's own paths; the service's agent unit for that identity writes
 // only under <name>.service (state/<name>.service/ and keys/<name>.service.json, mcp session-agent-open.test.ts pins
-// that half). A login write under <name>.service, or outside the principal's paths, breaks the ruling.
+// that half). A login write under <name>.service, or outside the principal's paths, breaks the rule.
 describe('ac login: the paths it writes, beside the bag service agent unit', () => {
   it('writes only the principal paths through a window, a grant and a logout, and nothing under <name>.service', async () => {
     const relay = new MemoryRelay()
@@ -409,7 +409,7 @@ describe('ac login: a new epoch once the newest is 12 hours old', () => {
     const h = agentHome(dir())
     publishRecord(relay, h)
     epochStore(h.dir).put(h.address, 1, seal, T0 - 43_199, T0 + 43_201)
-    epochStore(h.dir).markPublished(h.address, 1) // a published epoch (fs/edge 8c976aa4: put keeps it unpublished)
+    epochStore(h.dir).markPublished(h.address, 1) // a published epoch (the store's put keeps it unpublished)
     const quiet = await loggedIn(relay, h)
     expect(quiet.io.stdout).toHaveLength(1)
     expect(relay.published).toEqual([])

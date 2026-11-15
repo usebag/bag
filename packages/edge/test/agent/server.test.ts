@@ -20,7 +20,7 @@ import {
 } from '@usebag/core'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { AgentClient, AgentOpener, AgentSigner } from '../../src/agent/client.ts'
-import { type Agent, type GrantReply, hopDigest, WINDOW_MAX } from '../../src/agent/index.ts'
+import { type Agent, type GrantReply, hopDigest, NOTE_MAX, WINDOW_MAX } from '../../src/agent/index.ts'
 import {
   AgentServer,
   type LogoutOutcome,
@@ -328,6 +328,46 @@ describe('AgentServer: the terminal and the uid-only frames', () => {
     await expect(plain(m).grant(S, [CAVEAT], EXP)).rejects.toThrow('socket closed')
     m.terminal.fail = false
     expect((await plain(m).grant(S, [CAVEAT], EXP)).ok).toBe(true)
+  })
+})
+
+describe('AgentServer: the grant note and the session revoke (uid-only)', () => {
+  it("prints a grant's note from the request above the hop, leaves the code and the hop alone, and refuses a bad note", async () => {
+    const m = await boot({ answers: ['y', 'y'] })
+    const codes: string[] = []
+    const note = 'the bag service asks again for work (omp) after the grant ended\u202e'
+    const hop = hopOf(await plain(m).grant(S, [CAVEAT], EXP, (c) => codes.push(c), note))
+    expect(hop).toMatchObject({ iss: J, sub: S, caveats: [CAVEAT], exp: EXP })
+    expect(codes).toEqual([hopDigest(hop).slice(0, 8)])
+    expect(m.terminal.log.slice(0, 3)).toEqual([
+      `request ${codes[0]}`,
+      'note from the requester: "the bag service asks again for work (omp) after the grant ended\\u202e"',
+      `grant to session ${S}`,
+    ])
+    const r = await raw(m.server.path)
+    for (const bad of ['""', JSON.stringify('x'.repeat(NOTE_MAX + 1)), '7', 'null', '["x"]']) {
+      r.send(`{"op":"grant","args":["${S}",["${CAVEAT}"],${EXP},${bad}]}`)
+      expect(await r.next()).toEqual({ ok: false, code: 'bad-shape' })
+    }
+    r.send(`{"op":"grant","args":["${B}",["${CAVEAT}"],${EXP},${JSON.stringify('x'.repeat(NOTE_MAX))}]}`)
+    expect(await r.next()).toHaveProperty('pending')
+    expect(await r.next()).toMatchObject({ ok: true })
+  })
+
+  it("revokes a session's grants: its next sign is not-in-grant, a second revoke counts 0, bad args and no window refuse", async () => {
+    const m = await boot({ answers: ['y'] })
+    const c = sess(m, [await granted(m)])
+    await c.register(threadId(1))
+    expect(await plain(m).revoke(S)).toEqual({ ok: true, op: 'revoke', grants: 1 })
+    await expect(c.sign(B, [CAVEAT], EXP)).rejects.toMatchObject({ code: 'not-in-grant' })
+    expect(await plain(m).revoke(S)).toEqual({ ok: true, op: 'revoke', grants: 0 })
+    const r = await raw(m.server.path)
+    for (const args of ['[]', '[7]', `["${S}","x"]`, '"x"']) {
+      r.send(`{"op":"revoke","args":${args}}`)
+      expect(await r.next()).toEqual({ ok: false, code: 'bad-shape' })
+    }
+    m.agent.logout()
+    expect(await plain(m).revoke(S)).toEqual({ ok: false, code: 'agent-locked' })
   })
 })
 

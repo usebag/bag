@@ -1,22 +1,10 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ElicitRequestFormParams, ElicitResult } from '@modelcontextprotocol/sdk/types.js'
 import { describe, expect, it } from 'vitest'
 import {
   Bindings,
-  BRIDGE_CAPABILITY,
-  bridgeOf,
   CANNOT_BIND,
   type Custody,
   GONE_KEEP_MS,
@@ -216,7 +204,7 @@ describe('proposals and no re-attach', () => {
 })
 
 describe('custody per call', () => {
-  it("follows the contract's tool table for each class", () => {
+  it('follows the tool table (TOOLS_BY_CUSTODY) for each class', () => {
     const rows = ['status', 'send', 'pair_invite', 'pair_cancel', 'delegate', 'sign_in', 'enterprise_status']
     const allowed = (c: Custody) => rows.filter((t) => toolAllowed(c, t))
     expect(allowed('home-key')).toEqual(rows)
@@ -229,6 +217,8 @@ describe('custody per call', () => {
     for (const c of ['home-key', 'keychain', 'agent', 'grant'] as Custody[]) {
       expect(toolAllowed(c, 'a_tool_added_later')).toBe(false)
       expect(toolAllowed(c, 'lookup')).toBe(true)
+      // telemetry is the machine's setting: every class runs it; identity_create only a window bound to none.
+      expect([c, toolAllowed(c, 'telemetry'), toolAllowed(c, 'identity_create')]).toEqual([c, true, false])
       expect(TOOLS_BY_CUSTODY[c].every((t) => toolAllowed(c, t))).toBe(true)
     }
     const t = table(ids(['g', 'agent']))
@@ -351,7 +341,7 @@ describe('the lend and the service methods', () => {
   })
 })
 
-describe('the wake router and markUsed (svc-mail)', () => {
+describe('the wake router and markUsed', () => {
   function routed() {
     const calls: string[] = []
     const home = { home: '/h', identities: () => ids(['a', 'home-key'], ['b', 'home-key']), draining: false }
@@ -454,72 +444,23 @@ describe('after an explicit No, and a pairing with no table', () => {
   })
 })
 
-describe('the omp consent bridge folder, service-derived', () => {
-  const uid = process.getuid?.() ?? -1
-  const announcing = (o: { handle?: string } = {}): Fake => {
-    const c = conn({ elicit: false, host: 'omp', hook: true })
-    ;(c as { raw?: unknown; capabilities: { raw: object } }).capabilities.raw = {
-      experimental: { [BRIDGE_CAPABILITY]: { dir: '/tmp/evil' } },
-    }
-    if (o.handle !== undefined) (c as { handle: string }).handle = o.handle
-    return c
-  }
-  const withHome = (fn: (home: string) => void) => {
+describe('no omp consent bridge folder (0.4.2)', () => {
+  it('a window announcing the capability binds, unbinds and closes with no folder made or moved', () => {
     const home = mkdtempSync(join(tmpdir(), 'bridge-'))
     try {
-      fn(home)
+      const t = new Bindings({ home, identities: () => ids(['a', 'home-key']), draining: false })
+      const c = conn({ elicit: false, host: 'omp', hook: true })
+      ;(c as { capabilities: { raw: object } }).capabilities.raw = {
+        experimental: { 'bag.dev/consent-bridge': { pid: 4242 } },
+      }
+      t.bindByWord(c, 'a')
+      t.unbind(c, 'a')
+      c.close()
+      expect(existsSync(join(home, 'run', 'shim'))).toBe(false)
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
-  }
-
-  it('makes <home>/run/shim/<handle>.consent, 0700, ignoring any path the shim sent; none without the capability', () =>
-    withHome((home) => {
-      const c = announcing()
-      const dir = bridgeOf(c, home, uid) as string
-      expect(dir).toBe(join(home, 'run', 'shim', `${c.handle}.consent`))
-      expect(statSync(dir).mode & 0o777).toBe(0o700)
-      expect(bridgeOf(conn({ elicit: false }), home, uid)).toBeNull()
-    }))
-
-  it('moves the folder away on the unbind of the last binding and on close, never deleting it', () =>
-    withHome((home) => {
-      const t = new Bindings({
-        home,
-        identities: () => ids(['a', 'home-key'], ['b', 'home-key']),
-        draining: false,
-      })
-      const c = announcing()
-      const dir = bridgeOf(c, home, uid) as string
-      t.bindByWord(c, 'a')
-      t.bindByWord(c, 'b')
-      t.unbind(c, 'a')
-      expect(existsSync(dir)).toBe(true)
-      t.unbind(c, 'b')
-      expect(existsSync(dir)).toBe(false)
-      expect(readdirSync(join(home, 'run', 'shim', '.gone'))).toHaveLength(1)
-      const d = announcing()
-      const other = bridgeOf(d, home, uid) as string
-      d.close()
-      expect(existsSync(other)).toBe(false)
-      expect(readdirSync(join(home, 'run', 'shim', '.gone'))).toHaveLength(2)
-    }))
-
-  it('as defence refuses a folder of another uid, a mode not 0700, a symlinked run/shim, a handle unfit for a name', () =>
-    withHome((home) => {
-      expect(bridgeOf(announcing(), home, uid + 1)).toBeNull()
-      const loose = announcing()
-      mkdirSync(join(home, 'run', 'shim', `${loose.handle}.consent`), { recursive: true })
-      chmodSync(join(home, 'run', 'shim', `${loose.handle}.consent`), 0o755)
-      expect(bridgeOf(loose, home, uid)).toBeNull()
-      expect(bridgeOf(announcing({ handle: '../x' }), home, uid)).toBeNull()
-      withHome((other) => {
-        mkdirSync(join(other, 'run'))
-        symlinkSync(join(home, 'run', 'shim'), join(other, 'run', 'shim'))
-        expect(bridgeOf(announcing(), other, uid)).toBeNull()
-      })
-      expect(bridgeOf(announcing(), home, uid)).not.toBeNull()
-    }))
+  })
 })
 
 describe("an agent-class binding's own grant (M3)", () => {
@@ -578,31 +519,7 @@ describe("an agent-class binding's own grant (M3)", () => {
   })
 })
 
-describe('the bridge folder: an existing one, and the sweep of run/shim/.gone', () => {
-  const uid = process.getuid?.() ?? -1
-  it('refuses a folder that already holds anything, and takes an empty one', () => {
-    const home = mkdtempSync(join(tmpdir(), 'bridge-'))
-    try {
-      const c = conn({ elicit: false, host: 'omp' })
-      ;(c as { capabilities: { raw: object } }).capabilities.raw = {
-        experimental: { [BRIDGE_CAPABILITY]: {} },
-      }
-      const dir = join(home, 'run', 'shim', `${c.handle}.consent`)
-      mkdirSync(dir, { recursive: true, mode: 0o700 })
-      writeFileSync(join(dir, 'planted.json'), '{}')
-      expect(bridgeOf(c, home, uid)).toBeNull()
-      rmSync(join(dir, 'planted.json'))
-      const d = conn({ elicit: false, host: 'omp' })
-      ;(d as { capabilities: { raw: object } }).capabilities.raw = {
-        experimental: { [BRIDGE_CAPABILITY]: {} },
-      }
-      mkdirSync(join(home, 'run', 'shim', `${d.handle}.consent`), { mode: 0o700 })
-      expect(bridgeOf(d, home, uid)).not.toBeNull()
-    } finally {
-      rmSync(home, { recursive: true, force: true })
-    }
-  })
-
+describe("the sweep of a 0.4.1 service's run/shim/.gone (0.4.2 only)", () => {
   it('sweepGone removes a day-old folder holding only the known bridge files, and nothing else', () => {
     const home = mkdtempSync(join(tmpdir(), 'gone-'))
     try {

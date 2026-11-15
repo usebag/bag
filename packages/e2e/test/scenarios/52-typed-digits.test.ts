@@ -126,11 +126,12 @@ const holds = (s: Side, name: string, address: string): void => {
   writeFileSync(join(s.home, 'names.json'), JSON.stringify({ version: 1, names }))
 }
 
-/** The first call of `s` that is not pending. */
+/** The first call of `s` that is not pending, each call with the token the one before it answered. */
 async function ended(s: Side, tool: string, resume: unknown): Promise<Json> {
-  for (;;) {
-    const { value } = await s.call(tool, { resume })
+  for (let token = resume; ; ) {
+    const { value } = await s.call(tool, { resume: token })
     if (value.pending !== true) return value
+    token = value.resume
   }
 }
 
@@ -152,7 +153,7 @@ describe('e2e scenario 52: typed check digits, one real relay', () => {
       })
       expect(alice.dialogs).toHaveLength(3)
 
-      // No oracle in the relay's public reads either (ruling 9): the refusal changes none of I's records.
+      // No oracle in the relay's public reads either: the refusal changes none of I's records.
       expect(await publicRecords(w.url, first.invite)).toEqual(open)
 
       // No oracle: Bob's end is the no-answer of an inviter who never answered, and the relay still refuses him.

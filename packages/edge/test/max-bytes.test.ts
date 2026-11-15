@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import * as edge from '../src/index.ts'
 import { liftMaxBytes, OLD_DEFAULT_MAX_BYTES } from '../src/max-bytes.ts'
 
-// The accept-from max_bytes lift (W9): a re-sign writes the envelope cap in place of exactly the old default.
+// The accept-from max_bytes lift: a re-sign writes the envelope cap in place of exactly the old default.
 describe('liftMaxBytes', () => {
   it('lifts exactly 65,536 to the envelope cap and keeps every other value', () => {
     expect(OLD_DEFAULT_MAX_BYTES).toBe(65_536)

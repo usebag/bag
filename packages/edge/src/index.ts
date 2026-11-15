@@ -228,7 +228,7 @@ export type {
   Subscription,
   SubscriptionLink,
 } from './ports.ts'
-export { EdgeError, RelayError } from './ports.ts'
+export { EdgeError, RelayError, STOP_ABORT } from './ports.ts'
 export { programName } from './program.ts'
 export { RECEIPT_ACK, RECEIPT_HINT, RECEIPT_TYPE } from './receipts.ts'
 export {
@@ -350,6 +350,8 @@ export {
   type TelemetryState,
   telemetryCode,
   telemetryDir,
+  telemetryEraseId,
+  telemetryEraseIds,
   telemetryId,
   telemetryNotice,
   telemetryOn,
@@ -366,6 +368,8 @@ export {
   type TelemetryFacts,
   type TelemetryReport,
 } from './telemetry-report.ts'
+// The closed sets of the telemetry schema, for the MCP package's test that every tool it registers is named there.
+export { SETS as TELEMETRY_SETS } from './telemetry-schema.ts'
 export {
   eraseTelemetry,
   type SendOptions,

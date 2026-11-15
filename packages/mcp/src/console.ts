@@ -18,7 +18,7 @@ import { Names } from './names.ts'
 import { codeOf, pairingsFor, type ToolContext } from './tools.ts'
 import { addTrust, removeTrust } from './trust.ts'
 
-// The console's pairings inside the MCP host (decision 38c): while the home holds a live enterprise session, every
+// The console's pairings inside the MCP host: while the home holds a live enterprise session, every
 // CONSOLE_POLL_MS the server reads the console's pairing commands (packages/enterprise-client pairings.ts) and runs
 // them as the CLI's `bag pairings --watch` does: the links the console revoked or whose term ended leave the trust
 // file, then each new `pair` runs the OSS ceremony (Pairings.consoleInvite), one at a time, never beside a pair tool's;

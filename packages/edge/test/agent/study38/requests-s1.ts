@@ -1,6 +1,6 @@
 // Line S1, "a stolen session opens only its grant": the pre-registered request set of 100 (V3), built
 // deterministically from the line's text: in-grant opens, out-of-grant opens, the registered-thread replies and
-// a sign past `exp`. Committed before any run, at 6974626 (the c3778a6 code), before any test code of the line;
+// a sign past `exp`. Committed before any run, before any test code of the line;
 // no request below was chosen after a result. Data only: the test maps the names to
 // the fixtures' parties and builds each envelope with the core's own builders.
 //

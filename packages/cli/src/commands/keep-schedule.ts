@@ -3,7 +3,7 @@ import { shq } from '../args.ts'
 import { CLI_MAIN } from '../entries.ts'
 import { stableNode } from '../packaged.ts'
 
-// A person's own background `record keep` (the last-mile rulings, section 1): the text of a launchd job or a crontab
+// A person's own background `record keep`: the text of a launchd job or a crontab
 // line, on stdout. Nothing here writes a job, and nothing touches launchd or cron: the person's one line does.
 
 /** Four runs a day, 6 hours apart (a job must run every 11), at a minute drawn so that jobs do not align. null: hourly. */

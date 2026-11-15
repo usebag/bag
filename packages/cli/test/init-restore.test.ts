@@ -133,6 +133,11 @@ describe('ac init', () => {
     expect(auditOf(dir, 'alice')).toEqual([
       { event: 'onboard', decision: 'accept', detail: { copy: 'sheet' } },
       {
+        event: 'policy',
+        decision: 'accept',
+        detail: { step: 'publish', record: 'address', relay: R, outcome: 'ok' },
+      },
+      {
         event: 'rotate',
         decision: 'accept',
         detail: {
@@ -195,6 +200,7 @@ describe('ac init', () => {
     expect(readRecoveryState(dir, address)?.copy).toBe('none')
     expect(auditOf(dir, 'bob').map((l) => [l.event, l.decision])).toEqual([
       ['onboard', 'accept'],
+      ['policy', 'accept'],
       ['rotate', 'accept'],
     ])
     expect(auditOf(dir, 'bob')[0]).toEqual({ event: 'onboard', decision: 'accept', detail: { copy: 'none' } })
@@ -420,11 +426,19 @@ describe('ac restore', () => {
     const key = heldKey(net, address)
     expect([key.iat, key.exp - key.iat, epochStore(dir).epochs(address)]).toEqual([T0 + 60, 86_400, [1]])
     expect(readRecoveryState(dir, address)?.copy).toBe('sheet')
-    expect(io.secrets).toBe(SHEET_LINES) // every line of the sheet read with the echo off (ruling 5)
+    expect(io.secrets).toBe(SHEET_LINES) // every line of the sheet read with the echo off
     expect(auditOf(dir, 'alice').map((l) => [l.event, l.decision])).toEqual([
       ['restore', 'accept'],
+      ['policy', 'accept'],
       ['rotate', 'accept'],
     ])
+    // The restore's address publish is audited as init's is: one policy line, step publish, per relay.
+    expect(auditOf(dir, 'alice')[1]?.detail).toEqual({
+      step: 'publish',
+      record: 'address',
+      relay: R,
+      outcome: 'ok',
+    })
     const listed = testIo(net)
     expect(keysCommand(['list', '--dir', dir], listed)).toBe(0)
     expect(listed.stdout.find((l) => l.startsWith('alice '))).toMatch(/ copy=sheet$/)
@@ -456,7 +470,7 @@ describe('ac restore', () => {
     const { sheet, address } = await made(net)
     const fresh = new Network()
     const dir = home()
-    // No source holds a record: the person is warned that a revocation cannot be seen, and must say y (ruling 3).
+    // No source holds a record: the person is warned that a revocation cannot be seen, and must say y.
     const declined = term(fresh, ...sheet)
     const none = home()
     await expect(restore(['alice', '--dir', none], declined)).rejects.toMatchObject({ code: 'declined' })
@@ -474,7 +488,7 @@ describe('ac restore', () => {
     expect(fresh.log).toEqual([`${R} address ${address}`, `${R} key ${address}`])
   })
 
-  it('stops on a record that revokes the address, keeps a rotated record as held, and keeps every revocation (rulings 2 and 3)', async () => {
+  it('stops on a record that revokes the address, keeps a rotated record as held, and keeps every revocation', async () => {
     const R2 = 'http://127.0.0.1:2'
     const sign = (o: Partial<AddressRecord>, sheet: string[]) => {
       const { keys, rotation } = seedKeys((readSheet(sheet) as { seeds: Seeds }).seeds, FRESH)
@@ -638,7 +652,7 @@ describe('the state beside a keygen identity, and the stale line', () => {
     expect(keygen(['sess', '--dir', dir], io)).toBe(0)
     expect(io.stderr).toEqual([NO_RECOVERY])
     const script = testIo(net) // not a terminal: no notice
-    expect(keygen(['sess2', '--dir', dir], script)).toBe(0)
+    expect(keygen(['sess2', '--new', '--dir', dir], script)).toBe(0)
     expect(script.stderr).toEqual([])
     const address = io.stdout[0] as string
     writeRecoveryState(dir, address, { v: 1, copy: 'sheet', confirmed_at: T0, stale_since: T0 + 60 })
@@ -649,7 +663,7 @@ describe('the state beside a keygen identity, and the stale line', () => {
     const net = new Network()
     const { dir, address } = await made(net)
     const io = testIo(net)
-    const next = (await cli(io, 'keygen', 'alice2', '--dir', dir)).out[0] as string
+    const next = (await cli(io, 'keygen', '--new', 'alice2', '--dir', dir)).out[0] as string
     const out = join(dir, 'alice2.address.json')
     const r = await cli(
       io,
@@ -670,8 +684,8 @@ describe('the state beside a keygen identity, and the stale line', () => {
       expect(readRecoveryState(dir, a)).toMatchObject({ copy: 'sheet', stale_since: T0 })
     // Without a state for the old address, a rotation writes none.
     const plain = home()
-    await cli(io, 'keygen', 'p1', '--dir', plain)
-    await cli(io, 'keygen', 'p2', '--dir', plain)
+    await cli(io, 'keygen', '--new', 'p1', '--dir', plain)
+    await cli(io, 'keygen', '--new', 'p2', '--dir', plain)
     await cli(
       io,
       'record',

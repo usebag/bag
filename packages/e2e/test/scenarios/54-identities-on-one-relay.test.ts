@@ -55,8 +55,8 @@ import {
 //               --record-signers-per-day, since 128 new signers in a day from one address pass its default of 100. It
 //               prints `FACT 54d {...}`: what each server holds, what is refused, what sends and renewals do, what
 //               status says, and how long the second server takes once the first leaves. Direct, subscriptions stop
-//               short of the cap (ruling 8), so it asserts the same as behind a proxy: the sends and renewals of both
-//               servers go out, and status names no one the relay left out as subscribed.
+//               short of the cap, so a client's calls keep the rest, and it asserts the same as behind a proxy: the
+//               sends and renewals of both servers go out, and status names no one the relay left out as subscribed.
 //   reserve     arm (e), in every run, direct and reserve-proxied: arm (d)'s point at a small cap, where one server
 //               meets the limit, the reserve direct and the cap behind a proxy. A refusal reads rate-limited either way.
 
@@ -123,7 +123,7 @@ async function homes(w: World, names: readonly string[]): Promise<{ home: string
     const batch = names.slice(i, i + 8).map(async (name) => {
       const home = join(w.dir, 'homes', name)
       mkdirSync(home, { recursive: true, mode: 0o700 })
-      const run = await cliProcess(['keygen', name, '--dir', home])
+      const run = await cliProcess(['keygen', '--new', name, '--dir', home])
       expect(run.code).toBe(0)
       const keys = new FsKeyStore(join(home, 'keys')).load(name)
       const who = {

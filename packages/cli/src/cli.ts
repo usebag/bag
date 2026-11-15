@@ -59,8 +59,9 @@ export const USAGE = `bag: the bag v0 command line (pre-release)
 
 usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
 
-  keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--dir <home>]
-      a signing key and a separate sealing key; prints the address only. --custody keychain keeps both in one item
+  keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--new] [--dir <home>]
+      a signing key and a separate sealing key; prints the address only. On a home that holds identities already, a
+      new name needs --new (else exists). --custody keychain keeps both in one item
       of a macOS keychain (the default keychain, or --keychain), which no application reads without a dialog
       (--keychain-access prompt, the default) or which /usr/bin/security reads while the keychain is unlocked
       (security, for a host no one watches); with no --custody, the keychain on macOS for a person at a terminal
@@ -137,9 +138,13 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       keeps one apart at once; on and show ask one y on a terminal
   identity relays <name> --relay <url>... [--dir <home>]
       on a terminal after one y: the relays of a bag service identity, its entry in <home>/identities.json
+  identity keep-alive on|off|default <name> [--dir <home>]
+      on a terminal: whether the bag service keeps the identity's records alive, in <home>/run/keep-alive.json; on
+      and off hold until changed, default leaves it to the service's rule; prints "keep-alive <name> on|off|default"
   identity remove <name> --relay <url>... [--to <dir>] [--project <dir>] [--dir <home>]
       takes one identity out of a home that may keep others, on a terminal after one y that names every change;
-      nothing is deleted. Its accept-from is re-signed to name only its own address at each relay (a relay that does
+      nothing is deleted but local mail held for a pair of it, which is failed to its senders (by the bag service
+      at its give-back when one runs) and dropped; its entry leaves <home>/identities.json. Its accept-from is re-signed to name only its own address at each relay (a relay that does
       not take it stops the run before anything local changes); trust.json loses the roots of that record no other
       identity's accept-from copy names; names.json forgets the names of its address, and an unpair line is printed
       for each other identity that accepts it; with --project, its bag server in .omp/mcp.json (and bag's wake link)
@@ -247,9 +252,10 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       the identity <name> becomes a group (CLI only); members read it with inbox --group, post with send --to
   audit verify <file>
       recomputes an audit log's hash chain; prints "ok <n> lines" or the first bad line
-  connect [--as <name>] [--label <text>] [--dir <home>]
+  connect [--as <name>] [--label <text>] [--verbose] [--dir <home>]
       connects this machine's agent to its organisation with the console's one-time code, read from BAG_ORG_CODE or
-      stdin, never the command line: "Connected as <label>", or exit 4 while the organisation's signer is to sign
+      stdin, never the command line: "Connected as <label>", or exit 4 while the organisation's signer is to sign;
+      --verbose adds the instance, the fingerprint and each relay's records
   sign-in <domain> [--instance <origin>] [--as <name>] [--label <text>] [--code] [--no-wait] [--dir <home>]
       signs in to the bag enterprise instance of <domain> (--instance pins the console origin) under a person's
       approval: prints the link, the code and the key's fingerprint; --code redeems a console code from BAG_ORG_CODE
@@ -260,13 +266,22 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       with no --as: the enterprise session after one refresh tick; --chain prints the chain JSON, --plist and
       --crontab the hourly job. Exit 0 live, 3 ended or not signed in, 4 frozen, paused or waiting
   mcp [--dir <home>]
-      the tools connect, sign_in and status as a stdio MCP server: claude mcp add bag -- npx -y @usebag/bag@<version> mcp
+      the tools connect, sign_in, status and identities as a stdio MCP server, run from the package file whose
+      sha256 you checked (bag.dev/install, step 2, writes it as PKG in $HOME/.bag/install/<name>.env):
+      claude mcp add bag -- npx -y --package=<that file> bag mcp
   status --as <name> [--dir <home>]
       first, always, "doorbell <absolute path>"; then, from the identity's audit log, when its last subscription
       ended for good (three refusals in a row): "mailbox refused: <code> at <relay> after <n> refusals; edge
       errors <e>, last <code> at <time>"; else nothing more. It names a relay, not a mailbox, though the log's lines
       carry one: the identity's own and its groups' subscriptions share the log. A subscription that succeeds is not
       audited, so the line stays until a later subscribe retry line, whatever its mailbox, follows it
+  status --home [--json] [--dir <home>]
+      the whole home, one fact per line in this order: home, identities_file, the service (bag <version> pid <pid>
+      since <start> contract <n> socket <path>, or "no service at <path>"), local_delivery on|off, each identity
+      (key, custody file|keychain|agent, served by the service, open in a live window, spooled count), each
+      local_pair, each window (host pid, Codex session id or none, its identities, its shim's pid) and each relay
+      with its identities; --json the same as one object. Read-only: one hello, no key or Keychain read, no dialog;
+      exit 0 whatever it finds. It names every identity of this home; never paste it into a message
   wake-hook --as <name> [--session auto|auto:codex] [--max <seconds>] [--exit-code <n>] [--no-idle-wake] [--print] [--dir <home>]
       for a host hook: polls <home>/state/<name>/doorbell once a second and compares its mtime with the one in
       <home>/state/<name>/wake-seen (0600), the last it reported; the first run takes the current mtime as the baseline.
@@ -277,7 +292,7 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       "doorbell <mtime>" on stdout per change instead and runs until SIGINT or SIGTERM. Opens no edge and no store;
       --session auto takes the name from the MCP server's session file (exit 1 if none); --session auto:codex, for a
       Codex Stop hook, names it from the session_id of the Stop JSON on stdin (exit 0 at once before the first tool call)
-  wake-hook --session service [--max <seconds>] [--exit-code <n>] [--no-idle-wake] [--dir <home>]
+  wake-hook --session service [--max <seconds>] [--exit-code <n>] [--no-idle-wake] [--end] [--dir <home>]
       the same for the identity this session's bag service shim is bound to (<home>/run/shim/<host pid>.bound); an
       unbound session's hook exits 0 at once
   wake-hook --identities <file> [--max <seconds>] [--exit-code <n>] [--no-idle-wake] [--print]
@@ -295,7 +310,7 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       Merges into what is there, a second run changes nothing and says so; any other place is
       "not documented yet". claude-code --identities <file> [--label <label>] adds the identity to an identities
       file (absolute, outside the project, 0600) and wires the server and the hook to the file
-  host install <claude-code|codex|omp> --user [--sandbox] [--dir <home>]
+  host install <claude-code|codex|omp> --user [--sandbox (claude-code only)] [--dir <home>]
       with no --as: the bag service's shim for every identity of the home, once per user (claude-code: ~/.claude.json,
       a SessionStart, Stop and UserPromptSubmit hook and deny rules for <home>/run in ~/.claude/settings.json, --sandbox
       turning its sandbox on; codex: ~/.codex/config.toml and a Stop hook; omp: ~/.omp/agent/mcp.json). The --project
@@ -312,6 +327,9 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       takes the identity out of the file; no key, home or state is touched
   host remove omp --as <name> --project <dir>
       takes that identity's mcpServers.bag out of <dir>/.omp/mcp.json and bag's wake link out of .omp/hooks/pre/
+  host remove <claude-code|codex|omp> --user [--dir <home>]
+      takes this home's shim entry and bag's service hooks out of the host's user files; every other server and
+      hook stays, and so do the deny rules for <home>/run; a bag entry that is not this home's shim is left, named
   health <relay-url>
       prints "ok" when the relay answers its health probe
   telemetry on | off | status | preview [--date <YYYY-MM-DD>] | send | forget
@@ -322,18 +340,21 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
       then names the id it removed. preview prints the exact report for a UTC date (today, or --date, up to 7 days
       back) and, on stderr, its size. While it is on, each finished UTC day's report goes once to telemetry.bag.dev
       from 01:05 UTC: a command line then starts send detached, which sends what is due and prints nothing. forget
-      asks telemetry.bag.dev to erase every report under the id, then turns it off. AC_TELEMETRY=off, DO_NOT_TRACK
+      turns it off, then asks telemetry.bag.dev to erase every report under the id. AC_TELEMETRY=off, DO_NOT_TRACK
       and CI turn it off whatever the file says. While it is on, each command line, how long it took and the audit
       lines, relay calls and pairings it made are counted. While no choice is made, a command a person runs at a
       terminal, or host install, prints a notice once per machine that names this preview
+  help (or --help, -h)
+      prints this text
   version (or --version)
       prints "bag <version> <commit>": the package's version and the commit it was built from, or, run from
       source, "bag source" and the checkout's commit ("unknown" when no .git directory is readable)
 
 With a bag service in the home (<home>/run/service.sock answers), every command that writes an identity (pair, peer,
 inbox, held, send, resend, unpair, lookup, logout, record, init, restore, onboard, keys rotate and prune, group,
-identity) borrows it from the service (service/lend) and gives it back after; held while a window is bound to it, and
-for publish, which names no identity to borrow.
+identity relays, remove and custody) borrows it from the service (service/lend) and gives it back after; held while a
+window is bound to it. publish, and such a command that names no identity (record keep --identities), is refused held
+whenever a service answers: none is there to lend.
 
 The home is --dir, else $AC_HOME, else ~/.bag: keys in <home>/keys (0600 files in a 0700 directory), or in a
 keychain item that <home>/keychain/<name>.json names, or in the agent (<home>/agent/<name>.json holds the public

@@ -245,13 +245,13 @@ async function main(): Promise<void> {
   const names = ((listed.result as { tools?: { name: string }[] } | undefined)?.tools ?? []).map(
     (t) => t.name,
   )
-  if (names.length !== 16) mismatches.push(`tools/list: ${names.length} tools`)
-  // bob runs without --allow-delegate: 15 tools, and delegate is the SDK's unknown-tool error.
+  if (names.length !== 28) mismatches.push(`tools/list: ${names.length} tools`)
+  // bob runs without --allow-delegate: 27 tools, and delegate is the SDK's unknown-tool error.
   const bobs = await bob.rpc.request('tools/list')
   const bobNames = ((bobs.result as { tools?: { name: string }[] } | undefined)?.tools ?? []).map(
     (t) => t.name,
   )
-  if (bobNames.length !== 15 || bobNames.includes('delegate'))
+  if (bobNames.length !== 27 || bobNames.includes('delegate'))
     mismatches.push(`tools/list without --allow-delegate: ${bobNames.join(', ')}`)
   expectOutcome(
     'delegate unlisted',
@@ -274,6 +274,98 @@ async function main(): Promise<void> {
     (listedSession.result as { tools?: { name: string }[] } | undefined)?.tools ?? []
   ).map((t) => t.name)
   if (sessionNames.some((n) => n.startsWith('pair_'))) mismatches.push('tools/list of a session: a pair tool')
+  // The home's acts (packages/home behind tools.ts) load with the rest, for a server of its own identity, never a
+  // session: the reads answer, and each act refuses its bad values, or asks and cannot on this client (no dialog).
+  const homeActs = [
+    'identities',
+    'identity_remove',
+    'identity_relays',
+    'keep_alive',
+    'local_delivery',
+    'unpair',
+    'names',
+    'identity_create',
+    'telemetry',
+    'host_wire',
+    'service',
+  ]
+  for (const n of homeActs) {
+    if (!names.includes(n)) mismatches.push(`tools/list: no ${n}`)
+    if (sessionNames.includes(n)) mismatches.push(`tools/list of a session: ${n}`)
+  }
+  expectOutcome('identities', await alice.call('identities'), 'ok')
+  expectOutcome('names list', await alice.call('names', { verb: 'list' }), 'ok')
+  expectOutcome(
+    'identity_create bad label',
+    await alice.call('identity_create', { label: 'Bad Label', relays: [RELAY] }),
+    'usage',
+  )
+  // No HOME in this server's environment: the machine's telemetry directory is HOME/.bag, so usage.
+  expectOutcome('telemetry status', await alice.call('telemetry', { word: 'status' }), 'usage')
+  // host_wire wires, and unwires, only a window's own folder: a server with no window refuses both.
+  expectOutcome('host_wire', await alice.call('host_wire', { host: 'claude-code' }), 'usage')
+  // No HOME in this server's environment: the login agent's folder is under HOME, so usage before any question.
+  expectOutcome('service', await alice.call('service'), 'usage')
+  expectOutcome('host_wire unwire', await alice.call('host_wire', { host: 'omp', action: 'unwire' }), 'usage')
+  const wordBefore = await alice.call('local_delivery', { word: 'status' })
+  expectOutcome('local_delivery status', wordBefore, 'ok')
+  expectOutcome(
+    'keep_alive without a dialog',
+    await alice.call('keep_alive', { word: 'on' }),
+    'no-elicitation',
+  )
+  expectOutcome(
+    'local_delivery on without a dialog',
+    await alice.call('local_delivery', { word: 'on' }),
+    'no-elicitation',
+  )
+  expectOutcome(
+    'local_delivery hide bad name',
+    await alice.call('local_delivery', { word: 'hide', name: 'a\nb' }),
+    'usage',
+  )
+  expectOutcome(
+    'identity_relays bad relay',
+    await alice.call('identity_relays', { relays: ['ftp://relay.test'] }),
+    'usage',
+  )
+  expectOutcome(
+    'identity_relays user',
+    await alice.call('identity_relays', { relays: ['https://user@relay.test'] }),
+    'usage',
+  )
+  expectOutcome('identity_remove bad name', await alice.call('identity_remove', { name: 'a\nb' }), 'usage')
+  expectOutcome(
+    'identity_remove unknown',
+    await alice.call('identity_remove', { name: 'carol' }),
+    'unknown-identity',
+  )
+  expectOutcome('unpair bad root', await alice.call('unpair', { root: 'bob' }), 'usage')
+  // alice keeps her records alive (--keep-alive-records): outside the bag service nothing can hold her quiet.
+  expectOutcome('unpair kept alive', await alice.call('unpair', { root: P.bob.address }), 'busy')
+  expectOutcome(
+    'names add bad name',
+    await alice.call('names', { verb: 'add', name: 'Bob', address: P.bob.address }),
+    'bad-name',
+  )
+  expectOutcome(
+    'names add without a dialog',
+    await alice.call('names', { verb: 'add', name: 'bob', address: P.bob.address }),
+    'no-elicitation',
+  )
+  // None of the three acts that could not ask wrote anything: the book has no bob, and the word reads as before.
+  const bookAfter = await alice.call('names', { verb: 'list' })
+  if (JSON.stringify(bookAfter.value.names ?? null).includes('"bob"'))
+    mismatches.push('names add without a dialog: bob written')
+  const wordAfter = await alice.call('local_delivery', { word: 'status' })
+  if (JSON.stringify(wordAfter.value) !== JSON.stringify(wordBefore.value))
+    mismatches.push('local_delivery on without a dialog: the word changed')
+  expectOutcome(
+    'names forget unknown',
+    await alice.call('names', { verb: 'forget', name: 'carol' }),
+    'name-unknown',
+  )
+  expectOutcome('names schema', await alice.call('names', { verb: 'drop' }), '*')
   for (const n of ['connect', 'sign_in', 'enterprise_status'])
     if (!names.includes(n) || !sessionNames.includes(n)) mismatches.push(`tools/list: no ${n}`)
   // The enterprise tools (enterprise.ts, on @usebag/enterprise-client): their refusals before any network.

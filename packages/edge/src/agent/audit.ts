@@ -5,13 +5,13 @@ import { hopDigest, type ReadRule, type UnsignedHop } from './rules.ts'
 
 // The agent's own hash-chained audit log, in the line format of spec/SPEC.md §9 item 8,
 // written through the edge's AuditSink port with the core's auditHash. It is a log of its own: the edge's Audit and
-// its line parser know the agent's events as its own: `sign`, `open`, `declined`, `device` and `rotate`.
+// its line parser know the agent's events as its own: `sign`, `open`, `declined`, `device`, `rotate` and `revoke`.
 
 /**
  * What the agent audits: a signature under the held key, an opening for a session, a refused grant prompt, a device
- * grant and a group's generation taken.
+ * grant, a group's generation taken and a session's grants revoked.
  */
-export type AgentAuditEvent = 'sign' | 'open' | 'declined' | 'device' | 'rotate'
+export type AgentAuditEvent = 'sign' | 'open' | 'declined' | 'device' | 'rotate' | 'revoke'
 export type AgentAuditReason = AgentCode | 'ok' | 'declined'
 
 /** One step; the log adds seq, prev, ts and hash. `reason` is a code, or "ok" on an accept. */

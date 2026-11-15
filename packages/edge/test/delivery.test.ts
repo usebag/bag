@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { deliveryOf } from '../src/delivery.ts'
 import type { OutboxState, OutboxTarget } from '../src/ports.ts'
 
-// One send's delivery, as the CLI's send and the MCP send tool both count it (W9).
+// One send's delivery, as the CLI's send and the MCP send tool both count it.
 const target = (relay: string, state: OutboxState, reason: OutboxTarget['reason'] = null): OutboxTarget => ({
   id: 'ab'.repeat(32),
   relay,

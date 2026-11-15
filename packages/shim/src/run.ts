@@ -7,18 +7,21 @@ import { spawn } from 'node:child_process'
 import { closeSync, constants, existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
-import { bridgeDirOf } from './bridge.ts'
 import {
   ancestors,
   type Channel,
   channelDir,
   endSession,
   hostPidOf,
+  moveSession,
   openChannel,
   type PsRow,
   postTyped,
   postUse,
+  type SessionKey,
   safeDir,
+  sessionKey,
+  startOf,
   typedName,
   writeBound,
 } from './channel.ts'
@@ -29,7 +32,7 @@ import { Shim } from './shim.ts'
 import { homeOf, maxSocketPath, ownsHome, readToken, socketOf, tokenFileOf } from './wire.ts'
 
 type Env = Readonly<Record<string, string | undefined>>
-type Signal = 'SIGTERM' | 'SIGHUP' | 'SIGINT'
+type Signal = 'SIGTERM' | 'SIGHUP' | 'SIGINT' | 'SIGUSR2'
 
 export interface ShimIo {
   readonly argv: readonly string[]
@@ -42,6 +45,7 @@ export interface ShimIo {
   readonly stderr: { write(text: string): unknown }
   readonly signals: {
     once(event: Signal, listener: () => void): unknown
+    on(event: Signal, listener: () => void): unknown
     removeListener(event: Signal, listener: () => void): unknown
   }
   readonly ps?: (pid: number) => PsRow
@@ -60,7 +64,7 @@ const alive = (pid: number): boolean => {
   }
 }
 
-/** The environment the scrubbed launch passes on (contract section 8): an allow-list, PATH fixed. */
+/** The environment the scrubbed launch passes on: an allow-list, PATH fixed. */
 export function launchEnv(env: Env, home: string): Record<string, string> {
   const out: Record<string, string> = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', AC_HOME: home }
   for (const k of ['HOME', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'NODE_USE_ENV_PROXY']) {
@@ -172,6 +176,12 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
     io.stdout.write(frame(m))
   }
   const hostPid = hostPidOf(io.ppid, io.ps)
+  // The window's files' key: the host pid, or on Codex `<host pid>-<session id>` once a tool call names the window.
+  let key: SessionKey = hostPid
+  // This process's start time, in each .bound: wake-hook --end checks it before it signals (a reused pid is not us).
+  const started = startOf(io.pid)
+  // False for a Codex sub-agent's shim: it keeps no wake files (its window's shim has them; sub-agents fire no hooks).
+  let wakes = true
   let channel: Channel | null = null
   const shim = new Shim({
     connect: socketConnect(socketOf(home)),
@@ -188,19 +198,36 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
       // The ring lives in the channel directory: made 0700 or checked here, as for the .bound file.
       if (safeDir(channelDir(home)) !== null)
         throw Object.assign(new Error('unsafe'), { code: 'unsafe-path' })
-      writeRing(home, hostPid, io.pid, r)
+      if (wakes) writeRing(home, key, io.pid, r)
     },
     consentBridge: true,
     hostPid,
-    bridgeDirOf: (given) => bridgeDirOf(home, given),
     inputHook: false,
     owner: (pid) => ownsHome(home, pid, alive),
     boundChanged: (labels) => {
       try {
-        writeBound(home, hostPid, io.pid, labels)
+        if (wakes) writeBound(home, key, io.pid, labels, started)
       } catch (e) {
         log('bound-file-failed', { code: (e as { code?: unknown }).code ?? 'error' })
       }
+    },
+    windowSeen: (sessionId, subagent) => {
+      if (subagent && wakes) {
+        wakes = false
+        endSession(home, key, io.pid) // only files naming this shim
+        log('subagent', {})
+      }
+      if (!wakes) return
+      const next = sessionKey(hostPid, sessionId)
+      if (typeof next !== 'string' || next === key) return // not a uuid, or the same window
+      // A new key (the first tool call, or a new session in the window): the old key's files go, the binding moves.
+      try {
+        moveSession(home, key, next, io.pid, shim.bound, started)
+      } catch (e) {
+        log('bound-file-failed', { code: (e as { code?: unknown }).code ?? 'error' })
+      }
+      key = next
+      log('window', { keyed: true })
     },
   })
   if (wantHook) {
@@ -208,7 +235,7 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
       home,
       hostPid,
       io.pid,
-      { use: (name) => shim.use(name), typed: () => shim.typed(), bridge: () => shim.bridgeDir },
+      { use: (name) => shim.use(name), typed: () => shim.typed() },
       log,
       maxSocketPath(),
     )
@@ -252,6 +279,14 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
   io.stdin.once('close', onEnd)
   io.stdout.on('error', onOutError)
   for (const s of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) io.signals.once(s, onSignal[s])
+  // SIGUSR2, from Codex's SessionEnd hook (wake-hook --end): the session's files go and the binding is released.
+  // Registered once with on() for the whole run: a once() re-armed in the handler leaves an instant with no listener,
+  // when the signal's default action (exit) applies.
+  const onRelease = (): void => {
+    endSession(home, key, io.pid)
+    shim.release()
+  }
+  io.signals.on('SIGUSR2', onRelease)
   log('start', { host_pid: hostPid, input_hook: channel !== null })
 
   const why = await done
@@ -263,10 +298,11 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
   io.stdout.removeListener('error', onOutError)
   io.stdout.on('error', () => {})
   for (const s of ['SIGTERM', 'SIGHUP', 'SIGINT'] as const) io.signals.removeListener(s, onSignal[s])
+  io.signals.removeListener('SIGUSR2', onRelease)
   if (tty) io.stdin.setRawMode?.(false)
   shim.close()
   // The session's files: .bound, .ring and the wake hook's .ring-seen and .wake-hook.lock (channel.ts).
-  endSession(home, hostPid, io.pid)
+  endSession(home, key, io.pid)
   channel?.close()
   // A stdin that never ends must not hold the process open.
   io.stdin.destroy()

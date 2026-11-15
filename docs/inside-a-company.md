@@ -115,7 +115,8 @@ export NO_PROXY=localhost,127.0.0.1,.example.corp
   acknowledgement the relay stores; there is no polling fallback.
 
 The install guide an agent follows has the same in its section "Behind a company proxy": the person sets the
-variables in the terminal they start Claude Code from, then starts it again in the working folder.
+variables in the terminal they start their host from and starts it again; the bag service keeps those of the window
+that started it, and its login agent takes them only when the `service` tool writes it again (its step 6c).
 
 ## What this guide does not cover
 

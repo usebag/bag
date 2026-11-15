@@ -96,7 +96,7 @@ const cli = (...args: string[]) => cliProcess(args)
 
 /** A home made by keygen: its keys and its address. */
 async function home(dir: string, name: string): Promise<{ keys: EdgeKeys; address: string }> {
-  const made = await cli('keygen', name, '--dir', dir)
+  const made = await cli('keygen', '--new', name, '--dir', dir)
   expect(made.code).toBe(0)
   return { keys: new FsKeyStore(join(dir, 'keys')).load(name), address: made.out[0] as string }
 }

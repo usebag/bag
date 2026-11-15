@@ -114,12 +114,12 @@ fn a_started_relay_shows_its_open_subscriptions_and_the_day_s_mailboxes_at_0_bef
 
 #[test]
 fn the_build_s_rev_is_a_commit_of_7_to_40_lower_case_hex_digits_or_unknown() {
-    for commit in ["a10619f", "a10619f3", "0123456789abcdef0123456789abcdef01234567"] {
+    for commit in ["fadedbe", "fadedbe5", "0123456789abcdef0123456789abcdef01234567"] {
         assert_eq!(rev(Some(commit)), commit);
     }
     let long = "0123456789abcdef0123456789abcdef012345678";
-    let injected = "a10619f3\"} 1\nx";
-    for other in [None, Some(""), Some("a10619"), Some("A10619F3"), Some(injected), Some("dev"), Some(long)] {
+    let injected = "fadedbe5\"} 1\nx";
+    for other in [None, Some(""), Some("fadedb"), Some("FADEDBE5"), Some(injected), Some("dev"), Some(long)] {
         assert_eq!(rev(other), "unknown", "{other:?}");
     }
 }
@@ -264,7 +264,7 @@ fn a_started_relay_shows_every_seeded_counter_at_0_for_each_value_of_its_closed_
         "ac_relay_rate_limited_total{limit=\"domain\"} 0",
         "ac_relay_rate_limited_total{limit=\"fetch-global\"} 0",
         "ac_relay_record_fetches_total{result=\"not-found\"} 0",
-        // W1.2: the security note's M1 to M4, the claims and the connections.
+        // Proxy headers, capped resolutions, signatures, dropped pendings, pair claims and opens, connections.
         "ac_relay_proxy_header_ignored_total{reason=\"untrusted-source\"} 0",
         "ac_relay_resolutions_capped_total 0",
         "ac_relay_signature_failures_total{kind=\"pair-open\"} 0",

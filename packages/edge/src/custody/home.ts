@@ -194,14 +194,14 @@ export class HomeCustody {
 
 /**
  * custodyClass: the custody class of `name` in `home` ("file", "keychain" or "agent"; HomeCustody.custodyOf), from
- * which pointer or key file exists, never a key or a keychain read, so the bag service's binding code (lane svc-bind)
+ * which pointer or key file exists, never a key or a keychain read, so the bag service (packages/mcp/src/service.ts)
  * checks it on every call; the CLI's loadKeys refuses "agent" by the same check.
  */
 export function custodyClass(home: string, name: string): CustodyKind {
   return new HomeCustody(home).custodyOf(name)
 }
 
-/** The service's names for a home's classes (docs/bag-service.md 5a `Custody`; `grant` comes from a binding). */
+/** The service's names for a home's classes (`Custody`; `grant` comes from a binding). */
 export type ServiceCustody = 'home-key' | 'keychain' | 'agent'
 
 /** serviceCustody: custodyClass in the wire contract's words, "home-key" for a key file; for ServiceHome.identities. */

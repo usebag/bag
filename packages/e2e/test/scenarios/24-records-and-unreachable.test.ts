@@ -119,9 +119,9 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     const w = await world('s24a')
     const home = join(w.dir, 'cli-home')
     const dir = ['--dir', home]
-    const [bob, alice] = (await Promise.all(['bob', 'alice'].map((n) => cli('keygen', n, ...dir)))).map(
-      (r) => r.out[0] as string,
-    ) as [string, string]
+    const [bob, alice] = (
+      await Promise.all(['bob', 'alice'].map((n) => cli('keygen', '--new', n, ...dir)))
+    ).map((r) => r.out[0] as string) as [string, string]
     const record = join(home, 'bob.address.json')
     const accept = join(home, 'bob.accept.json')
     await cli(
@@ -177,7 +177,7 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     // Nothing else changed but the sealing key, which epoch 1 took out of the record.
     expect([content(second), content(secondAccept)]).toEqual([
       { ...content(first), sealing_key: null },
-      // record keep lifts the old default max_bytes (65,536, as written above) to the envelope cap (W9).
+      // record keep lifts the old default max_bytes (65,536, as written above) to the envelope cap.
       { ...content(firstAccept), max_bytes: MAX_ENVELOPE_BYTES },
     ])
 
@@ -206,7 +206,7 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     symlinkSync(join(REPO, 'node_modules'), links[1] as string)
     const orgHome = join(w.dir, 'org-home')
     mkdirSync(orgHome, { mode: 0o700 })
-    const rotation = (await cli('keygen', 'org-rot', '--dir', orgHome)).out[0] as string
+    const rotation = (await cli('keygen', '--new', 'org-rot', '--dir', orgHome)).out[0] as string
     let made: CliRun
     try {
       made = await exec(
@@ -283,7 +283,7 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     const home = join(w.dir, 'cli-home')
     const dir = ['--dir', home]
     const [alice, bob] = (
-      await Promise.all(['alice', 'bob', 'carol'].map((n) => cli('keygen', n, ...dir)))
+      await Promise.all(['alice', 'bob', 'carol'].map((n) => cli('keygen', '--new', n, ...dir)))
     ).map((r) => r.out[0] as string) as [string, string, string]
     const record = join(home, 'bob.address.json')
     const accept = join(home, 'bob.accept.json')
@@ -377,7 +377,7 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     symlinkSync(join(REPO, 'packages'), links[0] as string)
     symlinkSync(join(REPO, 'node_modules'), links[1] as string)
     const home = join(w.dir, 'cli-home')
-    const alice = (await cli('keygen', 'alice', '--dir', home)).out[0] as string
+    const alice = (await cli('keygen', '--new', 'alice', '--dir', home)).out[0] as string
     const orgHome = join(w.dir, 'org-home')
     mkdirSync(orgHome, { mode: 0o700 })
     const env = { ...process.env, AC_HOME: orgHome }
@@ -442,7 +442,7 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     symlinkSync(join(REPO, 'packages'), links[0] as string)
     symlinkSync(join(REPO, 'node_modules'), links[1] as string)
     const home = join(w.dir, 'cli-home')
-    const alice = (await cli('keygen', 'alice', '--dir', home)).out[0] as string
+    const alice = (await cli('keygen', '--new', 'alice', '--dir', home)).out[0] as string
     const orgHome = join(w.dir, 'org-home')
     mkdirSync(orgHome, { mode: 0o700 })
     const env = { ...process.env, AC_HOME: orgHome }
@@ -590,7 +590,7 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     symlinkSync(join(REPO, 'packages'), links[0] as string)
     symlinkSync(join(REPO, 'node_modules'), links[1] as string)
     const home = join(w.dir, 'cli-home')
-    const alice = (await cli('keygen', 'alice', '--dir', home)).out[0] as string
+    const alice = (await cli('keygen', '--new', 'alice', '--dir', home)).out[0] as string
     const orgHome = join(w.dir, 'org-home')
     mkdirSync(orgHome, { mode: 0o700 })
     // The signing runs take their scratch space from a directory of ours, which must be empty after each one.
@@ -780,7 +780,7 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     symlinkSync(join(REPO, 'packages'), links[0] as string)
     symlinkSync(join(REPO, 'node_modules'), links[1] as string)
     const home = join(w.dir, 'cli-home')
-    const alice = (await cli('keygen', 'alice', '--dir', home)).out[0] as string
+    const alice = (await cli('keygen', '--new', 'alice', '--dir', home)).out[0] as string
     const orgHome = join(w.dir, 'org-home')
     mkdirSync(orgHome, { mode: 0o700 })
     // The signing runs take their scratch space from a directory of ours, which must be empty after each one.

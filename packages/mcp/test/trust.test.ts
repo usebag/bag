@@ -128,15 +128,28 @@ describe('L5, amended: only the pair tools pair, names or trusts, and only throu
       'pair_invite',
       'pair_accept',
       'pair_cancel',
+      'identities',
+      'identity_remove',
+      'identity_relays',
+      'keep_alive',
+      'local_delivery',
+      'unpair',
+      'names',
+      'identity_create',
+      'telemetry',
+      'host_wire',
+      'service',
       'connect',
       'sign_in',
+      'sign_out',
       'enterprise_status',
     ])
     const alice = await serverFor(P.alice, ['--allow-delegate'])
     const { tools } = await alice.client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort())
-    // The word "peer" alone is allowed: the edge's inbox text says "a peer this server has resolved by handle".
-    for (const t of tools.filter((t) => !t.name.startsWith('pair_')))
+    // The word "peer" alone is allowed: the edge's inbox text says "a peer this server has resolved by handle". unpair
+    // ends a pairing, so it is named beside the pair tools.
+    for (const t of tools.filter((t) => !t.name.startsWith('pair_') && t.name !== 'unpair'))
       expect(`${t.name} ${t.title} ${t.description}`).not.toMatch(
         /pairing|invite|peer (invite|accept|grant)/i,
       )
@@ -186,26 +199,68 @@ describe('L5, amended: only the pair tools pair, names or trusts, and only throu
       ['facts', {}],
       ['lookup', { address: invite, relays: [invite] }],
       ['receipts', { id: invite }],
+      // The home's acts: each refuses the invite string as an argument, or asks first and cannot ask on this host.
+      ['identities', { full: true }],
+      ['identity_remove', { name: invite }],
+      ['identity_relays', { relays: [invite] }],
+      ['keep_alive', { word: 'on' }],
+      ['local_delivery', { word: 'hide', name: invite }],
+      ['local_delivery', { word: 'on' }],
+      ['unpair', { root: invite }],
+      ['names', { verb: 'add', name: 'bob', address: invite }],
+      ['names', { verb: 'add', name: 'carol', address: P.carol.address }],
+      ['names', { verb: 'forget', name: invite }],
+      ['identity_create', { label: invite, relays: [invite] }],
+      ['telemetry', { word: 'on' }],
+      ['host_wire', { host: 'claude-code', folder: invite }],
+      ['host_wire', { host: 'omp', folder: invite, action: 'unwire', label: invite }],
+      ['service', {}],
       ['pair_invite', { name: 'bob', for: invite }],
       ['pair_accept', { name: 'bob' }],
       ['pair_cancel', { resume: invite }],
       ['connect', { code: invite }],
       ['sign_in', { domain: invite, instance: invite }],
+      ['sign_out', { org: invite }],
       ['enterprise_status', {}],
     ]
     const results = []
     for (const [tool, args] of calls) results.push(await alice.call(tool, args))
     // The pair tools refuse before any network: this host declared no elicitation, so no dialog can open.
-    expect(results.slice(-6, -4).map((r) => r.value.error)).toEqual(['no-elicitation', 'no-elicitation'])
+    expect(results.slice(-7, -5).map((r) => r.value.error)).toEqual(['no-elicitation', 'no-elicitation'])
     // pair_cancel with nothing running ends nothing and says so.
-    expect(results.at(-4)?.value).toEqual({ cancelled: false })
-    // The enterprise tools refuse it as usage before any network, and there is no session to show.
-    expect(results.slice(-3).map((r) => [r.isError, (r.value.lines as string[])[0]?.split(':')[0]])).toEqual([
+    expect(results.at(-5)?.value).toEqual({ cancelled: false })
+    // The enterprise tools refuse it as usage before any network, and there is no session to show or end (sign_out
+    // answers that as a fact, no error).
+    expect(results.slice(-4).map((r) => [r.isError, (r.value.lines as string[])[0]?.split(':')[0]])).toEqual([
       [true, 'usage'],
       [true, 'usage'],
+      [false, 'signed-out'],
       [true, 'signed-out'],
     ])
     expect(new Set(calls.map(([t]) => t))).toEqual(new Set(TOOL_NAMES))
+    // The acts that ask refuse no-elicitation (keep_alive, local_delivery on, names add of a real address); the others
+    // refuse the invite string before any question.
+    const acts = results.slice(11, 26).map((r) => r.value.error ?? null)
+    expect(acts).toEqual([
+      null,
+      'usage',
+      'usage',
+      'no-elicitation',
+      'usage',
+      'no-elicitation',
+      'usage',
+      'bad-address',
+      'no-elicitation',
+      'name-unknown',
+      // identity_create refuses the invite string as a label, and telemetry on has no HOME/.bag here: both usage.
+      'usage',
+      'usage',
+      // host_wire, to wire or to unwire, runs in a window of the bag service only: none here, so usage before anything.
+      'usage',
+      'usage',
+      // service: no HOME here, so usage before any question.
+      'usage',
+    ])
     expect(before()).toEqual(was)
   })
 })

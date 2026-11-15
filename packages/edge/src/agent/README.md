@@ -57,10 +57,11 @@ class Agent {
   handle(conn: Connection, input: Uint8Array | string): AgentReply   // never throws a verdict; a fault propagates
   prepareGrant(req: GrantRequest): PendingGrant | AgentRefusal
   confirmGrant(pending: PendingGrant, answer: string): GrantReply    // exactly "y" (trimmed) signs
+  revoke(session: string): RevokeReply                               // uid-only: the session's grants leave the window
 }
 
 // audit.ts
-type AgentAuditEvent = 'sign' | 'open'
+type AgentAuditEvent = 'sign' | 'open' | 'declined' | 'device' | 'rotate' | 'revoke'
 interface AgentAuditEntry { event; decision: 'accept' | 'reject'; reason: AgentCode | 'ok'; id; from; root; detail }
 function signEntry(reason: AgentCode | 'ok', hop: UnsignedHop, from: string | null): AgentAuditEntry
 function openEntry(reason: AgentCode | 'ok', req: Pick<OpenRequest, 'id' | 'session' | 'mailbox'>, root: string,
@@ -89,7 +90,9 @@ function buildRequest(session: SignerLike, nonce: string, seq: number, op: Agent
 
 // rules.ts (pure)
 type UnsignedHop = Omit<Hop, 'sig'>
-interface GrantRequest { readonly session: string; readonly caveats: readonly string[]; readonly exp: number }
+interface GrantRequest { readonly session: string; readonly caveats: readonly string[]; readonly exp: number; readonly note?: string }
+const NOTE_MAX = 240
+function checkNote(note: unknown): string | undefined                // absent, or 1 to NOTE_MAX characters; bad-shape else
 function hopDigest(h: UnsignedHop): string
 function hasCaveatPrefix(caveats: readonly string[], prefix: readonly string[]): boolean
 function deriveHop(principal: string, effective: readonly string[], req: Pick<Hop, 'sub' | 'caveats' | 'exp'>,
@@ -101,7 +104,7 @@ type ReadDecision = { release: true; rule: ReadRule }
   | { release: false; rule: ReadRule; reason: 'not-in-grant' | 'caveat-failed' | 'unknown-caveat' }
 function decideRead(content: SealedContent, threads: ReadonlySet<string>, caveats: readonly string[],
   evaluators: readonly CaveatEvaluator[], ctx: Omit<CaveatContext, 'sealed'>): ReadDecision
-function grantLines(hop: UnsignedHop): readonly string[]
+function grantLines(hop: UnsignedHop, kind?: 'grant' | 'device grant', note?: string): readonly string[]  // the note first, escaped
 ```
 
 ## Order of checks and codes
@@ -122,7 +125,14 @@ terminal (any answer but `y`, or none) writes one `declined` line: event and rea
 `reject`, id and from null, the `sign` line's detail. A withheld read is audited with its precise
 reason (`caveat-failed`, `unknown-caveat`, `not-in-grant` for an unregistered reply) and the limb; `register`
 is not audited. The agent's audit is its own log, in the edge's line format: the edge's `parseAuditLine` and
-`verifyAuditLog` read it (the events `sign`, `open` and `declined`; the codes `agent-locked` and
+`verifyAuditLog` read it (the events `sign`, `open`, `declined`, `device`, `rotate` and `revoke`; the codes `agent-locked` and
 `not-in-grant` on the agent's events only, and `declined` on the `declined` event only), and an `AgentAudit`
 continues a chain the edge's `Audit` began, or the other way round. `Audit.record` writes the edge's own
 events only; the agent writes its lines itself through `AgentAudit`.
+
+`revoke [session]`, uid-only, takes every grant-set entry of the session out of the window: its next sign, open or
+register is `not-in-grant`, while a request already past `#authority` completes. It asks no `y` and is idempotent
+(`grants: 0` for an unknown session), and writes one `revoke` line, `{sub, grants}`. A grant's optional note (the
+fourth argument of `grant`) is printed first as `note from the requester: <JSON text>`, escaped as caveats are, and is
+in neither the hop nor the prompt's code. `grantAuditEntry` (grant-audit.ts) gives the bag service's regrant lines one
+shape in the identity's log: the `policy` event, `{step: 'grant', act, label?, from?, to?, exp?, code?}`, nothing else.

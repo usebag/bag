@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { isAddress } from '@usebag/core'
 import { programName, type TrustedRoot, wellKnownUrl } from '@usebag/edge'
@@ -374,7 +375,12 @@ export function parseServerConfig(argv: readonly string[], env: Env): ServerConf
     const wide = serverWideOf(values)
     const home = values.dir as string
     const list = file ?? `${home.replace(/\/+$/, '')}/identities.json`
-    return { ...readIdentities(list, wide, process.platform, home), multi: true, service: home, ...wide }
+    // A home with no identities file yet, or one listing none, is an empty home: the service starts with no identity,
+    // and a window reaches only the tools of a window bound to none (identity_create among them), until one is listed.
+    const read = existsSync(list)
+      ? readIdentities(list, wide, process.platform, home, true)
+      : { identities: [], defaultLabel: '' }
+    return { ...read, multi: true, service: home, ...wide }
   }
   if (file === undefined) {
     const one = configOf(values, env)

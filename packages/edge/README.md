@@ -387,7 +387,7 @@ audience, so a `RelayClient` sends a proof only to the relay its `url` names.
 ## The machine's telemetry: consent, the spool, the report and the sender (2026-11-02, the sender 2026-11-03)
 
 `src/telemetry.ts`, `src/telemetry-report.ts`, `src/telemetry-schema.ts` and `src/telemetry-send.ts`, after
-`spec/SPEC.md` Appendix B 111 and the telemetry design note (§2 to §5). Opt-in, with one consent and one install id
+`spec/SPEC.md` Appendix B 111. Opt-in, with one consent and one install id
 per machine, whatever the identity's home. While it is on, each finished UTC day's report goes once to
 telemetry.bag.dev; `telemetry-send.ts` is the only file with network code.
 
@@ -395,11 +395,13 @@ telemetry.bag.dev; `telemetry-send.ts` is the only file with network code.
   identity's home (`--dir`, `AC_HOME`). A test or an e2e process points it elsewhere with `HOME`. Without `HOME` there
   is no directory, and telemetry is off.
 - **Consent and the id**: `telemetry.json` there, `{"version":2,"telemetry":"on","id":"<32 hex>","since":"<date>"}` or
-  `{"version":2,"telemetry":"off"}`, 0600, written only by `setTelemetry(dir, choice, rng, now)`. `on` keeps the id and
-  its date or draws 16 bytes from `rng`, never from the machine, a user or a path, and dates the choice; `off` drops
-  both and deletes the spool, the sender's mark and the pairs snapshots, with no network call. A version-1 choice,
-  made before the `pairs` family, reads as off with the reason `old-file`, and the notice asks again (the red team's
-  Q2, 2026-11-03). `telemetryOn(env)` is the per-machine check (the variables first: `AC_TELEMETRY=off`,
+  `{"version":2,"telemetry":"off"}`, 0600, written only by `setTelemetry(dir, choice, rng, now, erase)`. Either may
+  carry `"erase"`, a 32-hex id or an array of them: the ids a forget asked to erase without a confirmation
+  (`telemetryEraseIds`), kept through an on and a plain off until a forget's erasure is confirmed. `on` keeps the id
+  and its date or draws 16 bytes from `rng`, never from the machine, a user or a path, and never an id still to be
+  erased, and dates the choice; `off` drops both and deletes the spool, the sender's mark and the pairs snapshots, with no network call. A version-1 choice,
+  made before the `pairs` family, reads as off with the reason `old-file`, and the notice asks again, as the person
+  never chose the new family. `telemetryOn(env)` is the per-machine check (the variables first: `AC_TELEMETRY=off`,
   `DO_NOT_TRACK` and `CI` turn it off, never on); `telemetryState(env, dir)` adds the reason and the choice. C0's use
   of `telemetryState`, `telemetryNotice` and `setTelemetry` with an identity's home as the directory is deprecated.
 - **The notice**: `machineTelemetryNotice(env, preview)`, once per machine (it makes `telemetry-noticed-2`
@@ -437,13 +439,14 @@ telemetry.bag.dev; `telemetry-send.ts` is the only file with network code.
   else `other`; `node` is the major from the list, else `other`; `host` is the kind with the most of the day's MCP
   sessions, `other` on a tie or with none. `telemetryReport(env, day)` is the
   preview: the machine's spool for the day under its id, or `PREVIEW_ID` (32 zeros) before `on`.
-- **The schema's copy**: `src/telemetry-schema.ts` copies `deploy/telemetry/src/schema.ts` and `builds.ts`, and
-  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (a3be93da). The public cut carries `packages/` and never
-  `deploy/telemetry/`, so the edge cannot import the Worker's file. `test/telemetry-report.test.ts` imports the
-  Worker's files wherever the checkout holds them, fails on any difference, and runs the Worker's `checkReport` on the
-  reports it builds.
-- **The sender** (`src/telemetry-send.ts`; the W6 design note in the operations records, reviewed by the red team on
-  2026-11-03). `sendDueTelemetry(env, clock, {fetch})` makes one try when one is due (`telemetryDue`: telemetry on,
+- **The schema's copy**: `src/telemetry-schema.ts` copies the Worker's `src/schema.ts` and `builds.ts`, and
+  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (c0e57176). The Worker lives in usebag/infra at
+  `workers/telemetry/` since 0.4.2 (here, `deploy/telemetry/`, before), and from 0.4.2 the constant names a usebag/infra
+  commit, so the edge cannot import the Worker's file. `test/telemetry-report.test.ts` imports the Worker's files where
+  `TELEMETRY_WORKER_SRC` names them, fails on any difference, and runs the Worker's `checkReport` on the reports it
+  builds; infra's deploy workflow compares this copy as text before every deploy (`agree.mjs`).
+- **The sender** (`src/telemetry-send.ts`; `spec/SPEC.md` Appendix B 111).
+  `sendDueTelemetry(env, clock, {fetch})` makes one try when one is due (`telemetryDue`: telemetry on,
   01:05 UTC passed, a spool, and yesterday not yet taken). It takes the spool's finished days by `takeSpool`, at most
   seven back, writes the mark `telemetry-sent` (yesterday's date), then POSTs each day's report, oldest first, to
   `https://telemetry.bag.dev/v1/report`: the bytes `telemetryReport` previews, with the content type the only header

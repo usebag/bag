@@ -12,10 +12,11 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { CliError } from './args.ts'
+import { HomeError } from './ports.ts'
 
 // One change to one path of a host's wiring, worked out before anything is written, so the user-scope install and the
 // migration can show every path, back each one up and journal it before the first write (host-user.ts, host-migrate.ts).
+// A file or link is written beside its path, named with the caller's process id, and renamed over.
 
 /** A path's next state: a file's whole text, a symbolic link's target, or gone. */
 export interface Change {
@@ -68,7 +69,7 @@ export function backup(path: string, dir: string, n: number): Before {
 }
 
 /** Puts `text` (a string or bytes) at `file`, beside and renamed over, keeping a file's mode or taking `mode`. */
-function put(file: string, text: string | Buffer, mode = 0o600): void {
+function put(file: string, text: string | Buffer, pid: number, mode = 0o600): void {
   mkdirSync(dirname(file), { recursive: true })
   let keep = mode
   try {
@@ -76,7 +77,7 @@ function put(file: string, text: string | Buffer, mode = 0o600): void {
   } catch {
     // a new file: `mode`
   }
-  const tmp = `${file}.${process.pid}.tmp`
+  const tmp = `${file}.${pid}.tmp`
   writeFileSync(tmp, text, { mode: keep })
   renameSync(tmp, file)
 }
@@ -91,29 +92,29 @@ function drop(path: string): void {
   unlinkSync(path)
 }
 
-/** Makes one change, a link through a renamed temporary link. */
-export function applyChange(c: Change): void {
+/** Makes one change, a link through a renamed temporary link; `pid` names the file or link written beside. */
+export function applyChange(c: Change, pid: number): void {
   if (c.gone) {
     drop(c.path)
     return
   }
   if (c.link !== undefined) {
     mkdirSync(dirname(c.path), { recursive: true })
-    const tmp = `${c.path}.${process.pid}.tmp`
+    const tmp = `${c.path}.${pid}.tmp`
     drop(tmp)
     symlinkSync(c.link, tmp)
     renameSync(tmp, c.path)
     return
   }
-  put(c.path, c.text ?? '', c.mode)
+  put(c.path, c.text ?? '', pid, c.mode)
 }
 
 /** Puts back what `before` says was at `path`. */
-export function restore(path: string, before: Before): void {
+export function restore(path: string, before: Before, pid: number): void {
   drop(path)
-  if (before.kind === 'link') applyChange({ path, link: before.target, note: '' })
+  if (before.kind === 'link') applyChange({ path, link: before.target, note: '' }, pid)
   if (before.kind !== 'file') return
-  put(path, readFileSync(before.backup), before.mode)
+  put(path, readFileSync(before.backup), pid, before.mode)
 }
 
 type Json = Record<string, unknown>
@@ -124,9 +125,12 @@ type Json = Record<string, unknown>
  */
 export class View {
   readonly #next = new Map<string, Change>()
+  /** Every path whose text was read, so a caller can check after a question that none changed. */
+  readonly read = new Set<string>()
 
   /** A file's text as the edits leave it, or null when absent or gone. */
   text(path: string): string | null {
+    this.read.add(path)
     const c = this.#next.get(path)
     if (c !== undefined) return c.gone || c.link !== undefined ? null : (c.text ?? '')
     try {
@@ -153,7 +157,7 @@ export class View {
       // refused below
     }
     if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) {
-      throw new CliError('host-file-invalid', `${path} is not a JSON object`)
+      throw new HomeError('host-file-invalid', `${path} is not a JSON object`)
     }
     if (edit(doc as Json)) this.set({ path, text: `${JSON.stringify(doc, null, 2)}\n`, mode, note })
   }

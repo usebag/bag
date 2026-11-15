@@ -13,7 +13,7 @@ import {
 import { noteTrackedPairs, withPairs } from './telemetry-pairs.ts'
 import { buildTelemetryReport, dateOf, dayOf, machineFacts } from './telemetry-report.ts'
 
-// The sender (the telemetry design note's §4 and §5; the W6 design note in the operations records, §5): each finished
+// The sender (spec/SPEC.md Appendix B 111): each finished
 // UTC day's report, exactly the one `telemetry preview --date` prints, as one POST to telemetry.bag.dev, once. A day is
 // due from 01:05 UTC of the next: every held count is written by then. The sender takes the finished days out of the
 // spool before its first request, so a day goes after one try whatever the answer (the Worker's DESIGN.md: the client

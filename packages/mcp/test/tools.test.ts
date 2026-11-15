@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAX_ENVELOPE_BYTES, serializeRecord, signHop, verifyChain } from '@usebag/core'
 import { RelayError, readTelemetrySpool, setTelemetry, systemRng, telemetryId } from '@usebag/edge'
+import { OFF_USE_FORGET } from '@usebag/home'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SESSION, TRUST_NOTE } from '../src/desk.ts'
 import { hostKind } from '../src/server.ts'
@@ -73,7 +74,7 @@ afterEach(async () => {
 })
 
 describe('tools/list', () => {
-  it('lists the fourteen tools, each with a plain-prose description and an object input schema', async () => {
+  it('lists every tool, each with a plain-prose description and an object input schema', async () => {
     const { tools } = await alice.client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort())
     for (const t of tools) {
@@ -86,7 +87,8 @@ describe('tools/list', () => {
   })
 
   // T1: a pair tool that cannot pair here names the host's setting (pairing.ts noDialog); nothing the model reads
-  // hands the person a bag command line or a terminal step (Dilip's 'plain codex', 2026-11-12).
+  // hands the person a bag command line or a terminal step: never a terminal command in a host window
+  // (since 2026-11-12; docs/pairing-without-dialogs.md section 3).
   it('INSTRUCTIONS and every tool description give no terminal command: no bag command line, nothing to run', async () => {
     const { tools } = await alice.client.listTools()
     expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['pair_invite', 'pair_accept']))
@@ -96,6 +98,38 @@ describe('tools/list', () => {
         /\b(run|type|paste|enter)s?\b[^.]{0,60}\bin (a|their|your|the) (own )?terminal\b/i,
       )
     }
+  })
+
+  it("identity_create says where its key goes: a file in the home, the Keychain being the command line's", async () => {
+    const { tools } = await alice.client.listTools()
+    expect(tools.find((t) => t.name === 'identity_create')?.description).toContain(
+      'its key is a file in the home; the bag command line offers the Keychain',
+    )
+  })
+
+  it("telemetry says off keeps the reports sent and forget erases them, in the same words as off's line", async () => {
+    const { tools } = await alice.client.listTools()
+    const d = tools.find((t) => t.name === 'telemetry')
+    expect(d?.description).toContain(OFF_USE_FORGET)
+    expect(d?.inputSchema.properties?.word).toMatchObject({ enum: ['status', 'on', 'off', 'forget'] })
+    // forget reaches the telemetry endpoint.
+    expect(d?.annotations).toMatchObject({ openWorldHint: true })
+  })
+
+  it("host_wire says it wires claude-code and omp only, Codex being the command line's, so it is never offered for Codex", async () => {
+    const { tools } = await alice.client.listTools()
+    expect(tools.find((t) => t.name === 'host_wire')?.description).toContain(
+      'It wires claude-code and omp only; Codex is wired in the bag command line.',
+    )
+  })
+
+  it('host_wire says a wire proposes the identity for new windows in the folder, writes nothing there, and never binds', async () => {
+    const { tools } = await alice.client.listTools()
+    const text = tools.find((t) => t.name === 'host_wire')?.description
+    expect(text).toContain(
+      "every new window opened in that folder then has it preset in its bind dialog. A proposal never binds: a window acts as it only after your user's own Yes in that dialog, or their typed use and the name. Nothing is written into the folder, and the bag service keeps holding the identity.",
+    )
+    expect(text).not.toContain('every agent session')
   })
 
   it('lists delegate only under --allow-delegate: 13 tools without it, and a call is the unknown-tool error', async () => {

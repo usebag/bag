@@ -61,6 +61,38 @@ describe('the wake router', () => {
     expect(r.speaking('omp')).toBe('c-b')
   })
 
+  it("never makes a sub-agent's connection the speaker, though it bound last or was typed in; its rings stay quiet", () => {
+    const { r, clock } = router()
+    const sub = { ...conn('c-sub'), subagent: true }
+    const a = conn('c-a')
+    r.bind('omp', a)
+    clock.t += 1
+    r.bind('omp', sub)
+    expect(r.speaking('omp')).toBe('c-a')
+    r.typed('c-sub')
+    expect(r.speaking('omp')).toBe('c-a')
+    r.ring('omp')
+    expect(a.got.map((g) => g.params.speaking)).toEqual([true])
+    expect(sub.got.map((g) => g.params.speaking)).toEqual([false])
+    // With only the sub-agent bound no one speaks: its ring is quiet and the mail waits unread.
+    r.unbind('c-a')
+    expect(r.speaking('omp')).toBeNull()
+    r.ring('omp')
+    expect(sub.got.map((g) => g.params.speaking)).toEqual([false, false])
+  })
+
+  it('reads the mark at each ring: a seat marked after its bind stops speaking at once', () => {
+    const { r, clock } = router()
+    const a = conn('c-a')
+    const late = { ...conn('c-late'), subagent: false }
+    r.bind('omp', a)
+    clock.t += 1
+    r.bind('omp', late)
+    expect(r.speaking('omp')).toBe('c-late')
+    late.subagent = true
+    expect(r.speaking('omp')).toBe('c-a')
+  })
+
   it('hands the speaking seat on when its connection closes, and rings no one once none is bound', () => {
     const { r, clock } = router()
     const [a, b] = [conn('c-a'), conn('c-b')]

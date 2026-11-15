@@ -730,7 +730,7 @@ describe('invitePeer and acceptPeer', () => {
   ]
 
   it.each(endings)(
-    "leaves I's public records as it opened them after %s; they lapse at I's end (ruling 9)",
+    "leaves I's public records as it opened them after %s; they lapse at I's end",
     async (_, e) => {
       const relay = new Relay()
       const [a, b] = [side(relay), side(relay)]
@@ -748,7 +748,7 @@ describe('invitePeer and acceptPeer', () => {
     },
   )
 
-  it("writes nothing to the inviter's own accept-from at a refusal, early or late (ruling 9)", async () => {
+  it("writes nothing to the inviter's own accept-from at a refusal, early or late", async () => {
     const relay = new Relay()
     const [a, b] = [side(relay), side(relay)]
     const inviting = invite(a, R1, { yes: false })
@@ -761,7 +761,7 @@ describe('invitePeer and acceptPeer', () => {
     expect(relay.records.get(`${R1} ${a.address} accept-from`)).toBe(before)
   })
 
-  it("takes a read that gets no answer as not yet, on the inviter's wait: it pairs (ruling 9)", async () => {
+  it("takes a read that gets no answer as not yet, on the inviter's wait: it pairs", async () => {
     const relay = new Relay()
     const flaky = flakyReads(relay, () => b.address)
     const [a, b] = [side(flaky), side(relay)]
@@ -771,7 +771,7 @@ describe('invitePeer and acceptPeer', () => {
     expect(relay.record<AcceptFromRecord>(R1, a.address, 'accept-from')?.roots).toContain(b.address)
   })
 
-  it("takes a read that gets no answer as not yet, on the acceptor's wait: it pairs (ruling 9)", async () => {
+  it("takes a read that gets no answer as not yet, on the acceptor's wait: it pairs", async () => {
     const relay = new Relay()
     const flaky = flakyReads(relay, () => a.address)
     const [a, b] = [side(relay), side(flaky)]
@@ -804,7 +804,7 @@ describe('invitePeer and acceptPeer', () => {
     ['a refusal with a code', new RelayError('bad-address', 400, null, 'answered 400')],
     ['a rate limit that names no wait', new RelayError('rate-limited', 429, null, 'answered 429')],
     ['a response over the cap', new RelayError(null, 200, null, 'a response over 65536 bytes')],
-  ])('waits through %s to its own end, and hears no-answer (ruling 9)', async (_, e) => {
+  ])('waits through %s to its own end, and hears no-answer', async (_, e) => {
     const { b, accepting } = await waitingOn(e)
     let ended = false
     void accepting
@@ -818,7 +818,7 @@ describe('invitePeer and acceptPeer', () => {
     expect(await fail(accepting)).toBe('no-answer')
   })
 
-  it("holds off for a relay's Retry-After, within the invitation's end, and ends there all the same (ruling 9)", async () => {
+  it("holds off for a relay's Retry-After, within the invitation's end, and ends there all the same", async () => {
     const relay = new Relay()
     let [asked, limited] = [0, 0]
     const fetchRecord: Relay['fetchRecord'] = (url, address, kind) => {
@@ -861,7 +861,7 @@ describe('invitePeer and acceptPeer', () => {
     ["another identity's record", 'bad-record', (_, b) => serializeRecord(acceptOf(b, T0 + 6))],
     ['a replay older than one it has seen', 'stale-record', (a) => serializeRecord(acceptOf(a, T0 + 1))],
   ])(
-    'ends a wait at once on %s: a delivered record that fails verification decides (ruling 9)',
+    'ends a wait at once on %s: a delivered record that fails verification decides',
     async (_, code, served) => {
       const relay = new Relay()
       const [a, b] = [side(relay), side(relay)]
@@ -877,7 +877,7 @@ describe('invitePeer and acceptPeer', () => {
     },
   )
 
-  it('takes the record it first saw, served again, as not yet: that is a wait, no replay (ruling 9)', async () => {
+  it('takes the record it first saw, served again, as not yet: that is a wait, no replay', async () => {
     const relay = new Relay()
     const [a, b] = [side(relay), side(relay)]
     await publish(relay, R1, acceptOf(a, T0 + 5))
@@ -1344,7 +1344,7 @@ describe('a side with no key record and a null-sealing address record (pre-FS)',
   })
 })
 
-describe("ownAddress when the relay holds no record: the home's copy goes on (last-mile ruling 4)", () => {
+describe("ownAddress when the relay holds no record: the home's copy goes on", () => {
   it('re-signs the copy with its rotation key, revoked list and relays, and keeps what it published', async () => {
     const relay = new Relay()
     const [a, b, c] = [side(relay), side(relay), side(relay)]
