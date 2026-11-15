@@ -15,7 +15,7 @@ let n = 0
 async function home(lock?: unknown): Promise<{ dir: string; io: ReturnType<typeof testIo> }> {
   const io = testIo(new MemoryRelay())
   const dir = join(tmp.dir, `home-${n++}`)
-  expect((await cli(io, 'keygen', 'bob', '--dir', dir)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).code).toBe(0)
   if (lock !== undefined) {
     mkdirSync(join(dir, 'state', 'bob'), { recursive: true })
     writeFileSync(

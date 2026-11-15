@@ -40,7 +40,8 @@ describe('the launchd job and crontab line name the node they are given, stableN
   it("onboard's next commands and cron line start with the link", async () => {
     const io = testIo(new MemoryRelay())
     const dir = join(tmp.dir, 'home')
-    const inviter = (await cli(io, 'keygen', 'inviter', '--dir', join(tmp.dir, 'inviter'))).out[0] as string
+    const inviter = (await cli(io, 'keygen', '--new', 'inviter', '--dir', join(tmp.dir, 'inviter')))
+      .out[0] as string
     const args = ['jane', '--domain', 'acme.test', '--relay', RELAY, '--accept', inviter, '--dir', dir]
     const out = (await cli(io, 'onboard', ...args)).out
     // Every printed command of the CLI: the next steps and the cron line.

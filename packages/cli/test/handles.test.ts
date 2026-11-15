@@ -43,7 +43,7 @@ async function world() {
   const relay = new MemoryRelay()
   const io = testIo(relay)
   const dir = join(tmp.dir, `home-${n++}`)
-  const bob = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
+  const bob = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
   const file = join(dir, 'bob.address.json')
   await cli(io, 'record', 'address', 'bob', '--relay', RELAY, '--sealing-key', '--out', file, '--dir', dir)
   await cli(io, 'publish', RELAY, file)

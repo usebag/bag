@@ -52,7 +52,7 @@ async function party(net: Network, name: string, relay: string, ...answers: bool
   }
   io.readLine = async () => (io.answers.shift() === true ? readOut : null)
   const dir = join(tmp.dir, `${name}-${n++}`)
-  const address = (await cli(io, 'keygen', name, '--dir', dir)).out[0] as string
+  const address = (await cli(io, 'keygen', '--new', name, '--dir', dir)).out[0] as string
   return { io, dir, address, name, relay }
 }
 
@@ -1245,7 +1245,7 @@ describe('pair: the guided one command runs the peer ceremony in one terminal', 
     const net = new Network()
     const io = testIo(net)
     const dir = join(tmp.dir, `pair-tty-${n++}`)
-    await cli(io, 'keygen', 'alice', '--dir', dir)
+    await cli(io, 'keygen', '--new', 'alice', '--dir', dir)
     io.tty = false
     const notty = await cli(io, 'pair', '--as', 'alice', '--relay', R1, '--name', 'bob', '--dir', dir)
     expect(notty.err[0]).toMatch(/^bag: no-tty: pair is a person's act/)

@@ -39,7 +39,7 @@ async function world(...relays: string[]): Promise<World> {
   const dir = join(tmp.dir, `home-${n++}`)
   const [alice, bob, carol] = (await Promise.all(
     ['alice', 'bob', 'carol'].map(
-      async (who) => (await cli(io, 'keygen', who, '--dir', dir)).out[0] as string,
+      async (who) => (await cli(io, 'keygen', '--new', who, '--dir', dir)).out[0] as string,
     ),
   )) as [string, string, string]
   await published(io, dir, 'bob', relays.length === 0 ? [R1] : relays)
@@ -77,7 +77,7 @@ function kept(w: World, id: string): Uint8Array | undefined {
 
 const hint = (id: string): string => `the bytes stay in the outbox, and resend --id ${id} sends them`
 
-describe('send: a partial delivery is a success with a warning, as the MCP send answers it (W9)', () => {
+describe('send: a partial delivery is a success with a warning, as the MCP send answers it', () => {
   it('exits 0 when one relay took it, naming each relay that refused with its reason; every relay refusing exits 1', async () => {
     const w = await world(R1, R2, R3)
     const publish = w.relay.publish.bind(w.relay)

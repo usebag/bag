@@ -2,13 +2,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { boundOf, watchRing } from '../src/commands/wake-hook.ts'
+import { boundOf, endWindow, hostOf, watchRing } from '../src/commands/wake-hook.ts'
 import { testIo } from './support/io.ts'
 import { MemoryRelay } from './support/relay.ts'
 import { cli } from './support/run.ts'
 
-// The CLI as a client of the bag service (docs/bag-service.md, service/lend and service/return): a fake service on a
-// unix socket under a short temporary home (a socket path must fit sun_path), speaking the contract's NDJSON JSON-RPC.
+// The CLI as a client of the bag service (docs/bag-service.md, "The command line beside the service"): a fake service
+// on a unix socket under a short temporary home (a socket path must fit sun_path), speaking the service's NDJSON
+// JSON-RPC.
 
 const base = mkdtempSync('/tmp/bs-')
 afterAll(() => rmSync(base, { recursive: true, force: true }))
@@ -28,10 +29,11 @@ interface Fake {
 async function fake(): Promise<Fake & { io: ReturnType<typeof testIo> }> {
   const home = join(base, `h${n++}`)
   const io = testIo(new MemoryRelay(), {})
-  expect((await cli(io, 'keygen', 'bob', '--dir', home)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'bob', '--dir', home)).code).toBe(0)
   mkdirSync(join(home, 'run'), { mode: 0o700 })
   writeFileSync(join(home, 'run', 'service.token'), `${TOKEN}\n`, { mode: 0o600 })
   const calls: Fake['calls'] = []
+  const lent = new Set<string>()
   const sockets: Socket[] = []
   const f: Fake & { io: typeof io } = {
     home,
@@ -68,9 +70,15 @@ async function fake(): Promise<Fake & { io: ReturnType<typeof testIo> }> {
               result: { contract: 1, service: { version: '0.4.0', pid: 5151 }, connection: 'c-1' },
             })
         } else if (m.method === 'service/lend') {
-          if (f.lend === null) answer(s, m.id, { result: { lent: true, label: m.params.label } })
-          else refuse(s, m.id, f.lend, 'bound in claude-code at /Users/x/repo')
+          const label = String(m.params.label)
+          // As the service: a label already lent is busy (bag identity remove's probe reads its own lease so).
+          if (lent.has(label)) refuse(s, m.id, 'busy', `${label} is lent to the CLI for ${m.params.verb}`)
+          else if (f.lend === null) {
+            lent.add(label)
+            answer(s, m.id, { result: { lent: true, label } })
+          } else refuse(s, m.id, f.lend, 'bound in claude-code at /Users/x/repo')
         } else if (m.method === 'service/return') {
+          lent.delete(String(m.params.label))
           answer(s, m.id, { result: { returned: true, label: m.params.label, open: true, removed: false } })
         }
       }
@@ -108,6 +116,73 @@ describe('the CLI as a client of the bag service', () => {
     const before = f.calls.length
     expect((await cli(f.io, 'address', 'bob', '--dir', f.home)).code).toBe(0)
     expect(f.calls.length).toBe(before)
+    await f.close()
+  })
+
+  it('identity remove beside the service leaves the rows for it and moves held mail to the other side (C2)', async () => {
+    const f = await fake()
+    f.io.tty = true
+    f.io.answers.push(true)
+    const bob = (await cli(f.io, 'address', 'bob', '--dir', f.home)).out[0] as string
+    const lab = (await cli(f.io, 'keygen', '--new', 'lab', '--dir', f.home)).out[0] as string
+    // bob's first touch of lab, held for lab's person in lab's own spool, named by the row.
+    const id = 'e'.repeat(64)
+    const labHeld = join(f.home, 'state', 'lab', 'local-spool', 'held')
+    mkdirSync(labHeld, { recursive: true })
+    writeFileSync(join(labHeld, `${id}.env`), 'x')
+    const row = { a: 'bob', b: 'lab', a_addr: bob, b_addr: lab, added_at: 1, state: 'requested', held: [id] }
+    const table = `${JSON.stringify({ version: 1, pairs: [row] })}\n`
+    writeFileSync(join(f.home, 'run', 'local-peers.json'), table, { mode: 0o600 })
+    const to = join(base, `left-${n}`)
+    const r = await cli(f.io, 'identity', 'remove', 'lab', '--relay', RELAY, '--to', to, '--dir', f.home)
+    expect(r.code, r.err.join('\n')).toBe(0)
+    expect(f.io.asked[0]).toContain(
+      '  its held local mail (1): the bag service fails it to the senders when this command gives lab back',
+    )
+    expect(r.out).toContain(
+      'the bag service tells the senders of its held mail when this command gives lab back to it',
+    )
+    expect(r.out.some((l) => l.startsWith('dropped the local pairs'))).toBe(false)
+    // The rows are the service's to drop at the give-back; the held file waits where its #dropRemoved reads it.
+    expect(readFileSync(join(f.home, 'run', 'local-peers.json'), 'utf8')).toBe(table)
+    expect(readFileSync(join(f.home, 'state', 'bob', 'local-spool', 'held', `${id}.env`), 'utf8')).toBe('x')
+    // The lease's lend, the command's probe (busy: its own lease holds lab), the probe again after the y (lentAgain:
+    // the identity holds mail, so a service that changed its answer while asked would be busy), the lease's return.
+    expect(f.calls.filter((c) => c.method !== 'service/hello').map((c) => [c.method, c.params])).toEqual([
+      ['service/lend', { label: 'lab', verb: 'identity-remove' }],
+      ['service/lend', { label: 'lab', verb: 'identity-remove' }],
+      ['service/lend', { label: 'lab', verb: 'identity-remove' }],
+      ['service/return', { label: 'lab' }],
+    ])
+    await f.close()
+  })
+
+  it('identity remove beside a service that does not serve the identity fails the held mail itself (C2, N2)', async () => {
+    const f = await fake()
+    f.lend = 'unknown-identity'
+    f.io.tty = true
+    f.io.answers.push(true)
+    const bob = (await cli(f.io, 'address', 'bob', '--dir', f.home)).out[0] as string
+    const lab = (await cli(f.io, 'keygen', '--new', 'lab', '--dir', f.home)).out[0] as string
+    const id = 'e'.repeat(64)
+    const labHeld = join(f.home, 'state', 'lab', 'local-spool', 'held')
+    mkdirSync(labHeld, { recursive: true })
+    writeFileSync(join(labHeld, `${id}.env`), 'x')
+    const row = { a: 'bob', b: 'lab', a_addr: bob, b_addr: lab, added_at: 1, state: 'requested', held: [id] }
+    writeFileSync(join(f.home, 'run', 'local-peers.json'), JSON.stringify({ version: 1, pairs: [row] }), {
+      mode: 0o600,
+    })
+    const to = join(base, `left-${n}`)
+    const r = await cli(f.io, 'identity', 'remove', 'lab', '--relay', RELAY, '--to', to, '--dir', f.home)
+    expect(r.code, r.err.join('\n')).toBe(0)
+    expect(f.io.asked[0]).toContain(
+      '  its held local mail (1): failed to the senders, in their audit logs, and deleted',
+    )
+    // An envelope that does not read names no sender: dropped, and the rows leave here (no service will see the remove).
+    expect(r.out).toContain(`dropped held mail ${id}`)
+    expect(r.out).toContain('dropped the local pairs of lab')
+    expect(JSON.parse(readFileSync(join(f.home, 'run', 'local-peers.json'), 'utf8')).pairs).toEqual([])
+    expect(f.calls.some((c) => c.method === 'service/return')).toBe(false)
     await f.close()
   })
 
@@ -181,6 +256,173 @@ describe('wake-hook --session service: the identity of this session is the one i
     expect(Date.now() - at).toBeLessThan(5000)
     expect((await cli(io, 'wake-hook', '--session', 'service', '--as', 'bob')).err[0]).toBe(
       'bag: usage: --session service takes no --as: the shim names it',
+    )
+  })
+})
+
+describe('wake-hook --session service: two Codex windows under one host process', () => {
+  // Codex 0.167 runs one server process (200) for all of its TUI windows; each window's shim keys its files by the
+  // window's session id, which the Stop hook's input carries as session_id.
+  const [A, B] = ['0a1b2c3d-0000-4000-8000-00000000000a', '0a1b2c3d-0000-4000-8000-00000000000b']
+  const home = join(base, 'codex')
+  const shim = join(home, 'run', 'shim')
+  mkdirSync(shim, { recursive: true })
+  const parents: Record<number, number> = { 300: 200, 200: 100 }
+  const parent = (pid: number) => parents[pid] ?? null
+  const live = (pid: number) => pid === 4242 || pid === 5353
+
+  it("finds its own window's file by the session id, and a hook with no keyed file takes the host's own", () => {
+    writeFileSync(join(shim, `200-${A}.bound`), JSON.stringify({ v: 1, as: ['id-a'], shim: 4242 }))
+    writeFileSync(join(shim, `200-${B}.bound`), JSON.stringify({ v: 1, as: ['id-b'], shim: 5353 }))
+    expect(hostOf(home, 300, parent, A)).toBe(`200-${A}`)
+    expect(boundOf(home, 300, parent, live, A)).toEqual(['id-a'])
+    expect(boundOf(home, 300, parent, live, B.toUpperCase())).toEqual(['id-b'])
+    // No session id, or one that is not a uuid: the host pid's own file only (Claude Code, omp), here none.
+    expect(boundOf(home, 300, parent, live)).toEqual([])
+    expect(boundOf(home, 300, parent, live, `${A}/..`)).toEqual([])
+    // B unbinds: B's hook ends unbound, A's still finds id-a.
+    rmSync(join(shim, `200-${B}.bound`))
+    expect(boundOf(home, 300, parent, live, B)).toEqual([])
+    expect(boundOf(home, 300, parent, live, A)).toEqual(['id-a'])
+    // One process per window (Claude Code): its session id names no keyed file, and the host's .bound is read.
+    writeFileSync(join(shim, '200.bound'), JSON.stringify({ v: 1, as: ['cc'], shim: 4242 }))
+    expect(boundOf(home, 300, parent, live, B)).toEqual(['cc'])
+    rmSync(join(shim, '200.bound'))
+  })
+
+  it("wakes a window only for its own window's ring", async () => {
+    const io = testIo(new MemoryRelay(), {})
+    const w = (ms: number) => ({
+      end: Date.now() + ms,
+      signal: new AbortController().signal,
+      pollMs: 10,
+      code: 2,
+    })
+    const ringOf = (key: string, as: string, n: number, pid: number) =>
+      writeFileSync(
+        join(shim, `${key}.ring`),
+        JSON.stringify({ v: 1, n, as, unread: 1, speaking: true, at: 'x', shim: pid }),
+      )
+    writeFileSync(join(shim, `200-${B}.bound`), JSON.stringify({ v: 1, as: ['id-b'], shim: 5353 }))
+    expect(await watchRing(io, home, `200-${A}`, w(40), live)).toBe(0)
+    expect(await watchRing(io, home, `200-${B}`, w(40), live)).toBe(0)
+    setTimeout(() => ringOf(`200-${B}`, 'id-b', 1, 5353), 30)
+    // B's mail: A's hook stays silent, B's wakes with its own name.
+    expect(await watchRing(io, home, `200-${A}`, w(200), live)).toBe(0)
+    expect(io.stderr).toEqual([])
+    expect(await watchRing(io, home, `200-${B}`, w(2000), live)).toBe(2)
+    expect(io.stderr).toEqual([
+      'bag: a message was delivered to id-b; read it with the inbox tool and report it',
+    ])
+  })
+
+  it("reads the window's session id from the Stop hook's input", async () => {
+    const host = process.ppid
+    writeFileSync(join(shim, `${host}-${A}.bound`), JSON.stringify({ v: 1, as: ['id-a'], shim: process.pid }))
+    const run = async (sid: string) => {
+      const io = testIo(new MemoryRelay(), {})
+      io.lines.push(JSON.stringify({ session_id: sid, hook_event_name: 'Stop' }))
+      const at = Date.now()
+      const ran = await cli(io, 'wake-hook', '--session', 'service', '--dir', home, '--max', '3')
+      // A wait of --max is 3 s; "waited" is 2.7 s or more, so a slow start under a gate's load (2 s seen) is never one.
+      return { code: ran.code, err: ran.err, waited: Date.now() - at >= 2700 }
+    }
+    // Window A is bound: its hook waits out --max. Window B's has no file of its own: unbound, it ends at once.
+    expect(await run(A)).toEqual({ code: 0, err: [], waited: true })
+    expect(await run(B)).toEqual({ code: 0, err: [], waited: false })
+    rmSync(join(shim, `${host}-${A}.bound`))
+  }, 15_000)
+})
+
+describe("wake-hook --session service --end: Codex's SessionEnd releases the ended session's binding only", () => {
+  const [A, B] = ['0a1b2c3d-0000-4000-8000-00000000000a', '0a1b2c3d-0000-4000-8000-00000000000b']
+  const home = join(base, 'end')
+  const shim = join(home, 'run', 'shim')
+  mkdirSync(shim, { recursive: true })
+  // The hook (300) and both shims (4242, 5353) are children of Codex's shared server process, 200.
+  const parents: Record<number, number> = { 300: 200, 200: 100, 4242: 200, 5353: 200, 7777: 1 }
+  const parent = (pid: number) => parents[pid] ?? null
+  const live = (pid: number) => pid === 4242 || pid === 5353 || pid === 7777 || pid === 6464
+  // Each live pid's start time as ps would print it; the shim writes its own into .bound as `started`.
+  const starts: Record<number, string> = {
+    4242: 'Fri Nov 13 01:00:00 2026',
+    5353: 'Fri Nov 13 01:00:05 2026',
+  }
+  const end = (sid: string | null) => {
+    const hit: number[] = []
+    endWindow(
+      home,
+      300,
+      sid,
+      parent,
+      live,
+      (pid) => hit.push(pid),
+      (pid) => starts[pid] ?? null,
+    )
+    return hit
+  }
+  const bind = (sid: string, shimPid: number, started: string | null = starts[shimPid] ?? null) =>
+    writeFileSync(
+      join(shim, `200-${sid}.bound`),
+      JSON.stringify({ v: 1, as: ['id'], shim: shimPid, ...(started === null ? {} : { started }) }),
+    )
+
+  it('signals the shim of its own session file, never another window or the host pid file', () => {
+    bind(A, 4242)
+    bind(B, 5353)
+    writeFileSync(join(shim, '200.bound'), JSON.stringify({ v: 1, as: ['cc'], shim: 4242 }))
+    expect(end(A)).toEqual([4242])
+    expect(end(B.toUpperCase())).toEqual([5353])
+    expect(end(null)).toEqual([])
+    expect(end('not-a-uuid')).toEqual([])
+    rmSync(join(shim, '200.bound'))
+    rmSync(join(shim, `200-${B}.bound`))
+    expect(end(B)).toEqual([])
+  })
+
+  it("signals the window's own shim, never a sub-agent's shim that runs under the same host with the same session id", () => {
+    // A sub-agent's shim (6464) has the window's session id but keeps no wake files (packages/shim run.ts), so the
+    // window's file names the window's shim, and --end signals that one only.
+    parents[6464] = 200
+    starts[6464] = 'Fri Nov 13 01:10:00 2026'
+    bind(A, 4242)
+    expect(end(A)).toEqual([4242])
+    rmSync(join(shim, `200-${A}.bound`))
+  })
+
+  it('/new: the old session ends after the shim moved to the new id, nothing; before it moved, the release', () => {
+    // Before the move: the old id's file is the shim's, and the shim is released (it connects again unbound).
+    bind(A, 4242)
+    expect(end(A)).toEqual([4242])
+    // After the move (the new session's first tool call): the old id names no file, the window's binding stays.
+    rmSync(join(shim, `200-${A}.bound`))
+    bind(B, 4242)
+    expect(end(A)).toEqual([])
+    rmSync(join(shim, `200-${B}.bound`))
+  })
+
+  it('signals no dead shim, no pid not under that host, and no reused pid (another start time, or none)', () => {
+    bind(A, 999)
+    expect(end(A)).toEqual([])
+    bind(A, 7777)
+    expect(end(A)).toEqual([])
+    // 4242 now is another process under the Codex host: kill 0 and the walk pass, the start time does not.
+    bind(A, 4242, 'Thu Nov 12 22:00:00 2026')
+    expect(end(A)).toEqual([])
+    bind(A, 4242, null)
+    expect(end(A)).toEqual([])
+    bind(A, 4242)
+    expect(end(A)).toEqual([4242])
+    rmSync(join(shim, `200-${A}.bound`))
+  })
+
+  it('ends 0, silent, and --end is for --session service only', async () => {
+    const io = testIo(new MemoryRelay(), {})
+    io.lines.push(JSON.stringify({ session_id: A, hook_event_name: 'SessionEnd' }))
+    const ran = await cli(io, 'wake-hook', '--session', 'service', '--end', '--dir', home)
+    expect([ran.code, ran.out, ran.err]).toEqual([0, [], []])
+    expect((await cli(io, 'wake-hook', '--as', 'bob', '--end')).err[0]).toBe(
+      'bag: usage: --end is for --session service only',
     )
   })
 })

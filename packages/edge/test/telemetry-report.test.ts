@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 import { systemRng } from '../src/adapters/system-clock.ts'
 import {
@@ -38,9 +37,10 @@ import {
 } from '../src/telemetry-schema.ts'
 import { T0, tempDir } from './support/fixtures.ts'
 
-// The client's report: the copy of the Worker's schema, the builder's buckets and caps (the red team's F-size),
-// and the property that no report carries a string outside the schema's sets, whatever the spool holds. Where the
-// checkout holds deploy/telemetry, every report built here also passes the Worker's own checkReport.
+// The client's report: the copy of the Worker's schema, the builder's buckets and caps (so that a report fits
+// MAX_BYTES), and the property that no report carries a string outside the schema's sets, whatever the spool holds.
+// Where TELEMETRY_WORKER_SRC names the Worker's src (usebag/infra workers/telemetry/src, since 0.4.2), every report
+// built here also passes the Worker's own checkReport.
 
 const tmp = tempDir('telemetry-report')
 afterAll(() => tmp.cleanup())
@@ -67,11 +67,17 @@ interface WorkerFiles {
   readonly maxBytes: unknown
 }
 
-const WORKER = fileURLToPath(new URL('../../../deploy/telemetry/src/', import.meta.url))
+// The Worker lives in usebag/infra (workers/telemetry) since 0.4.2, so this repository holds no copy of it. Set
+// TELEMETRY_WORKER_SRC to an infra checkout's workers/telemetry/src (release-bump.mjs names the release's infra
+// worktree in its next steps) and the copy is compared with it; unset, as in the public cut, it is not. A path that
+// holds no schema.ts is an error, never a silent skip.
+const WORKER = process.env.TELEMETRY_WORKER_SRC
 
-/** The Worker's files where the checkout holds them; null in the public cut, which carries no deploy/telemetry. */
+/** The Worker's files where TELEMETRY_WORKER_SRC names them; null when it is unset. */
 async function worker(): Promise<WorkerFiles | null> {
-  if (!existsSync(join(WORKER, 'schema.ts'))) return null
+  if (WORKER === undefined || WORKER === '') return null
+  if (!existsSync(join(WORKER, 'schema.ts')))
+    throw new Error(`TELEMETRY_WORKER_SRC=${WORKER} holds no schema.ts`)
   const schema = (await import(join(WORKER, 'schema.ts'))) as WorkerFiles['schema']
   const builds = ((await import(join(WORKER, 'builds.ts'))) as { BUILDS: unknown }).BUILDS
   const maxBytes = ((await import(join(WORKER, 'index.ts'))) as { MAX_BYTES: unknown }).MAX_BYTES
@@ -93,8 +99,8 @@ function leaves(v: unknown, path: readonly string[] = []): [string, number][] {
   return Object.entries(v).flatMap(([k, x]) => leaves(x, [...path, k]))
 }
 
-describe('the schema: the edge copy of deploy/telemetry/src/schema.ts at TELEMETRY_SCHEMA_COMMIT', () => {
-  it('equals the Worker files value for value wherever the checkout holds them (the cut holds none)', async () => {
+describe("the schema: the edge copy of the Worker's src/schema.ts at TELEMETRY_SCHEMA_COMMIT", () => {
+  it('equals the Worker files value for value where TELEMETRY_WORKER_SRC names them: the sets, the members, the four caps, the byte bound and the builds list (the cut sets none, and checks the commit form only)', async () => {
     expect(TELEMETRY_SCHEMA_COMMIT).toMatch(/^[0-9a-f]{40}$/)
     const w = await worker()
     if (w === null) return
@@ -208,7 +214,7 @@ describe('the builder: one schema-1 report for a UTC day', () => {
   })
 })
 
-describe('the caps: each family within its cap, the rest summed into other, every report within 4,096 bytes', () => {
+describe('the caps: each family within its cap, the rest summed into other, every report within MAX_BYTES', () => {
   it('keeps a count family largest cells, one fewer than MAX_CELLS, and sums the rest into other', async () => {
     const cells: Cells = new Map()
     const codes = SETS.code.slice(1, 41)
@@ -238,7 +244,7 @@ describe('the caps: each family within its cap, the rest summed into other, ever
     expect(rows.other).toEqual([bucket(91), 0, 0, bucket(13), 0])
   })
 
-  it('cuts a spool far over every cap to the caps, with the sums in other, within 4,096 bytes', async () => {
+  it('cuts a spool far over every cap to the caps, with the sums in other, within MAX_BYTES', async () => {
     const cells: Cells = new Map()
     let k = 1
     for (const [name, m] of Object.entries(MEMBERS)) {
@@ -411,6 +417,7 @@ describe('the facts: the package version or the checkout commit, a build only by
       '0.3.0',
       '0.4.0',
       '0.4.1',
+      '0.4.2',
     ])
     const built = (version: string) => machineFacts(ID, { version, commit: 'c'.repeat(40) })
     for (const version of BUILDS) {
@@ -419,7 +426,7 @@ describe('the facts: the package version or the checkout commit, a build only by
       expect(report.build).toBe(version)
       await sendable(report)
     }
-    for (const version of ['0.4.2', '0.0.0', '0.1.1-dirty', 'c'.repeat(40)]) {
+    for (const version of ['0.4.3', '0.0.0', '0.1.1-dirty', 'c'.repeat(40)]) {
       expect(buildTelemetryReport(DAY, new Map(), built(version)).build, version).toBe('other')
     }
     expect(machineFacts(ID, null).build).toBe(checkoutCommit())

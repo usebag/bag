@@ -102,7 +102,7 @@ async function ok(...args: string[]): Promise<CliRun> {
 
 /** Makes identities in a home; their addresses, in order. */
 async function keygen(home: string, ...names: string[]): Promise<string[]> {
-  const made = await Promise.all(names.map((name) => ok('keygen', name, '--dir', home)))
+  const made = await Promise.all(names.map((name) => ok('keygen', '--new', name, '--dir', home)))
   return made.map((m) => m.out[0] as string)
 }
 const one = async (home: string, name: string): Promise<string> => (await keygen(home, name))[0] as string
@@ -744,7 +744,7 @@ describe('e2e scenario 46: the lost device', () => {
       return value
     }
     const started = Date.now()
-    const dev2 = (await act('keygen', 'keygen', 'dev2', '--dir', hd2)).out[0] as string
+    const dev2 = (await act('keygen', 'keygen', '--new', 'dev2', '--dir', hd2)).out[0] as string
     const groupAtDev2 = carry('the group address to dev2', team)
     const addr = join(hd2, 'dev2.address.json')
     const accept = join(hd2, 'dev2.accept-from.json')
@@ -1228,10 +1228,12 @@ describe('e2e scenario 46: the lost device', () => {
     const reader = await one(hr, 'reader')
     await onboard(hp, 'pk', R, [P])
     await onboard(hr, 'reader', R, [P])
-    expect((await ok('keygen', 'p', '--custody', 'agent', '--principal', 'pk', '--dir', hp)).out).toEqual([P])
-    expect((await ok('keygen', 'dev', '--custody', 'agent', '--principal', 'dk', '--dir', hd)).out).toEqual([
-      D,
-    ])
+    expect(
+      (await ok('keygen', '--new', 'p', '--custody', 'agent', '--principal', 'pk', '--dir', hp)).out,
+    ).toEqual([P])
+    expect(
+      (await ok('keygen', '--new', 'dev', '--custody', 'agent', '--principal', 'dk', '--dir', hd)).out,
+    ).toEqual([D])
     // What `ac peer` leaves in each name book (the pairing is scenario 41's): P knows D as laptop, D knows P.
     await ok('name', 'add', 'laptop', D, '--dir', hp)
     await ok('name', 'add', 'p', P, '--dir', hd)
@@ -1464,7 +1466,7 @@ describe('e2e scenario 46: the lost device', () => {
 
     // The inverse of the agent's group refusal (agent-groups.test.ts): the pointer for a member is made, exit 0, and the login
     // window opens with the stored body replayed (bound: 0 "not held" lines and no `agent-groups` on stderr).
-    const pointer = await ok('keygen', 'p', '--custody', 'agent', '--principal', 'pk', '--dir', hp)
+    const pointer = await ok('keygen', '--new', 'p', '--custody', 'agent', '--principal', 'pk', '--dir', hp)
     expect(pointer.out).toEqual([P])
     const p = await loginAt(hp, 'p', R, P)
     expect([p.err().includes('not held'), p.err().includes('agent-groups')]).toEqual([false, false])
@@ -1937,7 +1939,7 @@ sys.exit(code if code >= 0 else 128 - code)
     const listed = await ok('keys', 'list', '--dir', hnew)
     const line = listed.out.find((l) => l.startsWith('dev '))
     expect([line?.split(' ')[1], line]).toEqual([dev, expect.stringMatching(/ copy=sheet$/)])
-    // A restore audits as every command outside an edge does, in the file of its own (the last-mile rulings, section 5).
+    // A restore audits as every command outside an edge does, in the file of its own.
     const log = join(hnew, 'state', 'dev', 'cli-audit.jsonl')
     expect(auditLinesOf(log)[0]).toEqual({
       event: 'restore',
@@ -2132,9 +2134,15 @@ sys.exit(code if code >= 0 else 128 - code)
     expect(listed.out.find((l) => l.startsWith('bob '))).toMatch(/ copy=none$/)
     const log = join(hl, 'state', 'bob', 'cli-audit.jsonl')
     const verified = await ok('audit', 'verify', log)
-    expect(verified.out).toEqual(['ok 2 lines'])
+    expect(verified.out).toEqual(['ok 3 lines'])
     expect(auditLinesOf(log)).toEqual([
       { event: 'onboard', decision: 'accept', reason: 'ok', detail: { copy: 'none' } },
+      {
+        event: 'policy',
+        decision: 'accept',
+        reason: 'ok',
+        detail: { step: 'publish', record: 'address', relay: R, outcome: 'ok' },
+      },
       {
         event: 'rotate',
         decision: 'accept',
@@ -2158,7 +2166,7 @@ sys.exit(code if code >= 0 else 128 - code)
         'the right checksum then published (control); stdin a pipe: no-tty x2 (the sheet and --accept-loss),',
         'stdout a pipe: no-tty and no sheet; --accept-loss with 5 bad answers (short, empty, lower case,',
         'trailing space, end of input): 5 of 5 exit 1 single-copy, 0 files; the exact phrase: exit 0, state none,',
-        'copy=none in keys list, 2 audit lines (onboard accept copy none, then rotate accept for epoch 1) that ac audit verify reads as "ok 2 lines"',
+        'copy=none in keys list, 3 audit lines (onboard accept copy none, policy accept for the address publish, then rotate accept for epoch 1) that ac audit verify reads as "ok 3 lines"',
       ].join(' '),
     )
     await verifyLogs([hs, hl, hn])

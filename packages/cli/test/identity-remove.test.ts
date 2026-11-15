@@ -38,7 +38,7 @@ async function world(answers: boolean[], env: Record<string, string> = {}) {
   io.answers.push(...answers)
   const dir = join(base, 'home')
   const key = async (name: string, home: string) =>
-    (await cli(io, 'keygen', name, '--dir', home)).out[0] as string
+    (await cli(io, 'keygen', '--new', name, '--dir', home)).out[0] as string
   const first = await key('first', dir)
   const second = await key('second', dir)
   const p1 = await key('p1', join(base, 'p1'))
@@ -189,7 +189,7 @@ describe('identity remove <name>: one identity out of a shared home', () => {
       join(c, '.claude', 'settings.json'),
       JSON.stringify({ hooks: { Stop: [{ hooks: [other] }] } }),
     )
-    expect((await cli(w.io, 'keygen', 'third', '--dir', w.dir)).code).toBe(0)
+    expect((await cli(w.io, 'keygen', '--new', 'third', '--dir', w.dir)).code).toBe(0)
     const cc = (name: string) =>
       cli(w.io, 'host', 'install', 'claude-code', '--as', name, '--dir', w.dir, '--relay', R1, '--project', c)
     expect((await cc('third')).code).toBe(0)
@@ -335,6 +335,7 @@ describe('identity remove <name>: one identity out of a shared home', () => {
     const made = await cli(
       w.io,
       'keygen',
+      '--new',
       'agt',
       '--custody',
       'agent',
@@ -353,7 +354,7 @@ describe('identity remove <name>: one identity out of a shared home', () => {
   it("an orphaned copy (its identity's key file gone) keeps no root in trust.json", async () => {
     const w = await world([true])
     await paired(w)
-    await cli(w.io, 'keygen', 'ghost', '--dir', w.dir)
+    await cli(w.io, 'keygen', '--new', 'ghost', '--dir', w.dir)
     await accept(w, 'ghost', [w.p2])
     renameSync(join(w.dir, 'keys', 'ghost.json'), join(w.base, 'ghost-gone.json'))
     const ran = await remove(w, 'second', '--to', join(w.base, 'left-ghost'))

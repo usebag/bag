@@ -52,7 +52,9 @@ async function world(): Promise<World> {
   const io = testIo(relay)
   const dir = join(tmp.dir, `w${n++}`)
   const [alice, bob] = await Promise.all(
-    ['alice', 'bob'].map(async (who) => (await cli(io, 'keygen', who, '--dir', dir)).out[0] as string),
+    ['alice', 'bob'].map(
+      async (who) => (await cli(io, 'keygen', '--new', who, '--dir', dir)).out[0] as string,
+    ),
   )
   return { relay, io, dir, alice: alice as string, bob: bob as string }
 }

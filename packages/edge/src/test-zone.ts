@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import type { Dns } from './ports.ts'
 
-// The test zone switch (decision 61): two bag enterprise instances and their relays on one machine, under the zone
+// The test zone switch: two bag enterprise instances and their relays on one machine, under the zone
 // pilot.bag.dev, which no public resolver serves. Off unless BAG_TEST_ZONE_FILE names a zone file; then, for this
 // process only and with one loud line on stderr: (1) a TXT lookup of a name in pilot.bag.dev reads that file (the format
 // docker/dns/zone.sh writes and bag enterprise's ORIGIN_ZONE_FILE reads: `<owner> IN TXT "<string>"...`, the owner

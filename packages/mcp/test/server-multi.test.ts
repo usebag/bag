@@ -16,6 +16,7 @@ import {
 } from '../src/config.ts'
 import type { Desk } from '../src/desk.ts'
 import { HeldError, type Opened } from '../src/open.ts'
+import { BUSY, BUSY_HERE } from '../src/pairing.ts'
 import {
   type ProcessIo,
   REOPEN_MS,
@@ -239,11 +240,23 @@ describe('the tools of several identities', () => {
     const m = await many([...two(), id('side', P.jane, { allow_delegate: true })])
     const three = (await m.client.listTools()).tools
     expect(three.map((t) => t.name).sort()).toEqual([...one.map((t) => t.name), 'delegate'].sort())
-    // The enterprise tools are home-level (the default identity's home): they take no as.
-    const enterprise = ['connect', 'sign_in', 'enterprise_status']
-    for (const t of three.filter((t) => !enterprise.includes(t.name)))
+    // The enterprise tools are home-level (the default identity's home), and identity_create, telemetry, host_wire and
+    // service are acts of no identity (the home's, the machine's, a folder's): none of them takes as.
+    const noAs = [
+      'connect',
+      'sign_in',
+      'sign_out',
+      'enterprise_status',
+      'identity_create',
+      'telemetry',
+      'host_wire',
+      'service',
+    ]
+    for (const t of three.filter((t) => !noAs.includes(t.name)))
       expect(Object.keys(t.inputSchema.properties ?? {})).toContain('as')
-    expect(three.filter((t) => enterprise.includes(t.name))).toHaveLength(3)
+    for (const t of three.filter((t) => noAs.includes(t.name)))
+      expect(Object.keys(t.inputSchema.properties ?? {})).not.toContain('as')
+    expect(three.filter((t) => noAs.includes(t.name))).toHaveLength(8)
     expect(m.client.getInstructions()).toContain('Act only as the identity your user names')
     const hop = { to: P.bob.address, caveats: ['type=chat.*'], exp: '+60' }
     expect((await m.call('delegate', { as: 'personal', ...hop })).value).toMatchObject({ error: 'usage' })
@@ -506,6 +519,25 @@ describe('pairing per identity', () => {
     expect(invite.value.resume).toMatch(/^personal:[0-9a-f]{32}$/)
     expect((await m.call('pair_accept', { as: 'research', name: 'alice' })).value).toMatchObject({
       error: 'busy',
+    })
+  })
+
+  it("busy carries a fresh resume, labelled, only to the identity whose pairing runs; another identity's busy has none", async () => {
+    const m = await many(two())
+    const invite = await m.call('pair_invite', { as: 'personal', name: 'bob' })
+    const other = await m.call('pair_accept', { as: 'research', name: 'alice' })
+    expect(other.value).toMatchObject({ error: 'busy', detail: BUSY })
+    expect(other.value).not.toHaveProperty('resume')
+    const own = await m.call('pair_accept', { as: 'personal', name: 'jane' })
+    expect(own.value).toMatchObject({ error: 'busy', detail: BUSY_HERE('pair_invite') })
+    expect(own.value.resume).toMatch(/^personal:[0-9a-f]{32}$/)
+    expect(own.value.resume).not.toBe(invite.value.resume)
+    // The token research could never see, and the one busy replaced, are both dead; the fresh one cancels.
+    expect((await m.call('pair_invite', { resume: invite.value.resume })).value).toMatchObject({
+      error: 'usage',
+    })
+    expect((await m.call('pair_cancel', { resume: own.value.resume })).value).toMatchObject({
+      cancelled: true,
     })
   })
 
@@ -852,7 +884,7 @@ describe('serve with --identities', () => {
     const done = serve(t)
     const client = new Client({ name: 'in-process', version: '0.0.0' })
     await client.connect(new StreamClientTransport(t.stdin, t.stdout))
-    expect((await client.listTools()).tools).toHaveLength(15)
+    expect((await client.listTools()).tools).toHaveLength(27)
     // The process's DO_NOT_TRACK reaches the machine's switch: a person's yes stays off under it.
     const status = await client.callTool({ name: 'status', arguments: { as: 'research' } })
     expect(JSON.parse((status.content as { text: string }[])[0]?.text ?? '{}').telemetry).toEqual({

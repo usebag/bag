@@ -50,7 +50,7 @@ async function world(...names: string[]): Promise<World> {
   mkdirSync(user, { recursive: true })
   mkdirSync(home, { recursive: true })
   const io = testIo(new MemoryRelay(), { HOME: user })
-  for (const name of names) expect((await cli(io, 'keygen', name, '--dir', home)).code).toBe(0)
+  for (const name of names) expect((await cli(io, 'keygen', '--new', name, '--dir', home)).code).toBe(0)
   chmodSync(home, 0o700)
   return { io, home, user, base }
 }
@@ -123,7 +123,7 @@ describe('host install <host> --user: the bag service for every identity of the 
     expect(existsSync(join(w.user, '.claude', 'settings.json'))).toBe(false)
   })
 
-  it('codex: the shim table in ~/.codex/config.toml and its Stop hook; a plain identity table is left for host migrate', async () => {
+  it('codex: the shim table in ~/.codex/config.toml and its Stop and SessionEnd hooks; a plain identity table is left for host migrate', async () => {
     const w = await world('bob')
     const ran = await user(w, 'codex')
     expect(ran.code).toBe(0)
@@ -131,7 +131,13 @@ describe('host install <host> --user: the bag service for every identity of the 
     expect(toml).toBe(
       `[mcp_servers.bag]\ncommand = ${JSON.stringify(NODE)}\nargs = ${JSON.stringify([SHIM, '--dir', w.home])}\n`,
     )
-    const hooks = json(join(w.user, '.codex', 'hooks.json')) as { hooks: { Stop: unknown[] } }
+    const hooks = json(join(w.user, '.codex', 'hooks.json')) as {
+      hooks: { Stop: unknown[]; SessionEnd: unknown[] }
+    }
+    // SessionEnd (a window closed or quit, or /new) releases the ended session's binding through its shim.
+    expect(hooks.hooks.SessionEnd).toEqual([
+      { hooks: [{ type: 'command', command: wake(w, ['--end']), timeout: 3 }] },
+    ])
     expect(hooks.hooks.Stop).toEqual([
       {
         hooks: [
@@ -168,12 +174,19 @@ describe('host install <host> --user: the bag service for every identity of the 
   it("omp: the shim in <agentDir>/mcp.json, PI_CODING_AGENT_DIR honoured; --as and --sandbox are not this form's", async () => {
     const w = await world('bob')
     expect((await user(w, 'omp')).code).toBe(0)
+    // omp's per-server MCP timeout for bag: 130 s, so a consent question may stand 120 s.
     expect(json(join(w.user, '.omp', 'agent', 'mcp.json'))).toEqual({
-      mcpServers: { bag: shimEntry(w, ['--input-hook']) },
+      mcpServers: { bag: { ...shimEntry(w, ['--input-hook']), timeout: 130000 } },
     })
     // The wake extension at user level: a link to the omp-wake entry (from the package, the launcher bag-omp-wake.js).
     const link = join(w.user, '.omp', 'agent', 'hooks', 'pre', 'bag-wake.ts')
     expect(readlinkSync(link)).toBe(OMP)
+    expect((await user(w, 'omp')).out[0]).toBe('nothing to change')
+    // A 0.4.1 entry (no timeout) is replaced once by a re-run, which then has nothing to change.
+    const file = join(w.user, '.omp', 'agent', 'mcp.json')
+    writeFileSync(file, JSON.stringify({ mcpServers: { bag: shimEntry(w, ['--input-hook']) } }))
+    expect((await user(w, 'omp')).out[0]).not.toBe('nothing to change')
+    expect((json(file).mcpServers as Record<string, Record<string, unknown>>).bag?.timeout).toBe(130000)
     expect((await user(w, 'omp')).out[0]).toBe('nothing to change')
     expect(
       (await user(w, 'omp')).out.some((l) =>
@@ -333,7 +346,7 @@ async function wired(): Promise<World & { a: string; b: string; c: string; other
   writeFileSync(settings, JSON.stringify(s, null, 2))
   // Another home's identity in a fourth folder: never migrated.
   const elsewhere = join(w.base, 'elsewhere')
-  expect((await cli(w.io, 'keygen', 'zed', '--dir', elsewhere)).code).toBe(0)
+  expect((await cli(w.io, 'keygen', '--new', 'zed', '--dir', elsewhere)).code).toBe(0)
   expect((await per('claude-code', 'zed', other, elsewhere)).code).toBe(0)
   mkdirSync(join(w.user, 'Library', 'LaunchAgents'), { recursive: true })
   writeFileSync(join(w.user, 'Library', 'LaunchAgents', 'bag.keep.bob.plist'), '<plist/>')
@@ -371,7 +384,7 @@ describe('host migrate: per-folder wiring moved to the bag service, journalled, 
     )
     expect(
       (json(join(w.user, '.omp', 'agent', 'mcp.json')).mcpServers as Record<string, unknown>).bag,
-    ).toEqual(shimEntry(w, ['--input-hook']))
+    ).toEqual({ ...shimEntry(w, ['--input-hook']), timeout: 130000 })
     expect(readFileSync(join(w.user, '.codex', 'config.toml'), 'utf8')).toContain(
       JSON.stringify([SHIM, '--dir', w.home]),
     )
@@ -540,8 +553,11 @@ describe('host install service: the login agent, printed for the person', () => 
     NODE_USE_ENV_PROXY: '1',
   }
   const main = '/Users/x/.bag/package/bag-mcp.js'
-  it("is byte for byte S1's launchAgentPlist and systemdUnit for the same inputs (their own output on ecce5f0e)", () => {
-    const s1 = readFileSync(fileURLToPath(new URL('./fixtures/svc-core-plist.txt', import.meta.url)), 'utf8')
+  it("is byte for byte the bag service's launchAgentPlist and systemdUnit for the same inputs (their own output)", () => {
+    const plist = readFileSync(
+      fileURLToPath(new URL('./fixtures/launch-agent-plist.txt', import.meta.url)),
+      'utf8',
+    )
     const ours = servicePlist({
       node: '/opt/homebrew/bin/node',
       main,
@@ -549,10 +565,10 @@ describe('host install service: the login agent, printed for the person', () => 
       identities: '/Users/x/.bag/identities.json',
       env,
     })
-    expect(ours).toBe(s1)
+    expect(ours).toBe(plist)
     expect(ours).not.toContain('NODE_OPTIONS')
     expect(ours).not.toContain('u:p@')
-    const unit = readFileSync(fileURLToPath(new URL('./fixtures/svc-core-unit.txt', import.meta.url)), 'utf8')
+    const unit = readFileSync(fileURLToPath(new URL('./fixtures/systemd-unit.txt', import.meta.url)), 'utf8')
     const o = {
       node: '/opt/homebrew/bin/node',
       main,
@@ -565,6 +581,10 @@ describe('host install service: the login agent, printed for the person', () => 
 
   it("names each proxy left out, ends with the person's one line, prints the unit on Linux, and one agent per user", () => {
     const none = () => null
+    const made: string[] = []
+    const prep = (dir: string) => {
+      made.push(dir)
+    }
     const mac = serviceInstall(
       env,
       '/Users/x/.bag',
@@ -573,16 +593,26 @@ describe('host install service: the login agent, printed for the person', () => 
       'darwin',
       '/opt/homebrew/bin/node',
       none,
+      prep,
     )
     expect(mac).toContain('left out of the login agent: http_proxy (it carries a user name or password)')
     expect(mac.at(-1)).toMatch(
-      /^mkdir -p \/Users\/x\/Library\/LaunchAgents && node bag.js host install service --dir \/Users\/x\/.bag \| sed -n '1,\/\^<\\\/plist>\$\/p' > \/Users\/x\/Library\/LaunchAgents\/dev.bag.service.plist && launchctl bootstrap gui\/\d+ \/Users\/x\/Library\/LaunchAgents\/dev.bag.service.plist$/,
+      /^mkdir -p \/Users\/x\/Library\/LaunchAgents && node bag\.js host install service --dir \/Users\/x\/\.bag \| sed -n '1,\/\^<\\\/plist>\$\/p' > \/Users\/x\/Library\/dev\.bag\.service\.plist\.new && if grep -q '\^<\/plist>\$' \/Users\/x\/Library\/dev\.bag\.service\.plist\.new; then mv \/Users\/x\/Library\/dev\.bag\.service\.plist\.new \/Users\/x\/Library\/LaunchAgents\/dev\.bag\.service\.plist && launchctl bootstrap gui\/\d+ \/Users\/x\/Library\/LaunchAgents\/dev\.bag\.service\.plist; else echo 'STOP: bag printed no login agent, so nothing was moved or loaded; what it printed is in' \/Users\/x\/Library\/dev\.bag\.service\.plist\.new >&2; false; fi$/,
     )
-    const linux = serviceInstall(env, '/Users/x/.bag', main, 'node bag.js', 'linux', '/usr/bin/node', none)
+    const linux = serviceInstall(
+      env,
+      '/Users/x/.bag',
+      main,
+      'node bag.js',
+      'linux',
+      '/usr/bin/node',
+      none,
+      prep,
+    )
     expect(linux[0]).toMatch(/^# ~\/\.config\/systemd\/user\/bag\.service: /)
     expect(linux[0]).toContain('UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD')
     expect(linux.at(-1)).toBe(
-      "mkdir -p /Users/x/.config/systemd/user && node bag.js host install service --dir /Users/x/.bag | sed -n '1,/^WantedBy=/p' > /Users/x/.config/systemd/user/bag.service && systemctl --user daemon-reload && systemctl --user enable --now bag",
+      "mkdir -p /Users/x/.config/systemd/user && node bag.js host install service --dir /Users/x/.bag | sed -n '1,/^WantedBy=/p' > /Users/x/.config/bag.service.new && if grep -q '^WantedBy=' /Users/x/.config/bag.service.new; then mv /Users/x/.config/bag.service.new /Users/x/.config/systemd/user/bag.service && systemctl --user daemon-reload && systemctl --user enable --now bag; else echo 'STOP: bag printed no login agent, so nothing was moved or loaded; what it printed is in' /Users/x/.config/bag.service.new >&2; false; fi",
     )
     const other = serviceInstall(
       env,
@@ -592,17 +622,21 @@ describe('host install service: the login agent, printed for the person', () => 
       'darwin',
       '/n',
       () => mac[0] as string,
+      prep,
     )
     expect(other).toEqual([
       'a login agent for another home is installed (/Users/x/Library/LaunchAgents/dev.bag.service.plist): bag 0.4.0 has one per user, so the service of /Users/x/.bag2 starts with its first window instead',
     ])
+    expect(made).toEqual(['/Users/x/.bag/run', '/Users/x/.bag/run'])
   })
 
-  it('writes nothing: the command prints and exits', async () => {
+  it("writes no agent file: the command prints and exits, having made only the home's run/ (0700)", async () => {
     const w = await world()
     const ran = await cli(w.io, 'host', 'install', 'service', '--dir', w.home)
     expect(ran.code).toBe(0)
     expect(existsSync(join(w.user, 'Library'))).toBe(false)
+    expect(existsSync(join(w.user, '.config'))).toBe(false)
+    expect(statSync(join(w.home, 'run')).mode & 0o777).toBe(0o700)
   })
 })
 
@@ -686,7 +720,7 @@ describe('the launchers: every host entry survives an upgrade and a prune', () =
     expect(run(m.cli, 'wake-hook', '--session', 'service')).toBe('0.4.0 bag.js wake-hook --session service')
     const n2 = build('0.4.1')
     expect(n2.shim).toBe(m.shim)
-    // W2's prune removes the old version: the same entries now run 0.4.1.
+    // A prune (pruneVersions) removes the old version: the same entries now run 0.4.1.
     renameSync(join(home, 'package', 'versions', '0.4.0'), join(base, 'pruned-0.4.0'))
     for (const f of [m.cli, m.mcp, m.shim]) expect(run(f, 'x')).toMatch(/^0\.4\.1 bag(-mcp|-shim)?\.js x$/)
     writeFileSync(join(home, 'package', 'current'), '../../etc\n')
@@ -753,7 +787,7 @@ describe("keygen, init and restore put the identity in the service's identities.
   it("keygen adds it with install/<name>.env's relays, or the file's first entry's, and adds nothing with no relay known", async () => {
     const w = await world()
     const file = join(w.home, 'identities.json')
-    const keygen = (name: string) => cli(w.io, 'keygen', name, '--custody', 'file', '--dir', w.home)
+    const keygen = (name: string) => cli(w.io, 'keygen', '--new', name, '--custody', 'file', '--dir', w.home)
     const none = await keygen('ann')
     expect([none.code, none.err, existsSync(file)]).toEqual([0, [], false])
     mkdirSync(join(w.home, 'install'), { recursive: true, mode: 0o700 })
@@ -834,7 +868,7 @@ describe("names reserved for the bag service's own files", () => {
     const line = (n: string, s: string) =>
       `bag: bad-name: "${n}" ends in ${s}, which is reserved for the bag service's own files: choose another name`
     const cases: [string[], string, string][] = [
-      [['keygen', 'build.service'], 'build.service', '.service'],
+      [['keygen', '--new', 'build.service'], 'build.service', '.service'],
       [['init', 'a.session', '--relay', RELAY], 'a.session', '.session'],
       [['restore', 'a.signin'], 'a.signin', '.signin'],
       [
@@ -849,7 +883,9 @@ describe("names reserved for the bag service's own files", () => {
       expect([ran.code, ran.err[0]]).toEqual([1, line(n, s)])
     }
     expect(existsSync(join(w.home, 'keys', 'build.service.json'))).toBe(false)
-    expect((await cli(w.io, 'keygen', 'service-bot', '--custody', 'file', '--dir', w.home)).code).toBe(0)
+    expect(
+      (await cli(w.io, 'keygen', '--new', 'service-bot', '--custody', 'file', '--dir', w.home)).code,
+    ).toBe(0)
   })
 })
 

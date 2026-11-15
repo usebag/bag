@@ -19,7 +19,9 @@ describe('e2e scenario 43: the CLI status line for a subscription the relay refu
     const w = await world('s43')
     const home = join(w.dir, 'cli-home')
     const dir = ['--dir', home]
-    const made = await Promise.all(['team', 'carol', 'cold'].map((name) => cli('keygen', name, ...dir)))
+    const made = await Promise.all(
+      ['team', 'carol', 'cold'].map((name) => cli('keygen', '--new', name, ...dir)),
+    )
     for (const m of made) expect([m.code, m.err]).toEqual([0, []])
     const [team, carol, cold] = made.map((m) => m.out[0] as string) as [string, string, string]
 

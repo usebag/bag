@@ -28,6 +28,8 @@ export const SETTLE_MS = 300
 export interface Ringable {
   /** The connection's opaque handle: it names the connection and authorises nothing. */
   readonly handle: string
+  /** True for a sub-agent's connection (socket.ts Connection): read at each ring, it never speaks. */
+  readonly subagent?: boolean
   notify(method: `service/${string}`, params: Readonly<Record<string, unknown>>): void
 }
 
@@ -35,7 +37,7 @@ export interface Ringable {
 export interface Ring {
   readonly as: string
   readonly unread: number
-  /** The local pair requests waiting for this identity's person (decision 104); present only when there are any. */
+  /** The local pair requests waiting for this identity's person (spec/SPEC.md 9.2 item 1); only when any wait. */
   readonly requests?: number
   readonly speaking: boolean
   readonly at: string
@@ -96,10 +98,14 @@ export class WakeRouter {
     }
   }
 
-  /** The handle of the connection that speaks for `label`: the one the person last typed in; null with none bound. */
+  /**
+   * The handle of the connection that speaks for `label`: the one the person last typed in, never a sub-agent's; null
+   * with none bound but sub-agents, so their rings are all quiet and the mail waits unread.
+   */
   speaking(label: string): string | null {
     let best: Seat | null = null
     for (const s of this.#seats.get(label)?.values() ?? []) {
+      if (s.conn.subagent === true) continue
       if (best === null || s.typedAt > best.typedAt || (s.typedAt === best.typedAt && s.order > best.order))
         best = s
     }
@@ -158,10 +164,11 @@ export interface MailUnit {
 }
 
 /**
- * The mail lane's part of a drain (docs/bag-service.md, section 9), called by the service once tool calls have had
- * their time and before it closes each edge: rings what is still settling, stops each keep-alive, and closes each
- * desk, which answers every pending wait at once with its resume token. The returned marks need no flush: each was
- * written to the store as it was set (Desk.keepMarks), so the next service, and the one after a crash, has them.
+ * The mail part of a drain (docs/bag-service.md, "When the service is not running"), called by the service once tool
+ * calls have had their time and before it closes each edge: rings what is still settling, stops each keep-alive, and
+ * closes each desk, which answers every pending wait at once with its resume token. The returned marks need no flush:
+ * each was written to the store as it was set (Desk.keepMarks), so the next service, and the one after a crash, has
+ * them.
  */
 export function drainMail(units: Iterable<MailUnit>, router: WakeRouter | null): void {
   router?.flush()

@@ -13,14 +13,39 @@ import {
 } from 'node:fs'
 import { createConnection, type Socket } from 'node:net'
 import { join } from 'node:path'
-import { buildEnvelope, newThread, parseEnvelope, SUITE } from '@usebag/core'
-import { type EdgeKeys, HomeCustody, keepAddressCopy, LOCAL_RELAY } from '@usebag/edge'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { ElicitRequestSchema, type ElicitResult } from '@modelcontextprotocol/sdk/types.js'
+import { type AddressRecord, buildEnvelope, newThread, parseEnvelope, parseRecord, SUITE } from '@usebag/core'
+import {
+  type EdgeKeys,
+  HomeCustody,
+  INVITE_PREFIX,
+  keepAddressCopy,
+  LOCAL_RELAY,
+  readInvite,
+} from '@usebag/edge'
+import { readRemoved, recordRemoved } from '@usebag/home'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { parseServerConfig, type ServerConfig } from '../src/config.ts'
+import { LINK_ASK_MS } from '../src/ask.ts'
+import type { ServiceConnection } from '../src/binding.ts'
+import { parseConfig, parseServerConfig, type ServerConfig } from '../src/config.ts'
 import { dropLocalPair, localPeersPath, localWordPath, spoolDir } from '../src/local.ts'
-import { HIDE_WORDS, OLD_EXTENSION, SHOW_EVERY_S } from '../src/pairing.ts'
-import { CONSENT_BRIDGE, LINK_ASK_S, Service, type ServiceDeps } from '../src/service.ts'
-import { DIALOG_META } from '../src/socket.ts'
+import {
+  BRIDGE_SHOW,
+  BUSY,
+  BUSY_HERE,
+  CLOSING,
+  HIDE_WORDS,
+  LINK_AGAIN,
+  LINK_DIGITS,
+  OLD_EXTENSION,
+  SHOW_EVERY_S,
+} from '../src/pairing.ts'
+import { type Running, startServer } from '../src/server.ts'
+import { CONSENT_BRIDGE, Service, type ServiceDeps } from '../src/service.ts'
+import { DIALOG_META, SUBAGENT_META } from '../src/socket.ts'
+import type { Peer } from '../src/socket-owner.ts'
 import {
   HOME_NOTE,
   HOME_OFF,
@@ -43,9 +68,10 @@ import {
   seededRng,
   T0,
 } from './support/fixtures.ts'
+import { party } from './support/ports.ts'
 import { MemoryRelay } from './support/relay.ts'
 
-// Delivery between identities of one home in the bag service (spec/SPEC.md 9.2, decision 98), over its socket as a
+// Delivery between identities of one home in the bag service (spec/SPEC.md 9.2), over its socket as a
 // host reaches it: with the home word off every guard answers as before; on, a local pair is one dialog that writes
 // only the service's table, and mail between the pair goes through the recipient's own receive path with no relay
 // request (M1 to M6). personal is alice's key, research carol's, in one home; bob is a wire peer.
@@ -139,6 +165,8 @@ async function start(
     timers: new ManualTimers(),
     pid: 4243,
     alive: () => false,
+    // The registering extension is the omp it names (socket-owner.ts peerIs answers match); a test changes it.
+    peer: async () => 'match',
     log,
     resubscribeDelayMs: () => 0,
     helloMs: 300,
@@ -159,10 +187,10 @@ interface Line {
   /** How many messages that `pick` takes have arrived and not been taken by next. */
   count(pick: (m: Json) => boolean): number
   send(m: Json): void
+  /** Several messages in one write, so the service reads them in one go. */
+  sendAll(ms: Json[]): void
   /** The dialogs this window was shown, by message. */
   readonly dialogs: string[]
-  /** The consent bridge folder the hello returned (an omp window), else undefined. */
-  bridge?: string
 }
 
 /** A window bound to `label`; `hello` replaces members of its hello (an omp window: no elicitation, the bridge). */
@@ -172,6 +200,32 @@ async function window(
   answer: boolean | null | 'never' | 'decline' | 'empty' = true,
   hello: Json = {},
 ): Promise<Line> {
+  const line = await connected(s, label, hello)
+  expect((await line.request('service/use', { label, via: 'typed' })).result).toMatchObject({ bound: true })
+  // The person: every confirm dialog answered `answer` (null cancels it; 'never' leaves it to the test).
+  if (answer === 'never') return line
+  void (async () => {
+    for (;;) {
+      const req = await line.next((m) => m.method === 'elicitation/create')
+      const params = req.params as Json
+      line.dialogs.push(String(params.message))
+      const handle = (params._meta as Json)[DIALOG_META]
+      const result =
+        answer === null
+          ? { action: 'cancel' }
+          : answer === 'decline'
+            ? { action: 'decline' }
+            : answer === 'empty'
+              ? { action: 'accept', content: {} }
+              : { action: 'accept', content: { confirm: answer } }
+      line.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } })
+    }
+  })().catch(() => {})
+  return line
+}
+
+/** A connection past its hello at cwd /w/<label>, bound to nothing. */
+async function connected(s: Service, label: string, hello: Json = {}): Promise<Line> {
   const socket = createConnection(s.paths.sock)
   sockets.push(socket)
   await new Promise<void>((r) => socket.once('connect', () => r()))
@@ -193,6 +247,7 @@ async function window(
     dialogs: [],
     count: (pick) => seen.filter(pick).length,
     send: (m) => socket.write(`${JSON.stringify(m)}\n`),
+    sendAll: (ms) => socket.write(ms.map((m) => `${JSON.stringify(m)}\n`).join('')),
     next: (pick) => {
       const i = seen.findIndex(pick)
       if (i >= 0) return Promise.resolve(seen.splice(i, 1)[0] as Json)
@@ -214,28 +269,8 @@ async function window(
     ...hello,
   })
   expect(said.result, JSON.stringify(said)).toBeDefined()
-  const dir = (said.result as Json).bridge_dir
-  if (typeof dir === 'string') line.bridge = dir
-  expect((await line.request('service/use', { label, via: 'typed' })).result).toMatchObject({ bound: true })
-  // The person: every confirm dialog answered `answer` (null cancels it; 'never' leaves it to the test).
-  if (answer === 'never') return line
-  void (async () => {
-    for (;;) {
-      const req = await line.next((m) => m.method === 'elicitation/create')
-      const params = req.params as Json
-      line.dialogs.push(String(params.message))
-      const handle = (params._meta as Json)[DIALOG_META]
-      const result =
-        answer === null
-          ? { action: 'cancel' }
-          : answer === 'decline'
-            ? { action: 'decline' }
-            : answer === 'empty'
-              ? { action: 'accept', content: {} }
-              : { action: 'accept', content: { confirm: answer } }
-      line.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } })
-    }
-  })().catch(() => {})
+  // 0.4.2: no hello reply names a bridge folder.
+  expect((said.result as Json).bridge_dir).toBeUndefined()
   return line
 }
 
@@ -332,7 +367,25 @@ describe('the home word off (M5)', () => {
   })
 })
 
-describe("discovery: status's home (decision 103)", () => {
+describe('a local send to an identity with no key in this home', () => {
+  it('answers resolve-failed with the fix: a rotation of that identity, named by its key name and its label', async () => {
+    word(true)
+    const s = await start()
+    // research (carol) holds no epoch key and its address record copy is gone: nothing to seal to.
+    rmSync(join(home, 'records', 'carol.address.json'), { force: true })
+    const a = await window(s, 'personal')
+    const refused = await call(a, 'send', chat([P.carol.address]))
+    expect(refused).toMatchObject({
+      error: 'resolve-failed',
+      detail:
+        'research has no key record and no address record copy in this home, so a local send has nothing to seal to: ' +
+        `run \`bag keys rotate carol --relay ${RELAY}\` once for research, then send again`,
+    })
+    expect(String(refused.detail)).not.toContain('<') // a command a person pastes holds no placeholder
+  })
+})
+
+describe("discovery: status's home (spec/SPEC.md 9.2 item 1)", () => {
   it('lists the other identities that take part, with address, relays and open; none with the word off', async () => {
     word(true)
     const s = await start()
@@ -362,7 +415,7 @@ describe("discovery: status's home (decision 103)", () => {
     const a = await window(s, 'personal')
     const st = await call(a, 'status')
     expect(st.home).toMatchObject({ local_delivery: 'on (default)', local: 'on' })
-    // The top-level word says the same as home (falsifier GAP 3); once the file exists, plain on.
+    // The top-level word says the same as home; once the file exists, plain on.
     expect(st.local_delivery).toBe('on (default)')
     word(true)
     expect((await call(a, 'status')).local_delivery).toBe('on')
@@ -403,7 +456,7 @@ describe("discovery: status's home (decision 103)", () => {
   })
 })
 
-describe('the local pair on first touch (decision 104)', () => {
+describe("the local pair on first touch: the message waits for the person's Allow (spec/SPEC.md 9.2 item 1)", () => {
   const ASK =
     'personal on this machine wants to message research. Allow both ways? Their messages stay on this machine, never ' +
     'go to a relay, and reach each agent as mail from your own identity.'
@@ -498,7 +551,7 @@ describe('the local pair on first touch (decision 104)', () => {
     expect(b.dialogs).toHaveLength(1)
   })
 
-  it('a corrupt held file is set aside as .failed and the rest delivered after a Yes (falsifier 21)', async () => {
+  it('a corrupt held file is set aside as .failed and the rest delivered after a Yes', async () => {
     word(true)
     const s = await start()
     const a = await window(s, 'personal')
@@ -656,7 +709,7 @@ describe('the local pair on first touch (decision 104)', () => {
     )
   })
 
-  it('a re-ask by the decliner rings the window that will be asked (row.b), not the other side (falsifier 18)', async () => {
+  it('a re-ask by the decliner rings the window that will be asked (row.b), not the other side', async () => {
     word(true)
     const [clock, timers] = [new FakeClock(), new ManualTimers()]
     const s = await start({ clock, timers })
@@ -1145,6 +1198,65 @@ describe('the local pair on first touch (decision 104)', () => {
   })
 })
 
+/**
+ * A wire peer on its own stdio server and home, on the same memory relay, whose host shows form dialogs: `person`
+ * answers them in order (pair_invite's address question is answered empty). For the omp pairing tests over the link.
+ */
+async function peer(party: Party) {
+  const dir = mkdtempSync('/tmp/bslp-')
+  peers.push(dir)
+  saveKeys(dir, party)
+  const config = parseConfig(['--as', party.name, '--dir', dir, '--relay', RELAY], {})
+  if (config === 'help') throw new Error('unexpected help')
+  let t = 0
+  const running: Running = await startServer(config, {
+    clock: new FakeClock(),
+    rng: seededRng(`peer-${party.name}`),
+    relay,
+    records: fakeRecords(new Map()),
+    timers: new ManualTimers(),
+    pid: 4244,
+    alive: () => false,
+    log: new MemoryLog(),
+    resubscribeDelayMs: () => 0,
+    pairPollMs: 2,
+    mono: () => (t += 1000),
+  })
+  stops.push(() => running.stop())
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
+  await running.mcp.connect(serverSide)
+  const client = new Client(
+    { name: 'peer', version: '0.0.0' },
+    { capabilities: { elicitation: { form: {} } } },
+  )
+  const dialogs: string[] = []
+  const person: ((message: string) => ElicitResult)[] = []
+  client.setRequestHandler(ElicitRequestSchema, async (r) => {
+    const props = Object.keys(
+      (r.params as { requestedSchema?: { properties?: object } }).requestedSchema?.properties ?? {},
+    )
+    if (props.join() === 'address') return { action: 'accept', content: {} }
+    dialogs.push(r.params.message)
+    return (person.shift() ?? (() => ({ action: 'cancel' }) as ElicitResult))(r.params.message)
+  })
+  await client.connect(clientSide)
+  stops.push(() => client.close())
+  const call = async (name: string, args: Json): Promise<Json> => {
+    const result = await client.callTool({ name, arguments: args })
+    return JSON.parse((result.content as { text: string }[])[0]?.text as string) as Json
+  }
+  return { dir, dialogs, person, call }
+}
+const peers: string[] = []
+const stops: (() => Promise<void>)[] = []
+afterEach(async () => {
+  await new Promise((r) => setTimeout(r, 20))
+  for (const s of stops.splice(0).reverse()) await s().catch(() => {})
+  for (const d of peers.splice(0)) rmSync(d, { recursive: true, force: true })
+})
+const digitsIn = (message: string | undefined): string =>
+  /[Cc]heck digits: (\d{3} \d{3})/.exec(message ?? '')?.[1] as string
+
 describe("omp's Allow over its extension's registered link, never a file (item 7, C2)", () => {
   const WORDS =
     'personal on this machine wants to message research. Allow both ways? Their messages stay on this machine, never ' +
@@ -1157,7 +1269,7 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
       client_capabilities: { experimental: { [CONSENT_BRIDGE]: { pid } } },
     })
   /** The extension's own connection: a hello, then consent-register for `pid`; the asks it receives, kept. */
-  async function link(s: Service, pid = PID, secret?: string) {
+  async function link(s: Service, pid = PID, secret?: string, more: Json = {}) {
     const socket = createConnection(s.paths.sock)
     sockets.push(socket)
     await new Promise<void>((r) => socket.once('connect', () => r()))
@@ -1181,6 +1293,7 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
     const reg = await request('service/consent-register', {
       pid,
       ...(secret === undefined ? {} : { secret }),
+      ...more,
     })
     const asks = () => seen.filter((m) => m.method === 'service/consent-ask').map((m) => m.params as Json)
     const withdraws = () =>
@@ -1201,9 +1314,9 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
     const done = call(b, 'status')
     await until(() => l.asks().length === 1)
     expect(l.asks()[0]).toMatchObject({ title: 'Yes: allow personal and research', message: WORDS })
-    // An answer file in the window's bridge folder, or an answer on another connection, changes nothing.
-    const dir = b.bridge as string
-    writeFileSync(join(dir, `${l.asks()[0]?.id}.answer.json`), JSON.stringify({ accepted: true }))
+    // No bridge folder is made (0.4.2), and an answer on another connection changes nothing.
+    const shim = join(home, 'run', 'shim')
+    expect(existsSync(shim) ? readdirSync(shim).filter((f) => f.endsWith('.consent')) : []).toEqual([])
     const other = await link(s, PID + 1)
     const forged = await other.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: true })
     expect((forged.error as Json).data).toMatchObject({ code: 'not-authorized' })
@@ -1280,10 +1393,13 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
     await call(a, 'send', chat([P.carol.address]))
     const done = call(b, 'status')
     await until(() => l.asks().length === 1)
-    // Under omp's 30 s limit on the tool call that carries it (item j): 25 s, then withdrawn, the confirm dismissed.
-    expect(LINK_ASK_S).toBe(25)
-    expect(l.asks()[0]?.ms).toBe(LINK_ASK_S * 1000)
-    timers.fire((ms) => ms === LINK_ASK_S * 1000)
+    // Under omp's 30 s limit on the tool call that carries it (item j): 25 s less the call's time so far, for a 0.4.1
+    // extension that told no call_ms; then withdrawn, the confirm dismissed.
+    expect(LINK_ASK_MS).toBe(25_000)
+    const ms = Number(l.asks()[0]?.ms)
+    expect(ms).toBeLessThanOrEqual(LINK_ASK_MS)
+    expect(ms).toBeGreaterThan(LINK_ASK_MS - 2000)
+    timers.fire((t) => t === ms)
     await done
     await until(() => l.withdraws().length === 1)
     expect(l.withdraws()).toEqual([{ id: l.asks()[0]?.id }])
@@ -1383,20 +1499,924 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
     expect(row('research')).toMatchObject({ state: 'allowed' })
   })
 
-  it('with no link the window is not asked; a first registration after its hello is refused (L2)', async () => {
+  /** The service's side of the omp window `label`'s connection, for the consent port (askPerson's seam). */
+  const connOf = (s: Service): ServiceConnection =>
+    [...s.connections].find((c) => {
+      const exp = c.capabilities.raw.experimental as Json | undefined
+      return exp !== undefined && CONSENT_BRIDGE in exp
+    }) as ServiceConnection
+
+  it('0.4.2 register: kinds and call_ms; a text ask carries max and placeholder, and its checked text answers', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    await omp(s, 'personal')
+    const asked = s.local.consent(connOf(s), {
+      kind: 'text',
+      title: 'bag: paste',
+      message: 'm',
+      placeholder: 'invite or code',
+      max: 512,
+    })
+    expect(asked).not.toBeNull()
+    await until(() => l.asks().length === 1)
+    // call_ms 130000: the cap is 120 s (clamp(call_ms - 10 s, 15 s, 120 s)).
+    expect(l.asks()[0]).toMatchObject({ kind: 'text', ms: 120_000, max: 512, placeholder: 'invite or code' })
+    await l.request('service/consent-answer', {
+      id: l.asks()[0]?.id,
+      accepted: true,
+      text: '  472-tulip-orbit-cedar ',
+    })
+    expect(await asked).toEqual({ accepted: true, text: '472-tulip-orbit-cedar' })
+  })
+
+  it('a text answer over max, with a line break, or not a string is no answer', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['text'], call_ms: 20_000 })
+    await omp(s, 'personal')
+    for (const [i, text] of ['x'.repeat(17), 'a\nb', 7, ''].entries()) {
+      const asked = s.local.consent(connOf(s), { kind: 'text', title: 't', message: 'm', max: 16 })
+      await until(() => l.asks().length === i + 1)
+      // call_ms 20000: the cap is 15 s.
+      expect(l.asks()[i]?.ms).toBe(15_000)
+      await l.request('service/consent-answer', { id: l.asks()[i]?.id, accepted: true, text })
+      expect(await asked).toEqual({ accepted: null })
+    }
+  })
+
+  it('only an ask the service made with fold folds a line break; an answer cannot ask for it (the paste)', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['text'], call_ms: 20_000 })
+    await omp(s, 'personal')
+    const folded = s.local.consent(connOf(s), { kind: 'text', title: 't', message: 'm', max: 64, fold: true })
+    await until(() => l.asks().length === 1)
+    // The fold is the service's record of the ask: it is never sent to the extension.
+    expect(l.asks()[0]).not.toHaveProperty('fold')
+    await l.request('service/consent-answer', {
+      id: l.asks()[0]?.id,
+      accepted: true,
+      text: 'line one\nline two\r\n',
+    })
+    expect(await folded).toEqual({ accepted: true, text: 'line one line two' })
+    // An ask made without fold stays no answer on an inner break, whatever the answer carries.
+    const plain = s.local.consent(connOf(s), { kind: 'text', title: 't', message: 'm', max: 64 })
+    await until(() => l.asks().length === 2)
+    await l.request('service/consent-answer', {
+      id: l.asks()[1]?.id,
+      accepted: true,
+      text: '123\n456',
+      fold: true,
+    })
+    expect(await plain).toEqual({ accepted: null })
+  })
+
+  it('a kind the link did not register is null: a 0.4.1 extension gets no text and no show', async () => {
+    const s = await start()
+    await link(s)
+    await omp(s, 'personal')
+    expect(s.local.consent(connOf(s), { kind: 'text', title: 't', message: 'm' })).toBeNull()
+    expect(s.local.consent(connOf(s), { kind: 'show', title: 't', message: 'm', ms: 1000 })).toBeNull()
+  })
+
+  it('a show stands beside a question and is withdrawn by its signal; with under 15 s of the call left, no ask', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['text', 'show'], call_ms: 30_000 })
+    await omp(s, 'personal')
+    const stop = new AbortController()
+    const shown = s.local.consent(
+      connOf(s),
+      { kind: 'show', title: 'bag: pairing', message: 'code', lines: ['code', 'x'], ms: 600_000 },
+      stop.signal,
+    )
+    await until(() => l.asks().length === 1)
+    expect(l.asks()[0]).toMatchObject({ kind: 'show', lines: ['code', 'x'], ms: 600_000 })
+    const q = s.local.consent(connOf(s), { kind: 'confirm', title: 't', message: 'm', elapsedMs: 0 })
+    await until(() => l.asks().length === 2)
+    expect(l.withdraws()).toEqual([])
+    stop.abort()
+    await until(() => l.withdraws().length === 1)
+    expect(l.withdraws()).toEqual([{ id: l.asks()[0]?.id }])
+    expect(await shown).toEqual({ accepted: null })
+    await l.request('service/consent-answer', { id: l.asks()[1]?.id, accepted: true })
+    expect(await q).toEqual({ accepted: true })
+    // 30 s call, 11 s gone: 14 s left before the 5 s margin is under 15 s, so it is not sent.
+    const late = s.local.consent(connOf(s), { kind: 'confirm', title: 't', message: 'm', elapsedMs: 11_000 })
+    expect(await late).toEqual({ accepted: null, sent: false })
+    expect(l.asks()).toHaveLength(2)
+  })
+
+  it('pair_accept in an omp window asks the paste as text over the link; no answer is not a No; pair_cancel withdraws it', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    expect(l.asks()[0]).toMatchObject({ kind: 'text', placeholder: 'invite or code', max: 512 })
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: null })
+    const asked = await first
+    expect(asked).toMatchObject({ requested: false, asked: true, note: LINK_AGAIN })
+    // The resume asks the paste again; a paste with a control character fails the one text check: no answer, never
+    // inviteOf. (A line break in the paste is folded since the wrapped-widget fix, and inviteOf judges the result.)
+    const again = call(b, 'pair_accept', { resume: asked.resume })
+    await until(() => l.asks().length === 2)
+    await l.request('service/consent-answer', { id: l.asks()[1]?.id, accepted: true, text: 'a\u0007b' })
+    const twice = await again
+    expect(twice).toMatchObject({ asked: true, note: LINK_AGAIN })
+    // A third ask, open while the person cancels in this window: withdrawn at once, and nothing written. Each answer
+    // carries the next token: a token serves one call.
+    const third = call(b, 'pair_accept', { resume: twice.resume })
+    await until(() => l.asks().length === 3)
+    expect(await call(b, 'pair_cancel', {})).toEqual({ cancelled: true, was: 'accept', as: 'personal' })
+    await until(() => l.withdraws().some((w) => w.id === l.asks()[2]?.id))
+    expect((await third).error).toBeDefined()
+    for (const f of ['trust.json', 'names.json']) expect(existsSync(join(home, f))).toBe(false)
+  })
+
+  it('an omp paste left unanswered at the first call and three resumes is asked each time, never rate-limited', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    let token = ''
+    for (let i = 0; i < 4; i++) {
+      const asked = call(b, 'pair_accept', i === 0 ? { name: 'bob' } : { resume: token })
+      await until(() => l.asks().length === i + 1)
+      await l.request('service/consent-answer', { id: l.asks()[i]?.id, accepted: null })
+      const r = await asked
+      expect(r).toMatchObject({ requested: false, asked: true, note: LINK_AGAIN })
+      token = String(r.resume)
+    }
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true, was: 'accept' })
+  })
+
+  it('pair_invite in an omp window shows the code over the link, never in the result; pair_cancel clears the widget', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const invited = await call(b, 'pair_invite', { name: 'bob' })
+    expect(invited).toMatchObject({ invite_open: true, note: BRIDGE_SHOW })
+    expect(invited.code ?? invited.invite).toBeUndefined()
+    const shows = () => l.asks().filter((q) => q.kind === 'show')
+    await until(() => shows().length === 2)
+    const shown = shows()[1] as Json
+    const code = String((shown.lines as string[])[1]).trim()
+    expect(code.length).toBeGreaterThan(5)
+    // The code alone on its line: no words of the heading around it.
+    expect(code).not.toMatch(/\s/)
+    expect(JSON.stringify(invited)).not.toContain(code)
+    // The placeholder show was replaced (withdrawn); the code's show stands until the pairing ends, then goes at once.
+    expect(l.withdraws().map((w) => w.id)).toContain(shows()[0]?.id)
+    expect(l.withdraws().map((w) => w.id)).not.toContain(shown.id)
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true, was: 'invite' })
+    await until(() => l.withdraws().some((w) => w.id === shown.id))
+  })
+
+  /** personal's audit lines of one event, each its decision and its detail's fields. */
+  const audited = (event: string): Json[] =>
+    readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter((x) => x !== '')
+      .map((x) => JSON.parse(x) as Json)
+      .filter((x) => x.event === event)
+      .map((x) => ({ decision: x.decision, ...(JSON.parse(String(x.detail ?? '{}')) as Json) }))
+  /** A tools/call on window `w` sent raw, with its own id, so the test can cancel it as omp does at its timeout. */
+  const raw = (w: Line, id: number, name: string, args: Json): void =>
+    w.send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } })
+  const cancelCall = (w: Line, id: number): void =>
+    w.send({
+      jsonrpc: '2.0',
+      method: 'notifications/cancelled',
+      params: { requestId: id, reason: 'omp ended the call at 30 s' },
+    })
+  /** A record's fields, or null when the bytes are not one (an envelope). */
+  const recordOf = (bytes: Uint8Array): Json | null => {
+    try {
+      return JSON.parse(new TextDecoder().decode(bytes)) as Json
+    } catch {
+      return null
+    }
+  }
+
+  it('a first pair_accept cancelled by the client while the paste stands ends its pairing: withdrawn, nothing written, asked afresh', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    raw(b, 9101, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    cancelCall(b, 9101)
+    await until(() => l.withdraws().some((w) => w.id === l.asks()[0]?.id))
+    const consent = () => audited('policy').filter((d) => d.step === 'consent')
+    await until(() => audited('pair').length > 0 && consent().length > 0)
+    expect(audited('pair')).toEqual([
+      {
+        decision: 'reject',
+        step: 'decline',
+        code: 'cancelled',
+        reason: 'client-abort',
+        window: 'omp /w/personal',
+      },
+    ])
+    expect(consent()).toEqual([
+      {
+        decision: 'queue',
+        step: 'consent',
+        act: 'pair-accept-code',
+        kind: 'text',
+        host: 'omp',
+        said: 'none',
+      },
+    ])
+    for (const f of ['trust.json', 'names.json']) expect(existsSync(join(home, f))).toBe(false)
+    // The window's next first call is not busy: it asks the paste again, and no answer keeps that pairing.
+    const next = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 2)
+    expect(l.asks()[1]).toMatchObject({ kind: 'text', placeholder: 'invite or code' })
+    await l.request('service/consent-answer', { id: l.asks()[1]?.id, accepted: null })
+    expect(await next).toMatchObject({ requested: false, asked: true, note: LINK_AGAIN })
+    // The cancelled call got no answer, as the protocol has it.
+    expect(b.count((m) => m.id === 9101)).toBe(0)
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true, was: 'accept' })
+  })
+
+  it('the same once the paste is answered, while the edge reads the invitation: the digits never show, nothing is sent', async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const bob = await peer(P.bob)
+    const invited = await bob.call('pair_invite', { name: 'alice' })
+    const code = String(invited.code ?? invited.invite)
+    // Hold the acceptor's reads at the relay once the paste is answered, so the cancel lands inside the edge's step.
+    const fetch = relay.fetchRecord.bind(relay)
+    const held = Promise.withResolvers<void>()
+    let holding = false
+    let reached = false
+    relay.fetchRecord = async (url, address, kind) => {
+      if (holding) {
+        reached = true
+        await held.promise
+      }
+      return fetch(url, address, kind)
+    }
+    raw(b, 9102, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    holding = true
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: true, text: code })
+    await until(() => reached)
+    cancelCall(b, 9102)
+    await new Promise((r) => setTimeout(r, 20))
+    holding = false
+    held.resolve()
+    await until(() => audited('pair').length === 1)
+    expect(audited('pair')).toEqual([
+      {
+        decision: 'reject',
+        step: 'decline',
+        code: 'cancelled',
+        reason: 'client-abort',
+        window: 'omp /w/personal',
+      },
+    ])
+    expect(l.asks()).toHaveLength(1)
+    if (code.startsWith(INVITE_PREFIX)) expect(relay.box(RELAY, readInvite(code).i)).toEqual([])
+    for (const f of ['trust.json', 'names.json']) expect(existsSync(join(home, f))).toBe(false)
+    expect(b.count((m) => m.id === 9102)).toBe(0)
+    const next = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 2)
+    await l.request('service/consent-answer', { id: l.asks()[1]?.id, accepted: null })
+    expect(await next).toMatchObject({ requested: false, asked: true, note: LINK_AGAIN })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true, was: 'accept' })
+  }, 30_000)
+
+  it('a first pair_invite cancelled by the client clears the widget at the abort itself; the invitation is withdrawn, and pair_invite starts again', async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    // Hold the invitation's accept-from at the relay: its address record went out, the call is still open.
+    const publish = relay.publish.bind(relay)
+    const held = Promise.withResolvers<void>()
+    let i = ''
+    relay.publish = async (url, bytes) => {
+      const r = recordOf(bytes)
+      if (i === '' && r?.kind === 'accept-from' && r.owner !== P.alice.address) {
+        i = String(r.owner)
+        await held.promise
+      }
+      return publish(url, bytes)
+    }
+    raw(b, 9103, 'pair_invite', { name: 'bob' })
+    await until(() => i !== '')
+    const shows = () => l.asks().filter((q) => q.kind === 'show')
+    // The making show was sent before the edge began; its frame reaches the link over the socket, which can come after
+    // the in-memory relay is held under a loaded machine: waited for, never assumed.
+    await until(() => shows().length === 1)
+    expect(shows()).toHaveLength(1)
+    cancelCall(b, 9103)
+    // Withdrawn while the edge is still held: at the abort, not when the call's body settles.
+    await until(() => l.withdraws().some((w) => w.id === shows()[0]?.id))
+    // A pair_cancel while that end winds down ends nothing twice: one audit line.
+    expect(await call(b, 'pair_cancel', {})).toEqual({ cancelled: false, as: 'personal' })
+    // A new start in this window meanwhile is told to try again soon, naming neither resume nor pair_cancel.
+    const closing = await call(b, 'pair_invite', { name: 'jane' })
+    expect(closing).toEqual({ error: 'busy', detail: CLOSING, as: 'personal' })
+    expect(String(closing.detail)).not.toContain('pair_cancel')
+    held.resolve()
+    await until(() => audited('pair').some((d) => d.code === 'cancelled'))
+    expect(audited('pair').filter((d) => d.decision === 'reject')).toEqual([
+      {
+        decision: 'reject',
+        step: 'refuse',
+        code: 'cancelled',
+        reason: 'client-abort',
+        window: 'omp /w/personal',
+      },
+    ])
+    // The code was never shown, and I's newest address record names no sealing key: nothing can reach it.
+    expect(shows()).toHaveLength(1)
+    await until(() => {
+      const bytes = relay.records.get(`${RELAY} ${i} address`)
+      return bytes !== undefined && (parseRecord(bytes) as AddressRecord).sealing_key === null
+    })
+    expect(b.count((m) => m.id === 9103)).toBe(0)
+    relay.publish = publish
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({
+      invite_open: true,
+      note: BRIDGE_SHOW,
+    })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true, was: 'invite' })
+  }, 30_000)
+
+  it('a first pair_accept cancelled before its first await resolves still ends the pairing it started: client-abort, nothing asked', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    // The call and its cancel in one write: the signal is aborted before the body's first await can resolve.
+    b.sendAll([
+      {
+        jsonrpc: '2.0',
+        id: 9108,
+        method: 'tools/call',
+        params: { name: 'pair_accept', arguments: { name: 'bob' } },
+      },
+      { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 9108, reason: 'at once' } },
+    ])
+    await until(() => audited('pair').length > 0)
+    expect(audited('pair')).toEqual([
+      {
+        decision: 'reject',
+        step: 'decline',
+        code: 'cancelled',
+        reason: 'client-abort',
+        window: 'omp /w/personal',
+      },
+    ])
+    expect(l.asks()).toEqual([])
+    const next = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: null })
+    expect(await next).toMatchObject({ asked: true, note: LINK_AGAIN })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+  })
+
+  it('a first pair_invite cancelled before its first await resolves ends the pairing it started: client-abort, widget withdrawn', async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    b.sendAll([
+      {
+        jsonrpc: '2.0',
+        id: 9109,
+        method: 'tools/call',
+        params: { name: 'pair_invite', arguments: { name: 'bob' } },
+      },
+      { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 9109, reason: 'at once' } },
+    ])
+    await until(() => audited('pair').some((d) => d.code === 'cancelled'), 10_000)
+    expect(audited('pair').filter((d) => d.decision === 'reject')).toEqual([
+      {
+        decision: 'reject',
+        step: 'refuse',
+        code: 'cancelled',
+        reason: 'client-abort',
+        window: 'omp /w/personal',
+      },
+    ])
+    const shows = l.asks().filter((q) => q.kind === 'show')
+    expect(shows.length).toBeGreaterThan(0)
+    await until(() => shows.every((q) => l.withdraws().some((w) => w.id === q.id)))
+    expect(b.count((m) => m.id === 9109)).toBe(0)
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+  }, 30_000)
+
+  it('the closing answer is bounded by the 30 s wait: an edge that never ends is let go, and the next start opens', async () => {
+    const timers = new ManualTimers()
+    const s = await start({ pairPollMs: 2, timers })
+    await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const publish = relay.publish.bind(relay)
+    const held = Promise.withResolvers<void>()
+    let i = ''
+    relay.publish = async (url, bytes) => {
+      const r = recordOf(bytes)
+      if (i === '' && r?.kind === 'accept-from' && r.owner !== P.alice.address) {
+        i = String(r.owner)
+        await held.promise
+      }
+      return publish(url, bytes)
+    }
+    raw(b, 9110, 'pair_invite', { name: 'bob' })
+    await until(() => i !== '')
+    cancelCall(b, 9110)
+    await until(() => timers.live().includes(30_000))
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toEqual({
+      error: 'busy',
+      detail: CLOSING,
+      as: 'personal',
+    })
+    // The edge is still held: the wait's 30 s run out, the pairing is let go and audited, and a start opens.
+    timers.fire((ms) => ms === 30_000)
+    await until(() => audited('pair').some((d) => d.code === 'cancelled'))
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({
+      invite_open: true,
+      note: BRIDGE_SHOW,
+    })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+    held.resolve()
+  }, 30_000)
+
+  it('a token dies at once on cancel: a resume while the cancel winds down is refused, and busy says it is closing', async () => {
+    const s = await start({ pairPollMs: 2 })
+    await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const invited = await call(b, 'pair_invite', { name: 'bob' })
+    // Hold every publish from here: the edge's withdrawal of the invitation, so pair_cancel waits on it.
+    const publish = relay.publish.bind(relay)
+    const held = Promise.withResolvers<void>()
+    let reached = false
+    relay.publish = async (url, bytes) => {
+      reached = true
+      await held.promise
+      return publish(url, bytes)
+    }
+    const cancelling = call(b, 'pair_cancel', {})
+    await until(() => reached)
+    expect(await call(b, 'pair_invite', { resume: invited.resume })).toMatchObject({ error: 'usage' })
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toEqual({
+      error: 'busy',
+      detail: CLOSING,
+      as: 'personal',
+    })
+    held.resolve()
+    relay.publish = publish
+    expect(await cancelling).toEqual({ cancelled: true, was: 'invite', as: 'personal' })
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+  }, 30_000)
+
+  it('a paste left to its expiry is reported by the token once, then it dies; the window starts again at once', async () => {
+    const timers = new ManualTimers()
+    const s = await start({ timers })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: null })
+    const asked = await first
+    expect(asked).toMatchObject({ asked: true, note: LINK_AGAIN })
+    // The invitation's longest life passes with no paste.
+    timers.fire((ms) => ms === 600_000)
+    await until(() => audited('pair').length > 0)
+    expect(audited('pair')).toEqual([{ decision: 'reject', step: 'decline', code: 'invite-expired' }])
+    expect(await call(b, 'pair_accept', { resume: asked.resume })).toMatchObject({ error: 'invite-expired' })
+    expect(await call(b, 'pair_accept', { resume: asked.resume })).toMatchObject({ error: 'usage' })
+    // Not busy and not closing: the next start asks the paste.
+    const next = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 2)
+    await l.request('service/consent-answer', { id: l.asks()[1]?.id, accepted: null })
+    expect(await next).toMatchObject({ asked: true, note: LINK_AGAIN })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+  })
+
+  it("a paste expiring under a resume's open question answers invite-expired there, once; then the token dies", async () => {
+    const timers = new ManualTimers()
+    const s = await start({ timers })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: null })
+    const asked = await first
+    const resumed = call(b, 'pair_accept', { resume: asked.resume })
+    await until(() => l.asks().length === 2)
+    // The invitation's longest life passes while that paste question is open: withdrawn, and the call says why.
+    timers.fire((ms) => ms === 600_000)
+    expect(await resumed).toMatchObject({ error: 'invite-expired', as: 'personal' })
+    expect(l.withdraws().map((w) => w.id)).toContain(l.asks()[1]?.id)
+    expect(audited('pair')).toEqual([{ decision: 'reject', step: 'decline', code: 'invite-expired' }])
+    // Reported once: the token that call spent is dead, and no answer carried another.
+    expect(await call(b, 'pair_accept', { resume: asked.resume })).toMatchObject({ error: 'usage' })
+    const next = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 3)
+    await l.request('service/consent-answer', { id: l.asks()[2]?.id, accepted: null })
+    expect(await next).toMatchObject({ asked: true, note: LINK_AGAIN })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+    expect(audited('pair')).toHaveLength(2)
+  })
+
+  it('an expired paste nobody resumes never strands the window: the next start is neither busy nor closing', async () => {
+    const timers = new ManualTimers()
+    const s = await start({ timers })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: null })
+    await first
+    timers.fire((ms) => ms === 600_000)
+    await until(() => audited('pair').length > 0)
+    const next = call(b, 'pair_invite', { name: 'bob' })
+    expect(await next).toMatchObject({ invite_open: true, note: BRIDGE_SHOW })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true, was: 'invite' })
+  })
+
+  it("a cancelled first call that started no pairing (the visibility dialog) never ends another window's pairing", async () => {
     word(true)
     const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const a = await window(s, 'personal', 'never')
+    const b = await omp(s, 'personal')
+    raw(a, 9107, 'pair_invite', { for: P.alice.address })
+    await a.next((m) => m.method === 'elicitation/create')
+    const started = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    cancelCall(a, 9107)
+    await new Promise((r) => setTimeout(r, 30))
+    expect(l.withdraws()).toEqual([])
+    expect(audited('pair')).toEqual([])
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: null })
+    expect(await started).toMatchObject({ asked: true, note: LINK_AGAIN })
+    expect(await call(b, 'pair_cancel', {})).toEqual({ cancelled: true, was: 'accept', as: 'personal' })
+  })
+
+  it("a resume cancelled by the client keeps the inviter's held request; busy in the window gives a fresh token, which asks the six again", async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const a = await omp(s, 'personal')
+    const other = await omp(s, 'personal')
+    const bob = await peer(P.bob)
+    const invited = await call(a, 'pair_invite', { name: 'bob' })
+    const shows = () => l.asks().filter((q) => q.kind === 'show')
+    await until(() => shows().length === 2)
+    const code = String(((shows()[1] as Json).lines as string[])[1]).trim()
+    let digits = ''
+    bob.person.push(() => ({ action: 'accept', content: { invite: code } }))
+    bob.person.push((m) => {
+      digits = digitsIn(m)
+      return { action: 'accept', content: { confirm: true } }
+    })
+    const accepted = await bob.call('pair_accept', { name: 'alice' })
+    const texts = () => l.asks().filter((q) => q.kind === 'text')
+    raw(a, 9104, 'pair_invite', { resume: invited.resume })
+    await until(() => texts().length === 1, 10_000)
+    cancelCall(a, 9104)
+    await until(() => l.withdraws().some((w) => w.id === texts()[0]?.id))
+    await new Promise((r) => setTimeout(r, 20))
+    // Not ended: no pair reject. The token that call spent is dead, and its answer, with the next one, was dropped.
+    expect(audited('pair').filter((d) => d.decision === 'reject')).toEqual([])
+    expect(await call(a, 'pair_invite', { resume: invited.resume })).toMatchObject({ error: 'usage' })
+    // Another window of the identity is told it runs elsewhere, with no token.
+    const elsewhere = await call(other, 'pair_invite', { name: 'jane' })
+    expect(elsewhere).toEqual({
+      error: 'busy',
+      detail: `${BUSY} (it runs in the omp window at /w/personal)`,
+      as: 'personal',
+    })
+    const busy = await call(a, 'pair_invite', { name: 'jane' })
+    expect(busy).toEqual({
+      error: 'busy',
+      detail: BUSY_HERE('pair_invite'),
+      resume: busy.resume,
+      as: 'personal',
+    })
+    expect(await call(other, 'pair_invite', { resume: busy.resume })).toMatchObject({ error: 'usage' })
+    const third = call(a, 'pair_invite', { resume: busy.resume })
+    await until(() => texts().length === 2, 10_000)
+    await l.request('service/consent-answer', { id: texts()[1]?.id, accepted: true, text: digits })
+    expect(await third).toMatchObject({ paired: true, peer: P.bob.address, name: 'bob' })
+    expect(await bob.call('pair_accept', { resume: accepted.resume })).toMatchObject({ paired: true })
+    // The token is dead once its pairing has ended and answered.
+    expect(await call(a, 'pair_invite', { resume: busy.resume })).toMatchObject({ error: 'usage' })
+    // No token reaches the service log or the audit, not even a 7-character prefix of one.
+    const audit = readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8')
+    for (const t of [invited.resume, busy.resume]) {
+      // The answer's token begins with the identity's label; the token itself follows it.
+      const token = String(t).split(':').at(-1) as string
+      expect(token).toMatch(/^[0-9a-f]{32}$/)
+      expect(log.text()).not.toContain(token.slice(0, 7))
+      expect(audit).not.toContain(token.slice(0, 7))
+    }
+  }, 30_000)
+
+  it("an acceptor's digits confirm cancelled by the client stays held; the fresh token from busy asks it again", async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const bob = await peer(P.bob)
+    const invited = await bob.call('pair_invite', { name: 'alice' })
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    await l.request('service/consent-answer', {
+      id: l.asks()[0]?.id,
+      accepted: true,
+      text: String(invited.code ?? invited.invite),
+    })
+    const asked = await first
+    expect(asked).toMatchObject({ note: LINK_DIGITS })
+    raw(b, 9105, 'pair_accept', { resume: asked.resume })
+    await until(() => l.asks().length === 2, 10_000)
+    cancelCall(b, 9105)
+    await until(() => l.withdraws().some((w) => w.id === l.asks()[1]?.id))
+    const busy = await call(b, 'pair_accept', { name: 'bob' })
+    expect(busy).toMatchObject({ error: 'busy', detail: BUSY_HERE('pair_accept') })
+    const no = call(b, 'pair_accept', { resume: busy.resume })
+    await until(() => l.asks().length === 3, 10_000)
+    expect(l.asks()[2]).toMatchObject({ title: 'bag: read these check digits to your peer' })
+    await l.request('service/consent-answer', { id: l.asks()[2]?.id, accepted: false })
+    expect(await no).toMatchObject({ error: 'declined' })
+    for (const f of ['trust.json', 'names.json']) expect(existsSync(join(home, f))).toBe(false)
+  }, 30_000)
+
+  it("the service log names each link ask's cap and how it ended, never its words, its answer or a code", async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const ev = (e: string): Json[] => log.lines.filter((x) => x.event === e).map((x) => x.fields as Json)
+    expect(ev('consent-link')).toEqual([{ pid: PID, kinds: ['confirm', 'text', 'show'], call_ms: 130_000 }])
+    // An answered ask (no answer is still an answer from the link), then a client abort under the cap.
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: null })
+    const asked = await first
+    raw(b, 9106, 'pair_accept', { resume: asked.resume })
+    await until(() => l.asks().length === 2)
+    cancelCall(b, 9106)
+    await until(() => ev('link-end').length === 2)
+    // A third ask ended by pair_cancel, whose why the pairing's abort carries.
+    const busy = await call(b, 'pair_accept', { name: 'bob' })
+    const third = call(b, 'pair_accept', { resume: busy.resume })
+    await until(() => l.asks().length === 3)
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+    await third
+    await until(() => ev('link-end').length === 3)
+    const ids = l.asks().map((q) => q.id)
+    const asks = ev('link-ask')
+    expect(asks.map((x) => [x.id, x.act, x.kind])).toEqual(ids.map((id) => [id, 'pair-accept-code', 'text']))
+    for (const x of asks) expect([typeof x.cap_ms, typeof x.elapsed_ms]).toEqual(['number', 'number'])
+    const ends = ev('link-end')
+    expect(ends.map((x) => [x.id, x.act, x.kind, x.end])).toEqual([
+      [ids[0], 'pair-accept-code', 'text', 'answered'],
+      [ids[1], 'pair-accept-code', 'text', 'client-abort'],
+      [ids[2], 'pair-accept-code', 'text', 'cancel'],
+    ])
+    for (const x of ends) expect(typeof x.open_ms).toBe('number')
+    // The abort came long before the cap: the link's call_ms is named beside it, for a mis-told one.
+    expect(ends[1]).toMatchObject({ mismatch: 'call-ms', call_ms: 130_000 })
+    expect(ends[0]).not.toHaveProperty('mismatch')
+    expect(ends[2]).not.toHaveProperty('mismatch')
+    const text = log.text()
+    for (const words of [l.asks()[0]?.title, l.asks()[0]?.message, 'invite or code'])
+      expect(text).not.toContain(String(words))
+  })
+
+  it('a first call past 6 starts in 600 s from one window is rate-limited and starts nothing; another window still starts', async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    // Each start asks the paste once, gets no answer (not a No, so the answered bound is not reached) and is cancelled.
+    for (let n = 0; n < 6; n++) {
+      const started = call(b, 'pair_accept', { name: 'bob' })
+      await until(() => l.asks().length === n + 1)
+      await l.request('service/consent-answer', { id: l.asks()[n]?.id, accepted: null })
+      expect(await started).toMatchObject({ asked: true, note: LINK_AGAIN })
+      expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+    }
+    const seventh = await call(b, 'pair_accept', { name: 'bob' })
+    expect(seventh).toMatchObject({ error: 'rate-limited', as: 'personal' })
+    expect(String(seventh.detail)).toMatch(/^6 pairings were started here lately: start again in \d+ s$/)
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({ error: 'rate-limited' })
+    expect(l.asks()).toHaveLength(6)
+    expect(audited('pair')).toHaveLength(6)
+    // The bound is per window: another window of the identity starts.
+    const c = await omp(s, 'personal')
+    const fresh = call(c, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 7)
+    await l.request('service/consent-answer', { id: l.asks()[6]?.id, accepted: null })
+    expect(await fresh).toMatchObject({ asked: true, note: LINK_AGAIN })
+    expect(await call(c, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+  })
+
+  it('a 0.4.1 link (no kinds registered) cannot pair: no-elicitation, the old-extension words, nothing shown', async () => {
+    const s = await start()
+    const l = await link(s)
+    const b = await omp(s, 'personal')
+    expect(await call(b, 'pair_accept', { name: 'bob' })).toMatchObject({ error: 'no-elicitation' })
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({ error: 'no-elicitation' })
+    expect(l.asks()).toEqual([])
+  })
+
+  it('an omp inviter pairs over the link: a wrong typed six counts a try, no answer and a line break are asked again, the right six pair', async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const a = await omp(s, 'personal')
+    const bob = await peer(P.bob)
+    const invited = await call(a, 'pair_invite', { name: 'bob' })
+    expect(invited).toMatchObject({ invite_open: true, note: BRIDGE_SHOW })
+    const shows = () => l.asks().filter((q) => q.kind === 'show')
+    await until(() => shows().length === 2)
+    const code = String(((shows()[1] as Json).lines as string[])[1]).trim()
+    // bob pastes the code and confirms the digits he reads out; his request reaches the omp window's held ask.
+    let digits = ''
+    bob.person.push(() => ({ action: 'accept', content: { invite: code } }))
+    bob.person.push((m) => {
+      digits = digitsIn(m)
+      return { action: 'accept', content: { confirm: true } }
+    })
+    const accepted = await bob.call('pair_accept', { name: 'alice' })
+    expect(accepted).toMatchObject({ requested: true })
+    const texts = () => l.asks().filter((q) => q.kind === 'text')
+    const answer = async (i: number, body: Json) => {
+      await until(() => texts().length === i + 1, 10_000)
+      await l.request('service/consent-answer', { id: texts()[i]?.id, ...body })
+    }
+    // A wrong six: one try spent, asked again in the same call with the tries left (the address on its own line).
+    const first = call(a, 'pair_invite', { resume: invited.resume })
+    await answer(0, { accepted: true, text: '000 000' })
+    await until(() => texts().length === 2, 10_000)
+    expect(String(texts()[1]?.message)).toContain('No match. Tries left: 2.')
+    expect(String(texts()[1]?.message).split('\n')).toHaveLength(3)
+    // No answer: not a try, and the call answers pending with the request held.
+    await answer(1, { accepted: null })
+    const once = await first
+    expect(once).toMatchObject({ pending: true, note: LINK_AGAIN })
+    // A line break inside the answer fails the link's one text check: no answer again, never a try. (Whitespace at
+    // either end is trimmed first, as for every text answer.)
+    const second = call(a, 'pair_invite', { resume: once.resume })
+    await answer(2, { accepted: true, text: `${digits.slice(0, 3)}\n${digits.slice(4)}` })
+    const twice = await second
+    expect(twice).toMatchObject({ pending: true, note: LINK_AGAIN })
+    // The right six, at the next resume: paired both sides.
+    const third = call(a, 'pair_invite', { resume: twice.resume })
+    await answer(3, { accepted: true, text: digits })
+    expect(await third).toMatchObject({ paired: true, peer: P.bob.address, name: 'bob' })
+    expect(String(texts()[3]?.message)).toContain('No match. Tries left: 2.')
+    expect(await bob.call('pair_accept', { resume: accepted.resume })).toMatchObject({
+      paired: true,
+      name: 'alice',
+    })
+    // The code's widget went at the pairing's end.
+    await until(() => l.withdraws().some((w) => w.id === shows()[1]?.id))
+  }, 30_000)
+
+  it('an omp inviter whose person types three wrong sixes ends digits-mismatch, nothing written', async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const a = await omp(s, 'personal')
+    const bob = await peer(P.bob)
+    const invited = await call(a, 'pair_invite', { name: 'bob' })
+    const shows = () => l.asks().filter((q) => q.kind === 'show')
+    await until(() => shows().length === 2)
+    const code = String(((shows()[1] as Json).lines as string[])[1]).trim()
+    bob.person.push(() => ({ action: 'accept', content: { invite: code } }))
+    bob.person.push(() => ({ action: 'accept', content: { confirm: true } }))
+    await bob.call('pair_accept', { name: 'alice' })
+    const texts = () => l.asks().filter((q) => q.kind === 'text')
+    const end = call(a, 'pair_invite', { resume: invited.resume })
+    for (let i = 0; i < 3; i++) {
+      await until(() => texts().length === i + 1, 10_000)
+      await l.request('service/consent-answer', { id: texts()[i]?.id, accepted: true, text: '000000' })
+    }
+    expect(await end).toMatchObject({ error: 'digits-mismatch' })
+    for (const f of ['trust.json', 'names.json']) expect(existsSync(join(home, f))).toBe(false)
+  }, 30_000)
+
+  it('an omp acceptor pastes the code over the link, then confirms the check digits in the next call: paired', async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const bob = await peer(P.bob)
+    const invited = await bob.call('pair_invite', { name: 'alice' })
+    const code = String(invited.code ?? invited.invite)
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    expect(l.asks()[0]).toMatchObject({ kind: 'text' })
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: true, text: code })
+    const asked = await first
+    expect(asked).toMatchObject({ requested: false, asked: true, note: LINK_DIGITS })
+    // The next call asks the check digits' Yes; bob's person types what was read out.
+    const done = call(b, 'pair_accept', { resume: asked.resume })
+    await until(() => l.asks().length === 2, 10_000)
+    const digits = digitsIn(String(l.asks()[1]?.message))
+    expect(digits).toMatch(/^\d{3} \d{3}$/)
+    expect(l.asks()[1]).toMatchObject({ title: 'bag: read these check digits to your peer' })
+    bob.person.push(() => ({ action: 'accept', content: { digits } }))
+    const inviter = bob.call('pair_invite', { resume: invited.resume })
+    await l.request('service/consent-answer', { id: l.asks()[1]?.id, accepted: true })
+    expect(await inviter).toMatchObject({ paired: true, name: 'alice' })
+    expect(await done).toMatchObject({ paired: true, peer: P.bob.address, name: 'bob' })
+  }, 30_000)
+
+  it('an omp acceptor pastes a code copied from a wrapped widget, with a line break at each wrap: it still pairs', async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const bob = await peer(P.bob)
+    const invited = await bob.call('pair_invite', { name: 'alice' })
+    const code = String(invited.code ?? invited.invite)
+    // As omp's widget wraps it: an invite string at columns 60 and 120, a code after each of its hyphens.
+    const wrapped = code.startsWith(INVITE_PREFIX)
+      ? `${code.slice(0, 60)}\n${code.slice(60, 120)}\r\n${code.slice(120)}`
+      : code.replaceAll('-', '-\n')
+    expect(wrapped).toContain('\n')
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: true, text: wrapped })
+    const asked = await first
+    expect(asked).toMatchObject({ requested: false, asked: true, note: LINK_DIGITS })
+    const done = call(b, 'pair_accept', { resume: asked.resume })
+    await until(() => l.asks().length === 2, 10_000)
+    const digits = digitsIn(String(l.asks()[1]?.message))
+    bob.person.push(() => ({ action: 'accept', content: { digits } }))
+    const inviter = bob.call('pair_invite', { resume: invited.resume })
+    await l.request('service/consent-answer', { id: l.asks()[1]?.id, accepted: true })
+    expect(await inviter).toMatchObject({ paired: true, name: 'alice' })
+    expect(await done).toMatchObject({ paired: true, peer: P.bob.address, name: 'bob' })
+  }, 30_000)
+
+  it("an omp acceptor's No at the check digits declines; a pasted text that is no code is bad-code, nothing sent", async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const bob = await peer(P.bob)
+    // A printable paste that is neither a code nor an invite string: the edge's strict parse, the second guard.
+    const bad = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    await l.request('service/consent-answer', { id: l.asks()[0]?.id, accepted: true, text: 'hello there' })
+    expect(await bad).toMatchObject({ error: 'bad-code' })
+    const invited = await bob.call('pair_invite', { name: 'alice' })
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 2)
+    await l.request('service/consent-answer', {
+      id: l.asks()[1]?.id,
+      accepted: true,
+      text: String(invited.code ?? invited.invite),
+    })
+    const asked = await first
+    // No answer to the digits first: pending; then the person's No declines.
+    const again = call(b, 'pair_accept', { resume: asked.resume })
+    await until(() => l.asks().length === 3, 10_000)
+    await l.request('service/consent-answer', { id: l.asks()[2]?.id, accepted: null })
+    const pending = await again
+    expect(pending).toMatchObject({ pending: true, note: LINK_AGAIN })
+    const no = call(b, 'pair_accept', { resume: pending.resume })
+    await until(() => l.asks().length === 4, 10_000)
+    await l.request('service/consent-answer', { id: l.asks()[3]?.id, accepted: false })
+    expect(await no).toMatchObject({ error: 'declined' })
+    for (const f of ['trust.json', 'names.json']) expect(existsSync(join(home, f))).toBe(false)
+  }, 30_000)
+
+  it('with no link the window is not asked; a first registration after its hello from a non-omp peer is refused (L2)', async () => {
+    word(true)
+    // The late registration's connection is not omp PID's own: refused by the peer check, with its line, not L2's.
+    const s = await start({ peer: async () => 'other' })
     const a = await window(s, 'personal')
     const b = await omp(s, 'research')
     await call(a, 'send', chat([P.carol.address]))
     expect(await call(b, 'status')).not.toHaveProperty('error')
     expect(pairState()).toBe('requested')
-    expect(OLD_EXTENSION).toContain('bag host install omp again and restarts omp')
+    expect(OLD_EXTENSION).toContain('bag host install omp --user again and restarts omp')
     const late = await link(s)
     expect((late.reg.error as Json).data).toMatchObject({ code: 'not-authorized' })
     expect(late.asks()).toEqual([])
     const audit = readFileSync(join(home, 'state', 'carol', 'audit.jsonl'), 'utf8')
-    expect(audit).toContain(`consent registration refused for omp ${PID}`)
+    // The audit line holds the policy text as an escaped JSON string, so a line's end reads \" in the file.
+    expect(audit).toContain(`consent registration refused for omp ${PID}: peer is not omp ${PID}\\"`)
+    expect(audit).not.toContain(`consent registration refused for omp ${PID}\\"`)
+  })
+
+  it('a first registration after its hello is taken when the peer is omp itself (L2 lifted for a verified peer)', async () => {
+    word(true)
+    const asked: number[] = []
+    const s = await start({
+      peer: async (_socket, pid) => {
+        asked.push(pid)
+        return 'match'
+      },
+    })
+    await omp(s, 'research')
+    const late = await link(s)
+    expect(typeof (late.reg.result as Json).secret).toBe('string')
+    expect(asked).toEqual([PID])
+    expect(existsSync(join(s.paths.dir, `consent-${PID}.json`))).toBe(true)
+    const linked = log.lines.filter((x) => x.event === 'consent-link').map((x) => x.fields as Json)
+    expect(linked).toEqual([{ pid: PID, kinds: ['confirm'], call_ms: null, late: true }])
   })
 
   it("at start, a dead omp's consent hash is removed and a live one's kept (L3)", async () => {
@@ -1431,7 +2451,140 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
   })
 })
 
-describe('hidden: an identity kept apart (decision 103, section 3)', () => {
+describe('the peer check on a consent registration: only omp itself registers for its pid', () => {
+  const PID = 777_002
+  /** A connection after its hello, whose register requests go out without waiting; answers and the close, kept. */
+  async function raw(s: Service) {
+    const socket = createConnection(s.paths.sock)
+    sockets.push(socket)
+    await new Promise<void>((r) => socket.once('connect', () => r()))
+    const seen: Json[] = []
+    let buf = ''
+    socket.on('data', (b: Buffer) => {
+      buf += b.toString()
+      for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+        seen.push(JSON.parse(buf.slice(0, i)) as Json)
+        buf = buf.slice(i + 1)
+      }
+    })
+    const send = (id: number, method: string, params: Json) =>
+      socket.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+    const answer = async (id: number): Promise<Json> => {
+      await until(() => seen.some((m) => m.id === id))
+      return seen.find((m) => m.id === id) as Json
+    }
+    send(0, 'service/hello', { contract: 1, token: s.token.toString('hex'), host: 'omp', cwd: '/w' })
+    await answer(0)
+    const register = (id: number, pid = PID) => send(id, 'service/consent-register', { pid })
+    return { socket, register, answer }
+  }
+  const audit = () => readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8')
+  const file = (s: Service) => join(s.paths.dir, `consent-${PID}.json`)
+  /** A fake lookup that answers only when the test releases it. */
+  function held() {
+    const waiting: ((p: Peer) => void)[] = []
+    return { waiting, peer: () => new Promise<Peer>((r) => waiting.push(r)) }
+  }
+
+  for (const [peer, line] of [
+    ['other', `peer is not omp ${PID}`],
+    ['unavailable', 'peer lookup unavailable'],
+  ] as const)
+    it(`a peer lookup that answers ${peer} is refused, writes no secret file, and the connection is closed`, async () => {
+      const s = await start({ peer: async () => peer })
+      const c = await raw(s)
+      c.register(1)
+      expect(((await c.answer(1)).error as Json).data).toMatchObject({ code: 'not-authorized' })
+      await until(() => c.socket.destroyed)
+      expect(existsSync(file(s))).toBe(false)
+      expect(audit()).toContain(`consent registration refused for omp ${PID}: ${line}\\"`)
+    })
+
+  it('a lookup with no answer in its limit is refused as timed out, and the connection is closed', async () => {
+    const h = held()
+    const s = await start({ peer: h.peer, peerMs: 50 })
+    const c = await raw(s)
+    c.register(1)
+    expect(((await c.answer(1)).error as Json).data).toMatchObject({ code: 'not-authorized' })
+    await until(() => c.socket.destroyed)
+    expect(existsSync(file(s))).toBe(false)
+    expect(audit()).toContain(`consent registration refused for omp ${PID}: peer lookup timed out\\"`)
+    // An answer after the limit changes nothing: still no link and no file.
+    for (const r of h.waiting) r('match')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(existsSync(file(s))).toBe(false)
+  })
+
+  it('a lookup past its limit frees its slot at the limit: four stuck lookups do not make the next four busy', async () => {
+    const h = held()
+    const s = await start({ peer: h.peer, peerMs: 50 })
+    const first = await Promise.all([1, 2, 3, 4].map(() => raw(s)))
+    for (const [i, c] of first.entries()) c.register(1, PID + i)
+    for (const c of first)
+      expect(((await c.answer(1)).error as Json).data).toMatchObject({ code: 'not-authorized' })
+    // None of the four lookups has answered, yet their slots are free: four more each get a lookup, none busy.
+    const next = await Promise.all([1, 2, 3, 4].map(() => raw(s)))
+    for (const [i, c] of next.entries()) c.register(1, PID + 10 + i)
+    for (const c of next)
+      expect(((await c.answer(1)).error as Json).data).toMatchObject({ code: 'not-authorized' })
+    expect(h.waiting).toHaveLength(8)
+    expect(audit()).not.toContain('too many peer lookups')
+    for (const r of h.waiting) r('match')
+  })
+
+  it('a lookup that throws at once is unavailable and frees its slot', async () => {
+    let calls = 0
+    const s = await start({
+      peer: () => {
+        calls++
+        throw new Error('no lookup')
+      },
+    })
+    for (const i of [1, 2, 3, 4, 5]) {
+      const c = await raw(s)
+      c.register(1, PID + i)
+      expect(((await c.answer(1)).error as Json).data).toMatchObject({ code: 'not-authorized' })
+    }
+    expect(calls).toBe(5)
+    expect(audit()).toContain(`consent registration refused for omp ${PID + 5}: peer lookup unavailable\\"`)
+  })
+
+  it('a match is taken: the lookup is asked for this connection and pid, and the secret is answered', async () => {
+    const asked: [unknown, number][] = []
+    const s = await start({
+      alive: (pid) => pid === PID,
+      peer: async (socket, pid) => {
+        asked.push([socket, pid])
+        return 'match'
+      },
+    })
+    const c = await raw(s)
+    c.register(1)
+    expect(((await c.answer(1)).result as Json).secret).toMatch(/^[0-9a-f]{64}$/)
+    expect(asked.map(([, pid]) => pid)).toEqual([PID])
+    expect(asked[0]?.[0]).toBeDefined()
+    expect(existsSync(file(s))).toBe(true)
+    expect(c.socket.destroyed).toBe(false)
+  })
+
+  it('more lookups than the cap are refused busy: three per connection, four in the whole service', async () => {
+    const h = held()
+    const s = await start({ peer: h.peer })
+    const one = await raw(s)
+    for (const id of [1, 2, 3, 4]) one.register(id, PID + id)
+    expect(((await one.answer(4)).error as Json).data).toMatchObject({ code: 'busy' })
+    await until(() => h.waiting.length === 3)
+    const two = await raw(s)
+    two.register(1, PID + 10)
+    two.register(2, PID + 11)
+    expect(((await two.answer(2)).error as Json).data).toMatchObject({ code: 'busy' })
+    expect(h.waiting).toHaveLength(4)
+    expect(audit()).toContain(`consent registration refused for omp ${PID + 4}: too many peer lookups\\"`)
+    for (const r of h.waiting) r('other')
+  })
+})
+
+describe('hidden: an identity kept apart (spec/SPEC.md 9.2 item 1)', () => {
   it("hides by its window's dialog, then refuses both ways and lists it to none; shows by a Yes", async () => {
     word(true)
     const clock = new FakeClock()
@@ -1623,7 +2776,7 @@ describe('local mail (M2, M3, M4)', () => {
       via: 'local',
       relay: 'local:',
       as: 'research',
-      // Labelled as from an own identity (decision 103, item 5).
+      // Labelled as from an own identity (tools.ts from_own_note).
       from_own: 'personal',
       from_own_note: 'from your own identity personal on this machine',
     })
@@ -1706,7 +2859,7 @@ describe('local mail (M2, M3, M4)', () => {
     // The table as bag unpair or identity remove leaves it (packages/cli/src/commands/local.ts dropLocalPairs).
     expect(dropLocalPair(home, P.alice.address, P.carol.address)).toBe(true)
     expect(JSON.parse(readFileSync(localPeersPath(home), 'utf8')).pairs).toEqual([])
-    // The next touch asks again (decision 104): held, nothing delivered.
+    // The next touch asks again (spec/SPEC.md 9.2 item 5): held, nothing delivered.
     expect(await call(a, 'send', chat([P.carol.address]))).toMatchObject({ pairing: 'requested' })
   })
 })
@@ -2093,6 +3246,139 @@ describe('the spool (M6)', () => {
     expect(audit).not.toContain('no identity of this home')
   })
 
+  it('bag identity remove beside the service: the return of the lent identity fails its held mail to the senders (C2)', async () => {
+    word(true)
+    const file = join(home, 'identities.json')
+    const reread = () =>
+      (parseServerConfig(['--service', '--dir', home, '--identities', file], {}) as ServerConfig).identities
+    const s = await start({ reread }, {}, [], [], [['lab', P.jane]])
+    const r = await window(s, 'research', null)
+    const waiting = await call(r, 'send', chat([P.jane.address], 'held for lab'))
+    expect(waiting).toMatchObject({ pairing: 'requested' })
+    const labHeld = join(spoolDir(home, 'jane'), 'held')
+    expect(readdirSync(labHeld)).toEqual([`${waiting.id}.env`])
+    // And lab's own first touch of personal, held in personal's spool (the other side's): its sender is the one removed.
+    // No personal window yet, and no answer from lab's: both requests stay held, unasked.
+    const l = await window(s, 'lab', null)
+    const fromLab = await call(l, 'send', chat([P.alice.address], 'held for personal'))
+    expect(fromLab).toMatchObject({ pairing: 'requested' })
+    const aliceHeld = join(spoolDir(home, 'alice'), 'held')
+    expect(readdirSync(aliceHeld)).toEqual([`${fromLab.id}.env`])
+    expect((await l.request('service/unbind', {})).result).toBeDefined()
+    // The CLI's connection, as bag identity remove makes it (packages/cli/src/service.ts leaseFor).
+    const socket = createConnection(s.paths.sock)
+    sockets.push(socket)
+    await new Promise<void>((done) => socket.once('connect', () => done()))
+    const seen: Json[] = []
+    let buf = ''
+    socket.on('data', (b: Buffer) => {
+      buf += b.toString()
+      for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+        seen.push(JSON.parse(buf.slice(0, i)) as Json)
+        buf = buf.slice(i + 1)
+      }
+    })
+    let n = 0
+    const request = async (method: string, params: Json): Promise<Json> => {
+      const id = ++n
+      socket.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+      await until(() => seen.some((m) => m.id === id))
+      return seen.find((m) => m.id === id) as Json
+    }
+    await request('service/hello', { contract: 1, token: s.token.toString('hex'), host: 'cli', cwd: '/w' })
+    expect((await request('service/lend', { label: 'lab', verb: 'identity-remove' })).result).toMatchObject({
+      lent: true,
+    })
+    // N1: while lab is lent for its remove, a personal window that would say Yes is not asked about lab's request, so
+    // no Yes delivers the held mail of the identity being removed.
+    const p = await window(s, 'personal')
+    await call(p, 'status')
+    expect(p.dialogs).toEqual([])
+    expect(readdirSync(aliceHeld)).toEqual([`${fromLab.id}.env`])
+    // What bag identity remove does to the home while lab is lent (packages/cli/src/commands/identity.ts): lab leaves
+    // identities.json, its held mail moves to the sender's held/ (state/jane leaves the home), the rows are left for
+    // the service, and its key and state move out.
+    const doc = JSON.parse(readFileSync(file, 'utf8')) as { version: number; identities: Json[] }
+    writeFileSync(
+      file,
+      JSON.stringify({ version: 1, identities: doc.identities.filter((x) => x.label !== 'lab') }),
+      {
+        mode: 0o600,
+      },
+    )
+    const carolHeld = join(spoolDir(home, 'carol'), 'held')
+    mkdirSync(carolHeld, { recursive: true, mode: 0o700 })
+    renameSync(join(labHeld, `${waiting.id}.env`), join(carolHeld, `${waiting.id}.env`))
+    const left = mkdtempSync(join(home, '..', 'bsl-left-'))
+    renameSync(join(home, 'keys', 'jane.json'), join(left, 'jane.json'))
+    renameSync(join(home, 'state', 'jane'), join(left, 'jane'))
+    const back = await request('service/return', { label: 'lab' })
+    expect(back.result).toMatchObject({ returned: true, removed: true })
+    // At the return, before its answer: lab's rows leave and its held mail is failed to research, then deleted.
+    expect(JSON.parse(readFileSync(localPeersPath(home), 'utf8')).pairs).toEqual([])
+    expect(readdirSync(carolHeld)).toEqual([])
+    // lab's own held mail in personal's spool is dropped with its row; its sender is gone, so no one is told.
+    expect(readdirSync(aliceHeld)).toEqual([])
+    const alice = readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8')
+    expect(alice.split('\n').filter((x) => x.includes('failed-local'))).toEqual([])
+    const carol = readFileSync(join(home, 'state', 'carol', 'audit.jsonl'), 'utf8').split('\n')
+    const failed = carol.filter((x) => x.includes('failed-local') && x.includes(String(waiting.id)))
+    expect(failed).toHaveLength(1)
+    expect(failed[0]).toContain('identity removed')
+    expect(await call(r, 'status', { id: waiting.id })).toMatchObject({
+      delivery: 'local',
+      reason: 'identity removed',
+    })
+  })
+
+  it('a return while the identities file does not read records no removal: pairs and held mail kept (F2)', async () => {
+    word(true)
+    const file = join(home, 'identities.json')
+    const reread = () =>
+      (parseServerConfig(['--service', '--dir', home, '--identities', file], {}) as ServerConfig).identities
+    const s = await start({ reread }, {}, [], [], [['lab', P.jane]])
+    const r = await window(s, 'research', null)
+    const waiting = await call(r, 'send', chat([P.jane.address], 'held for lab'))
+    expect(waiting).toMatchObject({ pairing: 'requested' })
+    const labHeld = join(spoolDir(home, 'jane'), 'held')
+    const socket = createConnection(s.paths.sock)
+    sockets.push(socket)
+    await new Promise<void>((done) => socket.once('connect', () => done()))
+    const seen: Json[] = []
+    let buf = ''
+    socket.on('data', (b: Buffer) => {
+      buf += b.toString()
+      for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+        seen.push(JSON.parse(buf.slice(0, i)) as Json)
+        buf = buf.slice(i + 1)
+      }
+    })
+    let n = 0
+    const request = async (method: string, params: Json): Promise<Json> => {
+      const id = ++n
+      socket.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+      await until(() => seen.some((m) => m.id === id))
+      return seen.find((m) => m.id === id) as Json
+    }
+    await request('service/hello', { contract: 1, token: s.token.toString('hex'), host: 'cli', cwd: '/w' })
+    expect((await request('service/lend', { label: 'lab', verb: 'keys-rotate' })).result).toMatchObject({
+      lent: true,
+    })
+    // lab is still listed and its key is in place, but the file does not read now (group-readable): the reread throws.
+    const rows = readFileSync(localPeersPath(home), 'utf8')
+    chmodSync(file, 0o644)
+    try {
+      expect((await request('service/return', { label: 'lab' })).result).toMatchObject({ removed: true })
+    } finally {
+      chmodSync(file, 0o600)
+    }
+    // No removal recorded: the row and its held mail stay, and no sender is told.
+    expect(readFileSync(localPeersPath(home), 'utf8')).toBe(rows)
+    expect(readdirSync(labHeld)).toEqual([`${waiting.id}.env`])
+    const carol = readFileSync(join(home, 'state', 'carol', 'audit.jsonl'), 'utf8').split('\n')
+    expect(carol.filter((x) => x.includes('failed-local'))).toEqual([])
+  })
+
   it('an identity removed at runtime loses its pairs and fails its held mail; re-added, it starts with none (u1)', async () => {
     word(true)
     const file = join(home, 'identities.json')
@@ -2154,6 +3440,20 @@ describe('the spool (M6)', () => {
     const again = await call(a, 'send', chat([P.jane.address], 'again'))
     expect(again).toMatchObject({ delivery: 'local', pairing: 'requested' })
     expect(table()).toMatchObject([{ a: 'personal', b: 'lab', state: 'requested', held: [again.id] }])
+    // C3: a window opened after the re-add is not told lab's notices from before its removal (its old pairs are gone).
+    const reborn = await window(s, 'personal')
+    const told = ((await call(reborn, 'inbox')).notice as string[] | undefined) ?? []
+    expect(told.some((x) => x.includes('lab allowed personal'))).toBe(false)
+    // Inverse: a change naming lab made after its re-add is told to a later window, once.
+    hide('lab')
+    const after = await window(s, 'personal')
+    const now = ((await call(after, 'inbox')).notice as string[] | undefined) ?? []
+    expect(now.filter((x) => x.includes('hidden lab'))).toHaveLength(1)
+    expect(
+      (((await call(after, 'inbox')).notice as string[] | undefined) ?? []).some((x) =>
+        x.includes('hidden lab'),
+      ),
+    ).toBe(false)
   })
 
   it('a hide notice of an identity removed since is not told to a later window; a present one is, once (v1)', async () => {
@@ -2361,5 +3661,385 @@ describe('the spool (M6)', () => {
     })
     const audit = readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8').split('\n')
     expect(audit.filter((l) => l.includes('failed-local') && l.includes(id))).toHaveLength(1)
+  })
+})
+
+describe("a removed identity's held mail is failed naming the side it was held for (#dropRemoved)", () => {
+  /** An envelope from research (carol) to lab (jane), as research's touch of a pair lab asked for is held. */
+  const forLab = (text: string) => {
+    const rng = seededRng(`for-lab-${text}`)
+    return buildEnvelope({
+      from: P.carol.keys.signing,
+      to: [{ address: P.jane.address, sealingKey: P.jane.keys.sealing.publicKey }],
+      auth: [],
+      type: 'chat.v1',
+      thread: newThread((n) => rng.bytes(n)),
+      body: { text },
+      ts: T0,
+      rng: (n) => rng.bytes(n),
+    })
+  }
+
+  it("lab removed while it is the row's a: each held message is failed naming the side it was for, both ways", async () => {
+    word(true)
+    const file = join(home, 'identities.json')
+    const reread = () =>
+      (parseServerConfig(['--service', '--dir', home, '--identities', file], {}) as ServerConfig).identities
+    const env = forLab('held')
+    // And lab's own message to research, from the row's a, waiting in research's held/.
+    const rng = seededRng('from-lab')
+    const fromLab = buildEnvelope({
+      from: P.jane.keys.signing,
+      to: [{ address: P.carol.address, sealingKey: P.carol.keys.sealing.publicKey }],
+      auth: [],
+      type: 'chat.v1',
+      thread: newThread((n) => rng.bytes(n)),
+      body: { text: 'from lab' },
+      ts: T0,
+      rng: (n) => rng.bytes(n),
+    })
+    // lab asked research first (lab is the row's a); research's message to lab waits in lab's held/.
+    const row = {
+      a: 'lab',
+      b: 'research',
+      a_addr: P.jane.address,
+      b_addr: P.carol.address,
+      added_at: 1,
+      state: 'requested',
+      at: T0,
+      held: [env.envelope.id, fromLab.envelope.id],
+    }
+    const s = await start({ reread }, {}, [], [], [['lab', P.jane]], () => {
+      const held = join(spoolDir(home, 'jane'), 'held')
+      mkdirSync(held, { recursive: true, mode: 0o700 })
+      writeFileSync(join(held, `${env.envelope.id}.env`), env.bytes, { mode: 0o600 })
+      const carolHeld = join(spoolDir(home, 'carol'), 'held')
+      mkdirSync(carolHeld, { recursive: true, mode: 0o700 })
+      writeFileSync(join(carolHeld, `${fromLab.envelope.id}.env`), fromLab.bytes, { mode: 0o600 })
+      writeFileSync(localPeersPath(home), JSON.stringify({ version: 1, pairs: [row] }), { mode: 0o600 })
+    })
+    const r = await window(s, 'research', null)
+    const doc = JSON.parse(readFileSync(file, 'utf8')) as { version: number; identities: Json[] }
+    const without = doc.identities.filter((x) => x.label !== 'lab')
+    writeFileSync(file, JSON.stringify({ version: 1, identities: without }), { mode: 0o600 })
+    await r.request('service/identities', {})
+    expect(readdirSync(join(spoolDir(home, 'jane'), 'held'))).toEqual([])
+    const lines = readFileSync(join(home, 'state', 'carol', 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter((x) => x.includes('failed-local') && x.includes(env.envelope.id))
+    expect(lines).toHaveLength(1)
+    const detail = JSON.parse(String((JSON.parse(lines[0] as string) as Json).detail)) as Json
+    // The side it was held for, lab: never the row's b (research, the sender's own side), as main had it.
+    expect(detail).toMatchObject({ delivery: 'failed-local', reason: 'identity removed', to: 'lab' })
+    // The other way, from the row's a: lab's message to research is failed in lab's own audit, naming research.
+    expect(readdirSync(join(spoolDir(home, 'carol'), 'held'))).toEqual([])
+    const fromA = readFileSync(join(home, 'state', 'jane', 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter((x) => x.includes('failed-local') && x.includes(fromLab.envelope.id))
+    expect(fromA).toHaveLength(1)
+    expect(JSON.parse(String((JSON.parse(fromA[0] as string) as Json).detail))).toMatchObject({
+      reason: 'identity removed',
+      to: 'research',
+    })
+  })
+})
+
+describe('run/removed.json: a served remove whose service stopped before the give-back', () => {
+  /** An envelope from `from` to `to`, by party. */
+  const mail = (from: Party, to: Party, text: string) => {
+    const rng = seededRng(`recorded-${text}`)
+    return buildEnvelope({
+      from: from.keys.signing,
+      to: [{ address: to.address, sealingKey: to.keys.sealing.publicKey }],
+      auth: [],
+      type: 'chat.v1',
+      thread: newThread((n) => rng.bytes(n)),
+      body: { text },
+      ts: T0,
+      rng: (n) => rng.bytes(n),
+    })
+  }
+  /** Holds `env` in the held/ of key name `name`. */
+  const holdIn = (name: string, env: { envelope: { id: string }; bytes: Uint8Array }): string => {
+    const dir = join(spoolDir(home, name), 'held')
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(dir, `${env.envelope.id}.env`), env.bytes, { mode: 0o600 })
+    return join(dir, `${env.envelope.id}.env`)
+  }
+  const rowOf = (a: string, b: string, aAddr: string, bAddr: string, id: string) => ({
+    a,
+    b,
+    a_addr: aAddr,
+    b_addr: bAddr,
+    added_at: 1,
+    state: 'requested',
+    at: T0,
+    held: [id],
+  })
+  const failedIn = (name: string, id: string): Json[] => {
+    const file = join(home, 'state', name, 'audit.jsonl')
+    if (!existsSync(file)) return []
+    return readFileSync(file, 'utf8')
+      .split('\n')
+      .filter((x) => x.includes('failed-local') && x.includes(id))
+      .map((x) => JSON.parse(String((JSON.parse(x) as Json).detail)) as Json)
+  }
+  const table = () => JSON.parse(readFileSync(localPeersPath(home), 'utf8')).pairs as Json[]
+
+  it("a fresh start fails the removed identity's held mail to each sender's audit, then the record goes", async () => {
+    word(true)
+    // What a served identity remove of lab left: lab out of identities.json and its key moved, research's mail to it
+    // moved into research's held/ (state/jane left the home), the row kept for the give-back, and the record.
+    const env = mail(P.carol, P.jane, 'to lab')
+    const file = holdIn('carol', env)
+    const s = await start({}, {}, [], [], [], () => {
+      const row = rowOf('research', 'lab', P.carol.address, P.jane.address, env.envelope.id)
+      writeFileSync(localPeersPath(home), JSON.stringify({ version: 1, pairs: [row] }), { mode: 0o600 })
+      recordRemoved(home, { label: 'lab', key: 'jane', address: P.jane.address, at: T0 })
+    })
+    void s
+    expect(existsSync(file)).toBe(false)
+    expect(table()).toEqual([])
+    await until(() => failedIn('carol', env.envelope.id).length === 1)
+    expect(failedIn('carol', env.envelope.id)).toEqual([
+      { relay: LOCAL_RELAY, delivery: 'failed-local', reason: 'identity removed', to: 'lab' },
+    ])
+    expect(readRemoved(home)).toEqual([])
+  })
+
+  it("a sender that is neither side of the row's addresses is not guessed: a policy line names the file, the spool's label is used", async () => {
+    word(true)
+    const env = mail(P.carol, P.jane, 'reset')
+    const file = holdIn('carol', env)
+    const s = await start({}, {}, [], [], [], () => {
+      // The row's b address is not research's (a reset row): carol, the sender, is neither side's address.
+      const row = rowOf('research', 'lab', P.bob.address, P.jane.address, env.envelope.id)
+      writeFileSync(localPeersPath(home), JSON.stringify({ version: 1, pairs: [row] }), { mode: 0o600 })
+      recordRemoved(home, { label: 'lab', key: 'jane', address: P.jane.address, at: T0 })
+    })
+    void s
+    expect(existsSync(file)).toBe(false)
+    await until(() => failedIn('carol', env.envelope.id).length === 1)
+    // research's spool held it: research is the label, never a guess between the row's two sides.
+    expect(failedIn('carol', env.envelope.id)).toEqual([
+      { relay: LOCAL_RELAY, delivery: 'failed-local', reason: 'identity removed', to: 'research' },
+    ])
+    const policy = readFileSync(join(home, 'state', 'carol', 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter((x) => x.includes('is from neither side of its pair'))
+    expect(policy).toHaveLength(1)
+    expect(policy[0]).toContain(`${env.envelope.id}.env`)
+  })
+
+  for (const [what, spoil] of [
+    [
+      'a symlinked removed.json',
+      () => {
+        const real = join(mkdtempSync(join(home, '..', 'bsl-real-')), 'removed.json')
+        renameSync(join(home, 'run', 'removed.json'), real)
+        symlinkSync(real, join(home, 'run', 'removed.json'))
+      },
+    ],
+    ['a 0644 removed.json', () => chmodSync(join(home, 'run', 'removed.json'), 0o644)],
+    [
+      'a directory in its place',
+      () => {
+        rmSync(join(home, 'run', 'removed.json'))
+        mkdirSync(join(home, 'run', 'removed.json'))
+      },
+    ],
+  ] as [string, () => void][])
+    it(`${what} is read as no entries at the start: a policy line, nothing failed, the held mail kept`, async () => {
+      word(true)
+      const env = mail(P.carol, P.jane, `refused-${what}`)
+      const file = holdIn('carol', env)
+      const s = await start({}, {}, [], [], [], () => {
+        const row = rowOf('research', 'lab', P.carol.address, P.jane.address, env.envelope.id)
+        writeFileSync(localPeersPath(home), JSON.stringify({ version: 1, pairs: [row] }), { mode: 0o600 })
+        recordRemoved(home, { label: 'lab', key: 'jane', address: P.jane.address, at: T0 })
+        spoil()
+      })
+      void s
+      await until(() =>
+        readFileSync(join(home, 'state', 'carol', 'audit.jsonl'), 'utf8').includes('removed record refused'),
+      )
+      expect(existsSync(file)).toBe(true)
+      expect(failedIn('carol', env.envelope.id)).toEqual([])
+    })
+
+  it('re-added with the same key: nothing is failed, the record goes, and the held mail is delivered at the Allow', async () => {
+    word(true)
+    const env = mail(P.carol, P.jane, 'kept')
+    const file = holdIn('jane', env)
+    const s = await start({}, {}, [], [], [['lab', P.jane]], () => {
+      const row = rowOf('research', 'lab', P.carol.address, P.jane.address, env.envelope.id)
+      writeFileSync(localPeersPath(home), JSON.stringify({ version: 1, pairs: [row] }), { mode: 0o600 })
+      recordRemoved(home, { label: 'lab', key: 'jane', address: P.jane.address, at: T0 })
+    })
+    expect(readRemoved(home)).toEqual([])
+    expect(existsSync(file)).toBe(true)
+    expect(table()).toMatchObject([{ a: 'research', b: 'lab', state: 'requested', held: [env.envelope.id] }])
+    const l = await window(s, 'lab')
+    await call(l, 'status')
+    await until(() => table()[0]?.state === 'allowed')
+    await until(() => !existsSync(file))
+    expect(failedIn('carol', env.envelope.id)).toEqual([])
+  })
+
+  it('re-added with a new key: the old held mail is failed, the new identity keeps its own', async () => {
+    word(true)
+    const jade = party('jade', 0x17)
+    const old = mail(P.carol, P.jane, 'old')
+    const fresh = mail(P.alice, jade, 'new')
+    const oldFile = holdIn('carol', old)
+    const s = await start({}, {}, [], [], [['lab', jade]], () => {
+      const freshFile = holdIn('jade', fresh)
+      void freshFile
+      const rows = [
+        rowOf('research', 'lab', P.carol.address, P.jane.address, old.envelope.id),
+        rowOf('personal', 'lab', P.alice.address, jade.address, fresh.envelope.id),
+      ]
+      writeFileSync(localPeersPath(home), JSON.stringify({ version: 1, pairs: rows }), { mode: 0o600 })
+      recordRemoved(home, { label: 'lab', key: 'jane', address: P.jane.address, at: T0 })
+    })
+    void s
+    expect(existsSync(oldFile)).toBe(false)
+    await until(() => failedIn('carol', old.envelope.id).length === 1)
+    expect(failedIn('carol', old.envelope.id)[0]).toMatchObject({ reason: 'identity removed', to: 'lab' })
+    expect(existsSync(join(spoolDir(home, 'jade'), 'held', `${fresh.envelope.id}.env`))).toBe(true)
+    expect(table()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ a: 'personal', b: 'lab', b_addr: jade.address, held: [fresh.envelope.id] }),
+      ]),
+    )
+    expect(failedIn('alice', fresh.envelope.id)).toEqual([])
+    expect(readRemoved(home)).toEqual([])
+  })
+})
+
+describe("a Codex sub-agent's connection never speaks for the identity it binds", () => {
+  // A Codex sub-agent's shim is a second connection of the same window: its calls carry the window's sessionId with a
+  // threadId of its own (a window's two ids are equal), and a current shim adds bag.dev/subagent true. The service
+  // marks such a connection at its first call, before the call runs, and never clears the mark; the wake router never
+  // lets a marked connection speak, so mail still wakes the window the person types in.
+  const isRing = (m: Json): boolean => m.method === 'service/ring'
+  const S = '01a1dcf8-4bfd-7000-8000-000000000001'
+  const T = '01a1dcf9-51b4-7000-8000-000000000002'
+  const SUB = { sessionId: S, threadId: T, [SUBAGENT_META]: true }
+  const OLD_SHIM = { sessionId: S, threadId: T }
+  const WINDOW = { sessionId: S, threadId: S }
+
+  async function callWith(l: Line, name: string, args: Json, meta?: Json): Promise<Json> {
+    const params = meta === undefined ? { name, arguments: args } : { name, arguments: args, _meta: meta }
+    const r = await l.request('tools/call', params)
+    const result = r.result as { content?: { text: string }[] } | undefined
+    if (result === undefined) throw new Error(JSON.stringify(r))
+    return JSON.parse(result.content?.[0]?.text ?? '{}') as Json
+  }
+
+  /** A Codex sub-agent's connection at /w/sub, bound to `label` by its own use call (the person's Yes), `meta` on it. */
+  async function subagent(s: Service, label: string, meta: Json): Promise<Line> {
+    const l = await connected(s, 'sub', { host: 'codex', input_hook: false })
+    const use = callWith(l, 'use', { name: label }, meta)
+    const req = await l.next((m) => m.method === 'elicitation/create')
+    const handle = ((req.params as Json)._meta as Json)[DIALOG_META]
+    const result = { action: 'accept', content: { bind: true }, _meta: { [DIALOG_META]: handle } }
+    l.send({ jsonrpc: '2.0', id: req.id, result })
+    expect(await use).toMatchObject({ bound: true, as: label, granted: 'dialog' })
+    return l
+  }
+
+  const connAt = (s: Service, cwd: string) => [...s.connections].find((c) => c.cwd === cwd)
+
+  /** personal and research allowed; personal's window, then research's Codex window, typed into, bound first. */
+  async function setup(): Promise<{ s: Service; timers: ManualTimers; a: Line; main: Line }> {
+    word(true)
+    allowedRow()
+    const timers = new ManualTimers()
+    const s = await start({ timers })
+    const a = await window(s, 'personal')
+    const main = await window(s, 'research', true, { host: 'codex' })
+    expect(await callWith(main, 'status', {}, WINDOW)).toMatchObject({ as: 'research' })
+    return { s, timers, a, main }
+  }
+
+  /** One local message from personal to research, rung after the settle wait. */
+  async function mail(a: Line, timers: ManualTimers): Promise<void> {
+    expect(await call(a, 'send', chat([P.carol.address]))).toMatchObject({ delivery: 'local' })
+    timers.fire((ms) => ms === SETTLE_MS)
+  }
+
+  it("a sub-agent bound last and alive: the mail rings the window's own connection, the sub-agent's quietly", async () => {
+    const { s, timers, a, main } = await setup()
+    const sub = await subagent(s, 'research', SUB)
+    expect(connAt(s, '/w/sub')?.subagent).toBe(true)
+    await mail(a, timers)
+    expect((await main.next(isRing)).params).toMatchObject({ as: 'research', unread: 1, speaking: true })
+    expect((await sub.next(isRing)).params).toMatchObject({ as: 'research', unread: 1, speaking: false })
+    // Its later calls change nothing: the next mail rings the same way.
+    await callWith(sub, 'status', {}, SUB)
+    await mail(a, timers)
+    expect((await main.next(isRing)).params).toMatchObject({ speaking: true })
+    expect((await sub.next(isRing)).params).toMatchObject({ speaking: false })
+    expect(connAt(s, '/w/research')?.subagent).toBe(false)
+  })
+
+  it('a sub-agent connection that says hello and never calls gets no ring and no wake, and is not marked', async () => {
+    const { s, timers, a, main } = await setup()
+    const sub = await connected(s, 'sub', { host: 'codex', input_hook: false })
+    await mail(a, timers)
+    expect((await main.next(isRing)).params).toMatchObject({ as: 'research', speaking: true })
+    // A ping is no tool call; its answer comes after anything the ring wrote to this connection.
+    expect((await sub.request('ping')).result).toEqual({})
+    expect(sub.count(isRing)).toBe(0)
+    expect(connAt(s, '/w/sub')?.subagent).toBe(false)
+  })
+
+  it("a later call that looks like the window's (bag.dev/subagent false, equal ids, or no _meta) never clears the mark", async () => {
+    const { s, timers, a, main } = await setup()
+    const sub = await subagent(s, 'research', SUB)
+    await callWith(sub, 'status', {}, { ...WINDOW, [SUBAGENT_META]: false })
+    expect(connAt(s, '/w/sub')?.subagent).toBe(true)
+    await callWith(sub, 'status', {})
+    expect(connAt(s, '/w/sub')?.subagent).toBe(true)
+    await mail(a, timers)
+    expect((await main.next(isRing)).params).toMatchObject({ speaking: true })
+    expect((await sub.next(isRing)).params).toMatchObject({ speaking: false })
+  })
+
+  it('a first call that is the use bind, with differing ids, is marked before the bind applies', async () => {
+    const { s, timers, a, main } = await setup()
+    const own = connAt(s, '/w/research')?.handle
+    const sub = await subagent(s, 'research', OLD_SHIM)
+    // The bind made this connection a seat of research, yet the window still speaks: the mark came first.
+    expect(connAt(s, '/w/sub')?.subagent).toBe(true)
+    expect(own).toBeDefined()
+    expect(s.router.speaking('research')).toBe(own)
+    await mail(a, timers)
+    expect((await main.next(isRing)).params).toMatchObject({ as: 'research', unread: 1, speaking: true })
+    expect((await sub.next(isRing)).params).toMatchObject({ as: 'research', unread: 1, speaking: false })
+  })
+
+  it('a 0.4.1 shim sends no field: differing sessionId and threadId mark its connection at the bind', async () => {
+    const { s, timers, a, main } = await setup()
+    const sub = await subagent(s, 'research', OLD_SHIM)
+    expect(connAt(s, '/w/sub')?.subagent).toBe(true)
+    await mail(a, timers)
+    expect((await main.next(isRing)).params).toMatchObject({ speaking: true })
+    expect((await sub.next(isRing)).params).toMatchObject({ speaking: false })
+  })
+
+  it("the window's own connection is never marked: equal ids, no _meta, and differing ids on a host that is not Codex", async () => {
+    const { s, timers, a, main } = await setup()
+    await callWith(main, 'status', {}, WINDOW)
+    await callWith(main, 'status', {})
+    expect(connAt(s, '/w/research')?.subagent).toBe(false)
+    // The inference is Codex's ids only: another host's differing ids are no sign of a sub-agent.
+    const other = await window(s, 'research', true, { host: 'claude-code', cwd: '/w/other' })
+    await callWith(other, 'status', {}, OLD_SHIM)
+    expect(connAt(s, '/w/other')?.subagent).toBe(false)
+    await mail(a, timers)
+    expect((await other.next(isRing)).params).toMatchObject({ speaking: true })
+    expect((await main.next(isRing)).params).toMatchObject({ speaking: false })
   })
 })

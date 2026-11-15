@@ -38,7 +38,7 @@ const tree: SessionNameOptions = {
 async function world() {
   const io = testIo(new MemoryRelay())
   const dir = join(tmp.dir, `home-${n++}`)
-  expect((await cli(io, 'keygen', 'bob', '--dir', dir)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).code).toBe(0)
   const address = (await cli(io, 'address', 'bob', '--dir', dir)).out[0] as string
   const { name, anchor } = resolveSessionName(address, tree)
   io.stdout.length = 0

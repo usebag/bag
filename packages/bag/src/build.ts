@@ -37,7 +37,7 @@ export const ENTRIES: Readonly<Record<string, string>> = {
   // The omp wake extension: `bag host install omp` links projects to <home>/package/bag-omp-wake.js, so the name is
   // stable. The published package carries only what ENTRIES lists.
   'bag-omp-wake': 'packages/cli/src/omp-wake.ts',
-  // The bag service's shim (decision 92): the stdio MCP server each host session starts; Node built-ins only.
+  // The bag service's shim (docs/bag-service.md): the stdio MCP server each host session starts; Node built-ins only.
   'bag-shim': 'packages/shim/src/main.ts',
 }
 

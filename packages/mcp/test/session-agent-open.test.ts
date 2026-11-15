@@ -9,9 +9,9 @@ import { P } from './support/fixtures.ts'
 import { seededRng } from './support/ports.ts'
 import { type AgentHome, agentHome, CAVEAT } from './support/sessions.ts'
 
-// openAgentUnit: the bag service's opening of an agent-custody identity (decision 92, the gap svc-core's wiring found:
-// a window bound to an agent-custody identity bound but could not act). It is the --session form for the service: a
-// session key of its own, the agent's hop to it after one y at the agent, the principal's mailbox.
+// openAgentUnit: the bag service's opening of an agent-custody identity (it closes a gap: a window bound to an
+// agent-custody identity bound but could not act). It is the --session form for the service: a session key of its
+// own, the agent's hop to it after one y at the agent, the principal's mailbox.
 
 let h: AgentHome
 let opened: SessionStart | null = null
@@ -29,7 +29,7 @@ afterEach(async () => {
 })
 
 const base = () => {
-  // a session config as svc-core's unit has one: openAgentUnit replaces its session with the label's
+  // a session config as the service's unit has one: openAgentUnit replaces its session with the label's
   const c = parseConfig(
     [
       '--session',
@@ -144,10 +144,10 @@ describe('openAgentUnit: an agent-custody identity opened for the bag service', 
     expect(h.codes()).toHaveLength(1)
   })
 
-  // The ruling of 2026-11-12 16:04 UTC: ac login does not lend an identity the bag service serves, because the two never
+  // The rule: ac login does not lend an identity the bag service serves, because the two never
   // write the same file. The unit writes only under <name>.service; the agent (ac login, here the fake agent in the same
   // home) writes the principal's paths, its audit among them (cli login.test.ts pins that half). A unit write outside
-  // <name>.service, or into a path of the principal, breaks the ruling.
+  // <name>.service, or into a path of the principal, breaks the rule.
   it('writes only under jane.service: its key with the mark, its grant and its lock; the agent only its audit', async () => {
     const before = filesOf(h.tmp.dir)
     opened = openAgentUnit(base(), 'jane', { caveats: [CAVEAT] }, deps())
@@ -176,5 +176,24 @@ describe('openAgentUnit: an agent-custody identity opened for the bag service', 
   it('refuses a label that is not an agent-custody identity', () => {
     expect(() => openAgentUnit(base(), 'nobody', { caveats: [CAVEAT] }, deps())).toThrow()
     expect(h.codes()).toHaveLength(0)
+  })
+
+  it("a declined first grant says the service's way to ask again, which is never written to the key file", async () => {
+    const declined = 'type use and the name to ask again'
+    opened = openAgentUnit(base(), 'jane', { caveats: [CAVEAT], declined }, deps())
+    const file = JSON.parse(readFileSync(join(h.tmp.dir, 'keys', 'jane.service.json'), 'utf8')) as object
+    expect('declined' in file).toBe(false)
+    h.type('n')
+    const e = await opened.granted.catch((x: unknown) => x)
+    expect(String(e)).toContain(`no y at the agent: ${declined}`)
+    expect(String(e)).not.toContain('restart the session')
+  })
+
+  it('with no hint (the stdio session) a declined first grant still says to restart the session', async () => {
+    opened = openAgentUnit(base(), 'jane', { caveats: [CAVEAT] }, deps())
+    h.type('n')
+    expect(String(await opened.granted.catch((x: unknown) => x))).toContain(
+      'restart the session to ask again',
+    )
   })
 })

@@ -1,6 +1,6 @@
 // Line S2, "the derived hop attenuates": the pre-registered set of 200 `sign` requests (V3), 20 each of
-// the ten cases of the line, built deterministically from its text. Committed before any run, at 6974626 (the
-// c3778a6 code), before any test code of the line; no request below
+// the ten cases of the line, built deterministically from its text. Committed before any run,
+// before any test code of the line; no request below
 // was chosen after a result.
 // Data only: `sub` names a fixture party (never the requesting session, so no request is a renewal).
 //

@@ -103,7 +103,7 @@ body() {
 A="$(j --home "$tmp/alice" keygen)"
 B="$(j --home "$tmp/bob" keygen)"
 c keygen ts-alice >/dev/null
-c keygen ts-bob >/dev/null
+c keygen ts-bob --new >/dev/null # a second identity in one home, on purpose
 TA="$(c address ts-alice)"
 TB="$(c address ts-bob)"
 j --home "$tmp/alice" records --relay "$R" --accept "$B" >/dev/null

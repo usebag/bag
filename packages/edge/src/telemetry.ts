@@ -27,7 +27,7 @@ import {
   treeOf,
 } from './telemetry-report.ts'
 
-// The telemetry switch and its counts (spec/SPEC.md Appendix B 111; the telemetry design note's §2 and §3):
+// The telemetry switch and its counts (spec/SPEC.md Appendix B 111):
 // opt-in, one consent and one install id per machine, whatever the identity's home, in the machine's
 // directory HOME/.bag (telemetryDir: a test or an e2e process points it elsewhere with HOME). telemetry.json holds the
 // person's choice, written only by setTelemetry (`ac telemetry on|off`); an environment variable can only turn
@@ -37,8 +37,11 @@ import {
 
 /**
  * The machine's choice, `{"version":2,"telemetry":"on","id":"<32 hex>","since":"<YYYY-MM-DD>"}` or
- * `{"version":2,"telemetry":"off"}`. A version-1 choice was made before the `pairs` family, which it does not cover:
- * it reads as off, `old-file`, and the notice asks again (the red team's Q2, 2026-11-03).
+ * `{"version":2,"telemetry":"off"}`. Either may carry `"erase"`, the install id (a 32-hex string) or ids (an array of
+ * them) a forget asked the endpoint to erase without a confirmation: kept only so that forget can ask again, until it
+ * is confirmed. An on never takes such an id again: it draws its own, so the new consent is not linked to the reports
+ * the person asked to erase. A version-1 choice was made before the `pairs` family, which it does not cover: it reads
+ * as off, `old-file`, and the notice asks again.
  */
 export const TELEMETRY_FILE = 'telemetry.json'
 
@@ -92,7 +95,7 @@ export function noticeText(preview: string): string {
 /**
  * The notice for a caller that cannot name the command line; the CLI names its own (its previewCommand: `npx --yes
  * --package=@usebag/bag@<version> bag telemetry preview` from the package, `node <main.ts> telemetry preview` from
- * source). No notice names `ac telemetry on`, a command a guide install does not have (the spec owner's ruling 13).
+ * source). No notice names `ac telemetry on`, a command a guide install does not have.
  */
 export const TELEMETRY_NOTICE = noticeText('telemetry preview, in the bag command line')
 
@@ -121,9 +124,25 @@ export interface TelemetryState {
 }
 
 type Env = Readonly<Record<string, string | undefined>>
-type Choice = { readonly choice: 'on' | 'off'; readonly id: string | null; readonly since: string | null }
+type Choice = {
+  readonly choice: 'on' | 'off'
+  readonly id: string | null
+  readonly since: string | null
+  /** The ids still to be erased, pending since a forget not yet confirmed; none when empty. */
+  readonly erase: readonly string[]
+}
 
 const ID = /^[0-9a-f]{32}$/
+/**
+ * The ids a file's `erase` names: a 32-hex string, or the 32-hex strings of an array (an entry that is not one is
+ * skipped, never the whole list, since an id lost here leaves its reports with nothing to erase them by); anything
+ * else names none.
+ */
+function erases(v: unknown): string[] {
+  const all: unknown[] = typeof v === 'string' ? [v] : Array.isArray(v) ? v : []
+  return [...new Set(all.filter((x): x is string => typeof x === 'string' && ID.test(x)))]
+}
+
 const said = (v: string | undefined): boolean => v !== undefined && !/^(|0|false|no|off)$/i.test(v.trim())
 
 /**
@@ -143,9 +162,11 @@ function readChoice(dir: string): Choice | 'old' | 'bad' | null {
       telemetry?: unknown
       id?: unknown
       since?: unknown
+      erase?: unknown
     } | null
     if (d?.version === 1) return 'old'
-    if (d?.version === 2 && d.telemetry === 'off') return { choice: 'off', id: null, since: null }
+    const erase = erases(d?.erase)
+    if (d?.version === 2 && d.telemetry === 'off') return { choice: 'off', id: null, since: null, erase }
     const since = typeof d?.since === 'string' && dayOf(d.since) !== null ? d.since : null
     if (
       d?.version === 2 &&
@@ -154,7 +175,7 @@ function readChoice(dir: string): Choice | 'old' | 'bad' | null {
       ID.test(d.id) &&
       since !== null
     ) {
-      return { choice: 'on', id: d.id, since }
+      return { choice: 'on', id: d.id, since, erase }
     }
   } catch {
     // not JSON: bad, as below
@@ -192,6 +213,16 @@ export function telemetryId(dir: string): string | null {
   return chosen(readChoice(dir))?.id ?? null
 }
 
+/** The ids the choice in `dir` keeps for a forget whose erasure was not confirmed, oldest first; none when empty. */
+export function telemetryEraseIds(dir: string): readonly string[] {
+  return chosen(readChoice(dir))?.erase ?? []
+}
+
+/** The first of telemetryEraseIds, or null. */
+export function telemetryEraseId(dir: string): string | null {
+  return telemetryEraseIds(dir)[0] ?? null
+}
+
 /** The UTC date the choice in `dir` turned on, while it is on; else null. Nothing before it is counted (Q8). */
 export function telemetrySince(dir: string): string | null {
   return chosen(readChoice(dir))?.since ?? null
@@ -200,17 +231,27 @@ export function telemetrySince(dir: string): string | null {
 /**
  * Writes the choice to <dir>/telemetry.json, 0600, by a temporary file renamed over it, `dir` made 0700 when missing.
  * on keeps the id and the date a readable on-file holds, else draws an id from `rng`, never from the machine, a user or
- * a path, and dates it at `now` (seconds); off drops both, so the next on draws anew, and then deletes the spool of
- * counts, the sender's mark and the pairs snapshots. It makes no network call.
+ * a path, and dates it at `now` (seconds); it never takes an id still to be erased. off drops both, so the next on
+ * draws anew, and then deletes the spool of counts, the sender's mark and the pairs snapshots. The ids still to be
+ * erased (telemetryEraseIds) stay through an on and a plain off alike, since only a confirmed erasure may drop them;
+ * `erase` (32-hex ids) replaces them, an empty list dropping them all. It makes no network call.
  */
-export function setTelemetry(dir: string, choice: 'on' | 'off', rng: Rng, now = Date.now() / 1000): void {
+export function setTelemetry(
+  dir: string,
+  choice: 'on' | 'off',
+  rng: Rng,
+  now = Date.now() / 1000,
+  erase: readonly string[] | null = null,
+): void {
   const held = chosen(readChoice(dir))
   const on =
     held?.choice === 'on' ? held : { id: toHex(rng.bytes(16)), since: dateOf(Math.floor(now / 86_400)) }
+  const pending = erase === null ? (held?.erase ?? []) : erases([...erase])
+  const kept = pending.length === 0 ? {} : { erase: pending.length === 1 ? pending[0] : pending }
   const doc =
     choice === 'on'
-      ? { version: 2, telemetry: choice, id: on.id, since: on.since }
-      : { version: 2, telemetry: choice }
+      ? { version: 2, telemetry: choice, id: on.id, since: on.since, ...kept }
+      : { version: 2, telemetry: choice, ...kept }
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   const path = join(dir, TELEMETRY_FILE)
   const tmp = `${path}.${toHex(rng.bytes(8))}.tmp`

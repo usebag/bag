@@ -1,11 +1,9 @@
 import { setTimeout as sleep } from 'node:timers/promises'
 import {
   type CaveatEvaluator,
-  codingEvaluator,
   domainOfRoot,
   GROUP_KEY_TYPE,
   groupEvaluator,
-  isAddress,
   parseEnvelope,
   type SealedContent,
   verifyChain,
@@ -25,6 +23,7 @@ import {
   type TrustedRoot,
 } from '@usebag/edge'
 import { withSession } from '@usebag/enterprise-client'
+import { trustedRoot as homeTrustedRoot, PROFILES } from '@usebag/home'
 import { flag, list, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { refuseWhileHeld } from '../held.ts'
 import {
@@ -38,6 +37,7 @@ import {
   openEdge,
   receivingKeys,
 } from '../home.ts'
+import { viaHome } from '../home-io.ts'
 import type { Io } from '../io.ts'
 import { instant, NameBook, short } from '../names.ts'
 import { confirmed, loadRecords, needTty, type Quarantined, quarantinedLine, withRecords } from '../policy.ts'
@@ -47,11 +47,8 @@ import { groupStore } from './group.ts'
 // inbox: the edge's Receiver at one relay. The CLI wraps the subscription the Receiver reads, to print each frame's
 // outcome when the Receiver acks it, and, for --once, to end the stream once no frame has come for io.idleMs.
 
-// A host name with an optional port, as the edge's well-known resolver takes it.
-const DOMAIN = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?$/
-
-/** The caveat profiles inbox --honor names: the coding profile's type= and repo= caveats (spec/SPEC.md §6.4). */
-export const PROFILES: ReadonlyMap<string, CaveatEvaluator> = new Map([['coding', codingEvaluator]])
+/** The caveat profiles inbox --honor names (packages/home's PROFILES, which the identities file checks too). */
+export { PROFILES }
 
 /** The evaluators of the --honor values; UsageError for a profile that does not exist. */
 export function honored(names: readonly string[]): CaveatEvaluator[] {
@@ -68,9 +65,7 @@ export function honored(names: readonly string[]): CaveatEvaluator[] {
 
 /** A --trust-root value: an address, trusted by key, or a domain, whose well-known record is pinned at first use. */
 export function trustedRoot(text: string): TrustedRoot {
-  if (isAddress(text)) return { address: text }
-  if (DOMAIN.test(text)) return { domain: text }
-  throw new UsageError(`--trust-root ${JSON.stringify(text)} is neither an address nor a domain`)
+  return viaHome(() => homeTrustedRoot(text))
 }
 
 /**

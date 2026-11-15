@@ -46,7 +46,7 @@ describe('S7 (a): the recovery setting is a field of the custody pointer, round-
   it('keygen --custody agent with a recovery setting of personal and of none: the pointer holds it and keys list shows it', async () => {
     const dir = home()
     const io = testIo(new MemoryRelay())
-    expect((await cli(io, 'keygen', 'jane-keys', '--dir', dir)).code).toBe(0)
+    expect((await cli(io, 'keygen', '--new', 'jane-keys', '--dir', dir)).code).toBe(0)
     const out: string[] = []
     let roundTrips = 0
     for (const setting of ['personal', 'none']) {
@@ -54,6 +54,7 @@ describe('S7 (a): the recovery setting is a field of the custody pointer, round-
       const made = await cli(
         io,
         'keygen',
+        '--new',
         name,
         '--custody',
         'agent',
@@ -80,8 +81,19 @@ describe('S7 (a): the recovery setting is a field of the custody pointer, round-
     // The same question of a pointer written by hand with the field: does keys list carry it?
     const hand = home()
     const handIo = testIo(new MemoryRelay())
-    await cli(handIo, 'keygen', 'jane-keys', '--dir', hand)
-    await cli(handIo, 'keygen', 'jane', '--custody', 'agent', '--principal', 'jane-keys', '--dir', hand)
+    await cli(handIo, 'keygen', '--new', 'jane-keys', '--dir', hand)
+    await cli(
+      handIo,
+      'keygen',
+      '--new',
+      'jane',
+      '--custody',
+      'agent',
+      '--principal',
+      'jane-keys',
+      '--dir',
+      hand,
+    )
     const file = join(hand, 'agent', 'jane.json')
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), recovery: 'personal' }), {
       mode: 0o600,
@@ -184,6 +196,7 @@ describe('S7 (c): an agent identity that holds group memberships is refused with
     const keygen = await cli(
       testIo(relay),
       'keygen',
+      '--new',
       'again',
       '--custody',
       'agent',
@@ -228,6 +241,7 @@ describe('S7 (c): an agent identity that holds group memberships is refused with
     const keygen = await cli(
       testIo(relay),
       'keygen',
+      '--new',
       'again',
       '--custody',
       'agent',

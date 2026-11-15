@@ -6,17 +6,19 @@ import {
   enterpriseStatus,
   signInSecrets,
   signInThroughAgent,
+  signOut,
   VERSION,
 } from '@usebag/enterprise-client'
 
-// The enterprise tools' work (tools.ts registers them): connect, sign_in and enterprise_status, the standalone `bag mcp`
-// server's three (the enterprise client's mcp.ts, where the last is named status), run at this server's home on the
+// The enterprise tools' work (tools.ts registers them): connect, sign_in, sign_out and enterprise_status, the standalone
+// `bag mcp` server's four (the enterprise client's mcp.ts, where the last is named status), run at this server's home on the
 // library's own flow: the code's parse, the pin, the guard and the redeem are the library's, never redone here. An
 // outcome holds the exit the command would end with and the lines it prints, scrubbed as the standalone server scrubs
-// its results: the code and its secret part for connect, the device code and the token (before and after) for sign_in.
+// its results: the code and its secret part for connect, the device code and the token (before and after) for sign_in,
+// the token for sign_out, which asks nothing (it only reduces power), as bag sign-out does.
 
 /** The enterprise tools, as tools.ts lists them. */
-export const ENTERPRISE_TOOLS = ['connect', 'sign_in', 'enterprise_status'] as const
+export const ENTERPRISE_TOOLS = ['connect', 'sign_in', 'sign_out', 'enterprise_status'] as const
 
 export type EnterpriseTool = (typeof ENTERPRISE_TOOLS)[number]
 
@@ -115,6 +117,17 @@ export async function runEnterprise(
   }
   // Several organisations: org names one; else the most recently connected, named on the first line.
   const org = typeof args.org === 'string' && args.org !== '' ? { org: args.org } : {}
+  if (tool === 'sign_out') {
+    const before = signInSecrets(home)
+    const out = await run(
+      (lines) => signOut({ ...deps(lines), ...org }),
+      notDone,
+      null,
+      () => before,
+    )
+    // No session to end is a fact, not an error: the person is signed out either way.
+    return out.code === 'signed-out' ? { ...out, code: null } : out
+  }
   const status = (lines: string[]): EnterpriseDeps => ({
     ...deps(lines),
     note: (line) => lines.push(line.replace(/^bag: /, '')),

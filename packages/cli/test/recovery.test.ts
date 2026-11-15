@@ -34,9 +34,9 @@ async function bob(): Promise<Home & { rotation: string; gone: string }> {
   const relay = new MemoryRelay()
   const io = testIo(relay)
   const dir = join(tmp.dir, `home-${n++}`)
-  const address = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
+  const address = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
   const [rotation, gone] = await Promise.all(
-    ['rot', 'gone'].map(async (k) => (await cli(io, 'keygen', k, '--dir', dir)).out[0] as string),
+    ['rot', 'gone'].map(async (k) => (await cli(io, 'keygen', '--new', k, '--dir', dir)).out[0] as string),
   )
   expect((await cli(io, 'keys', 'rotate', 'bob', '--relay', RELAY, '--dir', dir)).code).toBe(0)
   const file = join(dir, 'revoking.json')
@@ -196,7 +196,7 @@ describe('no copy, and the home published: fail closed', () => {
     const relay = new MemoryRelay()
     const io = testIo(relay)
     const dir = join(tmp.dir, `home-${n++}`)
-    const address = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
+    const address = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
     const none = await cli(io, 'record', 'keep', '--as', 'bob', '--relay', RELAY, '--once', '--dir', dir)
     expect([none.code, none.err[0]]).toEqual([
       1,

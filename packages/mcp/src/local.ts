@@ -2,6 +2,7 @@ import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, wr
 import { join } from 'node:path'
 import { fromHex, parseEnvelope } from '@usebag/core'
 import { addressCopy, HomeCustody, KeyEpochStore } from '@usebag/edge'
+import { failHeldToSender, type HeldMail } from '@usebag/home'
 
 // Delivery between identities of one home (spec/SPEC.md 9.2, decisions 98 and 104): the bag service's own files. The
 // home word, <home>/run/local.json {"version": 2, "local_delivery": "on" | "off", "hidden": [label]}, is written by the
@@ -21,7 +22,7 @@ export const localPeersPath = (home: string): string => join(home, 'run', 'local
 /** One identity's spool directory, by its key name. */
 export const spoolDir = (home: string, name: string): string => join(home, 'state', name, 'local-spool')
 
-/** Local delivery in a home with no word file (decision 104): on. One constant, so a ruling flips it in one line. */
+/** Local delivery in a home with no word file: on (spec/SPEC.md 9.2 item 1). One constant, so it flips in one line. */
 export const LOCAL_DELIVERY_DEFAULT = true
 
 /** The home word as read: on or off, the hidden labels (v2), and why a file there was read as off (else null). */
@@ -89,9 +90,9 @@ export interface LocalPair {
   readonly b_addr: string
   readonly added_at: number
   /**
-   * allowed: both ways. requested: a first touch from a waits for b's person (decision 104), with the held envelope
-   * ids; declined: refused until `until`, with the re-asks of this cooling (the clock seconds of each). Absent or any
-   * other value reads as none (stateOf).
+   * allowed: both ways. requested: a first touch from a waits for b's person (spec/SPEC.md 9.2 item 1), with the held
+   * envelope ids; declined: refused until `until`, with the re-asks of this cooling (the clock seconds of each). Absent
+   * or any other value reads as none (stateOf).
    */
   readonly state?: 'allowed' | 'requested' | 'declined'
   readonly at?: number
@@ -207,7 +208,7 @@ export function localRootsOf(
   addressOf?: (label: string) => string | null,
 ): string[] {
   const { on, hidden } = localWord(home)
-  // A hidden identity trusts none of the others locally, and none trusts it (symmetric, decision 103).
+  // A hidden identity trusts none of the others locally, and none trusts it (symmetric, spec/SPEC.md 9.2 item 1).
   if (!on || hidden.includes(x.label)) return []
   // The peer's address is its identity's in this home (`addressOf`, the service's), never the row's (s2).
   return rows
@@ -219,12 +220,27 @@ export function localRootsOf(
     })
 }
 
+/** How a dropped pair's spooled envelope is told to its sender: failed-local in the sender's own audit log. */
+export type TellSender = (m: HeldMail, reason: string) => void
+
+const tellInAudit =
+  (home: string): TellSender =>
+  (m, reason) =>
+    failHeldToSender(home, m, reason, () => Math.floor(Date.now() / 1000))
+
 /**
  * Drops the local pair of addresses x and y (both sides' one entry), and from the spool of whichever of them is an
  * identity of this home every envelope the other sent: the console's pairings remove of an own address (console.ts).
- * True when anything was dropped.
+ * Each such envelope is told to its sender first, failed-local with reason unpaired (`tell`: in the sender's own audit
+ * log, as the service's drop and home's dropLocalPairs tell it), then deleted; one whose sender could not be told
+ * (its store in use) stays. True when anything was dropped.
  */
-export function dropLocalPair(home: string, x: string, y: string): boolean {
+export function dropLocalPair(
+  home: string,
+  x: string,
+  y: string,
+  tell: TellSender = tellInAudit(home),
+): boolean {
   const pairs = localPairs(home)
   const ours = (p: LocalPair): boolean =>
     (p.a_addr === x && p.b_addr === y) || (p.a_addr === y && p.b_addr === x)
@@ -235,14 +251,34 @@ export function dropLocalPair(home: string, x: string, y: string): boolean {
     entries = new HomeCustody(home).list()
   } catch {}
   let spooledDropped = 0
+  // The label the dropped row gave each side, else its key name.
+  const labelOf = (e: { name: string; address: string }): string =>
+    pairs
+      .filter(ours)
+      .flatMap((p) => (p.a_addr === e.address ? [p.a] : p.b_addr === e.address ? [p.b] : []))[0] ?? e.name
   for (const e of entries.filter((e) => e.address === x || e.address === y)) {
     const other = e.address === x ? y : x
+    const sender = entries.find((o) => o.address === other)?.name ?? null
     for (const { file, bytes } of spooled(home, e.name)) {
-      let from: string | null = null
+      let env: ReturnType<typeof parseEnvelope> | null = null
       try {
-        from = parseEnvelope(bytes).from
+        env = parseEnvelope(bytes)
       } catch {}
-      if (from !== other) continue
+      if (env === null || env.from !== other) continue
+      const m: HeldMail = {
+        id: env.id,
+        file,
+        in: e.name,
+        other: sender ?? '',
+        sender,
+        from: env.from,
+        to: labelOf(e),
+      }
+      try {
+        tell(m, 'unpaired')
+      } catch {
+        continue
+      }
       rmSync(file, { force: true })
       spooledDropped++
     }

@@ -300,7 +300,7 @@ describe('http-relay: the relay API of spec/SPEC.md §8 on the global fetch', ()
   })
 })
 
-describe('http-relay: the time a request is given (W9)', () => {
+describe('http-relay: the time a request is given', () => {
   it('is 10 s plus 1 s per whole 16 KiB of body, at most 29 s, under the relay 30 s body timeout', () => {
     expect([BASE_TIMEOUT_MS, MAX_TIMEOUT_MS]).toEqual([10_000, 29_000])
     const sizes = [0, 16_383, 16_384, 65_536, 131_072, 196_608, 262_144, 311_296, 1_048_576]

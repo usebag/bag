@@ -155,12 +155,13 @@ Set me up on bag.dev: https://bag.dev/install
 ```
 
 Your agent fetches the guide at [bag.dev/install](https://bag.dev/install), which is written for a coding agent, and
-follows it step by step: it runs bag, the npm package `@usebag/bag` at the version the guide names, with `npx`,
-checks that the package is the published commit, and makes your identity (or, on a machine with bag already, reuses
-one) and publishes its records at the two public relays. Then you run the steps that set what runs on your machine:
-`bag host install <host> --user`, which puts the bag shim into your host once for every folder; the login agent that
-starts the bag service, one per home, which holds every identity; and, on a machine an earlier bag wired folder by
-folder, `bag host migrate`, with `--undo` to put it back. After you restart your host, in any folder, you type `use`
+hands you three lines. Line 1, in your terminal, fetches bag, the npm package `@usebag/bag` at the version the guide
+names, with `npm pack`, and checks its sha256. Line 2 checks that file again and runs `bag host install <host> --user`
+from it, which puts the bag shim into your host once for every folder (on a machine an earlier bag wired folder by
+folder, `bag host migrate` comes first, with `--undo` to put it back). Line 3 is what you say to the agent after you
+restart your host: through bag's own tools, each asking you first, it makes your identity (or, on a machine with bag
+already, reuses one) and publishes its records at the two public relays, and writes the login agent that starts the
+bag service, which you load with the one line it returns. Then, in any folder, you type `use`
 and your identity's name (`use omp-3`), or answer bag's dialog "Act as omp-3 in this window?", which every host offers
 in place of the typed word (on Codex it is the only way). Then you ask it to pair
 with your peer: the pairing dialogs and the six check digits are yours to answer, never the agent's. Once you are
@@ -176,12 +177,13 @@ two identities and one sealed message, all on your own machine.
 install script; `npx` runs it without installing anything globally. Name the version and the program every time:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.1 bag "$@"; }
-c --version                       # prints: bag 0.4.1 <the commit it was built from>
+c() { npx --yes --package=@usebag/bag@0.4.2 bag "$@"; }
+c --version                       # prints: bag 0.4.2 <the commit it was built from>
 ```
 
-The package is published from a commit of this repository by a workflow with npm provenance, and
-`npm view @usebag/bag@0.4.1 gitHead` names that commit. To run from source instead, see [From source](#from-source).
+The package is published from a commit of this repository by a workflow with npm provenance. The install guide runs it
+only from a file whose SHA-256 it has checked: `npm pack @usebag/bag@0.4.2` fetches the file, and its sha256 must be the
+one in the release's notes. To run from source instead, see [From source](#from-source).
 
 **2. Get a relay.** The relay is Rust and is not in the package: build it from source (`cargo build --release --locked
 -p ac-relay`, as [From source](#from-source) says) or run its container image (`docs/self-host.md`, "Run it with
@@ -261,8 +263,9 @@ words, and the agent calls the server's tools. The setup prompt in the [Quick st
 and registers it for you.
 
 `packages/mcp` is one MCP server over stdio. It gives an agent in an MCP host an address and a mailbox, as tools:
-`send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `status`, `facts`, `lookup`, `pair_invite`, `pair_accept` and
-`pair_cancel`, and `delegate` only when started with `--allow-delegate`. The server runs as the bag service, one
+`send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `status`, `facts`, `lookup`, `pair_invite`, `pair_accept`,
+`pair_cancel`, `connect`, `sign_in` and `enterprise_status`, and `delegate` only when started with `--allow-delegate`.
+The server runs as the bag service, one
 per home, which holds every identity of the home; each host session starts a small shim that talks to it, and a window
 takes an identity when you type `use` and its name, or answer the bind dialog. `host install --user` writes the shim
 into your host once, for every folder, and nothing it writes holds a key. Run from the package, it stages bag under
@@ -302,7 +305,7 @@ shim of the bag service for every folder; `docs/partner-install.md`, section 5c,
 The package's command line is the bin `bag`; the guides wrap it in a shell function, `c`:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.1 bag "$@"; }
+c() { npx --yes --package=@usebag/bag@0.4.2 bag "$@"; }
 c help          # prints every command
 ```
 
@@ -374,11 +377,11 @@ server or bridge.
   and the last day sent.
 - `c telemetry preview` prints the exact report that would be sent for today, or `--date` up to 7 days back, and its
   size in bytes.
-- `c telemetry on` makes the install id, or keeps it; `c telemetry off` deletes the id and the local counts, and
-  opens no connection.
+- `c telemetry on`, run by your person on a terminal, asks one question and after their y makes the install id, or
+  keeps it; `c telemetry off` deletes the id and the local counts, asks nothing, and opens no connection.
 - `c telemetry forget` asks `telemetry.bag.dev` to erase every report sent under the id, then turns telemetry off.
 
-A report covers one UTC day of one machine in at most 4,096 bytes: the install id, the build, the OS, the CPU
+A report covers one UTC day of one machine in at most 4,352 bytes: the install id, the build, the OS, the CPU
 architecture, the Node major and the host kind, each from a closed list, and counts of commands and tool calls (with
 their outcome codes and durations), audit lines, relay calls, MCP sessions, A2A bridge requests and pairings, and the
 machine's peers: how many were paired under 7 days before the day's end or longer, and how many of each it wrote to

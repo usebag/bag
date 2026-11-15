@@ -13,8 +13,7 @@ sections 1 to 4 of that guide first if you have not built this copy yet. Command
   a certificate, a CDN.
 - The right to add one DNS TXT record to the domain.
 - The URL of a relay: your own (`docs/partner-install.md`, section 3) or one you were given.
-- Node 24 or later, and this CLI built (`npm ci`). The CLI has no `bin` entry, so define the same shell function as
-  the install guide:
+- Node 24 or later, and this CLI built (`npm ci`). The CLI has no `bin` entry, so define a shell function:
 
 ```sh
 c() { node packages/cli/src/main.ts "$@"; }
@@ -277,8 +276,9 @@ peer paired since the last run. Its roots, without duplicates, in this order:
 A `kept <root>` line names each root of the union that you did not type, before the `published` lines. `trust.json`
 still gains only the roots you typed. The size and retention are the typed `--max-bytes` and `--retention`, else those
 of the held record, else 196608, the envelope cap, and 604800. A held `max_bytes` of exactly 65536, the default up to
-v0.3.0, is written as 196608; any other is kept, and a typed `--max-bytes 65536` is written as typed. A typed `*` publishes `*` alone: it admits every sender, and the roots in
-`trust.json` come back in the list when a later run types roots instead of `*`.
+v0.3.0, is written as 196608; any other is kept, and a typed `--max-bytes 65536` is written as typed. A typed `*`
+publishes `*` alone: it admits every sender, and the roots in `trust.json` come back in the list when a later run types
+roots instead of `*`.
 
 **The larger envelope cap.** After v0.3.0 the envelope cap rose from 65,536 to 196,608 bytes (`message-size.md`). The
 order: the relay flag first (the relay operator's deploy, `--max-envelope-bytes 196608`), then the readers (every

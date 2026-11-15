@@ -1,17 +1,30 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import {
+  type CallToolResult,
+  ElicitRequestSchema,
+  type ElicitResult,
+} from '@modelcontextprotocol/sdk/types.js'
 import { GuardRefused } from '@usebag/edge'
-import { connectCodeOf, type EnterprisePorts } from '@usebag/enterprise-client'
+import { connectCodeOf, type EnterprisePorts, readSession } from '@usebag/enterprise-client'
 import { FakeInstance } from '@usebag/enterprise-client/testing'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { TOOL_NAMES } from '../src/tools.ts'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { parseConfig } from '../src/config.ts'
+import { startServer } from '../src/server.ts'
+import { ACT_QUESTIONS, TOOL_NAMES } from '../src/tools.ts'
 import {
   FakeClock,
+  fakeRecords,
   ManualTimers,
+  MemoryLog,
   type Outcome,
   P,
   publishAddress,
+  RELAY,
   saveKeys,
+  seededRng,
   type TestServer,
   tempDir,
   testServer,
@@ -19,7 +32,26 @@ import {
 } from './support/fixtures.ts'
 import { MemoryRelay } from './support/relay.ts'
 
-// The enterprise tools of the identity server (connect, sign_in and enterprise_status) through an SDK client against
+// The enterprise client as it is, with two seams for sign_out's refusal test: readSession can be made to throw while
+// signOut, counted, would still find the session and revoke. Off (the default), both are the real functions.
+const seam = vi.hoisted(() => ({ throwRead: false, signOutCalls: 0 }))
+vi.mock('@usebag/enterprise-client', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@usebag/enterprise-client')>()
+  return {
+    ...real,
+    readSession: (...a: Parameters<typeof real.readSession>) => {
+      if (seam.throwRead)
+        throw Object.assign(new Error('the session file could not be read'), { code: 'internal' })
+      return real.readSession(...a)
+    },
+    signOut: (...a: Parameters<typeof real.signOut>) => {
+      seam.signOutCalls++
+      return real.signOut(...a)
+    },
+  }
+})
+
+// The enterprise tools of the identity server (connect, sign_in, sign_out and enterprise_status) through an SDK client against
 // the enterprise client's recorded fake instance: listed beside the eleven, the library's flow at the server's home,
 // {exit, lines} as text and structured content, a tool error where the standalone server answers one, and no secret
 // in any result or log line (the code, its secret part, the device code, the token, a key seed).
@@ -124,12 +156,13 @@ function shown(out: Outcome): { isError: boolean; exit: unknown; lines: string[]
 const ARGS = { domain: DOMAIN, instance: 'https://ent.example.test' }
 
 describe('the enterprise tools of the identity server', () => {
-  it('lists connect, sign_in and enterprise_status beside the thirteen: the full set, with their shapes', async () => {
+  it('lists connect, sign_in, sign_out and enterprise_status beside the twenty-four others: the full set, with their shapes', async () => {
     const w = await setup()
     const { tools } = await w.server.client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort())
-    expect(TOOL_NAMES).toHaveLength(16)
+    expect(TOOL_NAMES).toHaveLength(28)
     const tool = (name: string) => tools.find((t) => t.name === name)
+    expect(Object.keys(tool('sign_out')?.inputSchema.properties ?? {})).toEqual(['org'])
     expect(tool('connect')?.inputSchema.required).toEqual(['code'])
     expect(tool('sign_in')?.inputSchema.required).toEqual(['domain', 'instance'])
     expect(Object.keys(tool('enterprise_status')?.inputSchema.properties ?? {})).toEqual(['org'])
@@ -282,5 +315,156 @@ describe('the enterprise tools of the identity server', () => {
     expect(connect.lines.at(-1)).toMatch(/^resolve-failed: /)
     expect(w.fake.calls).toEqual([])
     clean(w)
+  })
+})
+
+/**
+ * alice's server as setup makes it, with a client that shows dialogs: each is recorded and answered by `answer`, after a
+ * person's pause (a decline faster than one is no answer). The calls go through `w.call` as in setup.
+ */
+async function setupAsking(answer: () => ElicitResult) {
+  const fake = new FakeInstance({ domain: DOMAIN, now: () => clock.now() })
+  const code = connectCodeOf({ instance: fake.origin, domain: DOMAIN }, SECRET)
+  fake.consoleCodes.add(code)
+  const home = join(tmp.dir, 'alice')
+  saveKeys(home, P.alice)
+  await publishAddress(relay, P.alice)
+  const config = parseConfig(['--as', 'alice', '--dir', home, '--relay', RELAY], {})
+  if (config === 'help') throw new Error('help')
+  const log = new MemoryLog()
+  const running = await startServer(config, {
+    clock,
+    rng: seededRng('alice'),
+    relay,
+    records: fakeRecords(new Map()),
+    timers,
+    pid: 4242,
+    alive: () => false,
+    log,
+    resubscribeDelayMs: () => 0,
+    enterprise: {
+      fetch: fake.fetch,
+      net: {
+        txt: async () => [],
+        get: async () => ({ status: 404, body: null }),
+        guard: { connectTo: async () => '192.0.2.10' },
+      },
+      sleep: async () => {},
+      relays: new MemoryRelay(),
+    },
+  })
+  const [a, b] = InMemoryTransport.createLinkedPair()
+  await running.mcp.connect(b)
+  const client = new Client({ name: 'asking', version: '0' }, { capabilities: { elicitation: { form: {} } } })
+  const dialogs: { title: string; message: string }[] = []
+  client.setRequestHandler(ElicitRequestSchema, async (request) => {
+    const params = request.params as {
+      message: string
+      requestedSchema?: { properties?: Record<string, { title?: string }> }
+    }
+    const props: Record<string, { title?: string }> = params.requestedSchema?.properties ?? {}
+    dialogs.push({ title: props.confirm?.title ?? '', message: params.message })
+    await new Promise((r) => setTimeout(r, 300))
+    return answer()
+  })
+  await client.connect(a)
+  open.push({
+    close: async () => {
+      await client.close()
+      await running.stop()
+    },
+  } as TestServer)
+  const said: string[] = []
+  const call = async (tool: string, args: Record<string, unknown> = {}): Promise<Outcome> => {
+    const result = (await client.callTool({ name: tool, arguments: args })) as CallToolResult
+    const text = (result.content[0] as { text: string }).text
+    said.push(text, JSON.stringify(result.structuredContent))
+    return { isError: result.isError === true, value: JSON.parse(text) as Record<string, unknown>, result }
+  }
+  return { fake, code, home, call, said, dialogs, log }
+}
+
+describe('sign_out through the identity server: a revoke for good, asked first', () => {
+  it('with no session answers signed-out with no error and asks nothing', async () => {
+    const w = await setupAsking(() => ({ action: 'accept', content: { confirm: true } }))
+    const none = shown(await w.call('sign_out'))
+    expect(none.isError).toBe(false)
+    expect(none.lines.at(-1)).toMatch(/^signed-out: /)
+    expect(w.dialogs).toEqual([])
+  })
+
+  it('a No or no answer leaves the session and sends nothing to /agent/sign-out; the Yes revokes; no token in any result', async () => {
+    let reply: ElicitResult = { action: 'accept', content: { confirm: false } }
+    const w = await setupAsking(() => reply)
+    expect(shown(await w.call('connect', { code: w.code })).isError).toBe(false)
+    const token = w.fake.row().token
+    const no = shown(await w.call('sign_out'))
+    expect([no.isError, no.lines[0]?.split(':')[0]]).toEqual([true, 'declined'])
+    expect(w.dialogs.at(-1)).toEqual(ACT_QUESTIONS.signOut('alice', DOMAIN))
+    reply = { action: 'cancel' }
+    const none = shown(await w.call('sign_out', { org: DOMAIN }))
+    expect([none.isError, none.lines[0]?.split(':')[0]]).toEqual([true, 'cancelled'])
+    expect(w.fake.calls.some((c) => c.path === '/agent/sign-out')).toBe(false)
+    expect(readSession(w.home)).not.toBeNull()
+    reply = { action: 'accept', content: { confirm: true } }
+    const out = shown(await w.call('sign_out', { org: DOMAIN }))
+    expect([out.isError, out.exit]).toEqual([false, 0])
+    expect(out.lines.at(-1)).toMatch(
+      /^signed-out acme\.example: ed25519:[0-9a-f]{64} is revoked for good; the identity .+ stays$/,
+    )
+    expect(w.fake.calls.some((c) => c.path === '/agent/sign-out')).toBe(true)
+    expect(readSession(w.home)).toBeNull()
+    expect(shown(await w.call('enterprise_status')).lines.at(-1)).toMatch(/^signed-out: /)
+    for (const text of w.said) expect(text).not.toContain(token)
+    expect(JSON.stringify(w.log.lines)).not.toContain(token)
+  })
+
+  it('a host with no dialog refuses no-elicitation and sends nothing', async () => {
+    const w = await setup()
+    expect(shown(await w.call('connect', { code: w.code })).isError).toBe(false)
+    const out = shown(await w.call('sign_out'))
+    expect([out.isError, out.lines[0]?.split(':')[0]]).toEqual([true, 'no-elicitation'])
+    expect(w.fake.calls.some((c) => c.path === '/agent/sign-out')).toBe(false)
+    expect(readSession(w.home)).not.toBeNull()
+  })
+
+  it('a session file that cannot be read is a refusal: nothing asked, nothing sent to /agent/sign-out, the file kept', async () => {
+    const w = await setupAsking(() => ({ action: 'accept', content: { confirm: true } }))
+    expect(shown(await w.call('connect', { code: w.code })).isError).toBe(false)
+    const file = join(w.home, 'orgs', DOMAIN, 'enterprise', 'session.json')
+    writeFileSync(file, '{', { mode: 0o600 })
+    for (const args of [{}, { org: DOMAIN }]) {
+      const out = shown(await w.call('sign_out', args))
+      expect(out.isError).toBe(true)
+      expect(w.dialogs).toEqual([])
+      expect(w.fake.calls.some((c) => c.path === '/agent/sign-out')).toBe(false)
+      expect(existsSync(file)).toBe(true)
+    }
+  })
+
+  it('readSession throwing while signOut would still revoke: the refusal, signOut never called, no dialog', async () => {
+    const w = await setupAsking(() => ({ action: 'accept', content: { confirm: true } }))
+    expect(shown(await w.call('connect', { code: w.code })).isError).toBe(false)
+    seam.signOutCalls = 0
+    seam.throwRead = true
+    try {
+      const out = shown(await w.call('sign_out'))
+      expect([out.isError, out.lines[0]]).toEqual([true, 'internal: the session file could not be read'])
+    } finally {
+      seam.throwRead = false
+    }
+    expect(seam.signOutCalls).toBe(0)
+    expect(w.dialogs).toEqual([])
+    expect(w.fake.calls.some((c) => c.path === '/agent/sign-out')).toBe(false)
+    expect(readSession(w.home)).not.toBeNull()
+  })
+
+  it('T18 moved from the standalone server: an unknown org answers signed-out, with nothing asked', async () => {
+    const w = await setupAsking(() => ({ action: 'accept', content: { confirm: true } }))
+    expect(shown(await w.call('connect', { code: w.code })).isError).toBe(false)
+    const unknown = shown(await w.call('sign_out', { org: 'other.example' }))
+    expect(unknown.lines.at(-1)).toMatch(/^signed-out: other\.example is not signed in/)
+    expect(w.dialogs).toEqual([])
+    expect(readSession(w.home)).not.toBeNull()
   })
 })

@@ -22,7 +22,9 @@ describe('e2e scenario 45: inbox --watch runs --exec once per accepted message a
     const w = await world('s45')
     const home = join(w.dir, 'cli-home')
     const dir = ['--dir', home]
-    const made = await Promise.all(['alice', 'bob', 'carol'].map((name) => cli('keygen', name, ...dir)))
+    const made = await Promise.all(
+      ['alice', 'bob', 'carol'].map((name) => cli('keygen', '--new', name, ...dir)),
+    )
     for (const m of made) expect([m.code, m.err]).toEqual([0, []])
     const [alice, bob, carol] = made.map((m) => m.out[0] as string) as [string, string, string]
 

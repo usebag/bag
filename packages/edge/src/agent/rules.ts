@@ -20,11 +20,23 @@ import { AgentError, DEVICE_MAX, MIN_CAVEATS, WINDOW_MAX } from './model.ts'
 /** A hop before its signature: the form the agent checks before it signs. */
 export type UnsignedHop = Omit<Hop, 'sig'>
 
-/** What `ac grant` asks for. */
+/** What `ac grant` asks for; `note`, from the requester, is printed above the hop and never signed. */
 export interface GrantRequest {
   readonly session: string
   readonly caveats: readonly string[]
   readonly exp: number
+  readonly note?: string
+}
+
+/** The longest note a grant request may carry, in UTF-16 units. */
+export const NOTE_MAX = 240
+
+/** A grant request's note: absent, or a string of 1 to NOTE_MAX units (`bad-shape` else). */
+export function checkNote(note: unknown): string | undefined {
+  if (note === undefined) return undefined
+  if (typeof note !== 'string' || note.length < 1 || note.length > NOTE_MAX)
+    throw new AcError('bad-shape', `a grant's note is a string of 1 to ${NOTE_MAX} characters`)
+  return note
 }
 
 /** What `ac device grant` asks for: D's key, the caveats (none allowed) and `exp`. */
@@ -162,10 +174,21 @@ const escapeChar = (ch: string): string =>
     .map((u) => `\\u${u.charCodeAt(0).toString(16).padStart(4, '0')}`)
     .join('')
 
-/** The lines printed before the `y`: the subject, its caveats (or `unrestricted`) and its `exp`. */
-export function grantLines(hop: UnsignedHop, kind: 'grant' | 'device grant' = 'grant'): readonly string[] {
-  const shown = hop.caveats.map((c) => JSON.stringify(c).replace(UNPRINTABLE, escapeChar))
+/** A caveat or a note as printed: JSON text, every unprintable unit escaped. */
+const printed = (s: string): string => JSON.stringify(s).replace(UNPRINTABLE, escapeChar)
+
+/**
+ * The lines printed before the `y`: the requester's note when it sent one (escaped as a caveat is, so it cannot redraw
+ * or pass for the hop), the subject, its caveats (or `unrestricted`) and its `exp`.
+ */
+export function grantLines(
+  hop: UnsignedHop,
+  kind: 'grant' | 'device grant' = 'grant',
+  note?: string,
+): readonly string[] {
+  const shown = hop.caveats.map(printed)
   return [
+    ...(note === undefined ? [] : [`note from the requester: ${printed(note)}`]),
     `${kind} to ${kind === 'grant' ? 'session ' : ''}${hop.sub}`,
     `caveats ${shown.length > 0 ? shown.join(' ') : 'unrestricted'}`,
     `until ${hop.exp} (${new Date(hop.exp * 1000).toISOString()})`,

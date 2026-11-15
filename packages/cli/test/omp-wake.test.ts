@@ -14,18 +14,16 @@ import { createServer, type Server } from 'node:net'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { SqliteStore } from '@usebag/edge'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import bagWake, {
   type Arrival,
+  ASK_WIDGET,
   arrivals,
   awayText,
   boundIn,
   CHANNEL_MS,
-  CONSENT_POLL_MS,
   CONSENT_STATUS,
-  ConsentLoop,
   type ConsentUi,
-  consentFiles,
   consentLink,
   holderOf,
   IDLE_MS,
@@ -35,16 +33,19 @@ import bagWake, {
   mtimeOf,
   namesOf,
   OMP_FAST_MS,
+  OMP_MCP_DEFAULT_MS,
+  ompCallMs,
   ompConfirm,
+  ompInput,
   PENDING_TEXT,
   POLL_MS,
+  RELINK_MAX_MS,
   RELINK_MS,
   RING_POLL_MS,
   type RingDoc,
   RingLoop,
   type RingSeen,
   refusal,
-  requestOf,
   ringIn,
   SETTLE_MS,
   seenIn,
@@ -493,393 +494,6 @@ describe('the extension factory', () => {
   })
 })
 
-describe('the consent bridge (decision 83h)', () => {
-  const ID = 'aaaaaaaaaaaaaaaa'
-  const T = Date.parse('2026-11-11T15:40:00Z')
-  const request = (o: Record<string, unknown> = {}) =>
-    JSON.stringify({
-      v: 1,
-      id: ID,
-      kind: 'pair-accept',
-      peer: { name: 'bob', address: 'ed25519:bb', root: 'ed25519:bb' },
-      code: '123456',
-      relay: 'https://relay.test',
-      asked_at: new Date(T).toISOString(),
-      expires_at: new Date(T + 120_000).toISOString(),
-      ...o,
-    })
-
-  /** A fake ui recording every call, answering confirm and input from queues. */
-  function fakeUi(confirms: boolean[] = [], inputs: (string | undefined)[] = []) {
-    const calls: unknown[][] = []
-    const status: (string | undefined)[] = []
-    const widgets: (string[] | undefined)[] = []
-    const ui: ConsentUi = {
-      confirm: async (title, message, options) => {
-        calls.push(['confirm', title, message, options?.initialIndex, options?.signal instanceof AbortSignal])
-        return confirms.shift() ?? false
-      },
-      input: async (title, placeholder) => {
-        calls.push(['input', title, placeholder])
-        return inputs.shift()
-      },
-      setStatus: (key, text) => {
-        if (key === CONSENT_STATUS) status.push(text)
-      },
-      setWidget: (key, content) => {
-        if (key === CONSENT_STATUS) widgets.push(content)
-      },
-    }
-    return { ui, calls, status, widgets }
-  }
-
-  function loop(text: string | null, ui: ConsentUi, now = () => T) {
-    const answers: [string, boolean, string | null][] = []
-    const dropped: string[] = []
-    const l = new ConsentLoop({
-      name: 'alice',
-      ui,
-      ids: () => (text === null ? [] : [ID]),
-      read: () => text,
-      answer: (id, accepted, code) => answers.push([id, accepted, code]),
-      drop: (id) => dropped.push(id),
-      now,
-    })
-    return { l, answers, dropped }
-  }
-
-  it('pair-accept with check digits: the confirm shows them, Yes answers accepted with no code, the status clears', async () => {
-    const f = fakeUi([true])
-    const { l, answers } = loop(request(), f.ui)
-    await l.look()
-    expect(f.calls).toEqual([
-      [
-        'confirm',
-        'bag: bob asks to pair as alice',
-        'check digits 123 456: do they match what bob reads? accept?',
-        1,
-        true,
-      ],
-    ])
-    expect(answers).toEqual([[ID, true, null]])
-    expect(f.status).toEqual([PENDING_TEXT, undefined])
-  })
-
-  it('pair-accept answered No is accepted false; a request is asked once', async () => {
-    const f = fakeUi([false, true])
-    const { l, answers } = loop(request(), f.ui)
-    await l.look()
-    await l.look()
-    expect(answers).toEqual([[ID, false, null]])
-    expect(f.calls.length).toBe(1)
-  })
-
-  it('pair-accept with no code asks for the six digits after Yes; anything but six digits is a refusal', async () => {
-    const f = fakeUi([true], ['654 321'])
-    const ok = loop(
-      request({ code: null, peer: { name: null, address: 'ed25519:cc', root: 'ed25519:cc' } }),
-      f.ui,
-    )
-    await ok.l.look()
-    expect(f.calls[0]?.slice(0, 3)).toEqual(['confirm', 'bag: ed25519:cc asks to pair as alice', 'accept?'])
-    expect(f.calls[1]).toEqual(['input', 'bag: the six digits ed25519:cc reads to you', '123 456'])
-    expect(ok.answers).toEqual([[ID, true, '654321']])
-    const g = fakeUi([true], ['12 34'])
-    const bad = loop(request({ code: null }), g.ui)
-    await bad.l.look()
-    expect(bad.answers).toEqual([[ID, false, null]])
-  })
-
-  it("the inviter's side (code null): No asks for no digits, and a cancelled digits input is a refusal", async () => {
-    const acceptor = { name: 'carol', address: 'ed25519:cc', root: 'ed25519:cc' }
-    const no = fakeUi([false])
-    const refused = loop(request({ code: null, peer: acceptor }), no.ui)
-    await refused.l.look()
-    expect(no.calls.map((c) => c[0])).toEqual(['confirm'])
-    expect(refused.answers).toEqual([[ID, false, null]])
-    const gone = fakeUi([true], [undefined])
-    const cancelled = loop(request({ code: null, peer: acceptor }), gone.ui)
-    await cancelled.l.look()
-    expect(gone.calls.map((c) => c.slice(0, 2))).toEqual([
-      ['confirm', 'bag: carol asks to pair as alice'],
-      ['input', 'bag: the six digits carol reads to you'],
-      ['input', 'bag: the six digits carol reads to you'],
-    ])
-    expect(cancelled.answers).toEqual([[ID, false, null]])
-  })
-
-  it('pair-accept-code asks the person to paste the invite and returns it trimmed; empty, too long (over 512) or cancelled refuses', async () => {
-    const paste = (inputs: (string | undefined)[]) => {
-      const f = fakeUi([], inputs)
-      return { f, x: loop(request({ kind: 'pair-accept-code', peer: null, code: null }), f.ui) }
-    }
-    const long = paste(['a'.repeat(512)])
-    await long.x.l.look()
-    expect(long.x.answers).toEqual([[ID, true, 'a'.repeat(512)]])
-    const ok = paste(['  ac-peer1:abcDEF_123  '])
-    await ok.x.l.look()
-    expect(ok.f.calls).toEqual([
-      ['input', 'bag: paste the invite or code you received to pair as alice', 'invite or code'],
-    ])
-    expect(ok.x.answers).toEqual([[ID, true, 'ac-peer1:abcDEF_123']])
-    expect(ok.f.status).toEqual([PENDING_TEXT, undefined])
-    for (const typed of ['   ', undefined, 'x'.repeat(513)]) {
-      const no = paste([typed])
-      await no.x.l.look()
-      expect(no.x.answers).toEqual([[ID, false, null]])
-    }
-    const old = loop(
-      request({
-        kind: 'pair-accept-code',
-        peer: null,
-        code: null,
-        expires_at: new Date(T - 1).toISOString(),
-      }),
-      fakeUi().ui,
-    )
-    await old.l.look()
-    expect([old.dropped, old.answers]).toEqual([[ID], []])
-    expect(requestOf(request({ kind: 'pair-accept-code', peer: null, code: '123456' }), ID)).toBeNull()
-    expect(requestOf(request({ kind: 'pair-accept', peer: null }), ID)).toBeNull()
-  })
-
-  it('every confirm opens on No with an expiry signal; a wrong or empty input is asked once more, then refused', async () => {
-    const f = fakeUi([true], ['', '654 321'])
-    const again = loop(request({ code: null }), f.ui)
-    await again.l.look()
-    expect(f.calls.map((c) => c[0])).toEqual(['confirm', 'input', 'input'])
-    expect(f.calls[0]?.slice(3)).toEqual([1, true])
-    expect(again.answers).toEqual([[ID, true, '654321']])
-    const g = fakeUi([true], ['12', 'x'])
-    const twice = loop(request({ code: null }), g.ui)
-    await twice.l.look()
-    expect(g.calls.map((c) => c[0])).toEqual(['confirm', 'input', 'input'])
-    expect(twice.answers).toEqual([[ID, false, null]])
-  })
-
-  it('a pair-accept shows what is asked in a widget before the confirm, and clears it after', async () => {
-    const f = fakeUi([false])
-    const order: string[] = []
-    const confirm = f.ui.confirm
-    f.ui.confirm = async (...a) => {
-      order.push(`confirm with widget ${JSON.stringify(f.widgets.at(-1)?.[0] ?? null)}`)
-      return confirm(...a)
-    }
-    const { l } = loop(request(), f.ui)
-    await l.look()
-    expect(order).toEqual(['confirm with widget "bag: bob (ed25519:bb) asks to pair as alice"'])
-    expect(f.widgets.at(-1)).toBeUndefined()
-  })
-
-  it('pair-invite-show shows the word code as the server sends it, asks that it was given, and clears the widget', async () => {
-    const f = fakeUi([true])
-    const { l, answers } = loop(
-      request({ kind: 'pair-invite-show', peer: null, code: '760-dimly-straw-cough' }),
-      f.ui,
-    )
-    await l.look()
-    expect(f.widgets[0]?.[0]).toBe('bag: your invite code: 760-dimly-straw-cough')
-    expect(f.widgets.at(-1)).toBeUndefined()
-    expect(f.calls[0]?.slice(0, 3)).toEqual([
-      'confirm',
-      'bag: your invite code is shown above',
-      'was it given to your peer?',
-    ])
-    expect(answers).toEqual([[ID, true, null]])
-  })
-
-  it('pair-accept check digits as the edge prints them, 227 500, are read as six digits', async () => {
-    const r = requestOf(request({ code: '227 500' }), ID)
-    expect(r?.code).toBe('227500')
-    const f = fakeUi([true])
-    const { l } = loop(request({ code: '227 500' }), f.ui)
-    await l.look()
-    expect(f.calls[0]?.[2]).toBe('check digits 227 500: do they match what bob reads? accept?')
-    expect(requestOf(request({ code: '22 75 00 1' }), ID)).toBeNull()
-  })
-
-  it('a request the server withdraws while its dialog is open closes the dialog and is not answered', async () => {
-    let present = true
-    const answers: unknown[] = []
-    let aborted = false
-    let l: ConsentLoop | null = null
-    const ui: ConsentUi = {
-      confirm: (_t, _m, options) =>
-        new Promise((resolve) => {
-          options?.signal?.addEventListener('abort', () => {
-            aborted = true
-            resolve(false)
-          })
-          present = false
-          void l?.look()
-        }),
-      input: async () => undefined,
-      setStatus: () => undefined,
-      setWidget: () => undefined,
-    }
-    l = new ConsentLoop({
-      name: 'alice',
-      ui,
-      ids: () => (present ? [ID] : []),
-      read: () => request(),
-      answer: (...a) => answers.push(a),
-      drop: () => undefined,
-      now: () => T,
-    })
-    await l.look()
-    expect([aborted, answers]).toEqual([true, []])
-  })
-
-  it('an expired request is dropped unasked; a malformed one or one naming another id is ignored', async () => {
-    const f = fakeUi([true])
-    const old = loop(request({ expires_at: new Date(T - 1).toISOString() }), f.ui)
-    await old.l.look()
-    expect([old.dropped, old.answers, f.calls]).toEqual([[ID], [], []])
-    for (const text of [
-      'not json',
-      request({ id: 'bbbbbbbbbbbbbbbb' }),
-      request({ kind: 'other' }),
-      request({ v: 2 }),
-    ]) {
-      const x = loop(text, f.ui)
-      await x.l.look()
-      expect([x.dropped, x.answers]).toEqual([[], []])
-    }
-    expect(f.calls).toEqual([])
-    expect(requestOf(request(), ID)?.peer?.name).toBe('bob')
-  })
-
-  it('an answer given after the request expired is not written', async () => {
-    let t = T
-    const f = fakeUi()
-    f.ui.confirm = async () => {
-      t = T + 121_000
-      return true
-    }
-    const { l, answers } = loop(request(), f.ui, () => t)
-    await l.look()
-    expect(answers).toEqual([])
-  })
-
-  it('consentFiles lists only request ids, writes the answer 0600 whole, and drops a request with its answer', () => {
-    const dir = join(tmp.dir, `c${n++}`)
-    mkdirSync(dir)
-    for (const f of [`${ID}.json`, `${ID}.answer.json`, '.bridge', 'x.json', `${ID}.json.1.tmp`])
-      writeFileSync(join(dir, f), '{}')
-    const files = consentFiles(dir, () => T)
-    expect(files.ids()).toEqual([ID])
-    files.answer(ID, true, null)
-    const answer = join(dir, `${ID}.answer.json`)
-    expect(JSON.parse(readFileSync(answer, 'utf8'))).toEqual({
-      v: 1,
-      id: ID,
-      accepted: true,
-      code: null,
-      answered_at: new Date(T).toISOString(),
-    })
-    expect(statSync(answer).mode & 0o777).toBe(0o600)
-    files.drop(ID)
-    expect([existsSync(join(dir, `${ID}.json`)), existsSync(answer)]).toEqual([false, false])
-  })
-
-  it('the factory writes .bridge for a tui session with a ui, answers a request through it, and removes .bridge at the end', async () => {
-    const home = join(tmp.dir, `h${n++}`)
-    const cwd = join(tmp.dir, `p${n++}`)
-    mkdirSync(join(cwd, '.omp'), { recursive: true })
-    writeFileSync(
-      join(cwd, '.omp', 'mcp.json'),
-      JSON.stringify({ mcpServers: { bag: { args: ['m', '--as', 'bob', '--dir', home] } } }),
-    )
-    const dir = join(home, 'state', 'bob', 'consent')
-    const f = fakeUi([true])
-    const intervals: { fn: () => void; ms: number }[] = []
-    const handlers = new Map<string, (e: unknown, ctx: unknown) => void>()
-    const ctx = {
-      cwd,
-      mode: 'tui',
-      hasUI: true,
-      ui: f.ui,
-      agent: { kind: 'main' },
-      isIdle: () => true,
-      setTimeout: () => undefined,
-      setInterval: (fn: () => void, ms: number) => intervals.push({ fn, ms }),
-    }
-    bagWake({
-      on: (e: string, h: (e: unknown, ctx: unknown) => void) => handlers.set(e, h),
-      sendMessage: () => undefined,
-    } as never)
-    handlers.get('session_start')?.({}, ctx)
-    const bridge = JSON.parse(readFileSync(join(dir, '.bridge'), 'utf8'))
-    expect([bridge.v, bridge.pid, bridge.host, bridge.mode]).toEqual([1, process.pid, 'omp', 'tui'])
-    // The local pair's dialog goes over the consent link, never a file: the .bridge lists no kinds.
-    expect(bridge.kinds).toBeUndefined()
-    expect(statSync(join(dir, '.bridge')).mode & 0o777).toBe(0o600)
-    const soon = new Date(Date.now() + 60_000).toISOString()
-    writeFileSync(join(dir, `${ID}.json`), request({ expires_at: soon }), { mode: 0o600 })
-    const answer = join(dir, `${ID}.answer.json`)
-    for (let i = 0; i < 150 && !existsSync(answer); i++) await new Promise((r) => setTimeout(r, 20))
-    // A slow fs event under load: the 2 s poll, run here, looks the same way.
-    if (!existsSync(answer)) for (const t of intervals.filter((t) => t.ms === CONSENT_POLL_MS)) t.fn()
-    for (let i = 0; i < 150 && !existsSync(answer); i++) await new Promise((r) => setTimeout(r, 20))
-    expect(JSON.parse(readFileSync(answer, 'utf8')).accepted).toBe(true)
-    handlers.get('session_shutdown')?.({}, ctx)
-    expect(existsSync(join(dir, '.bridge'))).toBe(false)
-  }, 20_000)
-
-  it('an rpc session writes no bridge even with hasUI true (nothing may answer there)', () => {
-    const home = join(tmp.dir, `h${n++}`)
-    const cwd = join(tmp.dir, `p${n++}`)
-    mkdirSync(join(cwd, '.omp'), { recursive: true })
-    writeFileSync(
-      join(cwd, '.omp', 'mcp.json'),
-      JSON.stringify({ mcpServers: { bag: { args: ['m', '--as', 'bob', '--dir', home] } } }),
-    )
-    const handlers = new Map<string, (e: unknown, ctx: unknown) => void>()
-    const ctx = {
-      cwd,
-      mode: 'rpc',
-      hasUI: true,
-      ui: fakeUi().ui,
-      agent: { kind: 'main' },
-      isIdle: () => true,
-      setTimeout: () => undefined,
-      setInterval: () => undefined,
-    }
-    bagWake({
-      on: (e: string, h: (e: unknown, ctx: unknown) => void) => handlers.set(e, h),
-      sendMessage: () => undefined,
-    } as never)
-    handlers.get('session_start')?.({}, ctx)
-    expect(existsSync(join(home, 'state', 'bob', 'consent', '.bridge'))).toBe(false)
-  })
-
-  it('a session without a ui (print) writes no bridge', () => {
-    const home = join(tmp.dir, `h${n++}`)
-    const cwd = join(tmp.dir, `p${n++}`)
-    mkdirSync(join(cwd, '.omp'), { recursive: true })
-    writeFileSync(
-      join(cwd, '.omp', 'mcp.json'),
-      JSON.stringify({ mcpServers: { bag: { args: ['m', '--as', 'bob', '--dir', home] } } }),
-    )
-    const handlers = new Map<string, (e: unknown, ctx: unknown) => void>()
-    const ctx = {
-      cwd,
-      mode: 'tui',
-      hasUI: false,
-      agent: { kind: 'main' },
-      isIdle: () => true,
-      setTimeout: () => undefined,
-      setInterval: () => undefined,
-    }
-    bagWake({
-      on: (e: string, h: (e: unknown, ctx: unknown) => void) => handlers.set(e, h),
-      sendMessage: () => undefined,
-    } as never)
-    handlers.get('session_start')?.({}, ctx)
-    expect(existsSync(join(home, 'state', 'bob', 'consent', '.bridge'))).toBe(false)
-  })
-})
-
 describe('the loop guard', () => {
   const A = `ed25519:${'a'.repeat(64)}`
   const B = `ed25519:${'b'.repeat(64)}`
@@ -1160,58 +774,6 @@ describe('the service: channel, bridge and ring', () => {
     const t = Date.now()
     expect(await d.input('use omp-3')).toBeUndefined()
     expect(Date.now() - t).toBeLessThan(1000)
-  }, 20_000)
-
-  it('the bridge folder comes from the channel: .bridge is written there and a request is answered there', async () => {
-    const s0 = await shim(() => ({ bridge: null }))
-    const folder = join(s0.dir, 'c0nn.consent')
-    mkdirSync(folder, { mode: 0o700 })
-    const s = await shim(() => ({ bridge: folder }))
-    const o = session(project(s.home, 'bob'), true)
-    o.emit('session_start')
-    await until(() => existsSync(join(folder, '.bridge')))
-    expect(JSON.parse(readFileSync(join(folder, '.bridge'), 'utf8')).host).toBe('omp')
-    expect(s.got).toEqual([{ v: 1, kind: 'bridge', secret: s.secret }])
-    expect(existsSync(join(s.home, 'state', 'bob', 'consent'))).toBe(false)
-    const id = 'aaaaaaaaaaaaaaaa'
-    const expires = new Date(Date.now() + 60_000).toISOString()
-    writeFileSync(
-      join(folder, `${id}.json`),
-      JSON.stringify({
-        v: 1,
-        id,
-        kind: 'pair-invite-show',
-        peer: null,
-        code: '760-a-b-c',
-        relay: 'r',
-        asked_at: expires,
-        expires_at: expires,
-      }),
-    )
-    for (const t of o.timers.filter((t) => t.ms === CONSENT_POLL_MS)) t.fn()
-    await until(() => existsSync(join(folder, `${id}.answer.json`)))
-    expect(JSON.parse(readFileSync(join(folder, `${id}.answer.json`), 'utf8')).accepted).toBe(true)
-    o.emit('session_shutdown')
-    expect(existsSync(join(folder, '.bridge'))).toBe(false)
-  }, 20_000)
-
-  it('a null bridge is no bridge (not the identity folder), said once, and asked again at the next turn', async () => {
-    let folder: string | null = null
-    const s = await shim(() => ({ bridge: folder }))
-    const o = session(project(s.home, 'bob'), true)
-    const err = await stderr(async () => {
-      o.emit('session_start')
-      await until(() => s.got.length > 0)
-      await new Promise((r) => setTimeout(r, 50))
-    })
-    expect(err).toContain('no consent bridge for this session yet')
-    expect(existsSync(join(s.home, 'state', 'bob', 'consent', '.bridge'))).toBe(false)
-    folder = join(s.dir, 'c1.consent')
-    mkdirSync(folder, { mode: 0o700 })
-    o.emit('agent_end')
-    await until(() => existsSync(join(folder as string, '.bridge')))
-    expect(existsSync(join(folder, '.bridge'))).toBe(true)
-    o.emit('session_shutdown')
   }, 20_000)
 
   /** A home with this process's .bound (shim alive) and a ring file of the given members. */
@@ -1534,25 +1096,30 @@ describe('the consent link to the bag service (item 7, C2)', () => {
     await new Promise<void>((r) => server.listen(join(home, 'run', 'service.sock'), () => r()))
     const asked: string[] = []
     let dismissed = false
-    const l = consentLink(home, 4242, async (title, message, _ms, withdrawn) => {
-      asked.push(`${title} | ${message}`)
-      // W: a confirm left open until the service withdraws it.
-      if (title === 'W')
-        return new Promise((r) =>
-          withdrawn.addEventListener('abort', () => {
-            dismissed = true
-            r(null)
-          }),
-        )
-      return title === 'T' ? true : null
-    })
+    const l = consentLink(
+      home,
+      4242,
+      async (title, message, _ms, withdrawn) => {
+        asked.push(`${title} | ${message}`)
+        // W: a confirm left open until the service withdraws it.
+        if (title === 'W')
+          return new Promise((r) =>
+            withdrawn.addEventListener('abort', () => {
+              dismissed = true
+              r(null)
+            }),
+          )
+        return title === 'T' ? true : null
+      },
+      30_000,
+    )
     const until = async (f: () => boolean, ms = 3000) => {
       for (let i = 0; i < ms / 10 && !f(); i++) await new Promise((r) => setTimeout(r, 10))
     }
     const registers = () => got.filter((m) => m.method === 'service/consent-register').map((m) => m.params)
     await until(() => registers().length === 1)
     expect(got[0]?.params).toMatchObject({ token: 'ab'.repeat(32), host: 'omp' })
-    expect(registers()).toEqual([{ pid: 4242 }])
+    expect(registers()).toEqual([{ pid: 4242, kinds: ['confirm'], call_ms: 30_000 }])
     const ask = { method: 'service/consent-ask', params: { id: 'q1', title: 'T', message: 'M', ms: 1000 } }
     conns[0]?.write(`${JSON.stringify({ jsonrpc: '2.0', ...ask })}\n`)
     await until(() => got.some((m) => m.method === 'service/consent-answer'))
@@ -1581,11 +1148,440 @@ describe('the consent link to the bag service (item 7, C2)', () => {
     // The service restarts (the link's connection ends): it opens again and presents the secret, kept in memory only.
     conns[0]?.destroy()
     await until(() => registers().length === 2, RELINK_MS + 2000)
-    expect(registers()[1]).toEqual({ pid: 4242, secret: 'f'.repeat(64) })
+    expect(registers()[1]).toEqual({ pid: 4242, secret: 'f'.repeat(64), kinds: ['confirm'], call_ms: 30_000 })
     expect(readdirSync(join(home, 'run')).sort()).toEqual(['service.sock', 'service.token'])
     l.close()
     for (const c of conns) c.destroy()
     await new Promise<void>((r) => server.close(() => r()))
     rmSync(home, { recursive: true, force: true })
   }, 10_000)
+})
+
+describe('the link in 0.4.2: text, show and call_ms', () => {
+  /** A fake service on a unix socket: answers hello and register, and records every message. */
+  async function service() {
+    const home = join('/tmp', `bwl2-${process.pid}-${n++}`)
+    mkdirSync(join(home, 'run'), { recursive: true, mode: 0o700 })
+    writeFileSync(join(home, 'run', 'service.token'), 'ab'.repeat(32))
+    const got: Record<string, unknown>[] = []
+    const conns: import('node:net').Socket[] = []
+    const server: Server = createServer((c) => {
+      conns.push(c)
+      let buf = ''
+      c.on('data', (b: Buffer) => {
+        buf += b.toString()
+        for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+          const m = JSON.parse(buf.slice(0, i)) as Record<string, unknown>
+          buf = buf.slice(i + 1)
+          got.push(m)
+          if (m.id !== undefined && m.method !== 'service/consent-answer')
+            c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: {} })}\n`)
+        }
+      })
+    })
+    await new Promise<void>((r) => server.listen(join(home, 'run', 'service.sock'), () => r()))
+    const send = (method: string, params: Record<string, unknown>) =>
+      conns[0]?.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`)
+    const answers = () => got.filter((m) => m.method === 'service/consent-answer').map((m) => m.params)
+    const close = async () => {
+      for (const c of conns) c.destroy()
+      await new Promise<void>((r) => server.close(() => r()))
+      rmSync(home, { recursive: true, force: true })
+    }
+    return { home, got, conns, send, answers, close }
+  }
+  const until = async (f: () => boolean, ms = 3000) => {
+    for (let i = 0; i < ms / 10 && !f(); i++) await new Promise((r) => setTimeout(r, 10))
+  }
+
+  it('registers kinds and call_ms; a text ask answers its text, a show sets the widget and a withdraw clears it', async () => {
+    const svc = await service()
+    const widgets: (string[] | undefined)[] = []
+    const inputs: unknown[][] = []
+    let closedOpen = false
+    const l = consentLink(
+      svc.home,
+      4243,
+      {
+        confirm: async () => true,
+        input: async (title, placeholder, ms, withdrawn, message) => {
+          if (title === 'wait')
+            return new Promise((r) =>
+              withdrawn.addEventListener('abort', () => {
+                closedOpen = true
+                r(null)
+              }),
+            )
+          inputs.push([title, placeholder, ms, message])
+          return title === 'none' ? null : 'pasted-code'
+        },
+        show: (lines) => widgets.push(lines),
+      },
+      130_000,
+    )
+    await until(() => svc.got.some((m) => m.method === 'service/consent-register'))
+    expect(svc.got.find((m) => m.method === 'service/consent-register')?.params).toEqual({
+      pid: 4243,
+      kinds: ['confirm', 'text', 'show'],
+      call_ms: 130_000,
+    })
+    svc.send('service/consent-ask', {
+      id: 't1',
+      kind: 'text',
+      title: 'paste',
+      message: 'M',
+      ms: 120_000,
+      placeholder: 'invite or code',
+      max: 512,
+    })
+    await until(() => svc.answers().length === 1)
+    // The question's message reaches the extension, which shows it beside omp's input (a title only).
+    expect(inputs).toEqual([['paste', 'invite or code', 120_000, 'M']])
+    expect(svc.answers()[0]).toEqual({ id: 't1', accepted: true, text: 'pasted-code' })
+    svc.send('service/consent-ask', { id: 't2', kind: 'text', title: 'none', message: 'M', ms: 1000 })
+    await until(() => svc.answers().length === 2)
+    expect(svc.answers()[1]).toEqual({ id: 't2', accepted: null })
+    svc.send('service/consent-ask', {
+      id: 's1',
+      kind: 'show',
+      title: 'bag: pairing',
+      message: 'code',
+      lines: ['code 1', 'x'],
+      ms: 600_000,
+    })
+    await until(() => widgets.length === 1)
+    expect(widgets).toEqual([['code 1', 'x']])
+    // A withdraw for another id leaves the widget; the show's own withdraw clears it at once. A show is never answered.
+    svc.send('service/consent-withdraw', { id: 'other' })
+    svc.send('service/consent-withdraw', { id: 's1' })
+    await until(() => widgets.length === 2)
+    expect(widgets[1]).toBeUndefined()
+    // A closed link clears a widget too.
+    svc.send('service/consent-ask', {
+      id: 's2',
+      kind: 'show',
+      title: 'bag: pairing',
+      message: 'code',
+      lines: ['code 2'],
+      ms: 600_000,
+    })
+    await until(() => widgets.length === 3)
+    // A text field still open when the link closes is closed at once, and nothing is answered for it.
+    svc.send('service/consent-ask', { id: 't3', kind: 'text', title: 'wait', message: 'M', ms: 120_000 })
+    await new Promise((r) => setTimeout(r, 30))
+    svc.conns[0]?.destroy()
+    await until(() => widgets.length === 4 && closedOpen)
+    expect(widgets[3]).toBeUndefined()
+    expect(closedOpen).toBe(true)
+    expect(svc.answers().map((a) => (a as { id: string }).id)).toEqual(['t1', 't2'])
+    l.close()
+    await svc.close()
+  }, 10_000)
+
+  it('ompInput: a trimmed answer; empty or too long asked once more, then null; Esc, timeout, withdraw and too fast are null', async () => {
+    const seen: unknown[] = []
+    const ui = (answers: (string | undefined | 'wait')[]): Pick<ConsentUi, 'input'> => ({
+      input: (_t, _p, options) => {
+        seen.push(options?.timeout)
+        const a = answers.shift()
+        if (a !== 'wait') return Promise.resolve(a)
+        return new Promise((r) => options?.signal?.addEventListener('abort', () => r(undefined)))
+      },
+    })
+    let t = 0
+    const slow = () => (t += 1000)
+    expect(await ompInput(ui([' 472-tulip-orbit-cedar ']), 'T', 'p', 60_000, undefined, slow)).toBe(
+      '472-tulip-orbit-cedar',
+    )
+    expect(typeof seen[0]).toBe('number')
+    expect(await ompInput(ui(['', 'x'.repeat(513)]), 'T', 'p', 60_000, undefined, slow)).toBeNull()
+    expect(await ompInput(ui(['', 'ok']), 'T', 'p', 60_000, undefined, slow)).toBe('ok')
+    expect(await ompInput(ui([undefined]), 'T', 'p', 60_000, undefined, slow)).toBeNull()
+    // Answered faster than any person (a forced test build's input): no answer, never the code.
+    let f = 0
+    const fast = () => (f += OMP_FAST_MS / 10)
+    expect(await ompInput(ui(['472-tulip-orbit-cedar']), 'T', 'p', 60_000, undefined, fast)).toBeNull()
+    const withdrawn = new AbortController()
+    const asked = ompInput(ui(['wait']), 'T', 'p', 60_000, withdrawn.signal)
+    withdrawn.abort()
+    expect(await asked).toBeNull()
+    expect(await ompInput(ui(['wait']), 'T', 'p', 30)).toBeNull()
+  })
+
+  it('ompCallMs: OMP_MCP_TIMEOUT_MS first, then the user-level bag entry timeout, then omp default', () => {
+    const agent = join(tmp.dir, `agent${n++}`)
+    mkdirSync(agent, { recursive: true })
+    const env = { PI_CODING_AGENT_DIR: agent }
+    expect(ompCallMs(env)).toBe(OMP_MCP_DEFAULT_MS)
+    writeFileSync(join(agent, 'mcp.json'), JSON.stringify({ mcpServers: { bag: { timeout: 130000 } } }))
+    expect(ompCallMs(env)).toBe(130_000)
+    expect(ompCallMs({ ...env, OMP_MCP_TIMEOUT_MS: '30000' })).toBe(30_000)
+    expect(ompCallMs({ ...env, OMP_MCP_TIMEOUT_MS: '0' })).toBe(0)
+    expect(ompCallMs({ ...env, OMP_MCP_TIMEOUT_MS: 'soon' })).toBe(130_000)
+    writeFileSync(join(agent, 'mcp.json'), JSON.stringify({ mcpServers: { bag: { timeout: -1 } } }))
+    expect(ompCallMs(env)).toBe(OMP_MCP_DEFAULT_MS)
+  })
+})
+
+describe("a session's consent link: the question's words and the pending line", () => {
+  // An empty user-level omp folder: a shim entry an earlier test left there would send the link to another home.
+  const agentDir = process.env.PI_CODING_AGENT_DIR
+  beforeAll(() => {
+    process.env.PI_CODING_AGENT_DIR = join(tmp.dir, `omp-agent-empty-${n++}`)
+  })
+  afterAll(() => {
+    process.env.PI_CODING_AGENT_DIR = agentDir
+  })
+  /**
+   * A fake bag service on a unix socket (hello and register answered) and a fake omp in tui mode whose ui records
+   * every widget and status call. Each dialog settles only when the test says so, as a host slow to take a dismiss
+   * would; a title starting "prompt" settles at once when its signal aborts, as a prompt host does.
+   */
+  async function session() {
+    const home = join('/tmp', `bwl3-${process.pid}-${n++}`)
+    mkdirSync(join(home, 'run'), { recursive: true, mode: 0o700 })
+    writeFileSync(join(home, 'run', 'service.token'), 'ab'.repeat(32))
+    const conns: import('node:net').Socket[] = []
+    const server: Server = createServer((c) => {
+      conns.push(c)
+      let buf = ''
+      c.on('data', (b: Buffer) => {
+        buf += b.toString()
+        for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+          const m = JSON.parse(buf.slice(0, i)) as Record<string, unknown>
+          buf = buf.slice(i + 1)
+          if (m.id !== undefined && m.method !== 'service/consent-answer')
+            c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: {} })}\n`)
+        }
+      })
+    })
+    await new Promise<void>((r) => server.listen(join(home, 'run', 'service.sock'), () => r()))
+    const cwd = join(tmp.dir, `p${n++}`)
+    mkdirSync(join(cwd, '.omp'), { recursive: true })
+    writeFileSync(
+      join(cwd, '.omp', 'mcp.json'),
+      JSON.stringify({ mcpServers: { bag: { args: ['m', '--as', 'bob', '--dir', home] } } }),
+    )
+    const open = new Map<string, { signal: AbortSignal | undefined; settle: (v: never) => void }>()
+    const hold = <T>(title: string, signal: AbortSignal | undefined, aborted: T): Promise<T> =>
+      new Promise<T>((r) => {
+        open.set(title, { signal, settle: r as (v: never) => void })
+        if (title.startsWith('prompt')) signal?.addEventListener('abort', () => r(aborted))
+      })
+    const calls: [string, string, unknown][] = []
+    const ui = {
+      confirm: (title: string, _message: string, o?: { signal?: AbortSignal }) =>
+        hold(title, o?.signal, false),
+      input: (title: string, _placeholder?: string, o?: { signal?: AbortSignal }) =>
+        hold<string | undefined>(title, o?.signal, undefined),
+      setStatus: (key: string, text: string | undefined) => calls.push(['status', key, text]),
+      setWidget: (key: string, content: string[] | undefined) => calls.push(['widget', key, content]),
+      notify: () => {},
+    }
+    const ctx = {
+      cwd,
+      mode: 'tui',
+      hasUI: true,
+      ui,
+      agent: { kind: 'main' },
+      isIdle: () => true,
+      setTimeout: () => undefined,
+      setInterval: () => undefined,
+    }
+    const handlers = new Map<string, ((e: unknown, ctx: unknown) => void)[]>()
+    bagWake({
+      on: (event: string, h: (e: unknown, ctx: unknown) => void) =>
+        handlers.set(event, [...(handlers.get(event) ?? []), h]),
+      sendMessage: () => {},
+    } as never)
+    const emit = (event: string) => {
+      for (const h of handlers.get(event) ?? []) h({}, ctx)
+    }
+    const until = async (f: () => boolean, ms = 3000) => {
+      for (let i = 0; i < ms / 10 && !f(); i++) await new Promise((r) => setTimeout(r, 10))
+    }
+    const send = (conn: number, method: string, params: Record<string, unknown>) =>
+      conns[conn]?.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`)
+    const ask = async (conn: number, id: string, kind: string, title: string, message: string) => {
+      send(conn, 'service/consent-ask', { id, kind, title, message, ms: 60_000 })
+      await until(() => open.has(title))
+    }
+    const settle = async (title: string, v: unknown) => {
+      open.get(title)?.settle(v as never)
+      await new Promise((r) => setTimeout(r, 30))
+    }
+    const last = (kind: string, key: string) => calls.filter((c) => c[0] === kind && c[1] === key).at(-1)?.[2]
+    const words = () => last('widget', ASK_WIDGET)
+    const status = () => last('status', CONSENT_STATUS)
+    const close = async () => {
+      emit('session_shutdown')
+      for (const c of conns) c.destroy()
+      await new Promise<void>((r) => server.close(() => r()))
+      rmSync(home, { recursive: true, force: true })
+    }
+    return { conns, open, emit, until, send, ask, settle, words, status, close }
+  }
+
+  it('only the newest text question clears its words: a withdrawn one settling late, or a confirm, moves nothing; the count never starts again', async () => {
+    const s = await session()
+    s.emit('session_start')
+    await s.until(() => s.conns.length === 1)
+    await s.ask(0, 't1', 'text', 'q1', 'one\nwords')
+    expect([s.words(), s.status()]).toEqual([['one', 'words'], PENDING_TEXT])
+    // The service withdraws q1 and asks q2; this host is slow to dismiss q1.
+    s.send(0, 'service/consent-withdraw', { id: 't1' })
+    await s.ask(0, 't2', 'text', 'q2', 'two')
+    expect(s.words()).toEqual(['two'])
+    // A confirm counts no text question and touches no words.
+    await s.ask(0, 'c1', 'confirm', 'c1', 'sure?')
+    await s.settle('c1', true)
+    expect(s.words()).toEqual(['two'])
+    await s.settle('q1', undefined)
+    expect([s.words(), s.status()]).toEqual([['two'], PENDING_TEXT])
+    await s.settle('q2', undefined)
+    expect([s.words(), s.status()]).toEqual([undefined, undefined])
+    // A new session in the same process: its first question sets its words and clears them as the newest.
+    s.emit('session_shutdown')
+    s.emit('session_start')
+    await s.until(() => s.conns.length === 2)
+    await s.ask(1, 't3', 'text', 'q3', 'three')
+    expect([s.words(), s.status()]).toEqual([['three'], PENDING_TEXT])
+    await s.settle('q3', undefined)
+    expect([s.words(), s.status()]).toEqual([undefined, undefined])
+    await s.close()
+  }, 10_000)
+
+  it("a question still open when its session ends, settling after the next session's question opened, leaves that question's words and pending line", async () => {
+    const s = await session()
+    s.emit('session_start')
+    await s.until(() => s.conns.length === 1)
+    await s.ask(0, 't1', 'text', 'q1', 'old')
+    s.emit('session_shutdown')
+    // The link's close aborts the open input's signal and returns: the input has not settled yet.
+    expect(s.open.get('q1')?.signal?.aborted).toBe(true)
+    expect([s.words(), s.status()]).toEqual([['old'], PENDING_TEXT])
+    s.emit('session_start')
+    await s.until(() => s.conns.length === 2)
+    await s.ask(1, 't2', 'text', 'q2', 'new')
+    await s.settle('q1', undefined)
+    expect([s.words(), s.status()]).toEqual([['new'], PENDING_TEXT])
+    await s.settle('q2', undefined)
+    expect([s.words(), s.status()]).toEqual([undefined, undefined])
+    // A host that settles on the abort: still after close returns, and with no newer question its own words and
+    // pending line go, so none is left standing in the next session.
+    await s.ask(1, 't3', 'text', 'prompt-q3', 'gone')
+    s.emit('session_shutdown')
+    expect([s.words(), s.status()]).toEqual([['gone'], PENDING_TEXT])
+    s.emit('session_start')
+    await s.until(() => s.conns.length === 3)
+    await new Promise((r) => setTimeout(r, 30))
+    expect([s.words(), s.status()]).toEqual([undefined, undefined])
+    await s.close()
+  }, 10_000)
+})
+
+describe('the relink after a refused registration', () => {
+  it('a refused link is opened again after 2 s, then 4 s; a taken link resets the wait to 2 s', async () => {
+    expect(RELINK_MAX_MS).toBe(60_000)
+    const home = join('/tmp', `bwl3-${process.pid}-${n++}`)
+    mkdirSync(join(home, 'run'), { recursive: true, mode: 0o700 })
+    writeFileSync(join(home, 'run', 'service.token'), 'ab'.repeat(32))
+    /** When each registration came; the first two are refused and their connections closed, as the service does. */
+    const at: number[] = []
+    const conns: import('node:net').Socket[] = []
+    const server: Server = createServer((c) => {
+      conns.push(c)
+      let buf = ''
+      c.on('data', (b: Buffer) => {
+        buf += b.toString()
+        for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+          const m = JSON.parse(buf.slice(0, i)) as Record<string, unknown>
+          buf = buf.slice(i + 1)
+          if (m.method === 'service/hello')
+            c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { contract: 1 } })}\n`)
+          if (m.method !== 'service/consent-register') continue
+          at.push(Date.now())
+          if (at.length > 2) c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: {} })}\n`)
+          else {
+            const error = { code: -32000, message: 'not-authorized', data: { code: 'not-authorized' } }
+            c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, error })}\n`)
+            c.end()
+          }
+        }
+      })
+    })
+    await new Promise<void>((r) => server.listen(join(home, 'run', 'service.sock'), () => r()))
+    const l = consentLink(home, 4244, async () => null, 30_000)
+    const until = async (f: () => boolean, ms: number) => {
+      for (let i = 0; i < ms / 10 && !f(); i++) await new Promise((r) => setTimeout(r, 10))
+    }
+    await until(() => at.length === 3, 9000)
+    expect(at).toHaveLength(3)
+    const gap = (i: number) => (at[i] ?? 0) - (at[i - 1] ?? 0)
+    expect(gap(1)).toBeGreaterThanOrEqual(RELINK_MS - 100)
+    expect(gap(1)).toBeLessThan(2 * RELINK_MS - 100)
+    expect(gap(2)).toBeGreaterThanOrEqual(2 * RELINK_MS - 100)
+    // The third was taken: its link's end (a service restart) is opened again after RELINK_MS, not 8 s.
+    conns.at(-1)?.destroy()
+    await until(() => at.length === 4, 2 * RELINK_MS + 1000)
+    expect(gap(3)).toBeLessThan(2 * RELINK_MS)
+    l.close()
+    for (const c of conns) c.destroy()
+    await new Promise<void>((r) => server.close(() => r()))
+    rmSync(home, { recursive: true, force: true })
+  }, 20_000)
+
+  it('a registration refused busy is opened again after 2 s, whatever came before, and leaves the doubling where it was', async () => {
+    const home = join('/tmp', `bwl3-${process.pid}-${n++}`)
+    mkdirSync(join(home, 'run'), { recursive: true, mode: 0o700 })
+    writeFileSync(join(home, 'run', 'service.token'), 'ab'.repeat(32))
+    /** Refused not-authorized twice, then busy, then not-authorized again, then taken. */
+    const answers = ['not-authorized', 'not-authorized', 'busy', 'not-authorized']
+    const at: number[] = []
+    const conns: import('node:net').Socket[] = []
+    const server: Server = createServer((c) => {
+      conns.push(c)
+      let buf = ''
+      c.on('data', (b: Buffer) => {
+        buf += b.toString()
+        for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+          const m = JSON.parse(buf.slice(0, i)) as Record<string, unknown>
+          buf = buf.slice(i + 1)
+          if (m.method === 'service/hello')
+            c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { contract: 1 } })}\n`)
+          if (m.method !== 'service/consent-register') continue
+          const code = answers[at.length]
+          at.push(Date.now())
+          if (code === undefined) c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: {} })}\n`)
+          else {
+            const error = { code: -32000, message: code, data: { code } }
+            c.write(`${JSON.stringify({ jsonrpc: '2.0', id: m.id, error })}\n`)
+            c.end()
+          }
+        }
+      })
+    })
+    await new Promise<void>((r) => server.listen(join(home, 'run', 'service.sock'), () => r()))
+    const l = consentLink(home, 4245, async () => null, 30_000)
+    const until = async (f: () => boolean, ms: number) => {
+      for (let i = 0; i < ms / 10 && !f(); i++) await new Promise((r) => setTimeout(r, 10))
+    }
+    await until(() => at.length === 5, 22_000)
+    expect(at).toHaveLength(5)
+    const gap = (i: number) => (at[i] ?? 0) - (at[i - 1] ?? 0)
+    const near = (i: number, ms: number) => {
+      expect(gap(i)).toBeGreaterThanOrEqual(ms - 100)
+      expect(gap(i)).toBeLessThan(ms + RELINK_MS - 100)
+    }
+    // Two refusals: 2 s, then 4 s. A busy one after them: 2 s, not 8.
+    near(1, RELINK_MS)
+    near(2, 2 * RELINK_MS)
+    near(3, RELINK_MS)
+    // The third not-authorized in a row doubles from where the second left it: 8 s.
+    near(4, 4 * RELINK_MS)
+    l.close()
+    for (const c of conns) c.destroy()
+    await new Promise<void>((r) => server.close(() => r()))
+    rmSync(home, { recursive: true, force: true })
+  }, 30_000)
 })

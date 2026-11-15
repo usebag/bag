@@ -16,6 +16,7 @@ import type { Io } from '../io.ts'
 import { instant } from '../names.ts'
 import { runPath, serviceLine } from '../service.ts'
 import { deps, refresherJob } from './refresher.ts'
+import { statusHome } from './status-home.ts'
 
 /** The detail of the edge's end of a subscription (receiver.ts, run). */
 type Ended = { readonly relay: string; readonly refusals: number; readonly end: 'subscription-ended' }
@@ -46,6 +47,7 @@ function ended(line: AuditLine | undefined): Ended | null {
  * is read: the custody checks the name, and a stat finds the identity.
  */
 export function status(args: readonly string[], io: Io): number | Promise<number> {
+  if (args.includes('--home')) return statusHome(args, io)
   if (!args.some((a) => a === '--as' || a.startsWith('--as='))) return enterprise(args, io)
   const options = { as: { type: 'string' }, dir: { type: 'string' } } as const
   const p = parse(args, { positionals: [], options, required: ['as'] })

@@ -1,11 +1,11 @@
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { type CustodyTarget, defaultKeychain, generateEdgeKeys } from '@usebag/edge'
-import { CliError, type Parsed, parse, str, UsageError } from '../args.ts'
-import { homeCustody, homeDir, loadKeys } from '../home.ts'
+import { type CustodyTarget, defaultKeychain } from '@usebag/edge'
+import { createAgentPointer, createIdentity, refuseReserved, refuseSecond } from '@usebag/home'
+import { CliError, flag, type Parsed, parse, str, UsageError } from '../args.ts'
+import { homeDir } from '../home.ts'
+import { homeIo, viaHome } from '../home-io.ts'
 import type { Io } from '../io.ts'
-import { addToServiceHome, refuseReserved } from '../service-home.ts'
-import { readWord, visibleLine } from './local.ts'
+
+export { HOLDS_IDENTITIES, heldIdentities } from '@usebag/home'
 
 /** keygen's one stderr line: its identity has no second copy. */
 export const NO_RECOVERY = 'keygen: no recovery copy; for sessions and tests (people: ac init)'
@@ -56,13 +56,7 @@ function agentPointer(p: Parsed, io: Io, home: string, name: string): number {
   if (recovery !== undefined && !['personal', 'none'].includes(recovery)) {
     throw new UsageError(`--recovery is personal or none, not ${JSON.stringify(recovery)}`)
   }
-  const custody = homeCustody(io, home)
-  custody.holder(name)
-  const held = ['keys', 'keychain'].map((d) => join(home, d, `${name}.json`)).find(existsSync)
-  if (held !== undefined) throw new CliError('EEXIST', `${name} is held already, by ${held}`)
-  const keys = loadKeys(io, home, principal)
-  custody.agent.create(name, keys, recovery)
-  io.out(keys.signing.address)
+  viaHome(() => createAgentPointer(homeIo(io), home, name, principal, recovery))
   return 0
 }
 
@@ -80,6 +74,12 @@ function agentPointer(p: Parsed, io: Io, home: string, name: string): number {
  * is defaultCustody's: the keychain on macOS with a default keychain (one stderr line says so), else a key file; a
  * defaulted keychain that refuses (locked, no one at the dialog) says --custody file. A name either custody holds is
  * refused. Prints the address only, never key material.
+ *
+ * On a home that holds identities already (heldIdentities), a name it does not hold is refused (exists,
+ * HOLDS_IDENTITIES) unless --new is passed: one home serves every identity of a machine, so a second identity is the
+ * person's choice, said in the command. A fresh home is unchanged, a held name keeps its own refusal with or without
+ * --new, and --custody agent, a pointer to an identity the home holds and no new key, is not asked for --new (and
+ * takes it with no effect, so a script may pass --new to every keygen it runs).
  */
 export function keygen(args: readonly string[], io: Io): number {
   const p = parse(args, {
@@ -91,34 +91,35 @@ export function keygen(args: readonly string[], io: Io): number {
       principal: { type: 'string' },
       recovery: { type: 'string' },
       dir: { type: 'string' },
+      new: { type: 'boolean' },
     },
   })
   const [home, name] = [homeDir(io, str(p, 'dir')), p.positionals[0] as string]
   refuseReserved(name)
-  if (str(p, 'custody') === 'agent') return agentPointer(p, io, home, name)
+  if (str(p, 'custody') === 'agent') return agentPointer(p, io, home, name) // --new changes nothing here
+  refuseSecond(home, name, flag(p, 'new') === true)
   if (str(p, 'principal') !== undefined || str(p, 'recovery') !== undefined) {
     throw new UsageError('--principal and --recovery go with --custody agent')
   }
   const defaulted = str(p, 'custody') === undefined
   const into = target(p, defaulted ? defaultCustody(io) : 'file')
-  const keys = generateEdgeKeys(io.rng)
-  try {
-    homeCustody(io, home).create(name, keys, into)
-  } catch (e) {
+  // A defaulted keychain that refuses (locked, no one at the dialog) says how to run again with a key file.
+  const refused = (e: unknown): unknown => {
     const code = (e as { code?: unknown }).code
-    if (!defaulted || into.custody !== 'keychain' || (code !== 'EACCES' && code !== 'ETIMEDOUT')) throw e
+    if (!defaulted || into.custody !== 'keychain' || (code !== 'EACCES' && code !== 'ETIMEDOUT')) return e
     const hint = 'on a host no one watches, run keygen again with --custody file'
-    throw new CliError(code, `${(e as Error).message}; ${hint}`)
+    return new CliError(code, `${(e as Error).message}; ${hint}`)
   }
-  if (defaulted && into.custody === 'keychain')
-    io.err(`keygen: ${name} is kept in the macOS keychain (bag:${name})`)
-  if (io.isTty) io.err(NO_RECOVERY) // said to a person at a terminal; a script, or onboard's own keygen, is not one
-  // The bag service serves <home>/identities.json: the new identity goes in it (service-home.ts); stdout stays the address.
-  const added = addToServiceHome(home, name)
-  if (added !== null) io.err(added)
-  // C4: an identity the bag service now serves is, with the word on, visible to the home's others: say how to hide it.
-  const word = readWord(home)
-  if (added !== null && word.on && !word.hidden.includes(name)) io.err(visibleLine(name))
-  io.out(keys.signing.address)
+  // said to a person at a terminal; a script, or onboard's own keygen, is not one
+  const note = io.isTty ? { note: NO_RECOVERY } : {}
+  viaHome(() =>
+    createIdentity(homeIo(io), home, name, {
+      into,
+      defaulted,
+      allowNew: flag(p, 'new') === true,
+      refused,
+      ...note,
+    }),
+  )
   return 0
 }

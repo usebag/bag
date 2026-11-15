@@ -61,9 +61,9 @@ describe('e2e scenario 21: one writer per identity, and an audit log checked aga
     const w = await world('s21')
     const home = join(w.dir, 'home')
     const dir = ['--dir', home]
-    const [alice, bob] = (await Promise.all(['alice', 'bob'].map((n) => cli('keygen', n, ...dir)))).map(
-      (r) => r.out[0] as string,
-    ) as [string, string]
+    const [alice, bob] = (
+      await Promise.all(['alice', 'bob'].map((n) => cli('keygen', '--new', n, ...dir)))
+    ).map((r) => r.out[0] as string) as [string, string]
     for (const [name, peer] of [
       ['alice', bob],
       ['bob', alice],

@@ -7,13 +7,13 @@ import { SPOOL_DAYS, TELEMETRY_PAIRS_FILE, telemetryDir, telemetryOn, telemetryS
 import { addCell, type Cells, dateOf, dayOf } from './telemetry-report.ts'
 import { SETS } from './telemetry-schema.ts'
 
-// The `pairs` family (the W6 design note and the red team's ruling of 2026-11-03, in the operations records): for a
-// day, the machine's peers, the address roots of each home's trust file, by their age at the day's end (under 7 days,
-// or 7 days or more), and of each, those the home sent to in the 7 days before, never before the consent's date (Q8).
-// The outbox is read, never written. A snapshot, not a count: a process that opens an identity writes its four counts
-// per finished day to telemetry-pairs.json beside the spool, keyed by hashes of the home's path and of the identity's
-// name, which never leave the machine. A report takes, per home, the largest of its identities' counts cell by cell,
-// sums the homes, and floors each sum as every count. Without this file a report's `pairs` is empty.
+// The `pairs` family: for a day, the machine's peers, the address roots of each home's trust file, by their age at the
+// day's end (under 7 days, or 7 days or more), and of each, those the home sent to in the 7 days before, never before
+// the consent's date (Q8). The outbox is read, never written. A snapshot, not a count: a process that opens an identity
+// writes its four counts per finished day to telemetry-pairs.json beside the spool, keyed by hashes of the home's path
+// and of the identity's name, which never leave the machine. A report takes, per home, the largest of its identities'
+// counts cell by cell, sums the homes, and floors each sum as every count. Without this file a report's `pairs` is
+// empty.
 
 const DAY = 86_400
 const WEEK = 7 * DAY

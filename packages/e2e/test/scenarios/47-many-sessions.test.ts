@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, renameSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { FsKeyStore } from '@usebag/edge'
 import { DESK_RETRY_MS, isClaudeCommand, psInfo, readSessionFile, sessionAnchor } from '@usebag/edge/agent'
 import { describe, expect, it } from 'vitest'
 import { sleep } from '../harness.ts'
@@ -18,6 +19,8 @@ import {
   isReady,
   type Json,
   ledger,
+  MAIN,
+  McpProc,
   type Msg,
   modeOf,
   POLL_SLACK_MS,
@@ -44,13 +47,14 @@ import {
 //   47d  the desk process ends: the other session takes the desk within DESK_RETRY_MS; a new root is answered once
 //   47e  a root answered before the handover is not answered again, across two handovers and a session that starts
 //        in between and replays the relay's history (a fresh store)
-//   47e2 the same root answered by a server that kept no ledger (what a pre-0.2 server leaves): must-fix 5, the stated
-//        gap (PR body, "Fresh stores replay history"); `it.fails` until the lever is built
+//   47e2 the same root answered by a plain server, which keeps no ledger, its store at the principal's path: a later
+//        session's desk merges that store's roots into the ledger and refuses it (must-fix 5)
 //   47e3 a new desk with the ledger intact answers no already-answered root while a fresh store replays: what is fixed
+//   47e4 the steady state: a ledger already there, then a root a plain server took while no desk ran, then a session
 //   47g  three sessions: three grants, one desk, replies to their own sessions, a re-login, two handovers
 //   47f  re-login: two sessions, logout, login, a `y` each; replies on the old threads reach their sessions: must-fix 1
 //        In both re-logins the logout record, which revokes the sessions' keys, is published, and each session
-//        re-grants under a fresh key (spec/SPEC.md §13.5, the re-grant ruling of 2026-11-02)
+//        re-grants under a fresh key (spec/SPEC.md §13.5)
 //
 // What the edge records for the desk's refusals (packages/edge/src/agent/front-desk.ts, receiver.ts): `desk-held` is a
 // plain error, so the receiver defers the row: audit `unseal retry open-failed`, not counted as rejected.
@@ -66,6 +70,38 @@ const NAME = /^s-[0-9a-f]{16}$/
 const ROOTS = 4
 /** One lock retry plus the receiver's first backoffs (1 s, 2 s): long enough for a deferred root to come due again. */
 const SETTLE_MS = DESK_RETRY_MS + POLL_SLACK_MS
+
+/**
+ * A plain (non-session) MCP server as jane, from a key file in a home of its own: the CLI and a plain server cannot
+ * open an agent-held identity, so this stands for jane's server before the agent held her keys.
+ */
+async function plainJane(r: Rig): Promise<{ plain: McpProc; plainHome: string }> {
+  const plainHome = join(r.w.dir, 'p')
+  mkdirSync(plainHome, { recursive: true, mode: 0o700 })
+  new FsKeyStore(join(plainHome, 'keys')).save('jane', r.jane.keys)
+  const args = [
+    MAIN,
+    '--as',
+    'jane',
+    '--dir',
+    plainHome,
+    '--relay',
+    r.w.url,
+    '--trust-root',
+    r.bobParty.address,
+  ]
+  return { plain: await McpProc.start('plain jane', args), plainHome }
+}
+
+/** Places the plain server's store (closed) at the principal's path, <home>/state/jane/edge.sqlite. */
+function placeStore(r: Rig, plainHome: string): void {
+  const state = join(r.janeHome, 'state', 'jane')
+  mkdirSync(state, { recursive: true, mode: 0o700 })
+  for (const f of ['edge.sqlite', 'edge.sqlite-wal']) {
+    const from = join(plainHome, 'state', 'jane', f)
+    if (existsSync(from)) copyFileSync(from, join(state, f))
+  }
+}
 
 /** Two sessions, the first started the desk, each with a model that answers the roots it reads. */
 async function pair(r: Rig): Promise<{ first: Session; second: Session; models: Responder[] }> {
@@ -355,48 +391,106 @@ describe('e2e scenario 47: many sessions on one principal', () => {
     )
   }, 180_000)
 
-  // Red team must-fix 5, the part the build does not cover. The writer chose the per-principal ledger (desk-handled)
-  // as the seed of a fresh store (PR body, "Fresh stores replay history (red team 5), decision: the ledger is the
-  // seed"), and states the gap: roots that the principal's own 0.1 server or a CLI accepted before any ledger existed
-  // are accepted once more by the first desk (lever: seed the ledger once from the principal's store, read only, at
-  // the first desk). This case moves the ledger aside to stand for such a server's answer, so it tests exactly that
-  // gap: `it.fails`, red by the stated design. When the lever is built, this must pass and `.fails` goes. (A `.fails`
-  // also passes on any other throw; the MEASURE line shows the answers per root, which says why it failed.)
-  it.fails('(47e2) a root answered by a server that kept no ledger is not answered again by a session that starts later (must-fix 5, stated gap)', async () => {
+  // Fresh stores replay history (must-fix 5). A plain (non-session) server or the CLI keeps no desk ledger: the roots it
+  // takes stay in the principal's own store, <home>/state/jane/edge.sqlite. Each desk start merges that store's
+  // accepted, unexpired roots into desk-handled (packages/edge/src/agent/desk-seed.ts), so a session's desk, whose
+  // fresh store the relay hands those roots again, refuses them. The CLI and a plain server cannot open an
+  // agent-held identity, so the plain server runs as jane from a key file in a home of its own (plainJane): jane's same
+  // keys and address, or the relay could not hand it r0. Its store is copied to the principal's path after the server
+  // closed (its WAL checkpointed; a -wal file, if any, copied too). Not a scenario: a session's
+  // own store (s-<hex>), whose desk always writes the ledger; a ledger moved aside is a fault, not a supported state.
+  // Not covered by a start-time merge: a plain server or the CLI taking a root while a desk runs (two live answerers).
+  it('(47e2) a root answered by a plain server, which keeps no ledger, is not answered again by a session that starts later (must-fix 5)', async () => {
     const r = await rig('s47e2')
+    const { plain, plainHome } = await plainJane(r)
+    try {
+      const model = new Responder(plain)
+      const r0 = await rootFromBob(r, 'answered by a plain server')
+      const [first] = await untilAnswered(r, [r0])
+      expect(first?.map((m) => m.from)).toEqual([r.jane.address])
+      await model.stop()
+      await plain.close()
+      placeStore(r, plainHome)
+      expect(existsSync(join(r.janeHome, 'state', 'jane', 'desk-handled'))).toBe(false)
+
+      const fresh = await grantedSession(r)
+      const freshModel = new Responder(fresh.proc)
+      expect(await deskFlag(fresh)).toBe(true)
+      expect(ledger(r)).toEqual([r0])
+      // A sentinel root: the relay hands the fresh session its rows in order, so r0 has been decided by the time the
+      // sentinel is answered; a late answer would come within one retry period after it.
+      const sentinel = await rootFromBob(r, 'after the fresh session started')
+      await untilAnswered(r, [sentinel])
+      await sleep(SETTLE_MS)
+      const [a0, sentinelAnswers] = await Promise.all([answersTo(r, r0), answersTo(r, sentinel)])
+      await freshModel.stop()
+
+      console.log(
+        [
+          'MEASURE 47e2: root answered by a plain jane server (no ledger), its store at state/jane;',
+          `a fresh session (new store, ${fresh.name}) started: answers to the old root ${a0.length} (target 1),`,
+          `to the sentinel ${sentinelAnswers.length} (target 1); the fresh session's model answered ${freshModel.answered.size} roots (target 1)`,
+        ].join(' '),
+      )
+      expect([a0.length, sentinelAnswers.length]).toEqual([1, 1])
+      expect(freshModel.answered.size).toBe(1)
+    } finally {
+      await plain.close().catch(() => {})
+    }
+  }, 120_000)
+
+  // The steady state: the sessions already keep a ledger, then a plain server takes a root while no desk runs, then a
+  // new session starts. The ledger exists, and the merge at the desk start still adds that root. Answers are counted by
+  // sender: a plain server never reads the ledger, so it may answer the session's earlier root again when the relay
+  // hands it over (a known limit, measured here and not asserted); what the desk owns is the new session's answers.
+  it('(47e4) with a ledger already there, a root a plain server took while no desk ran is not answered again by a new session', async () => {
+    const r = await rig('s47e4')
     const old = await grantedSession(r)
     const model = new Responder(old.proc)
-    const r0 = await rootFromBob(r, 'answered before this session existed')
-    const [first] = await untilAnswered(r, [r0])
-    expect(first?.map((m) => m.from)).toEqual([old.address])
+    const earlier = await rootFromBob(r, 'answered by a session')
+    await untilAnswered(r, [earlier])
     await model.stop()
     await endSession(old)
-    renameSync(
-      join(r.janeHome, 'state', 'jane', 'desk-handled'),
-      join(r.janeHome, 'state', 'jane', 'desk-handled.moved'),
-    )
+    expect(ledger(r)).toEqual([earlier])
 
-    const fresh = await grantedSession(r)
-    const freshModel = new Responder(fresh.proc)
-    expect(await deskFlag(fresh)).toBe(true)
-    // A sentinel root: the relay hands the fresh session its rows in order, so r0 has been decided by the time the
-    // sentinel is answered; a late answer would come within one retry period after it.
-    const sentinel = await rootFromBob(r, 'after the fresh session started')
-    await untilAnswered(r, [sentinel])
-    await sleep(SETTLE_MS)
-    const [a0, sentinelAnswers] = await Promise.all([answersTo(r, r0), answersTo(r, sentinel)])
-    await freshModel.stop()
+    const { plain, plainHome } = await plainJane(r)
+    try {
+      const plainModel = new Responder(plain)
+      const r0 = await rootFromBob(r, 'answered by a plain server after the ledger existed')
+      await untilAnswered(r, [r0])
+      await plainModel.stop()
+      await plain.close()
+      placeStore(r, plainHome)
 
-    console.log(
-      [
-        'MEASURE 47e2: root answered by the first session, its ledger then moved aside (a server that kept none);',
-        `a fresh session (new store, ${fresh.name}) started: answers to the old root ${a0.length} (target 1),`,
-        `to the sentinel ${sentinelAnswers.length} (target 1); the fresh session's model answered ${freshModel.answered.size} roots (target 1)`,
-      ].join(' '),
-    )
-    expect([a0.length, sentinelAnswers.length]).toEqual([1, 1])
-    expect(freshModel.answered.size).toBe(1)
-  }, 120_000)
+      const fresh = await grantedSession(r)
+      const freshModel = new Responder(fresh.proc)
+      expect(await deskFlag(fresh)).toBe(true)
+      expect([...ledger(r)].sort()).toEqual([earlier, r0].sort())
+      const sentinel = await rootFromBob(r, 'after the new session started')
+      await untilAnswered(r, [sentinel])
+      await sleep(SETTLE_MS)
+      const [a, b, c] = await Promise.all([answersTo(r, earlier), answersTo(r, r0), answersTo(r, sentinel)])
+      await freshModel.stop()
+      const by = (answers: readonly Msg[], from: string): number =>
+        answers.filter((m) => m.from === from).length
+      console.log(
+        [
+          'MEASURE 47e4: a ledger held by the sessions, then a root answered by a plain jane server while no desk ran;',
+          `a new session started: the new session answered the session's root ${by(a, fresh.address)}, the plain`,
+          `server's root ${by(b, fresh.address)} (target 0 each) and the sentinel ${by(c, fresh.address)} (target 1);`,
+          `the session's root answered by the old session ${by(a, old.address)} (target 1) and again by the plain server`,
+          `${by(a, r.jane.address)} (no ledger read: a known limit); the plain server's root by it ${by(b, r.jane.address)}`,
+          `(target 1); the new session's model answered ${freshModel.answered.size} (target 1)`,
+        ].join(' '),
+      )
+      expect(new Set([fresh.address, old.address, r.jane.address]).size).toBe(3) // counting by from separates them
+      expect([by(a, fresh.address), by(b, fresh.address), by(c, fresh.address)]).toEqual([0, 0, 1])
+      expect([by(a, old.address), by(b, r.jane.address), c.length]).toEqual([1, 1, 1])
+      expect(freshModel.answered.size).toBe(1)
+    } finally {
+      await plain.close().catch(() => {})
+    }
+  }, 180_000)
 
   // What the build does fix of must-fix 5: the ledger outlives sessions, so a new desk with a fresh store, to which the
   // relay hands every unexpired row, refuses each root an earlier desk took (desk-answered) and answers only new ones.
@@ -443,7 +537,7 @@ describe('e2e scenario 47: many sessions on one principal', () => {
     expect(await rejectedBy(fresh)).toEqual({ 'not-recipient': earlier.length })
   }, 120_000)
 
-  // Red team must-fix 1, as built: a session learns that its grant is gone from `agent-locked` on any call to the
+  // A lost grant (must-fix 1), as built: a session learns that its grant is gone from `agent-locked` on any call to the
   // agent, from `not-in-grant` on a sign or a register, and from a probe every LOST_PROBE_MS (5 minutes, mcp
   // server.ts, not exported to this package); a `not-in-grant` on an open only asks for a probe. After this rig's
   // re-login (the agent process ends, a new one opens an empty window) nothing calls the agent by itself sooner than

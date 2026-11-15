@@ -199,9 +199,9 @@ export function reasonOf(error: unknown, fallback: AcErrorCode): AcErrorCode {
 }
 
 const LINE_KEYS = ['seq', 'prev', 'ts', 'event', 'decision', 'reason', 'id', 'from', 'root', 'detail', 'hash']
-// The agent's lines parse (its events `sign`, `open`, `declined`, `device`; `rotate` is the edge's too),
+// The agent's lines parse (its events `sign`, `open`, `declined`, `device`, `revoke`; `rotate` is the edge's too),
 // and each of its codes on the events that write it only, so no edge line takes one.
-const EVENTS: ReadonlySet<string> = new Set([...AUDIT_EVENTS, 'sign', 'open', 'declined', 'device'])
+const EVENTS: ReadonlySet<string> = new Set([...AUDIT_EVENTS, 'sign', 'open', 'declined', 'device', 'revoke'])
 const DECISIONS: ReadonlySet<string> = new Set(AUDIT_DECISIONS)
 const AGENT = new Map<unknown, readonly unknown[]>([
   ['not-in-grant', ['sign', 'open']],

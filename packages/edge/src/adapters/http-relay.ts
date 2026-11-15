@@ -7,6 +7,7 @@ import {
   type PublishResult,
   type RelayClient,
   RelayError,
+  STOP_ABORT,
 } from '../ports.ts'
 import { countRelayCall, countRelayError } from '../telemetry.ts'
 import { RelayTurns } from './relay-turns.ts'
@@ -30,7 +31,7 @@ export const MAX_TIMEOUT_MS = 29_000
 /**
  * The time a request of `bytes` is given: 10 s plus 1 s per whole 16 KiB, at most 29 s. A full envelope at the cap of
  * 196,608 bytes is given 22 s, so a send at 72 kbit/s still goes out, where a flat 10 s failed it below about 160
- * kbit/s (W9). A publish counts its body; a fetch by id counts the envelope cap, the most its answer can be.
+ * kbit/s. A publish counts its body; a fetch by id counts the envelope cap, the most its answer can be.
  */
 export function timeoutFor(bytes: number): number {
   return Math.min(BASE_TIMEOUT_MS + Math.floor(bytes / 16_384) * 1000, MAX_TIMEOUT_MS)
@@ -54,6 +55,8 @@ export interface HttpRelayOptions {
   readonly timeoutMs?: number
   /** The process's turns at its relays (default: this client's own). */
   readonly turns?: RelayTurns
+  /** Aborts every request of this client, waiting for a turn or open, with its reason (the bag service's stop). */
+  readonly signal?: AbortSignal
 }
 
 /** A response body of at most `cap` bytes; RelayError past it. */
@@ -88,8 +91,10 @@ type Call = <T>(
   size?: number,
 ) => Promise<T>
 
-const noAnswer = (url: string, e: unknown): RelayError =>
-  new RelayError(null, 0, null, `${url}: ${e instanceof Error ? e.message : String(e)}`)
+const noAnswer = (url: string, e: unknown, stop?: AbortSignal): RelayError =>
+  Object.assign(new RelayError(null, 0, null, `${url}: ${e instanceof Error ? e.message : String(e)}`), {
+    stopped: stop?.aborted === true ? STOP_ABORT : null,
+  })
 
 /**
  * One request with the options' fetch and timeout (by default timeoutFor `size`, the bytes it moves), following no
@@ -100,9 +105,10 @@ const noAnswer = (url: string, e: unknown): RelayError =>
 function caller(options: HttpRelayOptions): Call {
   const turns = options.turns ?? new RelayTurns()
   return async (url, init, read, size = 0) => {
-    const signal = AbortSignal.timeout(options.timeoutMs ?? timeoutFor(size))
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? timeoutFor(size))
+    const signal = options.signal === undefined ? timeout : AbortSignal.any([timeout, options.signal])
     const leave = await turns.wait(url, signal).catch((e: unknown) => {
-      throw noAnswer(url, e)
+      throw noAnswer(url, e, options.signal)
     })
     countRelayCall(url)
     try {
@@ -110,7 +116,7 @@ function caller(options: HttpRelayOptions): Call {
       try {
         res = await (options.fetch ?? fetch)(url, { ...init, redirect: 'manual', signal })
       } catch (e) {
-        throw noAnswer(url, e)
+        throw noAnswer(url, e, options.signal)
       }
       return await read(res)
     } catch (e) {

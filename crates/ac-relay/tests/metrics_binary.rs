@@ -1,6 +1,6 @@
 //! The `ac-relay` binary with `--metrics-port`: the counts in Prometheus's text format on that port only, `/metrics`
 //! 404 `not-found` on the relay's own port, no address, key or client IP in the counts, Litestream's read at 0 when it
-//! is not there, the open subscriptions and the day's mailboxes at 0 and the store's size from the start, the W1.2
+//! is not there, the open subscriptions and the day's mailboxes at 0 and the store's size from the start, the newer
 //! families (headers not read, signatures, claims, connections, limits, build, networks), both listeners stopped by
 //! one SIGTERM, a kept-alive connection's quiet end at the header timeout on either port, and the flag errors.
 
@@ -43,10 +43,10 @@ fn spawn(dir: &TempDir, extra: &[&str]) -> (Child, Tail, SocketAddr, SocketAddr)
     (child, log, SocketAddr::from(([127, 0, 0, 1], port)), metrics)
 }
 
-/// The calls the W1.2 families count, on the relay at `relay` at time `t`: a record whose signature does not verify
+/// The calls the newer families count, on the relay at `relay` at time `t`: a record whose signature does not verify
 /// (the first hex digit of its one signature changed), a claim with a client-address header from a peer that no
 /// --trust-proxy names, and one connection served once and held open, returned so that it is open at the scrape.
-async fn w12_calls(relay: SocketAddr, t: u64) -> TcpStream {
+async fn family_calls(relay: SocketAddr, t: u64) -> TcpStream {
     let good = String::from_utf8(record_bytes(&accept(3, Roots::Any, 65_536, 3_600, t))).unwrap();
     assert_eq!(good.matches("\"sig\":\"").count(), 1, "{good}");
     let at = good.find("\"sig\":\"").unwrap() + 7;
@@ -93,7 +93,7 @@ async fn the_metrics_port_counts_what_the_relay_did_and_names_no_one() {
     assert_eq!(bad.status, 400);
     let fetched = request(relay, "GET", "/v0/fetch/zz", &[], b"").await;
     let refused = format!("ac_relay_fetches_total{{result=\"{}\"}}", fetched.error());
-    let held = w12_calls(relay, t).await;
+    let held = family_calls(relay, t).await;
     // The sweeper's first tick is at start, and its store-size line comes after the store's gauges are set.
     assert!(log.until("store-size", PATIENCE), "no store-size line at start; stderr:\n{}", log.rest());
 
@@ -116,8 +116,9 @@ async fn the_metrics_port_counts_what_the_relay_did_and_names_no_one() {
         ("ac_relay_publishes_total{result=\"bad-sig\"}", 0),
         ("ac_relay_rate_limited_total{limit=\"fetch-global\"}", 0),
         ("ac_relay_record_fetches_total{result=\"not-found\"}", 0),
-        // W1.2: the security note's M1 to M4, signatures by what was signed, claims, nameplates, connections (the
-        // public port's seven, none of the metrics port's), the limits run with, and the day's networks.
+        // Proxy headers, capped resolutions, signatures by what was signed, dropped pendings, claims, pair opens,
+        // nameplates, connections (the public port's seven, none of the metrics port's), the limits run with, the day's
+        // networks, and the request durations by route.
         ("ac_relay_proxy_header_ignored_total{reason=\"untrusted-source\"}", 1),
         ("ac_relay_proxy_header_ignored_total{reason=\"malformed\"}", 0),
         ("ac_relay_resolutions_capped_total", 0),

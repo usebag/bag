@@ -1,7 +1,7 @@
 import { type ChildProcess, execFile, spawn } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { NO_RECOVERY } from '@usebag/cli'
@@ -38,7 +38,7 @@ import {
   systemRng,
   type TrustedRoot,
 } from '@usebag/edge'
-import { onTestFinished } from 'vitest'
+import { afterAll, onTestFinished } from 'vitest'
 import { startWellKnown, type WellKnownStub } from './well-known-stub.ts'
 
 // The e2e harness: a real relay process per scenario (or AC_RELAY_URL), real edges on real SQLite files and audit
@@ -478,12 +478,33 @@ export interface CliRun {
 const lines = (text: string): string[] => text.split('\n').filter((l) => l !== '')
 
 let cliHomeDir: string | null = null
+const HOME_PREFIX = 'bag-e2e-home-'
 
-/** The CLI processes' HOME: one empty directory under AC_TEST_TMP (else the system's), made once, removed at exit. */
+/** Removes `dir` only when it is one cliHome made: a bag-e2e-home-* directory right under the temporary root. */
+function removeHome(dir: string): void {
+  const root = resolve(process.env.AC_TEST_TMP || tmpdir())
+  if (dirname(resolve(dir)) === root && basename(dir).startsWith(HOME_PREFIX))
+    rmSync(dir, { recursive: true, force: true })
+}
+
+// Vitest's workers never fire process 'exit' for a test file (2026-11-13: the bag-e2e-home-* directories stayed), so
+// the home a file made goes in the afterAll of that file's suite: vitest imports this module afresh for each file
+// (isolate, the default), as the file is collected, so the hook lands on that file. Imported outside a test file (the
+// global setup), there is no suite to hook: the exit hook below stays the only one there.
+try {
+  afterAll(() => {
+    if (cliHomeDir !== null) removeHome(cliHomeDir)
+    cliHomeDir = null
+  })
+} catch {
+  // no suite being collected
+}
+
+/** The CLI processes' HOME: one empty directory under AC_TEST_TMP (else the system's), made once per test file. */
 function cliHome(): string {
   if (cliHomeDir !== null) return cliHomeDir
-  const made = mkdtempSync(join(process.env.AC_TEST_TMP || tmpdir(), 'bag-e2e-home-'))
-  process.once('exit', () => rmSync(made, { recursive: true, force: true }))
+  const made = mkdtempSync(join(process.env.AC_TEST_TMP || tmpdir(), HOME_PREFIX))
+  process.once('exit', () => removeHome(made))
   cliHomeDir = made
   return made
 }

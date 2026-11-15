@@ -50,12 +50,13 @@ hand: when its holder has gone, the next owner replaces it.
 The per-folder mode of bag 0.3.0 is still in 0.4.0, unchanged, as the way back when the service does not work on a
 machine, and for an MCP host other than Claude Code, Codex and omp. In it a folder's host configuration names one
 `--as` name, the host starts that identity's own MCP server over stdio when a session opens in the folder, and the
-server is the owner for as long as the session lives. The install page's section "One identity per folder" wires it;
+server is the owner for as long as the session lives. The install page's section "One identity per folder" points here;
 `c host migrate --undo` puts back the folders an upgrade moved, byte for byte, from the journal the move kept.
 
 `c host migrate --undo` takes the stamp of the migration's `journal` line, asks `undo?`, prints one `restored` line
 per file, and ends `undone` and the stamp; a file changed since the move is named and nothing is put back
-(`stale-record`). Stop the bag service first.
+(`stale-record`). It does not check for a running bag service: stop the service before a session opens in a
+folder put back.
 
 What follows holds in that mode only.
 

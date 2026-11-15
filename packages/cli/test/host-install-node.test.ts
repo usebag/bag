@@ -31,7 +31,7 @@ async function world() {
   mkdirSync(project, { recursive: true })
   mkdirSync(userHome, { recursive: true })
   const io = testIo(new MemoryRelay(), { HOME: userHome })
-  expect((await cli(io, 'keygen', 'bob', '--dir', dir)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).code).toBe(0)
   const install = (host: string, ...more: string[]) =>
     cli(io, 'host', 'install', host, '--as', 'bob', '--dir', dir, '--relay', RELAY, ...more)
   return { dir, project, userHome, install }

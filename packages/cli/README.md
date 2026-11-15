@@ -51,11 +51,16 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
 
 ### Identities
 
-- **`keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--dir <home>]`**:
+- **`keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--new] [--dir <home>]`**:
   a signing key and a separate sealing key; prints the address only. `--custody keychain` keeps both in one item of
   the default macOS keychain or `--keychain`, read only after a dialog (`--keychain-access prompt`, the default) or by
   `/usr/bin/security` while the keychain is unlocked (`security`). `--keychain` and `--keychain-access` without
-  `--custody keychain` are `usage`; a name either custody holds is refused (`src/commands/keygen.ts`).
+  `--custody keychain` are `usage`; a name either custody holds is refused (`src/commands/keygen.ts`). On a home that
+  holds identities already (an identity file under `keys/`, `keychain/` or `agent/`; `identities.json` alone does not
+  count, so a 0.3.0 home counts by its files), a name the home does not hold is refused `exists`: "this home holds
+  identities already: use one of them, or pass --new for a new one", with nothing written. `--new` makes it; a fresh
+  home needs no `--new`; a held name keeps its own refusal with or without it. `--custody agent` makes no key and
+  needs no `--new` (it takes it with no effect), and `onboard` passes `--new` for the identities it makes.
 - **`address <name> [--dir <home>]`**: the identity's address. It reads no keychain and raises no dialog
   (`src/commands/address.ts`).
 - **`keys list [--dir <home>]`**: one line per identity, sorted by name, `<name> <address> <custody> <created>`: the
@@ -377,7 +382,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
     2026-10-27); the displays here still show a type that is not a short token as `(not shown)`.
   - **One receiver per identity at a time: `inbox --watch` or the MCP server, never both.** The edge's writer lock
     refuses whichever of the two starts second with `busy` (e2e scenario 21), and the doorbell is rung by
-    whichever holds the identity. (Corrected 2026-10-28: the usage text has said whichever starts second is refused since 7efdadb.) So
+    whichever holds the identity. (Corrected 2026-10-28: the usage text has said whichever starts second is refused.) So
     `inbox --watch` watches no doorbell: it is the receiver and acts on each message itself. The doorbell serves a
     process that is not the receiver, such as a Claude Code session watching the MCP server's doorbell.
     The lock lasts the whole watch, not each delivery (added 2026-10-28): while `inbox --watch` (or `--exec`) runs
@@ -519,8 +524,8 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   - **The hook is a request to read, not to send.** The line says only to read the inbox and report it: the hook is
     not a standing instruction to answer, and a send needs the user's word.
   - **Gaps, stated.** At `--max` (3500 s by default, 86000 s in the hooks `host install` writes) the watcher wakes the
-    session once on silence (adopted decision 9, "a deadline
-    that wakes it on silence", read as one wake per mail-free stretch because the waiting rule bars periodic turns); it
+    session once on silence (a deadline that wakes it on silence,
+    read as one wake per mail-free stretch because the waiting rule bars periodic turns); it
     exits 0 at the next deadline, and nothing re-arms it until the next `SessionStart` or `Stop`, so after that silent
     deadline an idle session is deaf until a turn runs: after about two hours of silence at the default, about two days
     (47.8 hours) with `host install`'s hooks. `host install` fixes the hook's `timeout` at 86400, above its `--max`,
@@ -580,7 +585,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   install writes one of them. `--mode worker`, the default, because Codex has no idle wake, writes
   nothing and prints the line that runs `inbox --watch --as <name> --exec 'codex exec --skip-git-repo-check --sandbox read-only "bag: $(cat)"'`, the form of the `--exec` bullet above (every `--relay` and
   `--trust-root` is on it). `--mode mcp` appends the `[mcp_servers.bag]` table of the mcp README to
-  `~/.codex/config.toml` (0600 when it makes the file). By default (since 2026-11-12, Dilip's 'plain codex') the server
+  `~/.codex/config.toml` (0600 when it makes the file). By default (since 2026-11-12) the server
   is the plain identity, the same args as the claude-code entry (`--as <name>`, every `--relay`, `--rendezvous` and
   `--trust-root`, `--dir <home>`, `--keep-alive-records`), so a Codex session can pair; the first Codex session holds
   the identity and any other answers held-by; the install then runs the same read-only check of the identity's records
@@ -804,6 +809,22 @@ copy, which a rotation can race and revert; run `group keep` for a group, never 
   running `inbox` is at worst ahead of it), does not verify is `bad-audit`, as `audit verify` reads it. It reads no
   key: the custody checks the name, and the key file `<home>/keys/<name>.json` or the keychain pointer
   `<home>/keychain/<name>.json` must exist (`ENOENT` otherwise); no dialog (`src/commands/status.ts`).
+- **`status --home [--json] [--dir <home>]`**: the whole home in one read, one fact per line, in this order: `home
+  <path>`; `identities_file ok|absent|invalid <code>`; the service, `service bag <version> pid <pid> since <start>
+  contract <n> socket <path>` from one hello (no lend, no other call), or `no service at <path>`, or `service refused
+  <code> at <path>`; `local_delivery on|off` (the home word, `bag local-delivery`); one `identity <label> key <key>
+  custody <file|keychain|agent> served <yes|no> hidden <yes|no> open <yes|no> spooled <n>` per identity, from
+  `identities.json` and the key files and pointers, in label order (served: the bag service holds it; hidden: kept
+  apart, `bag local-delivery hide`; open: bound in a live window; spooled: local mail waiting for it); one `local_pair <a> <b>` per pair of the local table; one `window <host pid> session
+  <id|none> as <labels> shim <pid>` per live window binding (`run/shim/<host pid>.bound`, or a Codex window's
+  `<host pid>-<session id>.bound`; a dead shim's file left out); one `relay
+  <url> for <labels>` per relay of the served identities. `--json` prints the same as one object (`version` 1).
+  Read-only: no key file or Keychain item is read (the custody is which pointer or key file exists), no dialog, no
+  write; exit 0 whatever it finds. Two facts the files cannot give: whether the service holds an identity's keys open
+  (no read-only service call lists them), so `open` means bound in a live window; and the `grant` class, which a
+  binding gives inside the service. No host name is shown: a binding file names only the host's pid (and, for a
+  Codex window, its session id: `window <host pid> session <id|none>`). It names every identity of this home; never
+  paste it into a message (the guard against a body naming another identity checks addresses, not labels).
 - **`health <relay-url>`**: prints `ok` when the relay answers its health probe with 200, else fails `unhealthy`
   (`src/commands/relay.ts`).
 
@@ -812,17 +833,20 @@ copy, which a rotation can race and revert; run `group keep` for a group, never 
 - **`telemetry on | off | status | preview [--date <YYYY-MM-DD>] | send | forget`**: the machine's telemetry
   (opt-in; `src/commands/telemetry.ts` over the edge's `telemetry.ts` and `telemetry-send.ts`), with one choice and one
   install id per machine in `~/.bag/telemetry.json`, `HOME`'s, whatever `--dir` or `AC_HOME` names; it takes no
-  `--dir`. `on` makes the id, or keeps it; `off` removes it, the spool of counts and the sender's mark, with no network
-  call. Each, and `status`, prints `telemetry <on|off> reason=<reason> choice=<on|off|none> id=<32 hex|none>
-  spool=<bytes> sent=<YYYY-MM-DD|none>`: the install id, which a request to erase the machine's reports names (the
-  telemetry design note's §3), and the last day the sender took. `off` then prints `telemetry off: reports already
-  sent stay up to 90 days; to erase them, send <id> to privacy@bag.dev` when it removed an id. `preview` prints the
+  `--dir`. `on` runs only on a terminal and asks one question (no-tty without one, declined on a no, nothing written
+  either way), then makes the id, or keeps it; `off` asks nothing and removes it, the spool of counts and the
+  sender's mark, with no network call. Each, and `status`, prints `telemetry <on|off> reason=<reason>
+  choice=<on|off|none> id=<32 hex|none>
+  spool=<bytes> sent=<YYYY-MM-DD|none>`: the install id, which a request to erase the machine's reports names, and
+  the last day the sender took. `off` then prints `telemetry off: reports already sent stay up to 90 days; to erase
+  them, send <id> to privacy@bag.dev` when it removed an id. `preview` prints the
   exact report the machine would send for a UTC date (today, or `--date`, at most 7 days back) as one JSON line on
   stdout, and `telemetry preview: <n> bytes for <date>; sent once, from 01:05 UTC the day after` on stderr. Before
   `on` its id is 32 zeros and it holds no counts. `send` sends the reports that are due and prints nothing; `forget`
-  posts the id to `https://telemetry.bag.dev/v1/erase` and, on its 204 only, turns telemetry off and prints the state
-  and `telemetry forget: the erasure of <id> was accepted; telemetry off`; any other answer, or none, is
-  `unreachable` or `http-<status>`, and nothing changes. Without `HOME`: `usage`.
+  turns telemetry off first, keeping the id in the file, then posts the id to `https://telemetry.bag.dev/v1/erase`; on
+  its 204 only it drops the id and prints the state and `telemetry forget: the erasure of <id> was accepted; telemetry
+  off`; any other answer, or none, is `unreachable` or `http-<status>`: `sending is off; the erasure of <id> failed, so
+  the id is kept: run forget again to retry, or send the id to privacy@bag.dev`. Without `HOME`: `usage`.
 - **The sender**: while telemetry is on, from 01:05 UTC, the first command line after a day ends starts `node <this
   main.ts> telemetry send` detached, with no stdio, and never waits for it (`io.spawnSender`, `telemetryDue`). It
   sends each finished day's report once, exactly as `preview --date` prints it. `telemetry` itself never starts it.
@@ -834,9 +858,14 @@ copy, which a rotation can race and revert; run `group keep` for a group, never 
   counts its audit lines, relay calls and pairings beside it. The line that turns telemetry on is not counted; the
   count of the line that turns it off goes with the spool.
 - The notice: while no choice is made, after a command a person runs at a terminal and after `host install`, once per
-  machine, on stderr. It names `npx --yes --package=@usebag/bag@<version> bag telemetry preview` when run from the
-  package, the install guide's form, which still works after npm clears its cache, and `node <this main.ts> telemetry
-  preview` from source; never `ac telemetry on`, which a guide install does not have (the spec owner's decision).
+  machine, on stderr. Run from the package, it names the line for how bag was installed, read from
+  `$HOME/.bag/install`: with exactly one package file of the running version (`usebag-bag-<version>-<16 hex>.tgz`,
+  as the three-line install keeps it), a line that checks the file's sha256 starts with those 16 hex, then runs bag
+  from it with `npx --yes --package=`, else prints STOP and runs nothing; with no such file and a settings file
+  (`<name>.env`), `c telemetry preview` and how `c` comes to exist (a shell function: `. "$HOME/.bag/install/<name>.env"`
+  first); otherwise, two files of one version included, the telemetry preview line of bag.dev/install's step 7.
+  Never the registry by name. From source it names `node <this main.ts> telemetry preview`; never `ac telemetry on`, which
+  a guide install does not have (the spec owner's decision).
 
 ### Enterprise: connect through your agent
 
@@ -846,7 +875,7 @@ is decided by the organisation's instance on the server, not by the client. The 
 `sign-in.ts` (sign-in and sign-out), `status.ts` (with no `--as`), `mcp.ts` and `refresher.ts`.
 
 A person gives their agent the prompt the console shows beside a minted connect code. The console fills in the exact
-version it pins (the current cut, `@usebag/bag@0.4.1`), never `@latest`:
+version it pins (the current cut, `@usebag/bag@0.4.2`), never `@latest`:
 
     1. Register once: claude mcp add bag -- npx -y @usebag/bag@<version> mcp (or run directly: BAG_ORG_CODE=<code> npx -y @usebag/bag@<version> connect)
     2. Paste the code into the chat and ask the agent to connect with the bag tool `connect`.
@@ -856,6 +885,11 @@ version it pins (the current cut, `@usebag/bag@0.4.1`), never `@latest`:
 Without a code, the person gives the domain and the console's address instead, and the agent runs, for example:
 
     npx -y @usebag/bag@<version> sign-in example.com --instance https://console.example.com --no-wait
+
+Those are the lines the console prints. On a machine where bag was installed by bag.dev/install, run them from the
+package file whose sha256 that install checked instead, never from the registry by name: the install guide's "Connect an
+enterprise agent" gives them as `npx --yes --package="$F" bag connect` and `... bag sign-in ...`, with `F` the file its
+line 1 kept, and the bag tool `connect` that its line 2's shim serves.
 
 Exits, for every command here: 0 done, 1 refused or failed, 2 usage, 3 the session has ended or none exists, 4
 waiting on a person of the organisation or its signer. An error is one line on stderr, `bag: <code>: <detail>`.
@@ -918,10 +952,20 @@ waiting on a person of the organisation or its signer. An error is one line on s
   session keys; the identity, its mailbox and every other organisation's session stay. With one organisation `--org` is
   implied; with several it is required, and without it sign-out removes nothing and exits 2 naming them: `bag: usage:
   signed in to <a> and <b>: bag sign-out --org <domain>, one of them`. With only a waiting sign-in, it drops it.
-- **`mcp [--dir <home>]`**: a stdio MCP server with three tools and nothing else: `connect` (argument `code`),
-  `sign_in` (`domain` and `instance`) and `status`. Register it with
-  `claude mcp add bag -- npx -y @usebag/bag@<version> mcp`. Each result holds only the lines the commands print;
-  stdout is the transport, so the command prints nothing else. It runs until the host closes it or stdin ends.
+- **`mcp [--dir <home>]`**: a stdio MCP server for an agent whose window acts as no identity yet, with four tools:
+  `connect` (argument `code`), `sign_in` (`domain` and `instance`), `status` and `identities`. No `sign_out`: its revoke
+  is for good and this server has no dialog to ask first, so signing out is the bag service window's `sign_out`, with
+  its confirm, or `bag sign-out --org <domain>` in a terminal. `status` leads with
+  bag's version, how many identities the home holds, and how many of the relays they name answer a health probe
+  (never the relays' URLs while names are not listed; each answer reused for 60 s), then the enterprise session if
+  there is one; no session is not an error. `identities` says how many identities the home
+  holds and leaves their names to the person, who picks one by typing `use` and its name in a window that runs the
+  bag service. Neither changes anything or calls a relay beyond the health probes. Each tool's description is its
+  documentation, written for the agent that reads it. A person sets it up in three steps: check and install the
+  package (`npm pack @usebag/bag@<version>`, compare the file's sha256 with the one the install page pins, then
+  `npm install -g` that file), add the server to the host (`claude mcp add bag -- bag mcp`), and ask the agent; the
+  agent then needs no page and no command line. Each result holds only the lines the commands print; stdout is the
+  transport, so the command prints nothing else. It runs until the host closes it or stdin ends.
 
 The home is `--dir`, else `AC_HOME`, else `~/.bag`, the same home as every other command. Each organisation's session
 lives in its own profile, `<home>/orgs/<domain>/enterprise/`; the keys stay in `<home>/keys` and the trust roots in

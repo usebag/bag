@@ -6,7 +6,8 @@ import { acceptCopy, heldAccept, keepAcceptCopy } from '../src/custody/key-recor
 import { P, T0, tempDir } from './support/fixtures.ts'
 
 // The copy of an identity's accept-from record in its home, and what it holds when a relay strands it: the roots go on,
-// so a re-sign or a pairing rollback never rebuilds them from nothing (the 2026-11-11 collapse to [owner], decision 83c).
+// so a re-sign or a pairing rollback never rebuilds them from nothing: a stranded relay copy must not collapse the
+// roots to [owner].
 
 const tmp = tempDir('accept-copy')
 afterAll(() => tmp.cleanup())

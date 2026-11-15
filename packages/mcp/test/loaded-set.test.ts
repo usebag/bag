@@ -39,6 +39,8 @@ describe('the loaded set of the MCP server', () => {
     const out = join(tmp.dir, 'loaded.txt')
     const env: NodeJS.ProcessEnv = { ...process.env, AC_LOADED_OUT: out }
     delete env.NODE_OPTIONS
+    // A child that exits non-zero (a mismatch with its script) fails with its own stdout, the summary line that names
+    // each mismatch, and its stderr, not with execFile's bare "Command failed".
     const { stdout } = await promisify(execFile)(
       process.execPath,
       ['--import', pathToFileURL(HOOK).href, SESSION],
@@ -46,7 +48,11 @@ describe('the loaded set of the MCP server', () => {
         env,
         timeout: 60_000,
       },
-    )
+    ).catch((e: { stdout?: string; stderr?: string; message?: string }) => {
+      throw new Error(
+        `the scripted session failed: ${e.message}\nstdout: ${e.stdout ?? ''}\nstderr: ${e.stderr ?? ''}`,
+      )
+    })
     const summary = JSON.parse(stdout.trim().split('\n').at(-1) as string) as {
       calls: number
       tool_errors: number

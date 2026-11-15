@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import type { Server } from 'node:net'
+import type { Server, Socket } from 'node:net'
 import { dirname, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { type Hop, parseEnvelope } from '@usebag/core'
 import {
@@ -14,12 +15,33 @@ import {
   markUsed,
   type OpenedKeys,
   openIdentityKeys,
+  type RelayClient,
+  type SecurityRunner,
   type SendInput,
   serviceCustody,
   withConnection,
 } from '@usebag/edge'
-import type { AgentClient } from '@usebag/edge/agent'
-import { Bindings, bridgeOf, type Custody, serveBindings, serviceMethods, sweepGone } from './binding.ts'
+import { AgentClient, type GrantAct, type GrantDetail, grantAuditEntry } from '@usebag/edge/agent'
+import {
+  forgetRemoved,
+  type RemovedEntry,
+  readRemoved,
+  removedRefusal,
+  removedRefused,
+  sameRemoved,
+} from '@usebag/home'
+import { askingIn, askMs, forgetWindow, type LinkAnswer, type LinkAsk, onAsking, textOf } from './ask.ts'
+import {
+  Bindings,
+  type Custody,
+  livePairings,
+  onPairingChange,
+  pairingsOfTable,
+  serveBindings,
+  serviceMethods,
+  sweepGone,
+} from './binding.ts'
+import { ChainKeeper, runShell } from './chain.ts'
 import { type Config, ConfigError, type ServerConfig } from './config.ts'
 import { readIdentities } from './identities.ts'
 import { keepAliveOn, RecordKeeper } from './keepalive.ts'
@@ -28,6 +50,7 @@ import {
   HELD_ID,
   type LocalPair,
   type LocalWord,
+  localPairs,
   localPeersOf,
   localPeersPath,
   localRootsOf,
@@ -46,8 +69,29 @@ import {
 } from './local.ts'
 import type { Logger } from './log.ts'
 import { holderLives, type Opened, readLock } from './open.ts'
+import { proposalsPath, proposalsRefused, readProposals } from './proposals.ts'
+import {
+  type Granted,
+  GrantSlot,
+  holdFile,
+  hostKindOf,
+  narrows,
+  regrantLine,
+  regrantNote,
+  revokeIntent,
+  SlotKeeper,
+  sendIntents,
+  withNotSent,
+} from './regrant.ts'
 import { type ManyDeps, REOPEN_MS, SERVER_VERSION, sharedOf, Unit } from './server.ts'
-import { connectionGrant, openAgentUnit, type SessionKeyMark, type SessionStart } from './session.ts'
+import {
+  connectionGrant,
+  openAgentUnit,
+  regrantConnection,
+  renewConnection,
+  type SessionKeyMark,
+  type SessionStart,
+} from './session.ts'
 import {
   bindSocket,
   Connection as Conn,
@@ -60,10 +104,13 @@ import {
   type ServiceConnection,
   type ServiceLock,
   StreamError,
+  subagentCall,
   takeServiceLock,
 } from './socket.ts'
+import { PEER_MS, type Peer, peerIs, within } from './socket-owner.ts'
 import {
   ALLOW_TAIL,
+  codeOf,
   HOME_NOTE,
   HOME_OFF,
   IDENTITIES_NOTE,
@@ -75,8 +122,8 @@ import {
   LOCAL_PER_DAY,
   LOCAL_PER_MINUTE,
   type LocalHome,
-  pairingsFor,
   registerTools,
+  type ServiceActs,
   type Sibling,
   type ToolContext,
   ToolError,
@@ -86,26 +133,49 @@ import { drainMail, WakeRouter } from './wake-router.ts'
 // The bag service (docs/bag-service.md): one process per home that holds every identity of it, one Unit each as the
 // --identities server holds them, and serves each socket connection its own MCP server over those units. It owns the
 // lifecycle: the lock, the run directory, the token, the drain and the CLI's lend and return. Binding a connection to an
-// identity is W1's (binding.ts), through onServiceRequest and ServiceHome.
+// identity is the binding table's (binding.ts Bindings), through onServiceRequest and ServiceHome.
 
 /** How long the drain lets in-flight calls finish. */
 export const DRAIN_CALLS_MS = 10_000
+/** How long the drain lets calls end once their relay requests are aborted. */
+export const ABORT_SETTLE_MS = 1_000
+/** How long the process may live after its drain before it exits hard, naming what was still open. */
+export const EXIT_GRACE_MS = 3_000
+/** The reason every relay request in flight at a drain is aborted with (the audit's cause is the edge's STOP_ABORT). */
+export const STOP_REASON = 'aborted at the service stop'
 /** How long a return waits for the CLI's identity lock before it answers busy. */
 export const RETURN_WAIT_MS = 5000
 /** The retry a shim is told on draining. */
 export const RETRY_AFTER_MS = 2000
-/** The hello capability (client_capabilities.experimental) of a host whose dialogs go through the consent bridge. */
+/** The hello capability (client_capabilities.experimental) naming an omp pid, whose questions go over its link. */
 export const CONSENT_BRIDGE = 'bag.dev/consent-bridge'
 
 /**
- * How long an ask over an omp consent link waits, in seconds: under omp's 30 s limit on an MCP tool call, which carries
- * the ask (W1 leg 5). Past it the ask is withdrawn and asked again at a later call.
+ * How a link's ask ended, for its link-end line: the person's answer, its cap's timer, the link's close, a newer ask
+ * of its kind on the link, or the asking signal's abort: the pairing's own end names its why (cancel, close,
+ * client-abort, or ended for a widget), and any other abort is the client's own cancel of the call.
  */
-export const LINK_ASK_S = 25
+export type LinkEnd =
+  | 'answered'
+  | 'timeout'
+  | 'link-closed'
+  | 'replaced'
+  | 'client-abort'
+  | 'cancel'
+  | 'close'
+  | 'ended'
+
+/** The end an abort's reason names: a tagged why from the pairing, else the client's abort. */
+function endOf(reason: unknown): LinkEnd {
+  const why = (reason as { why?: unknown } | null)?.why
+  return why === 'cancel' || why === 'close' || why === 'client-abort' || why === 'ended'
+    ? why
+    : 'client-abort'
+}
 
 export type { Custody }
 
-/** The home the service holds (section 5a). */
+/** The home the service holds. */
 export interface ServiceHome {
   readonly home: string
   identities(): readonly {
@@ -131,18 +201,20 @@ export interface ServiceDeps extends ManyDeps {
   readonly helloMs?: number
   readonly lockRetryMs?: number
   readonly drainCallsMs?: number
+  /** After the drain, the time before a hard exit (default EXIT_GRACE_MS). */
+  readonly exitGraceMs?: number
   readonly returnWaitMs?: number
   /** Re-reads the identities file (a return re-derives from disk); default the start's file. */
   readonly reread?: () => ServerConfig['identities']
   readonly uid?: number
   /**
-   * Reads one identity's class, address and keys, fresh each call: the Keychain lane's openIdentityKeys by default,
-   * with no `run` option, so a Keychain dialog holds only that identity's promise and never the process.
+   * Reads one identity's class, address and keys, fresh each call: openIdentityKeys (packages/edge/src/custody/home.ts)
+   * by default, with no `run` option, so a Keychain dialog holds only that identity's promise and never the process.
    */
   readonly openKeys?: (home: string, name: string) => Promise<OpenedKeys>
   /**
-   * How an agent identity's unit opens (W1's session opening): a key made for it, the agent's hop to it. The unit
-   * opens at the principal's mailbox, the agent opening what arrives. None: an agent identity does not open.
+   * How an agent identity's unit opens (by default session.ts openAgentUnit): a key made for it, the agent's hop to it.
+   * The unit opens at the principal's mailbox, the agent opening what arrives. None: an agent identity does not open.
    */
   readonly agentOpening?: (
     home: string,
@@ -150,26 +222,34 @@ export interface ServiceDeps extends ManyDeps {
   ) => Promise<{ readonly keys: EdgeKeys; readonly hop: Hop } | { readonly config: Config }>
   /** The agent a connection's grant is asked of (connectionGrant's connect); default the home's agent.sock. */
   readonly agentConnect?: () => Pick<AgentClient, 'grant' | 'close'>
+  /** The agent the start's revoke intents are sent to (AgentClient.revoke); default the home's agent.sock. */
+  readonly agentRevoke?: () => Pick<AgentClient, 'revoke' | 'close'>
   /**
-   * Whether a Keychain identity opens at start (its keep-alive opted in, the mail lane's keepAliveChoice); otherwise
+   * Whether a Keychain identity opens at start (its keep-alive opted in, keepAliveChoice in @usebag/edge); otherwise
    * it opens at its first bind, when a person is there for the dialog. Default: the person's word, keep true in the
    * keep-alive table (keepAliveChoice(home, label): the table is keyed by label), never keep_alive_records.
    */
   readonly eager?: (config: Config) => boolean
-  /** The mail lane's hooks (wake router, audit attribution, drain and restore of mail state); default mailHooks. */
+  /** The mail hooks (wake router, audit attribution, drain and restore of mail state); default mailHooks. */
   readonly mail?: MailHooks
   /** The versioned package directory this process loaded from, for service.json (packaged.ts keeps it). */
   readonly packageDir?: string | null
   /** How often an automatic return looks again at the CLI's identity lock (default REOPEN_MS). */
   readonly lockPollMs?: number
+  /** The macOS security tool the acts on the home read a keychain item with (tools.ts); the system's by default. */
+  readonly security?: SecurityRunner
+  /** Whether omp `pid` holds the other end of a registering connection (socket-owner.ts peerIs by default). */
+  readonly peer?: (socket: Socket, pid: number) => Promise<Peer>
+  /** How long a registration waits for that answer before it is refused as timed out (default PEER_MS). */
+  readonly peerMs?: number
 }
 
 /**
- * Where the mail lane (svc-mail: WakeRouter, withConnection, drainMail, restoreMail) plugs into the service. Each hook
- * is optional, so the service runs without that lane; its merge fills them with the mail lane's calls.
+ * Where the mail code (WakeRouter and drainMail in wake-router.ts, withConnection from @usebag/edge) plugs
+ * into the service. Each hook is optional, so the service runs without them; mailHooks fills them.
  */
 export interface MailHooks {
-  /** After a unit opens, before its first bind: desk.prefer, edge.audit.attribute, restoreMail. */
+  /** After a unit opens, before its first bind: desk.prefer and edge.audit.attribute. */
   opened?(label: string, unit: Unit): void
   /** Each message a unit delivers: router.arrived(label). */
   arrived?(label: string): void
@@ -183,11 +263,11 @@ export interface MailHooks {
   withConnection?<T>(handle: string, run: () => T): T
 }
 
-/** How often the service's keep-alive looks again, in seconds (svc-mail's tick_s). */
+/** How often the service's keep-alive looks again, in seconds (keepalive.ts tick_s). */
 export const KEEP_ALIVE_TICK_S = 300
 
 /**
- * The mail lane's hooks, over one WakeRouter of the service: each opened unit's
+ * The mail hooks, over one WakeRouter of the service: each opened unit's
  * desk prefers the speaking connection, its audit names it and its returned marks are kept in the store; arrivals,
  * typing and closes go to the router; the drain runs drainMail; each tool call runs inside withConnection.
  */
@@ -215,6 +295,9 @@ export function mailHooks(router: WakeRouter, clock: ServiceDeps['clock']): Mail
   }
 }
 
+/** A word quoted for a POSIX shell when it needs it (as home's host-common shq): a printed command pastes as it is. */
+const shellWord = (s: string): string => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`)
+
 /**
  * The state directory an identity's lock (mcp.lock) lives in: an agent identity's unit runs as its session
  * `<name>.service` (openAgentUnit), every other identity as its own name. Lend, return and the lock checks use it.
@@ -224,8 +307,8 @@ export function lockName(custody: Custody | null, name: string): string {
 }
 
 /**
- * Whether keys/<x>.service.json is provably an agent unit's session key (#sweepSessionKeys): it carries W1's mark
- * (session.ts SessionKeyMark: kind "session-key", principal x, written only by openAgentUnit), x has an agent
+ * Whether keys/<x>.service.json is provably an agent unit's session key (#sweepSessionKeys): it carries the session key
+ * mark (session.ts SessionKeyMark: kind "session-key", principal x, written only by openAgentUnit), x has an agent
  * pointer (agent/x.json), and x.service is no label or key name in the identities file.
  */
 export function sessionKeyOf(home: string, x: string, listed: ReadonlySet<string>): boolean {
@@ -242,7 +325,7 @@ export function sessionKeyOf(home: string, x: string, listed: ReadonlySet<string
   }
 }
 
-/** The custody class of `name` in the contract's words, or null for none or two (EEXIST: both custodies hold it). */
+/** The custody class of `name` as the service names it, or null for none or two (EEXIST: both custodies hold it). */
 function classOf(home: string, name: string): Custody | null {
   try {
     return serviceCustody(home, name)
@@ -254,6 +337,13 @@ function classOf(home: string, name: string): Custody | null {
 /** What a unit's tools answer while its keys are read: a Keychain dialog may be waiting for the person. */
 const keysPending = (label: string): ConfigError =>
   new ConfigError('busy', `the identity ${label} is opening: a Keychain dialog may be waiting on this Mac`)
+
+/** What an agent identity not opened yet answers: it opens at its first bind, when its agent asks for a y. */
+const agentAtBind = (label: string): ConfigError =>
+  new ConfigError(
+    'busy',
+    `the identity ${label} opens when a window binds to it (its agent asks for a y then)`,
+  )
 
 /** What a Keychain identity not opened yet answers: it opens at its first bind (no dialog on an unattended start). */
 const opensAtBind = (label: string): ConfigError =>
@@ -321,26 +411,50 @@ export class Service implements ServiceHome {
   #drained: Promise<void> | null = null
   #lock: ServiceLock | null = null
   #server: Server | null = null
-  #lends = new Map<string, { conn: Connection; verb: string }>()
+  /** Aborts every unit's relay requests at the drain (relayFor's signal), with STOP_REASON as the reason. */
+  readonly #stop = new AbortController()
+  /** The relay requests in flight, by label and call (#tracked). */
+  readonly #relayCalls = new Set<{ readonly label: string; readonly call: string }>()
+  /**
+   * Each lent identity: the CLI's connection that borrowed it, or null while a window's act holds it quiet. Written
+   * only by #lend and #release, so service.json's lends follows every change.
+   */
+  #lends = new Map<string, { conn: Connection | null; verb: string }>()
+  /** service.json's started_at, taken at its first write and kept by every later one. */
+  #startedAt: string | null = null
+  /** service.json's text as last written: a rewrite with the same text is skipped. */
+  #statusText: string | null = null
+  /** Stops this service hearing its home's asks (ask.ts onAsking): set at the first write, called at the teardown. */
+  #unhearAsks: (() => void) | null = null
   #handlers = new Map<string, Handler>()
   #dialogs = new Map<string, Connection>()
   #roots = new Map<Connection, { root: ToolContext; mcp: McpServer; inflight: number }>()
   #holders: Holders = () => []
-  /** Ends one connection's bindings, and with them its pairings only, at its close (W1's table.unbind; endFor). */
+  /** Ends one connection's bindings, and its pairings only, at its close (the table's unbind, via setEndFor). */
   #endFor: (conn: ServiceConnection) => void = () => {}
   /** Each identity's custody class as its open or return last read it (the edge's custodyClass); null for none or two. */
   readonly #custody = new Map<string, Custody | null>()
   /** Labels gone from the identities file whose unit still serves a bound window (#refresh). */
   readonly #gone = new Set<string>()
+  /** The last preflight refusal logged per agent identity (#openAgent), so a retried refusal is logged once. */
+  readonly #preflightSaid = new Map<string, string>()
   /** Each agent identity's session (openAgentUnit), closed with its unit and in the drain. */
   readonly #sessions = new Map<string, SessionStart>()
+  /** Each agent unit's grant, kept in place (regrant.ts): renewed by its ChainKeeper, asked again on a window's act. */
+  readonly #unitSlots = new Map<string, GrantSlot<Granted>>()
+  /** Each bound window's grant keeper (regrant.ts SlotKeeper), by the label it keeps; it leaves with its slot. */
+  readonly #keepers = new Map<Pick<SlotKeeper<Granted>, 'stop' | 'resume'>, string>()
+  /** The start's send of the revoke intents, after the units' opening (a test awaits it). */
+  revoking: Promise<void> = Promise.resolve()
+  /** The revoke intents' sends, one at a time: the start's and each regrant's. */
+  #intents: Promise<void> = Promise.resolve()
   /** Each label's key name in the identities file. */
   readonly #keyNames = new Map<string, string>()
   /** Each connection's identities, by label, and how a label added to the file joins them. */
   readonly #siblings = new Map<Connection, { all: Map<string, Sibling>; add: (label: string) => void }>()
-  /** W1's binding table of this home's connections. */
+  /** The binding table (binding.ts Bindings) of this home's connections. */
   readonly table: Bindings
-  /** The mail lane's wake router: which connection speaks for each identity, and the rings. */
+  /** The wake router (wake-router.ts): which connection speaks for each identity, and the rings. */
   readonly router: WakeRouter
   readonly #mail: MailHooks
   #config: ServerConfig
@@ -363,8 +477,19 @@ export class Service implements ServiceHome {
   readonly #removed = new Set<string>()
   /** A removed identity's key name, recorded at the remove: its spool is found after its unit is gone (v2). */
   readonly #removedNames = new Map<string, string>()
+  /**
+   * The served removes of run/removed.json not yet failed, read once at the first table read (#readRemoved); null
+   * before it. With each, the rows of its address as that read found them, for the held work after it (#pairs).
+   */
+  #removedRecords: { readonly entry: RemovedEntry; readonly rows: readonly LocalPair[] }[] | null = null
   /** A removed identity re-added this run, with the clock second of its re-add: older rows of it are foreign (u1). */
   readonly #reborn = new Map<string, number>()
+  /**
+   * A removed identity re-added this run, with the length of #changes at its re-add: a change naming it from before
+   * (its old pairs' notices) is not told again, as its old pairs are gone (C3). A position, not a clock second, so a
+   * change in the second of the re-add is never mistaken for one before it.
+   */
+  readonly #rebornAt = new Map<string, number>()
   /** The identities whose log has had the start's audit lines this run (#opened, t3). */
   readonly #replayed = new Set<string>()
   /** The labels whose address could not be read at a table read, audited once each (t2). */
@@ -379,6 +504,10 @@ export class Service implements ServiceHome {
   readonly #unsent = new Map<string, AuditEntry[]>()
   /** When a refused re-ask of each pair (askKey) was last audited, clock seconds (#reaskRefused). */
   readonly #reaskLogged = new Map<string, number>()
+  /** Why proposals.json was last refused (proposalsRefused), one policy line per change; null while it reads. */
+  #proposalsWhy: string | null = null
+  /** The labels of proposals that name no identity of the home, each logged once (#proposals). */
+  readonly #unproposed = new Set<string>()
   /** Why the local pair table was last refused (pairsRefused), told once per change; null while it reads. */
   #pairsWhy: string | null = null
   /** The pairs (requester and recipient, by askKey) whose dialog is open in a window now. */
@@ -387,6 +516,8 @@ export class Service implements ServiceHome {
   readonly #changesSeen = new Map<string, number>()
   /** Each label's local sends in the last day, by clock second (the rate limit, S5). */
   readonly #localSent = new Map<string, number[]>()
+  /** What every connection's tools reach of the service for the acts on its home (tools.ts ServiceActs). */
+  readonly #acts: ServiceActs = this.#actsOf()
 
   private constructor(config: ServerConfig, home: string, deps: ServiceDeps) {
     this.#config = config
@@ -434,8 +565,52 @@ export class Service implements ServiceHome {
           ...(deps.agentConnect === undefined ? {} : { connect: deps.agentConnect }),
         })
       },
+      // A window's grant kept in place: renewed silently, asked again only on its own act (regrant.ts, hooks 1 to 3).
+      slot: (conn, label, first) => {
+        let client: Pick<AgentClient, 'close'> | null = null
+        const audit = (act: GrantAct, f: GrantDetail) => this.#grantLine(label, act, f, conn.handle)
+        // The note the agent prints above the hop: the label and the host kind only, never what a window sent.
+        const note = regrantNote({ label, host: hostKindOf(conn.host) })
+        const slot = new GrantSlot(first, {
+          now: () => deps.clock.now(),
+          renew: (g) => renewConnection(home, g, { clock: deps.clock }),
+          regrant: (onCode) =>
+            regrantConnection(home, {
+              rng: deps.rng,
+              clock: deps.clock,
+              caveats: this.grantCaveats(label),
+              onCode,
+              onClient: (c) => (client = c),
+              note,
+              ...(deps.agentConnect === undefined ? {} : { connect: deps.agentConnect }),
+            }),
+          abort: () => client?.close(),
+          audit,
+          words: (code) => regrantLine({ label, host: conn.host, connection: conn.handle, code }),
+        })
+        // Renewed silently while bound, paused while the identity is lent or held quiet (lent() names both).
+        const keeper = new SlotKeeper(slot, {
+          now: () => deps.clock.now(),
+          timers: deps.timers,
+          held: () => this.lent(label) !== null,
+        })
+        this.#keepers.set(keeper, label)
+        slot.onCancel(() => this.#keepers.delete(keeper))
+        if (this.#draining) keeper.stop()
+        else keeper.start()
+        return slot
+      },
+      // A window's act on an agent identity first brings the unit's grant back when it was lost (never on its own).
+      before: (label) => this.#unitSlots.get(label)?.forAct(),
+      // The person's typed use or dialog Yes also resets the unit's hold, and asks only if it must.
+      person: (label, channel) =>
+        void this.#unitSlots
+          .get(label)
+          ?.person(channel)
+          .catch(() => {}),
     })
-    serveBindings(this.table, home)
+    // service.json carries the live counts, rewritten as a pairing starts or ends and as an ask opens or closes.
+    onPairingChange(this.table, () => this.#writeJson())
     // service/identities and service/use read the identities file again first (#refresh); unbind may drop a gone one.
     for (const [method, handler] of Object.entries(serviceMethods(this.table)))
       this.onServiceRequest(method as `service/${string}`, async (c, p) => {
@@ -451,103 +626,196 @@ export class Service implements ServiceHome {
     this.setHolders((label) =>
       [...this.connections].filter((c) => this.#binds(c, label)).map((c) => ({ host: c.host, cwd: c.cwd })),
     )
-    this.#handlers.set('service/lend', (c, p) => this.#lend(c as Connection, p))
+    this.#handlers.set('service/lend', (c, p) => this.#lendRequest(c as Connection, p))
     this.#handlers.set('service/return', (c, p) => this.#return(c as Connection, p))
     this.#handlers.set('service/consent-register', async (c, p) => this.#register(c as Connection, p))
     this.#handlers.set('service/consent-answer', async (c, p) => {
       const ask = this.#consentAsks.get(String(p.id))
       if (ask === undefined || ask.link !== c) throw new ToolError('not-authorized', 'not this consent link')
       // L1: true is Yes, false the person's own No; anything else (null: an aborted or timed-out confirm) is no
-      // answer, and the pair stays requested.
-      ask.done(p.accepted === true ? true : p.accepted === false ? false : null)
+      // answer, and the pair stays requested. A text question's Yes carries its text, checked here as askPerson
+      // checks it (printable, one line, 1 to max): any other text is no answer. A show takes no answer.
+      if (ask.kind === 'show') return {}
+      if (ask.kind !== 'text' || p.accepted !== true)
+        ask.done({ accepted: p.accepted === true ? true : p.accepted === false ? false : null }, 'answered')
+      else {
+        // The fold is the service's own record of the ask (the pasted code only), never anything in the answer.
+        const text = textOf(p.text, ask.max, ask.fold)
+        ask.done(text === null ? { accepted: null } : { accepted: true, text }, 'answered')
+      }
       return {}
     })
   }
 
   /** Each omp process's registered consent link (item 7), by its pid, and the questions open on them, by id. */
   readonly #links = new Map<number, Connection>()
-  /** The omp pids a window has named in its hello (L2): a first registration for one comes too late, refused. */
+  /** The omp pids a window has named in its hello (L2): a first registration after one is taken from omp itself only. */
   readonly #advertised = new Set<number>()
+  /** What each link registered (0.4.2): the kinds its extension renders, and omp's call limit for bag (ms; null: none told). */
+  readonly #linkFacts = new WeakMap<Connection, { kinds: ReadonlySet<string>; callMs: number | null }>()
   readonly #consentAsks = new Map<
     string,
-    { link: Connection; done: (yes: boolean | null) => void; withdraw: () => void }
+    {
+      link: Connection
+      kind: 'confirm' | 'text' | 'show'
+      max: number
+      fold: boolean
+      done: (a: LinkAnswer, end: LinkEnd) => void
+      withdraw: (end: LinkEnd) => void
+    }
   >()
+
+  /** Peer lookups running now, service-wide, and how many each connection has started (a real link makes one). */
+  #peerBusy = 0
+  readonly #peerTries = new WeakMap<Connection, number>()
 
   /**
    * An omp extension's registration for its process (C2): the first wins while its connection lives. The first answers
    * a secret whose hash the service keeps in run/consent-<pid>.json (0600); while that pid lives a later registration
-   * must present the secret, else it is refused and audited.
+   * must present the secret, else it is refused and audited. Only omp `pid` itself may register for it: the process at
+   * the other end of this connection must be `pid` (peerIs), else it is refused. A first registration after a window
+   * named the pid (L2) is taken only for that proven peer.
    */
-  #register(conn: Connection, p: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  async #register(conn: Connection, p: Readonly<Record<string, unknown>>): Promise<Record<string, unknown>> {
     const pid = Number(p.pid)
     const file = join(this.paths.dir, `consent-${pid}.json`)
     const hash = (x: unknown) => createHash('sha256').update(String(x)).digest('hex')
-    let kept: string | null = null
-    try {
-      kept = this.#deps.alive(pid) ? (JSON.parse(readFileSync(file, 'utf8')) as { hash: string }).hash : null
-    } catch {}
-    const held = this.#links.get(pid)
-    if (
-      !Number.isSafeInteger(pid) ||
-      (held !== undefined && !held.closed) ||
-      (kept === null && this.#advertised.has(pid)) ||
-      (kept !== null && hash(p.secret) !== kept)
-    ) {
-      this.#policy(`consent registration refused for omp ${pid}`)
-      throw new ToolError('not-authorized', 'this omp process has a consent link already')
+    const kept = (): string | null => {
+      try {
+        return this.#deps.alive(pid)
+          ? (JSON.parse(readFileSync(file, 'utf8')) as { hash: string }).hash
+          : null
+      } catch {
+        return null
+      }
     }
+    // Every refusal writes its policy line, makes no link and no secret file, and closes this connection once its
+    // answer is out: the extension opens a new link only when one closes, so a refused link left open never asks again.
+    const refuse = (
+      why = '',
+      e: Error = new ToolError('not-authorized', 'this omp process has a consent link already'),
+    ) => {
+      this.#policy(`consent registration refused for omp ${pid}${why}`)
+      setImmediate(() => conn.close())
+      return e
+    }
+    const taken = (): boolean => {
+      const held = this.#links.get(pid)
+      const k = kept()
+      return conn.closed || (held !== undefined && !held.closed) || (k !== null && hash(p.secret) !== k)
+    }
+    if (!Number.isSafeInteger(pid) || taken()) throw refuse()
+    const tries = (this.#peerTries.get(conn) ?? 0) + 1
+    this.#peerTries.set(conn, tries)
+    if (this.#peerBusy >= 4 || tries > 3)
+      throw refuse(
+        ': too many peer lookups',
+        new StreamError('busy', 'too many consent registrations at once'),
+      )
+    // The slot is freed at the answer or at the limit, whichever is first, never later; a lookup that throws at
+    // once is unavailable and frees it too.
+    this.#peerBusy++
+    const lookup = new Promise<Peer>((r) => r((this.#deps.peer ?? peerIs)(conn.socket, pid)))
+    const peer = await within(lookup, this.#deps.peerMs ?? PEER_MS).finally(() => this.#peerBusy--)
+    const why = {
+      other: `: peer is not omp ${pid}`,
+      timeout: ': peer lookup timed out',
+      unavailable: ': peer lookup unavailable',
+    }
+    if (peer !== 'match')
+      throw refuse(why[peer], new ToolError('not-authorized', 'this connection is not that omp process'))
+    // Looked at again after the wait: this connection may have closed, or another registration for the pid won.
+    if (taken()) throw refuse()
+    const first = kept() === null
     this.#links.set(pid, conn)
-    if (kept !== null) return {}
+    // 0.4.2: the kinds this extension renders (none told: a 0.4.1 extension, confirm only) and call_ms, omp's own MCP
+    // timeout for bag (the extension's word; a wrong one is safe, for omp cancels its own timed-out calls).
+    const kinds = Array.isArray(p.kinds) ? p.kinds.filter((k) => k === 'text' || k === 'show') : []
+    const callMs =
+      typeof p.call_ms === 'number' && Number.isSafeInteger(p.call_ms) && p.call_ms >= 0 ? p.call_ms : null
+    this.#linkFacts.set(conn, { kinds: new Set(['confirm', ...kinds]), callMs })
+    // What the link told, so a call_ms that does not match omp's real timeout is readable beside link-end.
+    // late: a window named this pid first (L2), taken because the peer is omp itself.
+    const late = first && this.#advertised.has(pid) ? { late: true } : {}
+    this.#log.log('info', 'consent-link', { pid, kinds: ['confirm', ...kinds], call_ms: callMs, ...late })
+    if (!first) return {}
     const secret = randomBytes(32).toString('hex')
     writeWhole(file, `${JSON.stringify({ hash: hash(secret) })}\n`)
     return { secret }
   }
 
   /**
-   * A yes or no from the person, asked over the registered link of `window`'s omp; null when it has none. The ask
-   * lives inside the asking tool call, which omp ends at 30 s: it is withdrawn (service/consent-withdraw {id}, the
-   * extension dismisses its confirm) when that call is cancelled or after LINK_ASK_S, and any later answer for its id
-   * is refused, so the row stays requested and is asked again at a later call (L1). A new ask on a link withdraws any
-   * open one first, so no confirm stacks behind a stale one.
+   * One question (a confirm or a line of text) or a show, over the registered link of `window`'s omp; null when it has
+   * none, or its extension did not register the kind (a 0.4.1 extension renders confirms only). A question lives inside
+   * the asking tool call: it is withdrawn (service/consent-withdraw {id}, the extension dismisses its dialog) when that
+   * call is cancelled (omp sends notifications/cancelled on its own timeout too) or at its cap (ask.ts askMs: the link's
+   * budget, never past the call's deadline less 5 s), and any later answer for its id is refused, so it is asked again
+   * at a later call (L1). With less than 15 s of the call left it is not sent: no answer at once. A new question on a
+   * link withdraws any open question first, so none stacks behind a stale one; a show stands beside questions until
+   * its signal (the pairing's end) or `ms`, and a new show replaces the old.
    */
-  #consent(
-    window: ServiceConnection,
-    words: { title: string; message: string },
-    signal?: AbortSignal,
-  ): Promise<boolean | null> | null {
+  #consent(window: ServiceConnection, q: LinkAsk, signal?: AbortSignal): Promise<LinkAnswer> | null {
     const pid = (window.capabilities.raw.experimental as Record<string, { pid?: number }> | undefined)?.[
       CONSENT_BRIDGE
     ]
     const link = pid?.pid === undefined ? undefined : this.#links.get(pid.pid)
     if (link === undefined || link.closed) return null
+    const facts = this.#linkFacts.get(link) ?? { kinds: new Set(['confirm']), callMs: null }
+    const kind = q.kind ?? 'confirm'
+    if (!facts.kinds.has(kind)) return null
+    const show = kind === 'show'
+    const ms = show ? Math.max(0, q.ms ?? 0) : askMs(facts.callMs, q.elapsedMs ?? 0)
+    // The log lines name the act, the kind, the cap and the times, never the title, message, lines or an answer.
+    const act = q.act ?? null
+    const elapsed_ms = Math.round(q.elapsedMs ?? 0)
+    if (ms === null) {
+      this.#log.log('info', 'link-ask', { act, kind, cap_ms: null, elapsed_ms })
+      return Promise.resolve({ accepted: null, sent: false })
+    }
     const id = randomBytes(8).toString('hex')
-    const ms = LINK_ASK_S * 1000
-    for (const a of [...this.#consentAsks.values()]) if (a.link === link) a.withdraw()
+    for (const a of [...this.#consentAsks.values()])
+      if (a.link === link && (a.kind === 'show') === show) a.withdraw('replaced')
     return new Promise((resolve) => {
       // L1: only an explicit accepted false is a No; a timeout, a cancelled call or a closed link is no answer.
       let settled = false
-      const done = (yes: boolean | null): void => {
+      const opened = performance.now()
+      const done = (a: LinkAnswer, end: LinkEnd): void => {
         if (settled) return
         settled = true
         cancel()
-        signal?.removeEventListener('abort', withdraw)
+        signal?.removeEventListener('abort', aborted)
         this.#consentAsks.delete(id)
-        resolve(yes)
+        const open_ms = Math.round(performance.now() - opened)
+        // A client's abort before the cap: omp's own timeout came first, so the call_ms the link told is too long.
+        const early = !show && end === 'client-abort' && open_ms < ms
+        const mismatch = early ? { mismatch: 'call-ms', call_ms: facts.callMs } : {}
+        this.#log.log('info', 'link-end', { id, act, kind, open_ms, end, ...mismatch })
+        resolve(a)
       }
-      const withdraw = (): void => {
+      const withdraw = (end: LinkEnd): void => {
         if (!settled && !link.closed) link.notify('service/consent-withdraw', { id })
-        done(null)
+        done({ accepted: null }, end)
       }
-      const cancel = this.#deps.timers.after(ms, withdraw)
-      if (signal?.aborted === true) return withdraw()
-      this.#consentAsks.set(id, { link, done, withdraw })
-      link.onClose(() => done(null))
-      signal?.addEventListener('abort', withdraw, { once: true })
-      link.notify('service/consent-ask', { id, ...words, ms })
+      const aborted = (): void => withdraw(endOf(signal?.reason))
+      const cancel = this.#deps.timers.after(ms, () => withdraw('timeout'))
+      this.#log.log('info', 'link-ask', { id, act, kind, cap_ms: ms, elapsed_ms })
+      if (signal?.aborted === true) return aborted()
+      const max = q.max ?? 512
+      this.#consentAsks.set(id, { link, kind, max, fold: kind === 'text' && q.fold === true, done, withdraw })
+      link.onClose(() => done({ accepted: null }, 'link-closed'))
+      signal?.addEventListener('abort', aborted, { once: true })
+      const more = {
+        ...(q.kind === undefined ? {} : { kind }),
+        ...(kind === 'text'
+          ? { max, ...(q.placeholder === undefined ? {} : { placeholder: q.placeholder }) }
+          : {}),
+        ...(show ? { lines: [...(q.lines ?? [])] } : {}),
+      }
+      link.notify('service/consent-ask', { id, title: q.title, message: q.message, ms, ...more })
     })
   }
 
-  /** Whether `conn` is bound to `label` (W1's require of a tool every class runs, status). */
+  /** Whether `conn` is bound to `label` (the table's require of status, a tool every class runs). */
   #binds(conn: ServiceConnection, label: string): boolean {
     try {
       this.table.require(conn, 'status', label)
@@ -575,6 +843,8 @@ export class Service implements ServiceHome {
       }
     }
     s.#lock = await takeServiceLock(paths.lock, holder, deps.lockRetryMs)
+    // The home's table only once the lock is this service's: a start refused busy leaves the live one's in place.
+    serveBindings(s.table, home)
     try {
       // The pair table's baseline is read now, before any identity opens or its spool drains (q1), with no held work;
       // the identities are made (not opened), then the start's held work runs (the expiry's drops, s1), its audit
@@ -582,6 +852,7 @@ export class Service implements ServiceHome {
       s.#pairs(false)
       const open = s.#openUnits()
       s.#pairs()
+      s.#proposals()
       s.#starting = false
       s.#server = await bindSocket(paths.sock, (socket) => s.#accept(socket))
       writeWhole(paths.token, s.token.toString('hex'))
@@ -592,6 +863,7 @@ export class Service implements ServiceHome {
       for (const f of readdirSync(paths.dir).filter((x) => /^consent-\d+\.json$/.test(x)))
         if (!deps.alive(Number(f.slice(8, -5)))) rmSync(join(paths.dir, f), { force: true })
       s.opening = open()
+      s.revoking = s.opening.catch(() => {}).then(() => s.#sendIntents())
     } catch (e) {
       await s.#teardown()
       throw e
@@ -620,13 +892,47 @@ export class Service implements ServiceHome {
     return [...this.#roots.values()].reduce((n, r) => n + r.inflight, 0)
   }
 
+  /** The relay requests still in flight, as "<label> <call>" (the hard exit names them). */
+  relayCalls(): string[] {
+    return [...this.#relayCalls].map((r) => `${r.label} ${r.call}`)
+  }
+
+  /**
+   * A unit's relay client, its HTTP calls counted while in flight; a call the drain aborted logs relay-aborted with
+   * at: 'stop'. The subscription is left as it is: the drain's halt closes it.
+   */
+  #tracked(label: string, client: RelayClient): RelayClient {
+    const counted = new Set(['publish', 'fetch', 'fetchRecord', 'pairOpen', 'pairClaim'])
+    return new Proxy(client, {
+      // The target as the receiver: a getter reading a #private field would throw with the proxy as `this`.
+      get: (target, key) => {
+        const v = Reflect.get(target, key, target) as unknown
+        if (typeof v !== 'function') return v
+        if (typeof key !== 'string' || !counted.has(key)) return v.bind(target)
+        return async (...a: unknown[]) => {
+          const row = { label, call: key }
+          this.#relayCalls.add(row)
+          try {
+            return await (v as (...x: unknown[]) => Promise<unknown>).apply(target, a)
+          } catch (e) {
+            if (this.#stop.signal.aborted)
+              this.#log.log('warn', 'relay-aborted', { label, call: key, at: 'stop' })
+            throw e
+          } finally {
+            this.#relayCalls.delete(row)
+          }
+        }
+      },
+    })
+  }
+
   unit(label: string): Unit | null {
     return this.units.get(label) ?? null
   }
 
   /**
-   * An agent identity's grant caveats, the same list for every connection that binds it (W1's connectionGrant), or the
-   * refusal not-authorized when it has none: an uncaveated grant would be wider than the session form allows.
+   * An agent identity's grant caveats, the same list for every connection that binds it (session.ts connectionGrant),
+   * or the refusal not-authorized when it has none: an uncaveated grant would be wider than the session form allows.
    */
   grantCaveats(label: string): readonly string[] {
     const u = this.units.get(label)
@@ -641,22 +947,25 @@ export class Service implements ServiceHome {
     return this.#lends.get(label)?.verb ?? null
   }
 
-  /** W1's handlers for its service/ methods (service/use, service/unbind, service/identities). */
+  /** The binding table's handlers for its service/ methods (service/use, service/unbind, service/identities). */
   onServiceRequest(method: `service/${string}`, handler: Handler): void {
     this.#handlers.set(method, handler)
   }
 
-  /** W1's table.endFor, called with each connection as it closes. */
+  /** The binding table's end of a connection (Bindings.unbind), called with each connection as it closes. */
   setEndFor(endFor: (conn: ServiceConnection) => void): void {
     this.#endFor = endFor
   }
 
-  /** W1's bindings, for a lend's refusal. */
+  /** Who binds each label now (from the binding table), for a lend's refusal. */
   setHolders(holders: Holders): void {
     this.#holders = holders
   }
 
-  /** The drain (section 9): refuse, cancel pairings, let calls finish, stop, flush, release, the lock last. */
+  /**
+   * The drain (docs/bag-service.md, "When the service is not running"): refuse, cancel pairings, let calls finish,
+   * stop, flush, release, the lock last.
+   */
   drain(reason: 'upgrade' | 'stop' = 'stop'): Promise<void> {
     this.#drained ??= this.#drain(reason)
     return this.#drained
@@ -669,20 +978,39 @@ export class Service implements ServiceHome {
     this.#log.log('info', 'service-drain', { reason })
     for (const c of this.connections) c.notify('service/draining', { retry_after_ms: RETRY_AFTER_MS, reason })
     for (const c of this.connections) await this.#cancelPairings(c)
+    await this.#cancelUnwindowed()
     dbg('pairings')
     const deadline = Date.now() + (this.#deps.drainCallsMs ?? DRAIN_CALLS_MS)
     while (Date.now() < deadline && [...this.#roots.values()].some((r) => r.inflight > 0))
       await new Promise((r) => setTimeout(r, 20))
     dbg('calls')
+    // A relay request still open (a relay that never answers) would keep this process on the network after its lock is
+    // released: aborted now, while the stores are open, so each aborted send is audited and kept in its outbox.
+    const open = this.relayCalls()
+    if (open.length > 0) this.#log.log('warn', 'drain-abort', { calls: open })
+    this.#stop.abort(new Error(STOP_REASON))
+    const settle = Date.now() + ABORT_SETTLE_MS
+    while (Date.now() < settle && (this.#relayCalls.size > 0 || this.calls() > 0))
+      await new Promise((r) => setTimeout(r, 20))
+    dbg('aborted')
     const why = new ConfigError('draining', 'the service is restarting')
     // Subscriptions stop and stores flush and close: every acting tool answers draining from here.
     const units = [...this.units.values()]
-    for (const u of units) u.halt()
+    // An outstanding y at the agent ends with the drain; no unit asks again.
+    // No window grant is renewed after the drain starts.
+    for (const slot of this.#unitSlots.values()) slot.cancel()
+    for (const keeper of this.#keepers.keys()) keeper.stop()
+    this.#keepers.clear()
+    for (const u of units) {
+      u.chain?.stop()
+      u.halt()
+    }
     await this.#mail.drain?.(units)
     dbg('mail')
     await Promise.allSettled(units.map((u) => u.suspend(why)))
     dbg('suspended')
     this.#lends.clear()
+    this.#writeJson()
     await this.#teardown()
     dbg('teardown')
     this.#log.log('info', 'service-stop', {})
@@ -697,6 +1025,9 @@ export class Service implements ServiceHome {
     await Promise.allSettled([...this.units.values()].map((u) => u.stop()))
     for (const s of this.#sessions.values()) s.close()
     this.#sessions.clear()
+    // A start that failed after its first write, and every drain, stop hearing the home's asks.
+    this.#unhearAsks?.()
+    this.#unhearAsks = null
     for (const p of [this.paths.sock, this.paths.token, this.paths.json]) rmSync(p, { force: true })
     this.#lock?.release()
     this.#lock = null
@@ -741,6 +1072,7 @@ export class Service implements ServiceHome {
       log: (level, event, f = {}) => deps.log.log(level, event, { ...f, label: c.label }),
     }
     const keeper = deps.keeper ?? this.#keeper(c.label)
+    const relay = this.#tracked(c.label, deps.relayFor(c, this.#stop.signal))
     const localSend = (input: SendInput) => this.#localReceipt(c.label, input)
     // The receiver trusts only the service's reconciled table, never the raw disk (item q1).
     const localRoots = (): string[] => {
@@ -753,14 +1085,14 @@ export class Service implements ServiceHome {
     const unit = new Unit(
       c,
       this.#shared,
-      { ...deps, relay: deps.relayFor(c), log: tagged, keeper, localSend, localRoots },
+      { ...deps, relay, log: tagged, keeper, localSend, localRoots },
       true,
     )
     unit.readKeys = async () => {
       const o = await read(this.home, c.as)
       this.#custody.set(c.label, o.custody)
-      // An agent identity opens as a session of it: the agentOpening seam's key under the agent's hop (W1's session
-      // opening, when it is wired); with none it does not open, and its windows' acts answer why.
+      // An agent identity opens as a session of it: the agentOpening seam's key under the agent's hop (by default
+      // #openAgent, through session.ts openAgentUnit); with none it does not open, and its windows' acts answer why.
       if (o.custody === 'agent') {
         const opening = await (deps.agentOpening ?? ((_h: string, x: Config) => this.#openAgent(unit, x)))(
           this.home,
@@ -776,10 +1108,7 @@ export class Service implements ServiceHome {
     this.#custody.set(c.label, classOf(this.home, c.as))
     // An agent identity asks one y at the agent per open: like a Keychain dialog, only when a window binds to it.
     if (this.#custody.get(c.label) === 'agent') {
-      unit.failure = new ConfigError(
-        'busy',
-        `the identity ${c.label} opens when a window binds to it (its agent asks for a y then)`,
-      )
+      unit.failure = agentAtBind(c.label)
       return 'bind'
     }
     if (!this.#prompts(unit)) return 'now'
@@ -796,14 +1125,21 @@ export class Service implements ServiceHome {
    * return or the next start. Never during a drain or for a lent label; an unreadable file changes nothing.
    */
   #refresh(): void {
-    if (this.#draining || this.#deps.reread === undefined) return
+    if (this.#draining) return
+    this.#reread()
+    this.#proposals()
+  }
+
+  /** The identities file read again, for #refresh. */
+  #reread(): void {
+    if (this.#deps.reread === undefined) return
     let list: ServerConfig['identities']
     try {
       list = this.#deps.reread()
     } catch (e) {
-      this.#log.log('warn', 'identities-reread', {
-        code: String((e as { code?: unknown }).code ?? 'internal'),
-      })
+      const code = String((e as { code?: unknown }).code ?? 'internal')
+      // An empty home's missing (or empty) file is its usual state, not a failure: nothing to say at each hello.
+      if (!(code === 'ENOENT' && this.units.size === 0)) this.#log.log('warn', 'identities-reread', { code })
       return
     }
     const labels = new Set(list.map((c) => c.label))
@@ -811,7 +1147,10 @@ export class Service implements ServiceHome {
     for (const c of list) {
       // Listed again: a removed identity re-added is the home's again, with no pairs: its old ones were dropped, and a
       // row of it older than the re-add that survived on disk is dropped as foreign at the next read (u1).
-      if (this.#removed.delete(c.label)) this.#reborn.set(c.label, this.#deps.clock.now())
+      if (this.#removed.delete(c.label)) {
+        this.#reborn.set(c.label, this.#deps.clock.now())
+        this.#rebornAt.set(c.label, this.#changes.length)
+      }
       if (this.units.has(c.label)) {
         this.#gone.delete(c.label)
         continue
@@ -849,8 +1188,8 @@ export class Service implements ServiceHome {
   }
 
   /**
-   * The keep-alive of identity `label` in the service (svc-mail): a keeper for every self-rooted identity, whatever its
-   * file's keep_alive_records, gated by the person's choice and the speaking connection (keepAliveOn).
+   * The keep-alive of identity `label` in the service (keepalive.ts): a keeper for every self-rooted identity, whatever
+   * its file's keep_alive_records, gated by the person's choice and the speaking connection (keepAliveOn).
    */
   #keeper(label: string): NonNullable<ServiceDeps['keeper']> {
     const { clock } = this.#deps
@@ -914,7 +1253,7 @@ export class Service implements ServiceHome {
     return this.#openUnit(u)
   }
 
-  /** A unit has opened: the mail lane's restore and wiring, its local spool delivered (M6), then its network start. */
+  /** A unit has opened: the mail hooks' restore and wiring, its local spool delivered (M6), then its network start. */
   #opened(u: Unit): void {
     // Every audit line of the start (the table read, its refusal, dropped held ids, reset rows) and any refusal now:
     // each identity's log gets them as it opens (r2, s1), then the failed-local lines its held mail earned meanwhile.
@@ -930,8 +1269,93 @@ export class Service implements ServiceHome {
     for (const entry of this.#unsent.get(u.config.label) ?? []) u.opened?.edge.audit.record(entry)
     this.#unsent.delete(u.config.label)
     this.#mail.opened?.(u.config.label, u)
+    if (u.opened?.agent != null) this.#keepAgent(u)
     if (spooled(this.home, u.config.as).length === 0) void u.run(0)
     else void this.#drainSpool(u).then(() => u.run(0))
+  }
+
+  /**
+   * An agent unit, kept: its chain renewed through the agent before its exp, the subscriptions made
+   * again under the renewed chain; a relay's hop-expired or revoked marks its grant lost and asks nothing; a window's
+   * act then asks a new first grant (session.regrant: a fresh key, the old key file gone after its revoke intent).
+   */
+  #keepAgent(u: Unit): void {
+    const o = u.opened as Opened
+    const agent = o.agent as NonNullable<Opened['agent']>
+    const { label } = u.config
+    const d = this.#deps
+    const resubscribe = async (): Promise<void> => {
+      await o.edge.stop()
+      u.subscriptions.reset()
+      // A drain, or a reopen, while the edge was stopped: it stays stopped (the lock may be released by now).
+      if (this.#draining || u.opened !== o) return
+      await o.edge.start()
+    }
+    const grant = (): Granted => {
+      const h = (u.opened?.edge.auth ?? o.edge.auth)[0] as Hop
+      return { iss: h.iss, sub: h.sub, caveats: h.caveats, exp: h.exp }
+    }
+    const held = (): Granted => ({ ...grant(), exp: Number.POSITIVE_INFINITY })
+    u.chain?.stop()
+    u.chain = new ChainKeeper({
+      // A renewal wider than the grant it replaces is never installed; the unit's grant is lost instead.
+      source: {
+        kind: 'agent',
+        // The session's pace: the keeper's next read waits for it rather than spending retries inside it.
+        allowedAt: agent.allowedAt,
+        renew: async () => {
+          const hops = await agent.renew()
+          const h = hops[0] as Hop // an earlier exp near the window's end is capped, not wider
+          if (!narrows(grant(), { ...h, exp: Math.max(h.exp, grant().exp) }, null, true)) {
+            this.#unitSlots.get(label)?.markLost('not-in-grant')
+            throw new ConfigError('not-in-grant', 'the agent renewed wider than the grant: refused')
+          }
+          return hops
+        },
+      },
+      edge: o.edge,
+      clock: d.clock,
+      timers: d.timers,
+      run: runShell,
+      env: process.env,
+      log: this.#log,
+      onRenewed: () =>
+        void resubscribe().catch((e) => this.#log.log('warn', 'resubscribe', { label, code: codeOf(e) })),
+    })
+    u.chain.start()
+    if (!this.#unitSlots.has(label))
+      this.#unitSlots.set(
+        label,
+        // The keeper renews the unit; its slot only answers a lost mark (its exp held open).
+        new GrantSlot(held(), {
+          now: () => d.clock.now(),
+          renew: async (g) => g,
+          regrant: async () => {
+            const start = this.#sessions.get(label) as SessionStart
+            const { sub, exp } = grant()
+            if (!revokeIntent(this.home, sub, d.clock.now(), { label, exp }))
+              this.#intentsLine('revoke intent not kept: run/revoke-intents.json is refused')
+            // Sent at once, with every intent still kept (the file is the retry, here and at each start).
+            await this.#sendIntents()
+            u.threads = agent.threads()
+            await start.regrant(regrantNote({ label, host: 'service' }))
+            await u.suspend(new ConfigError('grant-pending', withNotSent(start.waiting().message)))
+            if (!(await this.#openUnit(u))) throw u.failure
+            return held()
+          },
+          hold: holdFile(this.home, label),
+          audit: (act, f) => this.#grantLine(label, act, 'exp' in f ? { ...f, exp: grant().exp } : f, null),
+          // Either line ends with the words that say nothing was sent, once (the waiting line has none).
+          words: () =>
+            withNotSent(
+              this.#sessions.get(label)?.waiting().message ??
+                regrantLine({ label, host: 'service', connection: 'unit', code: null }),
+            ),
+        }),
+      )
+    u.onRefused = (code) => {
+      if (code === 'hop-expired' || code === 'revoked') this.#unitSlots.get(label)?.markLost(code)
+    }
   }
 
   /**
@@ -1018,7 +1442,10 @@ export class Service implements ServiceHome {
             this.#askable(r.a, r.b) &&
             // Never an agent or grant identity, nor a principal: a planted row naming one is not asked (u4).
             pairable(r.a) &&
-            pairable(r.b),
+            pairable(r.b) &&
+            // Nor a pair of an identity lent for its remove: its rows and held mail leave at the give-back (N1).
+            !this.#removing(r.a) &&
+            !this.#removing(r.b),
         )
         if (row === undefined) return null
         // The requester's address is its identity's in this home, never the row's; none: no ask (s2).
@@ -1065,12 +1492,15 @@ export class Service implements ServiceHome {
         const pairs = ok.map((r) => (r.a === label ? r.b : r.a))
         const listed =
           first && pairs.length > 0 ? [`local pairs allowed for ${label}: ${pairs.join(', ')}`] : []
-        // A change naming an identity removed since is not told: it would name one that is gone (u1).
-        const gone = (c: { readonly about?: readonly string[] }): boolean =>
-          (c.about ?? []).some((l) => this.#removed.has(l))
+        // A change naming an identity removed since is not told: it would name one that is gone (u1); nor one naming
+        // an identity re-added since, recorded before its re-add: it names its old pairs, which are gone (C3).
+        const gone = (c: { readonly about?: readonly string[] }, at: number): boolean =>
+          (c.about ?? []).some((l) => this.#removed.has(l) || at < (this.#rebornAt.get(l) ?? 0))
         const mine = this.#changes
+          .map((c, at) => ({ c, at }))
           .slice(seen)
-          .filter((c) => (c.label === undefined || c.label === label) && !gone(c))
+          .filter(({ c, at }) => (c.label === undefined || c.label === label) && !gone(c, at))
+          .map(({ c }) => c)
         return [...listed, ...mine.map((c) => c.what)]
       },
       home: (label) => {
@@ -1103,8 +1533,21 @@ export class Service implements ServiceHome {
         const [x] = both(label, label)
         const name = (this.units.get(label) as Unit).config.as
         const key = localSealingKey(this.home, name, x.address)
-        if (key === null)
-          throw new ToolError('resolve-failed', `no sealing key of ${label} in this home's own records`)
+        // A home whose recipient holds neither key record nor address record copy has nothing to seal to; the fix is
+        // a rotation of that identity, which writes its first key record (the install page's rotate step). The command
+        // is printed whole with the unit's own relays, each shell-quoted, so it can be pasted as it is.
+        if (key === null) {
+          const relays = (this.units.get(label) as Unit).config.relays
+          const fix =
+            relays.length === 0
+              ? `\`bag keys rotate ${shellWord(name)}\` with --relay and each of its relay URLs`
+              : `\`bag keys rotate ${shellWord(name)} ${relays.map((r) => `--relay ${shellWord(r)}`).join(' ')}\``
+          throw new ToolError(
+            'resolve-failed',
+            `${label} has no key record and no address record copy in this home, so a local send has nothing to seal ` +
+              `to: run ${fix} once for ${label}, then send again`,
+          )
+        }
         return { address: x.address, sealingKey: key }
       },
       deliver: (label, bytes) => this.#inject(label, bytes),
@@ -1142,12 +1585,13 @@ export class Service implements ServiceHome {
   }
 
   /**
-   * The local pair table (decision 104), reconciled with what this service last wrote (C1): a change it did not
-   * write is audited in every identity's log and told to every window, and an allowed row it did not know is put back
-   * to requested (D1 covers a restart, which forgets the text). The first read audits the count. A request no one
+   * The local pair table (spec/SPEC.md 9.2 item 2), reconciled with what this service last wrote (C1): a change it did
+   * not write is audited in every identity's log and told to every window, and an allowed row it did not know is put
+   * back to requested (D1 covers a restart, which forgets the text). The first read audits the count. A request no one
    * answered in LOCAL_ASK_DAYS days expires: its held mail is dropped, each failed-local no answer for its sender.
    */
   #pairs(held = true): LocalPair[] {
+    if (this.#removedRecords === null) this.#readRemoved()
     // A table refused for its mode or as a symlink reads as no pairs (fail closed): audited and told once (C1, item l),
     // and never written over while refused (#putPairs): no change check, no rewrite, no expiry (item n 24).
     const why = pairsRefused(this.home)
@@ -1250,6 +1694,7 @@ export class Service implements ServiceHome {
     this.#pairsText ??= text
     // The start's first read does no held work: the identities are not known yet (Service.start runs it again, s1).
     if (!held) return rows
+    if ((this.#removedRecords?.length ?? 0) > 0) this.#failRecorded()
     const old = rows.filter((r) => r.state === 'requested' && (r.at ?? now) + LOCAL_ASK_DAYS * 86_400 <= now)
     // The table first: if it cannot be written now, the old requests and their held mail stay for a later read.
     const rest = rows.filter((r) => !old.includes(r))
@@ -1257,6 +1702,60 @@ export class Service implements ServiceHome {
     for (const r of old) this.#drop(r, 'no answer')
     // The reconciled rows, as written: never a fresh raw read of the disk (r5).
     return rest
+  }
+
+  /**
+   * run/removed.json (packages/home removed.ts), read once, at the first table read after the lock: a served remove
+   * whose service stopped before the give-back. An entry whose address is again an identity of the home (its key
+   * restored) is dropped unfailed. A label the identities file no longer lists is removed (#removed), its key name
+   * kept for its spool; one listed again with a new key keeps its new rows. The rows of each entry's address are kept
+   * from this read, since the read drops or resets them, for #failRecorded.
+   */
+  #readRemoved(): void {
+    // A refused record (removedRefused: run/ or the file is not what the service writes) is read as no entries and
+    // fails nothing, its held mail kept (fail closed), with a policy line saying why. A refused table cannot be read
+    // for their rows: the entries stay for a later start.
+    const refused = removedRefused(this.home)
+    if (refused !== null) this.#policy(`removed record refused: ${removedRefusal(this.home, refused)}`)
+    const entries = pairsRefused(this.home) === null && refused === null ? readRemoved(this.home) : []
+    let own: string[] = []
+    try {
+      own = new HomeCustody(this.home).list().map((e) => e.address)
+    } catch {}
+    const back = entries.filter((e) => own.includes(e.address))
+    if (back.length > 0) this.#forgetRemoved((e) => back.some((b) => sameRemoved(b, e)))
+    const rows = entries.length === back.length ? [] : localPairs(this.home)
+    const of = (e: RemovedEntry) => (r: LocalPair) =>
+      (r.a === e.label && r.a_addr === e.address) || (r.b === e.label && r.b_addr === e.address)
+    this.#removedRecords = entries
+      .filter((e) => !own.includes(e.address))
+      .map((entry) => ({ entry, rows: rows.filter(of(entry)) }))
+    for (const { entry: e } of this.#removedRecords)
+      if (!this.#config.identities.some((c) => c.label === e.label)) {
+        this.#removed.add(e.label)
+        this.#removedNames.set(e.label, e.key)
+      }
+  }
+
+  /**
+   * The held work of the recorded removes, once, at the first table read that does held work: each kept row's held
+   * mail of the removed address failed-local to its sender (#dropRemoved, only that address's mail), then the entries
+   * deleted from run/removed.json.
+   */
+  #failRecorded(): void {
+    const records = this.#removedRecords ?? []
+    this.#removedRecords = []
+    for (const { entry, rows } of records) for (const r of rows) this.#dropRemoved(r, entry.address)
+    this.#forgetRemoved((e) => records.some((r) => sameRemoved(r.entry, e)))
+  }
+
+  /** forgetRemoved, which never throws here: a lock not taken in its wait is logged, and the entries stay. */
+  #forgetRemoved(done: (e: RemovedEntry) => boolean): void {
+    try {
+      forgetRemoved(this.home, done)
+    } catch (e) {
+      this.#log.log('warn', 'removed-record', { code: String((e as { code?: unknown }).code ?? 'internal') })
+    }
   }
 
   /** #putPairs inside #pairs, which never throws: a refusal that came since its check is logged, and false. */
@@ -1282,6 +1781,29 @@ export class Service implements ServiceHome {
     if (why !== null) throw new ToolError('to-own-identity', `the local pair table is refused: ${why}`)
   }
 
+  /**
+   * <home>/proposals.json (proposals.ts) read into the table's folder markers, at start and at each #refresh: a row
+   * whose label is no identity of the home marks nothing and is logged once; a row whose folder is gone is kept in the
+   * file and marks nothing (unwire alone takes a row out). A refused file marks nothing (fail closed): one policy line.
+   */
+  #proposals(): void {
+    const why = proposalsRefused(this.home, this.#deps.uid)
+    if (why !== null && why !== this.#proposalsWhy)
+      this.#policy(
+        `folder proposals refused, none read: ${why}; to use them again: chmod 600 ${proposalsPath(this.home)}`,
+      )
+    this.#proposalsWhy = why
+    const labels = new Set(this.identities().map((i) => i.label))
+    const rows = why === null ? readProposals(this.home, this.#deps.uid) : []
+    for (const r of rows.filter((x) => !labels.has(x.label) && !this.#unproposed.has(x.label))) {
+      this.#unproposed.add(r.label)
+      this.#log.log('warn', 'proposal-not-an-identity', { label: r.label })
+    }
+    this.table.marks(
+      rows.filter((r) => labels.has(r.label) && existsSync(r.folder)).map((r) => [r.folder, r.label]),
+    )
+  }
+
   /** One policy line in every open identity's audit log (C1). */
   #policy(local: string): void {
     // During start no identity is open yet: the line is kept and written into each identity's log as it opens (s1).
@@ -1305,8 +1827,8 @@ export class Service implements ServiceHome {
   }
 
   /**
-   * A first touch from `from` to `to` with no allowed pair (decision 104): one request per pair, the message (if any)
-   * held in <to>'s spool's held/ until the person answers, at most LOCAL_HELD_MAX; to's windows are rung.
+   * A first touch from `from` to `to` with no allowed pair (spec/SPEC.md 9.2 item 1): one request per pair, the message
+   * (if any) held in <to>'s spool's held/ until the person answers, at most LOCAL_HELD_MAX; to's windows are rung.
    */
   #hold(from: string, to: string, id: string | null, bytes: Uint8Array | null): void {
     this.#writable()
@@ -1341,7 +1863,7 @@ export class Service implements ServiceHome {
     this.#mail.arrived?.(kept.b)
   }
 
-  /** A re-ask in cooling (the red team's form): its bounds, then the sender's own Yes puts the request back. */
+  /** A re-ask in cooling: its bounds, then the sender's own Yes puts the request back. */
   #reask(from: string, to: string, yes: boolean | null): number | null {
     const { row } = this.#pairState(from, to)
     const now = this.#deps.clock.now()
@@ -1357,7 +1879,7 @@ export class Service implements ServiceHome {
         ...rows,
         { ...(row as LocalPair), state: 'requested', at: now, held: [], reasks: [...times, now] },
       ])
-      // The request is asked in row.b's window (pending), whichever side asked again: ring row.b (falsifier 18).
+      // The request is asked in row.b's window (pending), whichever side asked again: ring row.b.
       this.#mail.arrived?.((row as LocalPair).b)
     }
     return null
@@ -1392,6 +1914,8 @@ export class Service implements ServiceHome {
     this.#asking.delete(askKey(from, to))
     const row = this.#pairState(from, to).row
     if (yes === null || row?.state !== 'requested' || !this.#askable(row.a, row.b)) return
+    // An answer that lands while either side is lent for its remove changes nothing: no Yes delivers its held mail (N1).
+    if (this.#removing(row.a) || this.#removing(row.b)) return
     const rest = this.#pairs().filter((r) => r.a !== row.a || r.b !== row.b)
     const now = this.#deps.clock.now()
     if (!yes) {
@@ -1462,13 +1986,18 @@ export class Service implements ServiceHome {
    * A removed identity's row's held mail, failed-local to each sender and deleted (v2): its spool is resolved from the
    * key name recorded at the remove, as its unit may be gone; the other side's from its unit. A separate path from
    * #heldOf, which the normal drain keeps unchanged; the same guard: an envelope id, directly in held/, a regular file.
+   * With `address` (a recorded remove, #failRecorded), only the mail to or from that address.
    */
-  #dropRemoved(row: LocalPair): void {
+  #dropRemoved(row: LocalPair, address?: string): void {
     const nameOf = (l: string): string | undefined =>
       this.units.get(l)?.config.as ?? this.#removedNames.get(l)
-    const names = [row.a, row.b].map(nameOf).filter((n) => n !== undefined)
+    // Each side's spool, by its label and key name.
+    const sides = [row.a, row.b].flatMap((l): [string, string][] => {
+      const n = nameOf(l)
+      return n === undefined ? [] : [[l, n]]
+    })
     for (const id of row.held ?? [])
-      for (const n of names) {
+      for (const [label, n] of sides) {
         const dir = resolve(spoolDir(this.home, n), 'held')
         const file = resolve(dir, `${id}.env`)
         if (!HELD_ID.test(id) || !file.startsWith(dir + sep) || dirname(file) !== dir) continue
@@ -1479,8 +2008,18 @@ export class Service implements ServiceHome {
         } catch {
           continue
         }
-        if (this.#heldEnvelope(bytes, file, row.b) === null) continue
-        this.#failedLocal(bytes, row.b, 'identity removed')
+        const env = this.#heldEnvelope(bytes, file, row.b)
+        if (env === null) continue
+        if (address !== undefined && env.from !== address && !env.to.includes(address)) continue
+        // The side it was held for: the one that did not send it (the remove may have moved it into the other's spool).
+        // A sender that is neither side's address (a row whose addresses were reset) is not guessed at: the policy line
+        // names the file, and the label is the spool's it was found in.
+        const to = env.from === row.b_addr ? row.a : env.from === row.a_addr ? row.b : null
+        if (to === null)
+          this.#policy(
+            `held mail ${file} is from neither side of its pair: failed as held for ${label}, whose spool held it`,
+          )
+        this.#failedLocal(bytes, to ?? label, 'identity removed')
         rmSync(file, { force: true })
       }
   }
@@ -1496,7 +2035,7 @@ export class Service implements ServiceHome {
 
   /**
    * A held file's envelope; one that does not parse is renamed <id>.env.failed and logged, with no sender line (its
-   * sender cannot be read), and the caller goes on with the rest (falsifier 21).
+   * sender cannot be read), and the caller goes on with the rest.
    */
   #heldEnvelope(bytes: Uint8Array, file: string, label: string): ReturnType<typeof parseEnvelope> | null {
     try {
@@ -1582,16 +2121,38 @@ export class Service implements ServiceHome {
     else this.#unsent.set(sender.config.label, [...(this.#unsent.get(sender.config.label) ?? []), entry])
   }
 
+  /**
+   * service.json: who runs, since when, and what is live now (pairings running, identities lent, asks waiting on a
+   * person), so an update can tell whether a restart would cut anything. Written only while the lock is held, and only
+   * when its text changes.
+   */
   #writeJson(): void {
+    if (this.#lock === null) return
+    // Heard from the first write on, so a start refused busy (no lock) never listens.
+    this.#unhearAsks ??= onAsking(this.home, () => this.#writeJson())
+    this.#startedAt ??= new Date(this.#deps.clock.now() * 1000).toISOString()
     const body = {
       pid: this.#deps.pid,
-      started_at: new Date(this.#deps.clock.now() * 1000).toISOString(),
+      started_at: this.#startedAt,
       contract: 1,
       version: SERVER_VERSION,
       package_dir: this.#deps.packageDir ?? null,
       draining: this.#draining,
+      pairings: livePairings(this.table),
+      lends: this.#lends.size,
+      asking: askingIn(this.home),
     }
-    if (this.#lock !== null) writeWhole(this.paths.json, `${JSON.stringify(body)}\n`)
+    const text = `${JSON.stringify(body)}\n`
+    if (text === this.#statusText) return
+    try {
+      writeWhole(this.paths.json, text)
+    } catch (e) {
+      // The start's write fails the start. A later one never fails the lend, pairing or ask that moved a count: the
+      // next change writes again, as the last text written is kept.
+      if (this.#statusText === null) throw e
+      return
+    }
+    this.#statusText = text
   }
 
   #accept(socket: import('node:net').Socket): void {
@@ -1634,7 +2195,8 @@ export class Service implements ServiceHome {
       closed: (c) => void this.#closed(c),
       prepare: (c) => {
         this.#refresh()
-        return this.#bridge(c)
+        this.#advertise(c)
+        return {}
       },
       notification: (c, method) => {
         if (method === 'service/typed') this.#mail.typed?.(c.handle)
@@ -1655,10 +2217,11 @@ export class Service implements ServiceHome {
       canElicit: () => conn.capabilities.elicitation,
       client: () => ({ kind: conn.host, version: '' }),
       elicit: (dialog, extra) => conn.elicit(dialog, { signal: extra.signal }),
+      acts: this.#acts,
     }
     const all = new Map<string, Sibling>()
     const labels = [...this.units.keys()]
-    const identities = { defaultLabel: labels[0] as string, all }
+    const identities = { defaultLabel: labels[0] ?? '', all }
     // Each identity as this connection's context: a label the identities file adds later joins it (#refresh).
     const add = (label: string): void => {
       const service = this
@@ -1676,7 +2239,11 @@ export class Service implements ServiceHome {
     }
     for (const label of labels) add(label)
     this.#siblings.set(conn, { all, add })
-    const root = (all.get(identities.defaultLabel) as Sibling).ctx
+    // An empty home's window has no identity to root its tools on: a context of the service's own, `opened` null.
+    const root =
+      labels.length > 0
+        ? (all.get(identities.defaultLabel) as Sibling).ctx
+        : this.#emptyRoot(over, identities)
     const mcp = new McpServer(
       { name: 'bag', version: SERVER_VERSION },
       { instructions: [INSTRUCTIONS, IDENTITIES_NOTE].join(' ') },
@@ -1691,6 +2258,8 @@ export class Service implements ServiceHome {
     const deliver = transport.deliver
     transport.deliver = (m) => {
       if ('method' in m && 'id' in m && m.method === 'tools/call') {
+        // Marked before the call runs, so a bind in this very call never makes a sub-agent the speaking window.
+        if (subagentCall(conn.host, m.params)) conn.markSubagent()
         open.add(m.id)
         entry.inflight = open.size
       }
@@ -1706,24 +2275,39 @@ export class Service implements ServiceHome {
   }
 
   /**
-   * The omp consent bridge (a hello whose client_capabilities.experimental names bag.dev/consent-bridge): W1's bridgeOf
-   * makes <run>/shim/<handle>.consent, 0700, checked, and the hello returns it as bridge_dir; a path the client supplies
-   * is never used. A folder that fails bridgeOf's checks is not offered.
+   * The root context of a window on a home with no identity: the service's ports and this window's, its config
+   * naming the home only, with `opened` null and no desk. Its tools all run through the binding table (binding.ts
+   * bound), which answers not-bound outside UNBOUND_TOOLS, so none reaches `opened`; an identity identity_create adds
+   * joins `identities` through #refresh, and a bind then acts as it.
    */
-  #bridge(conn: Connection): Record<string, unknown> {
-    const exp = conn.capabilities.raw.experimental
-    if (typeof exp !== 'object' || exp === null || !(CONSENT_BRIDGE in exp)) return {}
-    const pid = (exp as Record<string, { pid?: unknown }>)[CONSENT_BRIDGE]?.pid
-    if (typeof pid === 'number') this.#advertised.add(pid)
-    ensureRunDir(join(this.paths.dir, 'shim'), this.#deps.uid)
-    const dir = bridgeOf(conn, this.home, this.#deps.uid ?? process.getuid?.() ?? -1)
-    if (dir === null) return {}
-    conn.bridgeDir = dir
-    return { bridge_dir: dir }
+  #emptyRoot(over: Partial<ToolContext>, identities: NonNullable<ToolContext['identities']>): ToolContext {
+    const config = {
+      home: this.home,
+      label: '',
+      as: '',
+      session: null,
+      auth: null,
+      chainCmd: null,
+      relays: [],
+    }
+    const none = { opened: null, desk: null, chain: null, records: null, subscriptions: null }
+    const errors = { edgeErrors: { count: 0, last: null } }
+    return { ...this.#shared, ...over, ...none, ...errors, identities, config } as unknown as ToolContext
   }
 
   /**
-   * Runs each tools/call handler, its whole promise, inside the mail lane's withConnection(handle, ...), so every audit
+   * A hello whose client_capabilities.experimental names bag.dev/consent-bridge carries its omp pid ({pid}): recorded
+   * (L2), so the service asks that omp's registered link. Since 0.4.2 there is no bridge folder and no bridge_dir.
+   */
+  #advertise(conn: Connection): void {
+    const exp = conn.capabilities.raw.experimental
+    if (typeof exp !== 'object' || exp === null || !(CONSENT_BRIDGE in exp)) return
+    const pid = (exp as Record<string, { pid?: unknown }>)[CONSENT_BRIDGE]?.pid
+    if (typeof pid === 'number') this.#advertised.add(pid)
+  }
+
+  /**
+   * Runs each tools/call handler, its whole promise, inside the mail hooks' withConnection(handle, ...), so every audit
    * line it writes after any await names this connection. The SDK keeps its handlers in Protocol's _requestHandlers, a
    * private member: this reads it at the pin @modelcontextprotocol/sdk 1.32.2 (packages/mcp/package.json, exact), and a
    * bump of that pin re-checks it (service.test.ts "names its connection after the handler awaits" fails without it,
@@ -1740,26 +2324,47 @@ export class Service implements ServiceHome {
     handlers.set('tools/call', (...a: unknown[]) => within(conn.handle, () => call(...a)))
   }
 
-  /** The drain's cancel only: every pairing running on the connection's server, whichever window started it. */
+  /**
+   * The drain's cancel only: every pairing a window of this connection started, of every identity (the service's
+   * Pairings, one per identity), ended as the service, past pair_cancel's window check (Pairings.drainStop). Before,
+   * it called pair_cancel with no window, which refuses another window's pairing, on the default identity's alone.
+   */
   async #cancelPairings(conn: Connection): Promise<void> {
-    const r = this.#roots.get(conn)
-    if (r === undefined) return
+    if (!this.#roots.has(conn)) return
     this.#log.log('info', 'drain-pairings', { connection: conn.handle })
-    try {
-      await pairingsFor(r.root, r.root)?.cancel({})
-    } catch {}
+    for (const p of pairingsOfTable(this.table))
+      if (p.runningIn() === conn)
+        await p.drainStop().catch((e: unknown) =>
+          this.#log.log('warn', 'drain-pairing', {
+            code: String((e as { code?: unknown }).code ?? 'internal'),
+          }),
+        )
+  }
+
+  /**
+   * The drain's cancel of the pairings no window started (the console's own ceremony, consoleInvite, runs with none):
+   * after the per-connection cancels, each ended as the service, as a close (drainStop does nothing where none runs).
+   */
+  async #cancelUnwindowed(): Promise<void> {
+    for (const p of pairingsOfTable(this.table))
+      if (p.runningIn() === null)
+        await p.drainStop().catch((e: unknown) =>
+          this.#log.log('warn', 'drain-pairing', {
+            code: String((e as { code?: unknown }).code ?? 'internal'),
+          }),
+        )
   }
 
   async #closed(conn: Connection): Promise<void> {
     this.connections.delete(conn)
-    // A connection's pairings die with it (section 5), through W1's table.endFor(conn), which ends this connection's
-    // and never another's; its lends return by themselves (R2).
+    // A connection's pairings die with it (docs/bag-service.md, "Pairing in a window"), through #endFor (the binding
+    // table's unbind), which ends this connection's and never another's; its lends return by themselves (R2).
     try {
       this.#endFor(conn)
     } catch (e) {
       this.#log.log('warn', 'end-for', { code: String((e as { code?: unknown }).code ?? 'internal') })
     }
-    // The mail lane's close hook (markUsed may be async and busy): never awaited on the close path, never thrown.
+    // The mail hooks' close hook (markUsed may be async and busy): never awaited on the close path, never thrown.
     try {
       void Promise.resolve(this.#mail.closed?.(conn.handle)).catch((e) =>
         this.#log.log('warn', 'mail-closed', { code: String((e as { code?: unknown }).code ?? 'internal') }),
@@ -1769,13 +2374,17 @@ export class Service implements ServiceHome {
     }
     const r = this.#roots.get(conn)
     this.#roots.delete(conn)
+    forgetWindow(conn.handle)
     this.#siblings.delete(conn)
     void r?.mcp.close().catch(() => {})
     for (const [label, l] of this.#lends) if (l.conn === conn && !this.#draining) this.#giveBack(label)
   }
 
   /** Lend (R1, R2, R4): refused while a window holds it or a pairing runs; the unit suspended, its lock released. */
-  async #lend(conn: Connection, p: Readonly<Record<string, unknown>>): Promise<Record<string, unknown>> {
+  async #lendRequest(
+    conn: Connection,
+    p: Readonly<Record<string, unknown>>,
+  ): Promise<Record<string, unknown>> {
     if (conn.host !== 'cli') throw new StreamError('not-authorized', 'only the CLI lends an identity')
     const { label, verb } = p
     if (
@@ -1787,7 +2396,7 @@ export class Service implements ServiceHome {
     const unit = this.units.get(label)
     if (unit === undefined) throw new StreamError('unknown-identity', `no identity ${label} in this home`)
     const lent = this.#lends.get(label)
-    if (lent !== undefined) throw new StreamError('busy', `${label} is lent to the CLI for ${lent.verb}`)
+    if (lent !== undefined) throw new StreamError('busy', this.#lentWhy(label, lent))
     const holders = [...this.#holders(label), ...this.#pairing()]
     if (holders.length > 0) {
       const h = holders[0] as { host: string; cwd: string }
@@ -1796,18 +2405,125 @@ export class Service implements ServiceHome {
         `${label} is in use in ${h.host} at ${h.cwd}: close that window or unbind first`,
       )
     }
-    this.#lends.set(label, { conn, verb })
-    this.table.lend(label, verb)
+    this.#lend(label, conn, verb)
     await unit.suspend(new ConfigError('busy', `the identity ${label} is lent to the CLI for ${verb}`))
     this.#log.log('info', 'lend', { label, verb })
     return { lent: true, label }
   }
 
-  /** The windows running a pairing (a pairing of any identity counts: one runs per connection). */
+  /**
+   * Holds `label` quiet for an act a window runs on it (tools.ts), after the person's Yes: its unit suspended (its
+   * subscription and its keep-alive) as a lend suspends it, so nothing of it moves while the act re-checks and writes.
+   * The end gives it back by the return a lend ends in (#takeBack); the caller runs it also when the act throws. Busy
+   * while it is lent to the CLI or held quiet already (and a lend of it answers busy meanwhile); with `alone`, busy too
+   * while a window is bound to it or runs a pairing, as a lend is.
+   */
+  async quiet(label: string, verb: string, alone = false): Promise<() => Promise<void>> {
+    if (this.#draining) throw new ToolError('draining', 'the service is restarting')
+    const unit = this.units.get(label)
+    if (unit === undefined) throw new ToolError('unknown-identity', `no identity ${label} in this home`)
+    const lent = this.#lends.get(label)
+    if (lent !== undefined) throw new ToolError('busy', this.#lentWhy(label, lent))
+    const holders = alone ? [...this.#holders(label), ...this.#pairing()] : []
+    if (holders.length > 0) {
+      const h = holders[0] as { host: string; cwd: string }
+      throw new ToolError(
+        'busy',
+        `${label} is in use in ${h.host} at ${h.cwd}: close that window or unbind first`,
+      )
+    }
+    this.#lend(label, null, verb, 'an act in a window')
+    await unit.suspend(new ConfigError('busy', `the identity ${label} is held for ${verb} in a window`))
+    this.#log.log('info', 'quiet', { label, verb })
+    let ended = false
+    return async () => {
+      if (ended) return
+      ended = true
+      if (this.#draining || this.units.get(label) !== unit) return this.#release(label)
+      try {
+        await this.#takeBack(label, verb)
+      } catch {
+        // Its lock not free within the wait: it comes back by itself, as a closed lender's identity does.
+        this.#giveBack(label)
+      }
+      this.#log.log('info', 'quiet-end', { label, verb })
+    }
+  }
+
+  /** quiesce(label, act): quiet, then `act`, then the give-back, also when the act throws. */
+  async quiesce<T>(label: string, act: () => Promise<T>, verb = 'an act', alone = false): Promise<T> {
+    const end = await this.quiet(label, verb, alone)
+    try {
+      return await act()
+    } finally {
+      await end()
+    }
+  }
+
+  /**
+   * ServiceActs.ownLock: whether the mcp.lock of `label` is this service's own for an identity remove a window runs,
+   * matched by label and lease, never by the holder's pid alone: no other live process holds it, and either the quiet
+   * of that act is open now, or no quiet or lend is and its own unit holds it with no window bound to it.
+   */
+  #ownLock(label: string): boolean {
+    const unit = this.units.get(label)
+    if (unit === undefined || this.#lockHolder(label)) return false
+    const lent = this.#lends.get(label)
+    if (lent !== undefined) return lent.conn === null && lent.verb === 'identity-remove'
+    return unit.opened !== null && this.#holders(label).length === 0
+  }
+
+  /** Why `label` cannot be lent or held quiet now: who holds it, and for what. */
+  #lentWhy(label: string, lent: { conn: Connection | null; verb: string }): string {
+    return lent.conn === null
+      ? `${label} is held for ${lent.verb} in a window: try again when it is done`
+      : `${label} is lent to the CLI for ${lent.verb}`
+  }
+
+  /** The acts' reach into the service: quiet, key names, its own locks and a relay client (tools.ts ServiceActs). */
+  #actsOf(): ServiceActs {
+    const service = this
+    return {
+      quiet: (label, verb, alone) => this.quiet(label, verb, alone),
+      keyName: (label) => this.#keyNames.get(label) ?? null,
+      reread: () => this.#refresh(),
+      proposals: () => this.#proposals(),
+      hostMains: () => {
+        // Packaged: the launchers under <home>/package (stage.ts), which outlive a version; from source, the checkout's.
+        const pkg = this.#deps.packageDir
+        const at = (f: string) => fileURLToPath(new URL(f, import.meta.url))
+        if (pkg === undefined || pkg === null)
+          return {
+            cli: at('../../cli/src/main.ts'),
+            mcp: at('./main.ts'),
+            omp: at('../../cli/src/omp-wake.ts'),
+            copied: null,
+          }
+        const dir = dirname(dirname(pkg))
+        const f = (n: string) => join(dir, n)
+        return { cli: f('bag.js'), mcp: f('bag-mcp.js'), omp: f('bag-omp-wake.js'), copied: null }
+      },
+      ownLock: (label) => this.#ownLock(label),
+      relay: (label) => {
+        const c = this.units.get(label)?.config ?? this.#config.identities[0]
+        return this.#tracked(label, this.#deps.relayFor(c as Config, this.#stop.signal))
+      },
+      get security() {
+        return service.#deps.security
+      },
+    }
+  }
+
+  /**
+   * The windows running a pairing, each by the window that started it (a pairing of any identity counts): the
+   * service's Pairings of each identity, never one Pairings read through every window, which named the first window
+   * for whichever ran the pairing.
+   */
   #pairing(): { host: string; cwd: string }[] {
-    return [...this.#roots]
-      .filter(([, r]) => pairingsFor(r.root, r.root)?.busy() === true)
-      .map(([c]) => ({ host: c.host, cwd: c.cwd }))
+    return pairingsOfTable(this.table).flatMap((p) => {
+      const c = p.runningIn()
+      return c === null ? [] : [{ host: c.host, cwd: c.cwd }]
+    })
   }
 
   /** Return (R3): nothing trusted from the CLI; existence re-derived from disk and custody; the reopen takes the lock. */
@@ -1819,40 +2535,102 @@ export class Service implements ServiceHome {
     const lent = this.#lends.get(label)
     if (lent === undefined || lent.conn !== conn)
       throw new StreamError('usage', `this connection has not lent ${label}`)
+    return this.#takeBack(label, lent.verb)
+  }
+
+  /**
+   * The give-back of a lend (#return) and of a quiet act (quiet's end): nothing trusted from the borrower; existence
+   * re-derived from disk and custody, a removed identity recorded removed (#removedAtReturn); a Keychain identity no
+   * window is bound to goes back to opening at its next bind; any other opens again, its lock taken by the reopen.
+   */
+  async #takeBack(label: string, verb: string): Promise<Record<string, unknown>> {
     const unit = this.units.get(label) as Unit
     // The CLI may have moved or re-made it: its class is read again from the home, never kept from before the lend.
     this.#custody.set(label, classOf(this.home, unit.config.as))
     if (!this.#exists(label)) {
       this.#release(label)
       await unit.stop()
+      this.#removedAtReturn(label, unit)
       this.units.delete(label)
       this.#log.log('info', 'return', { label, removed: true })
       return { returned: true, label, open: false, removed: true }
     }
-    if (this.#prompts(unit) && !this.#eager(unit.config)) {
+    // An agent identity with no session and no window bound to it was never opened (it opens at a bind, with its
+    // agent's y): it goes back to that, as a Keychain identity does, never asking a y at a give-back. Reopened, its
+    // preflight would refuse on this very lend, and the give-back would run to its deadline (a defect on main).
+    const unopenedAgent =
+      this.#custody.get(label) === 'agent' && !this.#sessions.has(label) && this.#holders(label).length === 0
+    if (
+      unopenedAgent ||
+      (this.#prompts(unit) && !this.#eager(unit.config) && this.#holders(label).length === 0)
+    ) {
       // A Keychain identity goes back to opening at its next bind: no dialog for the CLI's return.
       await this.#lockFree(label)
       this.#release(label)
-      unit.failure = opensAtBind(label)
+      unit.failure = unopenedAgent ? agentAtBind(label) : opensAtBind(label)
       this.#log.log('info', 'return', { label, removed: false })
       return { returned: true, label, open: false, removed: false, opens_at: 'bind' }
     }
     const deadline = Date.now() + (this.#deps.returnWaitMs ?? RETURN_WAIT_MS)
+    // While it reopens, its tools answer who holds it (#lentWhy): the CLI's lend, or a window's act holding it quiet.
+    const held = (): ConfigError => {
+      const lent = this.#lends.get(label)
+      return new ConfigError(
+        'busy',
+        lent === undefined
+          ? `the identity ${label} is lent to the CLI for ${verb}`
+          : `the identity ${this.#lentWhy(label, lent)}`,
+      )
+    }
     for (;;) {
       if (await unit.openWith(keysPending(label))) break
       if (Date.now() >= deadline) {
-        await unit.suspend(
-          new ConfigError('busy', `the identity ${label} is lent to the CLI for ${lent.verb}`),
+        await unit.suspend(held())
+        // Named by its holder (#lentWhy): a window's act holding it quiet, or the CLI, which still holds it.
+        const lent = this.#lends.get(label)
+        const why =
+          lent === undefined ? `${label} is lent to the CLI for ${verb}` : this.#lentWhy(label, lent)
+        throw new StreamError(
+          'busy',
+          lent?.conn === null ? why : `${why}, which still holds it: return again once it has closed it`,
         )
-        throw new StreamError('busy', `the CLI still holds ${label}: return again once it has closed it`)
       }
-      await unit.suspend(new ConfigError('busy', `the identity ${label} is lent to the CLI for ${lent.verb}`))
+      await unit.suspend(held())
       await new Promise((r) => setTimeout(r, 50))
     }
     this.#release(label)
     this.#opened(unit)
     this.#log.log('info', 'return', { label, removed: false })
     return { returned: true, label, open: true, removed: false }
+  }
+
+  /** Whether `label` is lent to the CLI for identity remove (the verb its lease names, packages/cli/src/service.ts). */
+  #removing(label: string): boolean {
+    return this.#lends.get(label)?.verb === 'identity-remove'
+  }
+
+  /**
+   * A lent identity the CLI removed (bag identity remove, which takes it out of identities.json): recorded removed as
+   * #refresh records one, then its pairs leave while its unit still exists, so its held mail is failed to its senders
+   * (#dropRemoved). Without this the unit left units before any reread saw it, and its rows and held mail stayed.
+   * Only a removal the identities file confirms: a reread that throws (a mode the file does not pass, a file being
+   * written) or one that still lists the label (a custody move stopped partway, t2) records nothing, and the unit
+   * comes back at the next refresh as before, its pairs and held mail kept (F2).
+   */
+  #removedAtReturn(label: string, unit: Unit): void {
+    let listed: boolean
+    try {
+      listed = (this.#deps.reread?.() ?? this.#config.identities).some((c) => c.label === label)
+    } catch {
+      return
+    }
+    if (listed) return
+    this.#removed.add(label)
+    this.#removedNames.set(label, unit.config.as)
+    this.#log.log('info', 'identity-removed', { label })
+    this.#pairs()
+    // Its held mail failed: the record of a served remove (run/removed.json) is done.
+    this.#forgetRemoved((e) => e.label === label)
   }
 
   /** The lender closed (R2, L7): the identity comes back by itself, retried as a failed unit is until its lock frees. */
@@ -1863,6 +2641,7 @@ export class Service implements ServiceHome {
     this.#custody.set(label, classOf(this.home, unit.config.as))
     if (!this.#exists(label)) {
       void unit.stop()
+      this.#removedAtReturn(label, unit)
       this.units.delete(label)
       return
     }
@@ -1882,8 +2661,8 @@ export class Service implements ServiceHome {
   }
 
   /**
-   * W1's openAgentUnit for an agent identity's unit (the --session form): its own session key under the agent's hop,
-   * one y at the agent per open, the principal's mailbox, its lock at state/<name>.service. Its tools answer the
+   * session.ts openAgentUnit for an agent identity's unit (the --session form): its own session key under the agent's
+   * hop, one y at the agent per open, the principal's mailbox, its lock at state/<name>.service. Its tools answer the
    * session's waiting line until the grant comes, which blocks no other unit; the session closes with the unit.
    * The principal is the entry's key name (c.as), the label when the CLI wrote the file.
    */
@@ -1894,10 +2673,22 @@ export class Service implements ServiceHome {
     if (start === undefined) {
       try {
         this.#agentPreflight(c.label)
+      } catch (e) {
+        // Logged here, once per refusal text and label: the unit's open logs a failure only when its code changes,
+        // and a preflight's busy has the same code as the opening's pending state, so it would never be seen.
+        const detail = String((e as Error).message ?? e)
+        if (this.#preflightSaid.get(c.label) !== detail) {
+          this.#preflightSaid.set(c.label, detail)
+          this.#log.log('warn', 'agent-preflight', { label: c.label, detail })
+        }
+        throw Object.assign(e as object, { retry: false })
+      }
+      this.#preflightSaid.delete(c.label)
+      try {
         start = openAgentUnit(
           { ...c, session: null },
           c.as,
-          { caveats: this.grantCaveats(c.label) },
+          { caveats: this.grantCaveats(c.label), declined: 'type use and the name to ask again' },
           { clock: d.clock, rng: d.rng, timers: d.timers, pid: d.pid, alive: d.alive },
         )
       } catch (e) {
@@ -1923,13 +2714,15 @@ export class Service implements ServiceHome {
    * key file at keys/<name>.service.json that is not this service's marked session key.
    */
   #agentPreflight(label: string): void {
-    // Unreachable through a bind today (the socket handler and W1's Bindings #check refuse first); kept on purpose as
-    // defence in depth so no future path asks the agent for a y during a drain. Not dead code: do not remove.
+    // Unreachable through a bind today (the socket handler and binding.ts Bindings #check refuse first); kept on
+    // purpose as defence in depth so no future path asks the agent for a y during a drain. Not dead code: keep it.
     if (this.#draining) throw new ConfigError('draining', 'the service is restarting')
     const name = this.#keyNames.get(label)
     if (name === undefined || !this.units.has(label) || this.#gone.has(label))
       throw new ConfigError('unknown-identity', `no identity ${label} in this home`)
-    if (this.#lends.has(label)) throw new ConfigError('busy', `${label} is lent to the bag command line`)
+    // Named by its holder: the CLI's lend, or a window's act holding it quiet (#lentWhy), never always the CLI.
+    const lent = this.#lends.get(label)
+    if (lent !== undefined) throw new ConfigError('busy', this.#lentWhy(label, lent))
     const lock = join(this.home, 'state', lockName('agent', name), 'mcp.lock')
     const h = readLock(lock)
     if (h !== null && h.pid !== this.#deps.pid && holderLives(lock, h, this.#deps.alive))
@@ -1947,9 +2740,9 @@ export class Service implements ServiceHome {
   /**
    * An agent unit's session key left by a crash, moved (never deleted) to <home>/run/.gone/ (0700) at the next start.
    * `.service` is not a reserved suffix, so a file is moved only when it is provably this service's session key:
-   * keys/<x>.service.json where (1) it carries W1's mark, kind "session-key" with principal x, (2) agent/<x>.json
-   * exists, (3) <x>.service is no label and no key name in the identities file, and (4) state/<x>.service/mcp.lock
-   * has no live holder. Anything else under keys/ is left as it is.
+   * keys/<x>.service.json where (1) it carries the session key mark, kind "session-key" with principal x, (2)
+   * agent/<x>.json exists, (3) <x>.service is no label and no key name in the identities file, and (4)
+   * state/<x>.service/mcp.lock has no live holder. Anything else under keys/ is left as it is.
    */
   #sweepSessionKeys(): void {
     let names: string[]
@@ -1977,10 +2770,82 @@ export class Service implements ServiceHome {
     }
   }
 
-  /** The lend of `label` is over: here and in W1's table, whose binds stop answering busy for it. */
+  /**
+   * `label` is lent: to the CLI's connection `conn`, or (null) held quiet by the service for a window's act. Here,
+   * in service.json's lends and in the binding table, whose binds answer busy for it meanwhile (`by` names the holder).
+   */
+  #lend(label: string, conn: Connection | null, verb: string, by?: string): void {
+    this.#lends.set(label, { conn, verb })
+    this.#writeJson()
+    this.table.lend(label, verb, by)
+  }
+
+  /** The lend of `label` is over: here and in the binding table, whose binds stop answering busy for it. */
   #release(label: string): void {
     this.#lends.delete(label)
+    this.#writeJson()
     this.table.returned(label)
+    // The give-back: each window keeper of the label paused by the hold makes its one attempt now.
+    if (!this.#draining) for (const [keeper, l] of this.#keepers) if (l === label) keeper.resume()
+  }
+
+  /**
+   * One grant line (grantAuditEntry: a policy entry, step grant) in the identity's own audit log, naming the window's
+   * connection when there is one; in the service log while the identity is not open, as a consent ask's line is.
+   */
+  #grantLine(label: string, act: GrantAct, f: GrantDetail, connection: string | null): void {
+    const entry = grantAuditEntry(act, { ...f, label })
+    const opened = this.units.get(label)?.opened ?? null
+    const at = connection === null ? {} : { connection }
+    try {
+      if (opened !== null) return void opened.edge.audit.record({ ...entry, ...at })
+    } catch (e) {
+      // A line that cannot be written never fails the grant it reports: the service log says so instead.
+      this.#log.log('warn', 'audit', { label, act, code: codeOf(e) })
+    }
+    this.#log.log('info', act, { ...entry.detail, ...at })
+  }
+
+  /** One policy line about the revoke intents (#policy), and in the service log when no identity is open to keep it. */
+  #intentsLine(local: string): void {
+    this.#policy(local)
+    if (!this.#starting && ![...this.units.values()].some((u) => u.opened != null))
+      this.#log.log('warn', 'policy', { local })
+  }
+
+  /**
+   * The revoke intents of run/revoke-intents.json, sent through the agent's session revoke (sendIntents) at start
+   * and at once at each regrant, one send at a time: dropped on ok, kept with the refusal, pruned past its exp with
+   * one line saying it was never confirmed. A refused file is not read: one policy line says why.
+   */
+  #sendIntents(): Promise<void> {
+    this.#intents = this.#intents.then(() => this.#sendIntentsNow()).catch(() => {})
+    return this.#intents
+  }
+
+  async #sendIntentsNow(): Promise<void> {
+    if (this.#draining) return
+    const connect = this.#deps.agentRevoke ?? (() => new AgentClient(join(this.home, 'agent.sock')))
+    await sendIntents(this.home, {
+      now: this.#deps.clock.now(),
+      connect,
+      refused: (why) => this.#intentsLine(`revoke intents refused: ${why}; none is read`),
+      outcome: (i, what) => {
+        if (what !== 'pruned') return
+        // One line: in the label's own audit log while it is open, else in the service log (as a consent ask's).
+        const local = `revoke of ${i.address} never confirmed: its grant has ended`
+        const opened = i.label === undefined ? null : (this.units.get(i.label)?.opened ?? null)
+        const entry = { event: 'policy', decision: 'route', detail: { local } } as const
+        try {
+          if (opened !== null) return void opened.edge.audit.record(entry)
+        } catch (e) {
+          // A line that cannot be written never stops the send: the file's write-back still runs, and the service
+          // log takes the line instead.
+          this.#log.log('warn', 'audit', { label: i.label ?? null, code: codeOf(e) })
+        }
+        this.#log.log('info', 'policy', { local })
+      },
+    })
   }
 
   /** True while a live process other than this one holds the identity's mcp.lock (the CLI, after its lend). */
@@ -2021,12 +2886,21 @@ export class Service implements ServiceHome {
   }
 }
 
-/** A reread for the service's own identities file: the same checks as at start. */
+/**
+ * A reread for the service's own identities file: the same checks as at start. No file, or a list of none, throws
+ * ENOENT, which changes nothing (#refresh), and on a home with no identity logs nothing either.
+ */
 export function rereadOf(file: string, config: ServerConfig, home: string): () => ServerConfig['identities'] {
-  return () => readIdentities(file, config, process.platform, home).identities
+  return () => {
+    const none = Object.assign(new Error(`${file} lists no identity`), { code: 'ENOENT' })
+    if (!existsSync(file)) throw none
+    const list = readIdentities(file, config, process.platform, home, true).identities
+    if (list.length === 0) throw none
+    return list
+  }
 }
 
-/** The environment variables a scrubbed launch passes on (section 8); every other, NODE_OPTIONS first, is dropped. */
+/** The environment variables a scrubbed launch passes on; every other, NODE_OPTIONS first, is dropped. */
 export const SCRUB_ENV = [
   'HOME',
   'USER',
@@ -2204,7 +3078,7 @@ export function systemdUnit(o: Parameters<typeof launchAgentPlist>[0]): string {
     '[Service]',
     'Type=simple',
     `ExecStart=${args.map(unitWord).join(' ')}`,
-    `WorkingDirectory=${unitWord(run)}`,
+    `WorkingDirectory=${run.replace(/%/g, '%%')}`,
     ...Object.entries(env).map(([k, v]) => `Environment=${unitWord(`${k}=${v}`)}`),
     // The user manager's environment is inherited: drop what would make the self-check refuse (and restart in a loop).
     'UnsetEnvironment=NODE_OPTIONS NODE_PATH LD_PRELOAD',
@@ -2212,7 +3086,8 @@ export function systemdUnit(o: Parameters<typeof launchAgentPlist>[0]): string {
     'LimitCORE=0',
     'Restart=on-failure',
     'StandardOutput=null',
-    `StandardError=append:${join(run, 'service.log')}`,
+    // `%` is a specifier in systemd values, so it is doubled here as in WorkingDirectory.
+    `StandardError=append:${join(run, 'service.log').replace(/%/g, '%%')}`,
     '',
     '[Install]',
     'WantedBy=default.target',
@@ -2244,6 +3119,12 @@ export function printLoginAgent(
     i++
   }
   if (home === undefined) return usage('it takes --dir <home>, an absolute path')
+  // A home holding a line break would break the unit (read line by line), and one holding another C0 control character
+  // the plist (XML 1.0 has no form for it): either text would not load, so such a home is refused. Tab stays.
+  if ([...home].some((c) => c < ' ' && c !== '\t'))
+    return usage(
+      `the home ${JSON.stringify(home)} holds a line break or a control character, which a login agent cannot hold`,
+    )
   if (platform !== 'darwin' && platform !== 'linux') return usage(`no login agent for ${platform}`)
   let current = ''
   try {
@@ -2276,6 +3157,10 @@ export interface ServiceIo {
   readonly signals: {
     once(event: 'SIGINT' | 'SIGTERM' | 'SIGUSR2', listener: () => void): unknown
   }
+  /** Ends the process with a status (process.exit); absent, the drain arms no hard exit. */
+  readonly exit?: (status: number) => void
+  /** What still holds the event loop (process.getActiveResourcesInfo), for the hard exit's line. */
+  readonly open?: () => readonly string[]
 }
 
 /**
@@ -2309,5 +3194,13 @@ export async function serveService(config: ServerConfig, deps: ServiceDeps, io: 
   io.signals.once('SIGUSR2', () => resolve(EXIT_UPGRADE))
   const status = await promise
   await service.drain(status === EXIT_UPGRADE ? 'upgrade' : 'stop')
+  const { exit } = io
+  // The lock is released: whatever still holds the event loop after the grace is ended, and named.
+  if (exit !== undefined)
+    setTimeout(() => {
+      const open = io.open?.() ?? []
+      deps.log.log('warn', 'service-exit-hard', { status, open, relay_calls: service.relayCalls() })
+      exit(status)
+    }, deps.exitGraceMs ?? EXIT_GRACE_MS).unref()
   return status
 }

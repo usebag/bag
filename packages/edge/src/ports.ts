@@ -491,10 +491,15 @@ export type PairReach = Omit<PairOpen, 'ttl' | 'sig'> & { readonly exp: number }
  * A failed relay call. `status` is the HTTP status, 0 when no response arrived; `code` is the relay's code when its
  * body named one from the closed set; `retryAfter` is a 429's Retry-After in seconds.
  */
+/** The publish audit's cause for a try its client's signal aborted: the bag service's stop, not the relay's silence. */
+export const STOP_ABORT = 'stop-abort'
+
 export class RelayError extends Error {
   readonly code: AcErrorCode | null
   readonly status: number
   readonly retryAfter: number | null
+  /** STOP_ABORT when the client's own signal ended the request (the bag service's stop), else null. */
+  stopped: typeof STOP_ABORT | null = null
 
   constructor(code: AcErrorCode | null, status: number, retryAfter: number | null, detail: string) {
     super(`${code ?? (status === 0 ? 'no response' : `status ${status}`)}: ${detail}`)

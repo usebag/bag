@@ -35,7 +35,7 @@ import { removePairedRoot, type SourcedRoot, syncSourcedTrust, type TrustSync } 
 // @usebag/core's and @usebag/edge's own.
 
 const H = 3600
-/** The client's half of the contract's AGENT_CLOCKS, in seconds. */
+/** The client's half of the clocks it shares with the enterprise instance, in seconds. */
 export const CLOCKS = {
   refreshUnder: 12 * H,
   localMax: 24 * H,

@@ -134,7 +134,7 @@ async fn refuse(socket: &mut WebSocket, code: Code, close_code: u16) {
 }
 
 /// Refuses a subscription at its address's limit before any challenge: `rate-limited`, which a client retries, and
-/// nothing about any identity (ruling 8).
+/// nothing about any identity: the refusal turns on the address alone.
 pub(crate) async fn at_limit(socket: &mut WebSocket) {
     refuse(socket, Code::RateLimited, CLOSE_TRY_LATER).await;
 }

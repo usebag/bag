@@ -26,12 +26,13 @@ import type {
   GroupKeyReply,
   PendingGrant,
   PrincipalKeys,
+  RevokeReply,
 } from './agent.ts'
 import { AgentError, codeOf } from './model.ts'
-import { hopDigest } from './rules.ts'
+import { checkNote, hopDigest } from './rules.ts'
 
 // The agent's socket: newline-framed JSON, the nonce first, session requests to
-// Agent.handle, and `grant`, `resign`, `device-grant` and `group-key`, uid-only frames.
+// Agent.handle, and `grant`, `resign`, `device-grant`, `group-key` and `revoke`, uid-only frames.
 
 /** A subject a device's logout leaves live: `until` is its hop's exp + TTL + skew. */
 export type Unrevoked = { readonly sub: string; readonly until: number }
@@ -309,8 +310,9 @@ export class AgentServer {
     const { op, args } = f
     if (op === 'grant') return this.#grant(args, peer)
     if (op === 'resign') return this.#resign(args)
-    // The two uid-only ops; a session frame naming one goes to Agent.handle, and is `bad-shape` (13.6).
+    // The three uid-only ops; a session frame naming one goes to Agent.handle, and is `bad-shape` (13.6).
     if (op === 'device-grant' && f.session === undefined) return this.#deviceGrant(args, peer)
+    if (op === 'revoke' && f.session === undefined) return this.#revoke(args)
     if (op === 'group-key' && f.session === undefined) return this.#groupKey(args)
     if (op === 'logout') {
       const { record, error: e, unrevoked } = this.#end(true)
@@ -363,13 +365,29 @@ export class AgentServer {
     const asked = triple(args)
     if (asked === null) return refuse(new AcError('bad-shape', 'grant args are [session, caveats, exp]'))
     const [session, caveats, exp] = asked
-    const pending = this.#o.agent.prepareGrant({ session, caveats, exp })
+    let note: string | undefined
+    try {
+      note = checkNote((args as unknown[])[3])
+    } catch (e) {
+      return refuse(e)
+    }
+    const pending = this.#o.agent.prepareGrant(
+      note === undefined ? { session, caveats, exp } : { session, caveats, exp, note },
+    )
     if (!pending.ok) return pending
     return this.#ask(pending, peer, (typed) => {
       const reply = this.#o.agent.confirmGrant(pending, typed)
       if (reply.ok) this.#note(reply.hop)
       return reply
     })
+  }
+
+  /** `revoke [session]`, uid-only: the session's grants leave the window (Agent.revoke). */
+  #revoke(args: unknown): RevokeReply {
+    const [session, ...rest] = Array.isArray(args) ? args : []
+    if (typeof session !== 'string' || rest.length > 0)
+      return refuse(new AcError('bad-shape', 'revoke args are [session]'))
+    return this.#o.agent.revoke(session)
   }
 
   /**

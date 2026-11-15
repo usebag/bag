@@ -65,6 +65,7 @@ absent('keygen --custody keychain without /usr/bin/security (not macOS)', () => 
     const r = await cli(
       { ...testIo(new MemoryRelay()), security: runSecurity },
       'keygen',
+      '--new',
       'a',
       ...kc,
       '--dir',
@@ -99,8 +100,8 @@ live('the CLI on /usr/bin/security and a temporary keychain (L2 (d), L3)', () =>
       expect(r.code, argv.slice(0, 2).join(' ')).toBe(0)
       return r.out
     }
-    const [alice] = (await run('keygen', 'alice', ...kc, '--dir', dir)) as [string]
-    const [bob] = (await run('keygen', 'bob', ...kc, '--dir', dir)) as [string]
+    const [alice] = (await run('keygen', '--new', 'alice', ...kc, '--dir', dir)) as [string]
+    const [bob] = (await run('keygen', '--new', 'bob', ...kc, '--dir', dir)) as [string]
     expect((await run('keys', 'list', '--dir', dir)).map((l) => l.split(' ').slice(0, 3).join(' '))).toEqual([
       `alice ${alice} keychain`,
       `bob ${bob} keychain`,

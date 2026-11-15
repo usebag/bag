@@ -195,10 +195,10 @@ describe("device-grant on P's agent (S1)", () => {
     expect(org.takeGroupKey({ body: own })).toEqual(refusal('not-authorized'))
   })
 
-  it('is no session op: a session frame naming device-grant or group-key is bad-shape', () => {
+  it('is no session op: a session frame naming device-grant, group-key or revoke is bad-shape', () => {
     const { agent } = setup()
     const s = new Session(agent, P.session.signing, [grant(agent)])
-    for (const op of ['device-grant', 'group-key']) {
+    for (const op of ['device-grant', 'group-key', 'revoke']) {
       expect(s.send(op as unknown as AgentOp, [D, [], EXP])).toEqual(refusal('bad-shape'))
     }
   })

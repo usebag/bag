@@ -14,10 +14,10 @@ import {
 } from './support/fixtures.ts'
 import { ScriptedRelay } from './support/relays.ts'
 
-// 'relays N' (spec/SPEC.md §4.3, §9.1; the red team's rulings of 2026-10-30): a record may list up to 64 relays, and the
-// sender publishes to at most K = 3 of each recipient's, in listed order, the union across recipients deduplicated. A
-// target refused for good (a 4xx other than 408 and 429), or unreachable for RETIRE_TRIES tries, is retired and the
-// recipient's next listed relay promoted, when it has one; a retired target is never tried again, resend included.
+// 'relays N' (spec/SPEC.md §4.3, §9.1): a record may list up to 64 relays, and the sender publishes to at most K = 3 of
+// each recipient's, in listed order, the union across recipients deduplicated. A target refused for good (a 4xx other
+// than 408 and 429), or unreachable for RETIRE_TRIES tries, is retired and the recipient's next listed relay promoted,
+// when it has one; a retired target is never tried again, resend included.
 
 const HOME = 'http://home.test'
 const R = (n: number): string => `http://relay-${n}.test`
@@ -117,7 +117,7 @@ describe('relays N: K = 3 of each recipient, in listed order (spec/SPEC.md §4.3
   })
 })
 
-describe('relays N: failover to the next listed relay (§4.3; the red team ruling 2)', () => {
+describe('relays N: failover to the next listed relay (§4.3)', () => {
   it('retires a target refused for good and publishes to the next listed relay at once', async () => {
     const { edge, relay, store } = setup({ bob: [1, 2, 3, 4, 5] }, (u) => (u === R(2) ? refused() : ok))
     const sent = await edge.send({ to: [P.bob.address], type: 'chat.v1', body: {} })
@@ -193,13 +193,13 @@ describe('relays N: failover to the next listed relay (§4.3; the red team rulin
   })
 })
 
-describe('relays N: the count is each Edge own (§4.3; ruling 3)', () => {
+describe('relays N: the count is each Edge own (§4.3)', () => {
   it('after a restart the plan comes from the outbox row: the target fails over, and nothing is sprayed', async () => {
     const { edge, store, relay, records, clock, audit } = setup({ bob: [1, 2, 3, 4, 5] }, (u) =>
       u === R(1) ? down() : ok,
     )
     const sent = await edge.send({ to: [P.bob.address], type: 'chat.v1', body: {} })
-    // Routing fields only (the red team's condition): relay URLs and a count, never a key or a body.
+    // Routing fields only: relay URLs and a count, never a key or a body.
     expect(JSON.parse(store.outboxPlan(sent.id) as string)).toEqual([
       { list: [1, 2, 3, 4, 5].map(R), counted: [1, 2, 3].map(R), next: 3 },
     ])

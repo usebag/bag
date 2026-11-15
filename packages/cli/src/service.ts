@@ -11,7 +11,7 @@ import { versionLine } from './packaged.ts'
 // asks it to lend that identity (service/lend), runs as it does without a service, with its own terminal prompts, and
 // gives it back (service/return; the connection's close is a return). No socket, or one that refuses: as today.
 
-/** The service's socket and launch token of `home` (contract section 2). */
+/** The service's socket and launch token of `home` (docs/bag-service.md, What runs). */
 export const runPath = (home: string, file: 'service.sock' | 'service.token'): string =>
   join(resolve(home), 'run', file)
 
@@ -241,16 +241,39 @@ async function lend(io: Io, home: string, act: { verb: string; name: string }): 
   }
 }
 
-/** status's line for a home whose service answers a hello, else null. */
-export async function serviceLine(home: string): Promise<string | null> {
+/** What one hello found at <home>/run/service.sock: nothing answering, a refusal's code, or the service. */
+export type ServiceHello =
+  | { readonly state: 'none'; readonly socket: string }
+  | { readonly state: 'refused'; readonly socket: string; readonly code: string }
+  | {
+      readonly state: 'up'
+      readonly socket: string
+      readonly version: string
+      readonly pid: number
+      readonly contract: number
+      readonly since: string | null
+    }
+
+/** One hello to the service of `home`, closed at once: no lend, no other call (status and status --home). */
+export async function serviceHello(home: string): Promise<ServiceHello> {
+  const socket = runPath(home, 'service.sock')
   let conn: Conn | null = null
   try {
     conn = await connectService(home)
   } catch (e) {
-    return `service at ${runPath(home, 'service.sock')} refused: ${(e as CliError).code}`
+    return { state: 'refused', socket, code: (e as CliError).code }
   }
-  if (conn === null) return null
+  if (conn === null) return { state: 'none', socket }
   conn.close()
   const s = conn.hello.service
-  return `service bag ${s.version} pid ${s.pid} contract ${conn.hello.contract} ${runPath(home, 'service.sock')}`
+  const since = typeof s.started_at === 'string' ? s.started_at : null
+  return { state: 'up', socket, version: s.version, pid: s.pid, contract: conn.hello.contract, since }
+}
+
+/** status's line for a home whose service answers a hello, else null. */
+export async function serviceLine(home: string): Promise<string | null> {
+  const h = await serviceHello(home)
+  if (h.state === 'none') return null
+  if (h.state === 'refused') return `service at ${h.socket} refused: ${h.code}`
+  return `service bag ${h.version} pid ${h.pid} contract ${h.contract} ${h.socket}`
 }

@@ -38,7 +38,7 @@ async function reported(mode: string, script: SubscriptionLink[][]): Promise<str
   const relay = new ReportingRelay(script)
   const io = testIo(relay)
   const dir = `${tmp.dir}/${mode}`
-  await cli(io, 'keygen', 'bob', '--dir', dir)
+  await cli(io, 'keygen', '--new', 'bob', '--dir', dir)
   const running = cli(io, 'inbox', mode, '--as', 'bob', '--relay', RELAY, '--dir', dir)
   if (mode === '--watch') {
     while (relay.subs.size === 0) await new Promise((done) => setTimeout(done, 5))
@@ -75,7 +75,7 @@ it('a one-shot inbox ends 200 ms after the relay admits it, not after its whole 
   const io = testIo(new ReportingRelay([[{ admitted: true }]]))
   Object.assign(io, { idleMs: 5000 })
   const dir = `${tmp.dir}/drained`
-  await cli(io, 'keygen', 'bob', '--dir', dir)
+  await cli(io, 'keygen', '--new', 'bob', '--dir', dir)
   const start = performance.now()
   expect((await cli(io, 'inbox', '--once', '--as', 'bob', '--relay', RELAY, '--dir', dir)).code).toBe(0)
   const ms = performance.now() - start

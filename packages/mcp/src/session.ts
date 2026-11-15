@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import { type Clock, type EdgeKeys, generateEdgeKeys, HomeCustody, type Rng } from '@usebag/edge'
 import {
   AgentClient,
+  type AgentSession,
+  clampLife,
   codexSessionId,
   codexSessionName,
   type GrantReply,
@@ -13,11 +15,13 @@ import {
   SessionNameError,
   type SessionNameOptions,
   sessionFilePath,
+  WINDOW_MAX,
   writeSessionFile,
 } from '@usebag/edge/agent'
 import { CODEX_SESSION, type Config, ConfigError } from './config.ts'
 import type { Timers } from './desk.ts'
 import { acquireLock } from './open.ts'
+import type { Granted } from './regrant.ts'
 
 // --session: one agent session per Claude Code session, all on one principal. The name is the shared
 // resolver's (or the flag's); the server takes the session's mcp.lock at once, so a second server of one session is
@@ -68,8 +72,8 @@ export interface SessionStart {
   readonly deskDir: string
   /** Settles when grant.json holds a grant for the session's key; rejects with the refusal that ends the wait. */
   readonly granted: Promise<void>
-  /** Asks the agent for a new grant (the old one is gone) and returns the new `granted`. */
-  regrant(): Promise<void>
+  /** Asks the agent for a new grant (the old one is gone), `note` printed above its hop, and returns `granted`. */
+  regrant(note?: string): Promise<void>
   /** Why the tools cannot run yet: the waiting line, with the request code once the agent has printed it. */
   waiting(): ConfigError
   /** Stops asking, removes the session's key file and releases its mcp.lock. */
@@ -87,6 +91,8 @@ export interface SessionKeyMark {
   readonly kind: 'session-key'
   /** The principal's key name: the agent-custody identity this session key acts under. */
   readonly principal: string
+  /** What a declined first grant tells the person to do (the service: type use; never written to the key file). */
+  readonly declined?: string
 }
 
 /** Adds `mark`'s fields to the key file this server just made, by a 0600 temporary file and a rename. */
@@ -181,7 +187,7 @@ function codexSession(given: Config, start: (id: string) => SessionStart): Sessi
     get granted() {
       return inner?.granted ?? first
     },
-    regrant: () => (inner as SessionStart).regrant(),
+    regrant: (note) => (inner as SessionStart).regrant(note),
     waiting: () =>
       inner?.waiting() ??
       new ConfigError('no-session', `not named before Codex's first tool call; ${CODEX_WAY_OUT}`),
@@ -276,12 +282,15 @@ function named(
     address = custody.create(name, generateEdgeKeys(deps.rng), { custody: 'file' }).address
     if (mark !== undefined) markKey(keyFile, mark)
   }
-  const grant = async (rekeyed: boolean): Promise<void> => {
+  const grant = async (rekeyed: boolean, note?: string): Promise<void> => {
     let fresh = rekeyed
     for (;;) {
       if (closed) throw new ConfigError('busy', 'the server closed before the grant')
       const r = await requestGrant(
-        () => (client = new AgentClient(join(given.home, 'agent.sock'))),
+        () => {
+          client = new AgentClient(join(given.home, 'agent.sock'))
+          return withNote(client, note)
+        },
         address,
         s.caveats,
         s.exp,
@@ -294,6 +303,8 @@ function named(
       if (closed) throw new ConfigError('busy', 'the server closed before the grant')
       if (r?.ok) {
         forget(requestFile)
+        // The granted request's code is spent: a later regrant's first answer must not name it.
+        line = `waiting for the agent of ${s.principal}`
         return writeAtomic(grantFile, JSON.stringify([r.hop]))
       }
       if (r?.code === 'revoked' && !fresh) {
@@ -305,7 +316,9 @@ function named(
       if (r !== null && r.code !== 'agent-locked') {
         forget(requestFile)
         line =
-          r.code === 'declined' ? 'no y at the agent: restart the session to ask again' : 'the agent refused'
+          r.code === 'declined'
+            ? `no y at the agent: ${mark?.declined ?? 'restart the session to ask again'}`
+            : 'the agent refused'
         throw new ConfigError(r.code, line)
       }
       line = `no agent of ${s.principal} answers: run ac login; asked again every ${GRANT_RETRY_MS / 1000} s`
@@ -326,11 +339,11 @@ function named(
     get granted() {
       return granted
     },
-    regrant: () => {
+    regrant: (note) => {
       line = `waiting for the agent of ${s.principal}`
       granted = (async () => {
         rekey()
-        return grant(true)
+        return grant(true, note)
       })()
       granted.catch(() => {})
       return granted
@@ -355,16 +368,17 @@ function named(
 }
 
 /**
- * The bag service's opening of the agent-custody identity `label` (svc-core's unit open, decision 92): the --session
+ * The bag service's opening of the agent-custody identity `label` (service.ts #openAgent): the --session
  * form for the service, so a window bound to it can act. A session key of its own under the agent's hop, opening at
  * the principal's mailbox, with the same lock, key file, grant request, regrant and close as --session; the session is
- * named `<label>.service`. `caveats` is the principal's configured list, never empty (the red team's MEDIUM on
- * connectionGrant). A label that is not an agent-custody identity is refused as startSession refuses it.
+ * named `<label>.service`. `caveats` is the principal's configured list, never empty, for a grant with no caveat
+ * would give the window the principal's whole authority. A label that is not an agent-custody identity is refused as
+ * startSession refuses it.
  */
 export function openAgentUnit(
   given: Config,
   label: string,
-  o: { readonly caveats: readonly string[]; readonly exp?: string | null },
+  o: { readonly caveats: readonly string[]; readonly exp?: string | null; readonly declined?: string },
   deps: SessionDeps,
 ): SessionStart {
   if (o.caveats.length === 0)
@@ -378,7 +392,7 @@ export function openAgentUnit(
       session: { name: `${label}.service`, principal: label, caveats: o.caveats, exp: o.exp ?? null },
     },
     deps,
-    { kind: 'session-key', principal: label },
+    { kind: 'session-key', principal: label, ...(o.declined === undefined ? {} : { declined: o.declined }) },
   )
 }
 
@@ -389,7 +403,7 @@ export interface ConnectionGrant {
 }
 
 /**
- * The grant of one bag service connection bound to an agent-class identity (red team M3): a fresh key made for this
+ * The grant of one bag service connection bound to an agent-class identity: a fresh key made for this
  * connection alone, never written to a file, and the agent's first grant to it through requestGrant, one y at the
  * agent's terminal per connection, so one connection's grant never serves another. A refusal throws its code.
  */
@@ -404,8 +418,8 @@ export async function connectionGrant(
     readonly onCode?: (code: string) => void
   },
 ): Promise<ConnectionGrant> {
-  // The principal's configured caveat list, the same for every connection (svc-core passes it): never none, for a grant
-  // with no caveat would give a window the principal's whole authority (the red team's MEDIUM).
+  // The principal's configured caveat list, the same for every connection (service.ts passes it): never none, for a
+  // grant with no caveat would give a window the principal's whole authority.
   if ((o.caveats ?? []).length === 0)
     throw new ConfigError(
       'usage',
@@ -425,4 +439,85 @@ export async function connectionGrant(
     throw new ConfigError('agent-locked', 'no agent answers: the person runs ac login, then binds again')
   if (!r.ok) throw new ConfigError(r.code, 'the agent did not grant this window')
   return { keys, hop: r.hop }
+}
+
+/** A window's grant as a regrant slot holds it (regrant.ts): the connection grant with its hop's iss, sub, caveats, exp. */
+export interface WindowGrant extends ConnectionGrant, Granted {}
+
+export const windowGrant = (g: ConnectionGrant): WindowGrant => ({
+  ...g,
+  iss: g.hop.iss,
+  sub: g.hop.sub,
+  caveats: g.hop.caveats,
+  exp: g.hop.exp,
+})
+
+/**
+ * The agent's silent renewal of a window's grant (spec/SPEC.md 13.5; the regrant wiring's hook 1): a session `sign`
+ * for the window's own in-memory key, presenting its one-hop chain, the same caveats, the longest exp the agent's
+ * window takes (clampLife: halved while past its end). The agent bounds it to its window; the slot checks the answer
+ * names the same key and issuer, so a renewal never swaps the key. A refusal is thrown as a ConfigError with the
+ * agent's code.
+ */
+export async function renewConnection(
+  home: string,
+  g: WindowGrant,
+  o: {
+    readonly clock: Clock
+    readonly connect?: (s: AgentSession) => Pick<AgentClient, 'sign' | 'close'>
+  },
+): Promise<WindowGrant> {
+  const session: AgentSession = { key: g.keys.signing, chain: [g.hop] }
+  const client = (o.connect ?? ((s) => new AgentClient(join(home, 'agent.sock'), s)))(session)
+  try {
+    const now = o.clock.now()
+    // Halved down to the first life the agent takes, never searched upward: each accepted ask is a real hop.
+    const hop = await clampLife(WINDOW_MAX, (life) => client.sign(g.sub, g.caveats, now + life))
+    return windowGrant({ keys: g.keys, hop })
+  } catch (e) {
+    throw new ConfigError(
+      (e as { code?: string }).code ?? 'agent-locked',
+      "the agent did not renew this window's grant",
+    )
+  } finally {
+    client.close()
+  }
+}
+
+/**
+ * A grant client that sends `note` with each ask (the agent prints it above the hop, never in it); with no note, the
+ * client as it is. The note is the service's own text (regrant.ts regrantNote), never a tool argument.
+ */
+export function withNote<C extends Pick<AgentClient, 'grant' | 'close'>>(
+  c: C,
+  note: string | undefined,
+): Pick<AgentClient, 'grant' | 'close'> {
+  if (note === undefined) return c
+  return {
+    grant: (session, caveats, exp, onCode) => c.grant(session, caveats, exp, onCode, note),
+    close: () => c.close(),
+  }
+}
+
+/**
+ * A window's new first grant under a fresh key (connectionGrant), for a regrant slot, its `note` sent with the ask.
+ * `onClient` receives each agent client the request opens, so a drain can close it and end the agent's prompt.
+ */
+export async function regrantConnection(
+  home: string,
+  o: Parameters<typeof connectionGrant>[1] & {
+    readonly onClient?: (c: Pick<AgentClient, 'close'>) => void
+    readonly note?: string
+  },
+): Promise<WindowGrant> {
+  const connect = o.connect ?? (() => new AgentClient(join(home, 'agent.sock')))
+  const g = await connectionGrant(home, {
+    ...o,
+    connect: () => {
+      const c = connect()
+      o.onClient?.(c)
+      return withNote(c, o.note)
+    },
+  })
+  return windowGrant(g)
 }

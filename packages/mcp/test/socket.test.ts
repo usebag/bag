@@ -14,7 +14,7 @@ import {
   tokenMatches,
 } from '../src/socket.ts'
 
-// The socket side of the bag service (docs/bag-service.md sections 2 to 4): the lock, the run directory, the path
+// The socket side of the bag service (docs/bag-service.md, "What runs"): the lock, the run directory, the path
 // guard, the framing and the token. Homes are short directories under /tmp, so a socket path fits sun_path.
 
 let dir: string
@@ -94,6 +94,17 @@ describe('the run directory', () => {
     symlinkSync(real, join(dir, 'link'))
     expect(() => ensureRunDir(join(dir, 'link'))).toThrow('is a link or not a directory')
     expect(() => ensureRunDir(run, 12345)).toThrow('belongs to another user')
+  })
+
+  it('refuses a clean 0700 run/ another user owns, by the uid it is given; with no uid (-1) the owner is not tested', () => {
+    const run = join(dir, 'owned')
+    mkdirSync(run, { mode: 0o700 })
+    const owner = lstatSync(run).uid
+    expect(() => ensureRunDir(run, owner + 1)).toThrow(
+      `unsafe-path: ${run} belongs to another user (uid ${owner})`,
+    )
+    expect(() => ensureRunDir(run, owner)).not.toThrow()
+    expect(() => ensureRunDir(run, -1)).not.toThrow()
   })
 })
 

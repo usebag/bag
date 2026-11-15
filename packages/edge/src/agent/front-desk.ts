@@ -1,6 +1,7 @@
 import {
   closeSync,
   existsSync,
+  fchmodSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -63,16 +64,23 @@ export interface FrontDeskOptions {
   readonly sync?: (fd: number) => void
   /** Prune the ledger after this many appends (default PRUNE_EVERY). */
   readonly pruneEvery?: number
-  /** Called with a fault of the retry timer's attempt to take the lock; the retry goes on. */
+  /** Called with a fault of the retry timer's attempt to take the lock, the seed's merge or a prune; each goes on. */
   readonly onError?: (error: unknown) => void
   /**
    * The edge's ts window (default DEFAULT_WINDOW), the one its stale check uses: a ledger entry or a held root is
    * dropped only once the edge would refuse that root as stale, so a wider window never lets a root be answered twice.
    */
   readonly window?: TimeWindow
+  /**
+   * The roots something of this principal accepted without writing the ledger (a plain server, the CLI, a 0.1 server):
+   * read at every desk start, under desk.lock, and the unexpired ids the ledger lacks are added to it (desk-seed.ts,
+   * seedFromStore). A fault of that merge is reported through onError and the desk starts, its ledger unchanged unless
+   * the write was committed.
+   */
+  readonly seed?: () => Iterable<{ readonly id: string; readonly ts: number }>
 }
 
-/** fsync of a directory, so a file just made in it survives a crash. */
+/** fsync of a directory, so a file just made in it, or renamed into it, survives a crash. */
 function syncDir(dir: string): void {
   const fd = openSync(dir, 'r')
   try {
@@ -87,6 +95,7 @@ export function appendDurable(path: string, line: string, sync: (fd: number) => 
   const fresh = !existsSync(path)
   const fd = openSync(path, 'a', 0o600)
   try {
+    fchmodSync(fd, 0o600) // the mode of open applies only on create: a wider ledger is narrowed at its next append
     writeSync(fd, line)
     sync(fd)
   } finally {
@@ -95,17 +104,22 @@ export function appendDurable(path: string, line: string, sync: (fd: number) => 
   if (fresh) syncDir(dirname(path))
 }
 
-/** Replaces `path` by `text` (mode 0600): a temporary file, fsynced, then renamed over it. */
+/**
+ * Replaces `path` by `text` (mode 0600): a temporary file, fsynced, renamed over it, and the directory fsynced, so the
+ * rename survives a crash (else an older ledger could come back without the lines appended to the new one).
+ */
 function replaceDurable(path: string, text: string): void {
   const temp = `${path}.tmp`
   const fd = openSync(temp, 'w', 0o600)
   try {
+    fchmodSync(fd, 0o600) // a temporary file left by a crash keeps its mode through open; the ledger is never wider
     writeSync(fd, text)
     fsyncSync(fd)
   } finally {
     closeSync(fd)
   }
   renameSync(temp, path)
+  syncDir(dirname(path))
 }
 
 export class FrontDesk {
@@ -157,8 +171,46 @@ export class FrontDesk {
       this.#again()
       return
     }
+    this.#merge()
     this.#prune()
     this.#o.onDesk?.()
+  }
+
+  /**
+   * Adds to the ledger the seed's unexpired roots it lacks, written whole (replaceDurable) and only when one is
+   * missing, so a start with nothing new writes nothing. Under desk.lock, so one writer. Any fault of the merge (the
+   * seed's read, the ledger's read or write) is reported and skipped: the merge never costs the desk.
+   */
+  #merge(): void {
+    if (this.#o.seed === undefined) return
+    try {
+      const roots = [...this.#o.seed()]
+      const now = this.#now()
+      const lines = this.#ledger()
+      const have = new Set(lines.map((l) => l.split(' ')[0]))
+      const missing: string[] = []
+      for (const r of roots) {
+        if (have.has(r.id) || r.ts + this.#stale() < now) continue
+        have.add(r.id)
+        missing.push(`${r.id} ${r.ts}`)
+      }
+      if (missing.length === 0) return
+      replaceDurable(join(this.#dir, 'desk-handled'), [...lines, ...missing].map((l) => `${l}\n`).join(''))
+    } catch (e) {
+      this.#report(e)
+    }
+  }
+
+  /**
+   * Reports a fault to onError and never throws: an onError that throws is ignored, so a report cannot turn into a
+   * rejected root whose ledger line is written, a desk start that skips onDesk, or a retry timer that stops.
+   */
+  #report(e: unknown): void {
+    try {
+      this.#o.onError?.(e)
+    } catch {
+      // the fault was offered to the server's handler; a handler that throws has nowhere further to report to
+    }
   }
 
   /** The retry timer: a fault is reported and the retry goes on, it never ends the tries or escapes the timer. */
@@ -167,7 +219,7 @@ export class FrontDesk {
       try {
         this.start()
       } catch (e) {
-        this.#o.onError?.(e)
+        this.#report(e)
         this.#again()
       }
     })
@@ -224,13 +276,21 @@ export class FrontDesk {
     return this.#ledger().some((l) => l.split(' ')[0] === id)
   }
 
-  /** The desk drops the entries whose ts + ttl + skew is past (a root that old is refused by the edge's stale check). */
+  /**
+   * The desk drops the entries whose ts + ttl + skew is past (a root that old is refused by the edge's stale check). A
+   * fault is reported and skipped, as pruning only shortens the ledger: at start() it never skips onDesk, and after an
+   * append it never fails a root whose line is written (whose retry the ledger would refuse, so no model would see it).
+   */
   #prune(): void {
-    const now = this.#now()
-    const lines = this.#ledger()
-    const keep = lines.filter((l) => Number(l.split(' ')[1]) + this.#stale() >= now)
-    if (keep.length === lines.length) return
-    replaceDurable(join(this.#dir, 'desk-handled'), keep.map((l) => `${l}\n`).join(''))
+    try {
+      const now = this.#now()
+      const lines = this.#ledger()
+      const keep = lines.filter((l) => Number(l.split(' ')[1]) + this.#stale() >= now)
+      if (keep.length === lines.length) return
+      replaceDurable(join(this.#dir, 'desk-handled'), keep.map((l) => `${l}\n`).join(''))
+    } catch (e) {
+      this.#report(e)
+    }
   }
 
   /** Drops the held roots whose ts + ttl + skew is past: the edge's stale check rejects them for good. */

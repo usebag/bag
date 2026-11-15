@@ -4,6 +4,349 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.4.2: 2026-11-15
+
+The cut tagged v0.4.2, `@usebag/bag` 0.4.2.
+
+- **`@usebag/bag` 0.4.2**, published from this cut (`npm view @usebag/bag@0.4.2 gitHead` names it).
+
+Changes after v0.4.1, for 0.4.2.
+
+- **The install page is three lines.** bag.dev/install now hands your person two terminal lines and one sentence.
+  Line 1 fetches `@usebag/bag` with `npm pack`, checks its sha256 against the page and keeps the file under a name
+  that holds it. Line 2 checks that file again and, only on a match, runs `bag host install <host> --user` from it,
+  for Claude Code, omp or Codex; on a mismatch it prints a STOP line and runs nothing. Line 3, said to the agent after
+  the restart, has it set up the rest through bag's tools, each asking first: `identities`, `identity_create` (or a
+  reused identity), `service` for the login agent, `host_wire` if wanted, and `telemetry` only on your word. Then you
+  type `use` and the name. The page no longer writes a settings file or defines a `c` function. The tools make file
+  keys; on a Mac, `bag keygen --custody keychain` in a terminal keeps them in the login Keychain instead.
+- **The install page's terminal lines run the same in zsh as in bash.** The line that retires old keep jobs printed
+  `no matches found` in zsh, the macOS default shell, when there were none; it now prints `keep jobs: none left`.
+- **The install page checks that the bag service runs after the login agent loads.** After you run the line that
+  loads the login agent, the page has you run one more check: it waits up to 15 seconds for the pid in
+  `~/.bag/run/service.json` to be bag's own launcher, then checks that it runs the page's version and that the login
+  agent is loaded. It prints one line, `bag service: running, bag <version>, started at every login`, or a STOP line
+  naming what is wrong and its fix. It only reads and runs no bag code. The three-line page had dropped this check.
+- **hono and @hono/node-server moved past seven moderate advisories, in the build's own install.** The source
+  repository's lock now holds hono 4.13.16 and @hono/node-server 2.1.6 (pulled by @modelcontextprotocol/sdk), so
+  `npm audit` is clean. The published `@usebag/bag` never contained either: its build bundles only the MCP SDK,
+  zod and ajv with their helpers, so an install of bag was not exposed.
+- **`bag local-delivery hide` and `show` take only your identities.** A name that is not an identity of the home is
+  refused with `ENOENT`, naming the ones there are, and nothing is written; an identity named by its key name is hidden
+  by its label in the bag service's `identities.json`, the name the service reads. Before, `hide` of any name wrote it
+  to the hidden list. `show` of a name already on that list still takes it out, after the same y, so an old stray
+  entry can be cleaned.
+- **A re-added identity's old news is not told again.** An identity removed and added back while the bag service
+  runs starts with no pairs; a window opened after that is no longer told the notices about it from before its
+  removal (such as "lab allowed personal"), which named pairs that are gone. A change made after the re-add is told
+  as before.
+- **`bag identity remove` tells the senders of local mail waiting for it, and leaves the bag service's file.** Mail
+  one of your identities sent to the removed one, held until your person allowed the pair, is now reported to its
+  sender as not delivered ("identity removed", in its `status`), and the held copy is deleted. With the bag service
+  running, the service does this as the command gives the identity back; with none, the command does it. The removed
+  identity also leaves `identities.json`, which the remove used to leave behind, so the service kept serving an
+  identity whose key was gone. This closes 0.4.1's known limit on `bag identity remove`. With no service running, a
+  sender whose files another bag command is using makes the remove stop before its question, with nothing changed.
+- **Codex: one wake per window.** Codex runs one server process for all of its TUI windows, and each window's bag
+  shim now keeps its own binding file and ring file, named by the window's Codex session id
+  (`<host pid>-<session id>.bound` and `.ring` under `<home>/run/shim/`). The Stop hook finds its window's files by
+  the `session_id` of its input, so with two windows bound to two identities each window is woken for its own
+  identity's mail only, and an unbind in one window leaves the other's binding alone. Claude Code and omp, one
+  process per window, keep `<host pid>.bound` as before.
+- **omp: pairing comes over the extension's own link.** omp's pairing questions (paste the code, the six check digits'
+  Yes, type the peer's six digits) come over bag's omp extension's own connection to the bag service, as the local Allow
+  did in 0.4.1; the file bridge of 0.3.0 to 0.4.1 (the `consent` folder, `.bridge`, request and answer files) is gone.
+  One question per agent call: after you paste a code, the check digits' Yes opens during the agent's next call. The
+  invite code shows above the editor until the pairing ends. No answer is not a No: the question opens again on the
+  agent's next call, until the invite ends. Run `bag host install omp --user` again after the upgrade and restart omp:
+  it also sets omp's own timeout for the bag server to 130 s (`"timeout": 130000` on `mcpServers.bag`), so a question
+  can stand up to 120 s. The per-folder form (no bag service) cannot pair inside omp any more and answers
+  `no-elicitation`: pair there with `bag pair` in a terminal. Old `<home>/state/<name>/consent/` folders are no longer
+  used and are safe to move to the Trash. A typed question's own words (how many tries are left, the peer's address)
+  now show above the editor while omp's text field is open; omp's field shows only its title.
+- **omp: a long invite pastes whole from the wrapped widget.** The invite code above the editor now has a line of its
+  own, with the peer's name cut to fit, so no name can push the code out of sight; under a code over 58 characters
+  it says "it wraps on screen: copy it all, as one line". A code copied from omp's wrapped widget carries a line break
+  at every wrap: the paste question now folds those to spaces before the code is checked, as the dialog of other
+  hosts does, so such a paste pairs; the typed six digits and every other typed answer still refuse a line break.
+  The paste question cuts the peer's name to 35 characters.
+- **omp: the refusal says where pairing works.** In omp, a pair tool that cannot ask you now says that bag's pairing
+  questions show only in an interactive omp session that runs bag's omp extension with the bag service, so neither
+  the per-folder server nor an omp without the extension can pair. A print session (`omp -p`) binds no identity, so
+  its pair tools answer `not-bound` before any question.
+- **A pairing whose first call the host cancelled ends, instead of blocking the next one.** When your host gives up on
+  the first `pair_accept` or `pair_invite` call (omp's own timeout, for example), the pairing that call started ends at
+  once, as `pair_cancel` ends it: the open question or the invite code above the editor is withdrawn, an invite is
+  withdrawn at the relay, nothing is written, and the audit says `cancelled` with `"reason":"client-abort"`. The
+  agent's next call starts afresh. A pairing still running answers `busy`; in the window that started it, `busy`
+  carries a fresh `resume`, so the agent goes on with it instead of cancelling it; for up to 30 seconds after a pairing
+  ends there, while the relay side winds down, `busy` says the last pairing is still closing, and the next try starts. Each resume token serves one call:
+  every answer that leaves the pairing running carries the next one, and a token is dead once its pairing ends.
+  `pair_cancel` asks nothing and its text tells the agent to call it only when you ask. A window may start at most 6
+  pairings in 10 minutes; the next start is refused `rate-limited` and starts nothing. The bag service's log names
+  each omp question's cap and how it ended (`link-ask`, `link-end`), never its words or your answer.
+- **The limits on questions hold across every window of a home.** A window may ask you about one act at most 3 times
+  answered and 6 times unanswered in 10 minutes, and start at most 6 pairings; since a window that reconnects starts
+  its own count again, all windows of one bag home together now stop at twice that (6 answered and 12 unanswered per
+  act, and 12 pairing starts, in 10 minutes). Past it the refusal is `rate-limited` and says the cap was reached "by all
+  windows of this bag home together". A question that is never sent, because too little of the agent's call is left,
+  no longer counts as unanswered; at most 6 of those per window and act in 10 minutes, then `rate-limited`. omp: a
+  question still open when its session ends no longer clears the words or the pending line of the next session's
+  question.
+- **The telemetry endpoint lists a version before it is released.** The maintainers deploy the endpoint by hand from
+  their infrastructure repository, and the release chain's approval waits until the endpoint's public health check
+  lists the version, so a report from a new version is never refused as an unknown build. The endpoint's source moved to that repository;
+  `TELEMETRY_SCHEMA_COMMIT` names a commit there from the next version on (docs/release.md, step 1).
+- **`bag telemetry on` asks you first.** It now runs only on a terminal and asks one question that says what is sent
+  (once a day, to telemetry.bag.dev: the version, the OS and counts under a random id; never an address, a key, a
+  message or a file path; the report holds no IP address and bag's server stores none, while Cloudflare's rate limiter
+  sees it) and turns telemetry on only after your y. Without a terminal it refuses (`no-tty`) and changes nothing; a no
+  changes nothing. `off`, `status`, `preview`, `send` and `forget` ask nothing.
+- **The telemetry notice names a preview line that works for your install.** After a three-line install, which
+  writes no settings file, the notice named `c telemetry preview`, a shell function such an install never defines.
+  It now reads `$HOME/.bag/install`: when it holds exactly one package file of the running version
+  (`usebag-bag-<version>-<16 hex>.tgz`), the notice names a line that checks the file's sha256 starts with those 16
+  hex and then runs bag from it with `npx --yes --package=`, else prints STOP and runs nothing; with no such file and
+  a settings file, it still names `c`; otherwise, including two files of one version, the preview line of the install
+  page's step 7.
+- **`bag telemetry forget` turns sending off before it asks for the erasure.** It now writes telemetry off first,
+  keeping the install id in `telemetry.json`, then asks telemetry.bag.dev to erase every report sent under that id;
+  only the endpoint's confirmation drops the id. When the erasure fails, sending stays off, the id is kept and the line
+  says so ("sending is off; the erasure of <id> failed, so the id is kept: run forget again to retry, or send the id
+  to privacy@bag.dev"). Before, a failed erasure changed nothing and left telemetry on. After a failed forget,
+  `telemetry on` draws a fresh id, so the new choice is not linked to the reports you asked to erase; the old id stays
+  pending beside it, through an on and a plain off, until a forget has its erasure confirmed. The `telemetry` tool's
+  forget does the same.
+- **Fixed: `bag onboard` keeps its keys in key files.** At a Mac terminal with a default keychain, the org key and the
+  agent key that onboard makes were put in the macOS keychain; they are now key files, as intended for a job that
+  runs from cron.
+- **The help text matches the commands.** `bag help` now lists `identity keep-alive on|off|default <name>`, `host remove
+  <host> --user`, `help` and `connect --verbose`; it says `--sandbox` is for claude-code only, which identity commands
+  the bag service lends (relays, remove and custody), and that `publish` is refused as held whenever a bag service
+  answers. `bag host migrate --undo` now says to stop the bag service before a session opens in those folders.
+- **bag's own lines run bag from the package file you checked.** `bag help`'s `mcp` entry gives
+  `claude mcp add bag -- npx -y --package=<that file> bag mcp`, the file whose sha256 the install page checked (`PKG`
+  in `$HOME/.bag/install/<name>.env`), in place of a fetch of `@usebag/bag@<version>` from the registry by name; the
+  telemetry notice names `c telemetry preview` from that package, and says how `c` comes to exist in a new shell.
+- **Fix: after a stop, the old service ends within seconds of releasing its lock.** In 0.4.0 it could stay alive for up
+  to half a minute while a send's request to a relay that did not answer was still open. Now the stop aborts every
+  relay request still open after its 10-second wait for calls, while the stores are still open: the send stays in the
+  outbox for the next service to retry, the window is told it is retrying (so do not send it again), its audit line
+  says `"cause":"stop-abort"`, and the log says `relay-aborted` with `"at":"stop"`. If anything still holds
+  the process 3 seconds after the lock is released, it exits anyway and logs `service-exit-hard` naming what was open.
+- **Fix: an identity whose keys an agent holds keeps working in the bag service past its grant's end.** In 0.4.0 the
+  service never renewed its grant, so the identity stopped receiving at the grant's end and a lost grant answered
+  `not-authorized` until you bound the window again. Now the service renews it through the agent with no `y`, and each
+  window's own grant renews while the window is bound. A grant that ends with the agent's login is used to its end.
+  When a grant is revoked (a logout, say) or has ended, nothing is asked until a window acts: that act answers
+  `grant-pending` with the agent's request code, and one `y` at the agent per grant (the identity's, and each window's
+  own) grants a fresh key; the identity and its threads carry on. A `no` holds until you type `use` and the name again.
+- **Fix: mail wakes the Codex window, not a sub-agent of it.** In 0.4.1 a Codex sub-agent that bound the window's
+  identity and stayed alive took the speaking role, so mail rang the sub-agent and the window woke only after it ended.
+  Now the bag service marks a sub-agent's connection at its first tool call, before that call runs, and never lets it
+  speak: the window you type in is woken, and the sub-agent sees a quiet notice. The mark lasts the connection's life.
+  It works with 0.4.1's bag shim too, which sends no mark of its own: the service reads Codex's own session and thread
+  ids on the call.
+- **Codex: a closed window's binding ends.** `bag host install codex --user` adds a SessionEnd hook to
+  `~/.codex/hooks.json`. When a Codex session ends (its window closed or quit, or `/new`), Codex runs the hook, about a
+  minute late, and the bag shim of that session ends its connection to the service, which releases the binding and
+  any pairing that session started, then connects again unbound. A window that started `/new` keeps bag and binds
+  again in its next dialog. The hook acts only on the files of the session that ended. Re-run your install step to
+  add the hook (Codex asks you to trust it in `/hooks`).
+- **`bag status --home` shows the whole home in one read.** The bag service, the local-delivery word, every identity
+  with its custody (file, Keychain or agent), whether the service serves it, whether it is kept apart (hidden),
+  whether a window has it bound and how much local mail waits for it, the local pairs, the bound windows and the
+  relays; `--json` for the same as JSON. It reads no key and asks nothing.
+- **`bag keygen` asks for `--new` before a second identity.** On a home that holds identities already, a name it
+  does not hold is refused (`exists`, "this home holds identities already: use one of them, or pass --new for a new
+  one") and nothing is written, so an agent that meant to reuse an identity does not make a new one by mistake; the
+  first identity of a fresh home needs no `--new`. The bag service's own key files are not counted, so a home whose
+  only file is a stale service key is a fresh home. `bag onboard` passes `--new` for the keys it makes.
+- **`bag keygen --custody agent` lists the identity for the bag service.** As for a key file or Keychain identity, it
+  now adds the agent identity to `<home>/identities.json` when a relay is known (the install settings' relays, or the
+  list's first entry's), so the bag service serves it without a further step; with no relay known it writes nothing
+  there, and `bag identity relays <name>`, with `--relay` once for each relay, run on a terminal, lists it.
+- **`bag mcp` says what this machine holds.** The standalone MCP server, for a window that acts as no identity yet,
+  gains an `identities` tool: it answers how many identities the home holds and leaves their names to the person,
+  who picks one by typing `use` and its name in a window that runs the bag service. `status` now starts with bag's
+  version, the identities' count and how many of the relays they name answer a health probe (never the relays'
+  addresses; each answer reused for 60 seconds), then the enterprise session if there is one; no session is no
+  longer an error there.
+- **An update path for 0.4.x installs.** Part 2 of the update page checks the new package, points every identity's
+  settings at it, restarts the bag service on it and rewires omp and Codex, with a checked way back.
+- **Part 1's way back works after part 1 is done.** Part 1 of the update page now goes back from the install's own
+  record, even after its last step has moved the page's note away: a package install from the `BEFORE_` lines in
+  `$HOME/bag-install.env`, an install from a clone from its `.before-update` files, each read only as a file of yours
+  alone (mode 0600), never a link, and the settings file searched for those lines before it is loaded. Before, the
+  way back stopped and sent you to part 2 once bag's copy was in `$HOME/.bag/package`. With neither record, it stops
+  with "nothing to go back to" and changes nothing.
+- **The update page's steps for earlier installs stop on a 0.4.x install.** Part 1 of the update page, for installs
+  made before 0.4.0 (`$HOME/bag-install.env`), now stops at every one of its blocks when a 0.4.x settings file
+  exists in `$HOME/.bag/install/`, before any other command, and sends you to part 2; before, its per-folder steps
+  could run against a 0.4.x install.
+- **The update page updates an install made by the three-line page.** Such an install keeps no settings file in
+  `$HOME/.bag/install/`, only its checked package file, and part 2 of the update page stopped on it with "no bag
+  install here". Part 2 now finds it by that package file, which it checks before any `npx`, and by the bag service's
+  `identities.json`, and updates it with the same checked way back.
+- **Part 1 of the update page knows a three-line install, and runs again after a stop.** Part 1 now also stops and
+  sends you to part 2 on a three-line install (its package file, `package/current` or `identities.json`), and keeps a
+  note while it runs, so a run stopped after its host install step picks up on a rerun instead of stopping as if the
+  install were already 0.4.x; the note goes to the Trash at its last step.
+- **The install page runs bag only from the package file it checked.** Step 2a fetches the package as one file with
+  `npm pack` into `$HOME/.bag/install`, compares its sha256 with the page's pin (with npm's `dist.integrity` printed
+  beside it), and on a match points the settings' `PKG` at that file, kept under a name holding the first 16 hex of
+  its sha256, so the bytes bag runs from are the bytes checked; a mismatch stops with the settings as they were. A
+  copied package file (2b) is checked as a copy in the install folder. The page never installs bag globally, and the
+  enterprise console's lines, the partner install page and the update page's step 3a run bag from the checked file
+  too.
+- **A session does not answer again what your plain server or `bag inbox` already took.** A root message that a
+  plain (non-session) bag server, the CLI or a 0.1 server accepted for your identity stays in that identity's own
+  store and was never in the sessions' answered list, so the first session to take the front desk could answer it a
+  second time when the relay handed it over again. Each time a session takes the desk, it now adds the unexpired
+  roots that store accepted to the list, reading the store without writing it. A root such a server saw and chose
+  not to answer is not answered by a session either.
+- **`sign_out` beside `sign_in`, in a window.** The agent can sign this machine out of an organisation, as
+  `bag sign-out --org <domain>` does, when you ask it to, and only after you answer Yes in the window: the
+  organisation revokes the agent's key for good. The standalone `bag mcp` has no dialog, so it offers no `sign_out`.
+- **The login agent from a window.** In a window bound to no identity, `service` writes the bag service's login agent
+  (launchd on macOS, the systemd user unit on Linux) after you answer Yes to a question that says it starts bag at
+  every login; it gives you the one line to load it, and loads nothing itself.
+- **Propose a folder's identity from a window.** In a window bound to no identity, `host_wire` proposes one identity
+  for that window's own folder: every new window opened there has it preset in its bind dialog, and acts as it only
+  after your Yes or your typed `use` and the name. You are asked in the window, which says that every new window in the
+  folder will propose the identity, and you type its label there (or say Yes to the one identity that window just made).
+  Nothing is written into the folder, so the bag service keeps holding the identity; the answer's last line says
+  whether the service keeps its records at its relays or none are published yet (`bag onboard` publishes them). The
+  agent cannot choose the identity or another folder. `host_wire` with `action: unwire` takes the proposal out again,
+  and an earlier bag's own entries in the folder, after your Yes, leaving every other one. The bag service now reads
+  the proposals `bag host migrate` writes, so a migrated folder's identity is preset as migrate says.
+- **A first identity from a window, and telemetry from a window.** The bag service now starts on a machine with no
+  identity yet; a window there can call only `status`, `use`, `identities`, `identity_create` and `telemetry`.
+  `identity_create` makes a new identity with the label and relays you name, in a key file, after you answer Yes to a
+  question in the window that shows the label and every relay whole, and publishes its first records to those relays
+  (one line per relay; if none takes them, the identity stays and the answer names the relay's code); the service serves it at once, and it acts in no
+  window until you bind one to it (`use`), nor is any host or folder wired for it. `telemetry` reads, turns on or turns
+  off this machine's telemetry, as `bag telemetry` does: on asks you first, naming what is sent and where; off and
+  status ask nothing; forget, also asking nothing, turns it off first and then erases the reports already sent, where
+  off keeps them up to 90 days. No answer shows the agent the telemetry id. Both run in a window bound to no identity, and `telemetry` in every bound window too. `bag telemetry` prints what it printed before.
+- **Each publish of an identity's address and accept-from records is in its audit log.** Every address record and
+  accept-from that `bag onboard`, `bag init`, `bag restore`, `bag record keep` and the `identity_create` tool publish
+  now writes one line per relay to the identity's `cli-audit.jsonl`: a `policy` line with `"step":"publish"`, the
+  record, the relay and the outcome (`ok`; `unchanged` when the relay already holds that record; else the relay's
+  code, as a reject).
+- **The identity acts run in a window too.** In a window bound to an identity, the agent can now call
+  `identity_remove` (of another identity, never the window's own), `identity_relays`, `keep_alive`, `local_delivery`
+  (on, off, hide, show), `unpair` and `names` (add, list, forget).
+  Each one that changes something asks you in the window first, with a short question that names the act and the
+  identity, and the bag service holds the identity quiet only after your Yes, while the change is written, so its mail
+  keeps arriving while the question is open. A window bound to no identity gets `identities`: each identity's label with a short
+  address (`ed25519:` and its first 8 and last 4 hex); the full addresses only after you answer Yes, once, to "Show the
+  full addresses of this machine's identities to this window?" in that window, for as long as it stays open. After
+  that Yes, the agent in that window can read the full addresses and carry them out of bag.
+- **Unpair and identity remove deal with mail still waiting for a local pair.** When a local pair is dropped (by
+  `bag unpair` of an own identity paired locally, or by `bag identity remove`), mail one side sent that still waits in
+  the other side's spool can never be delivered: it is now deleted and reported to its sender as not delivered
+  ("unpaired", in its `status`), as the bag service already did for its own drop. A sender whose files another bag
+  command is using stops the drop before anything is written.
+- **A removed identity's mail is told to its senders even when the bag service stops first.** A remove the bag
+  service took part in now leaves a record, `run/removed.json`, before it moves anything; the service fails the
+  removed identity's held mail to its senders when it gets the identity back, or at its next start if it stopped
+  before that, and with no service running the next `bag identity remove`, `bag identity relays` or
+  `bag status --home` does it. An identity added back with the same key keeps its mail. `bag identity remove` beside a
+  running service now also checks the service again after your y when the identity has held mail.
+- **Mail failed for a removed identity names the identity it was for.** The not-delivered report could name the
+  sender's own identity in place of the removed one when the removed one had asked for the pair first.
+- **Stopping the bag service ends the pairings its windows run.** Before, a stop or upgrade ended no window's
+  pairing itself: each ended only as its window closed. A command refused because a window is pairing now names that
+  window, not the first window open.
+- **`service.json` says what is running.** The bag service's `run/service.json` gains three counts, rewritten when one
+  changes: `pairings` (the pairings running over every window and identity, one still winding down included), `lends`
+  (the identities lent to a bag command or held quiet for a window's act) and `asking` (the questions to you open in
+  any window), so an update can wait for them instead of cutting one; `started_at` now stays the time the service
+  started, where a stop's last write moved it. Readers of the other keys are unaffected. A pairing a window started
+  after a lend check had looked at it is now counted there and ends when its window closes; before, it ran
+  uncounted and outlived its window.
+- **The enterprise console's pairings remove tells the senders too.** When the console ends a link to another of your
+  identities paired locally, mail that waited in a spool between the two was deleted with no word to anyone; each one
+  is now reported to its sender as not delivered ("unpaired", in its `status`) before it is deleted, as `bag unpair`
+  and the bag service do. One whose sender's files are in use stays in the spool.
+- **`bag identity custody` asks before it reads the key.** The question now comes first, then the old copy is read
+  (with its keychain dialog, for a keychain item), written, read back and compared. A No reads no key. For a key file,
+  the question no longer names the address: it is read with the key, after the y.
+- **A wake link whose target is gone is now removed.** `bag host install omp` and `bag host remove omp` reported such
+  a link of bag's as removed but left it in place; it is now removed. A temporary wake link left by a stopped install
+  is removed too.
+- **`bag host migrate` writes nothing until your y, and stops if a file changes while you are asked.** It now stages
+  the package only after your y, so a no leaves nothing under `<home>/package`. `bag host migrate` and `--undo`
+  read again every file they planned against (and the keep jobs) after your y; when one changed while you were asked
+  (a running Claude Code rewriting `~/.claude.json`, say), they refuse `busy`, naming what changed, and write nothing.
+  Before, such an edit was overwritten.
+- **The line `bag host install service` prints saves the login agent.** Since 0.4.1 its redirect into the agent's own
+  file emptied that file before the command read it, and an empty file reads as another home's agent, so the file got
+  that refusal in place of the plist (or the systemd unit). The line now saves the text outside the agents' folder
+  and moves it in and loads it only when it holds a login agent's last line; anything else, a refusal included, stops the
+  line with a STOP message and leaves the installed agent as it was.
+- **Linux: the login agent starts on a fresh home.** In 0.4.1 the systemd user unit of step 6c did not start:
+  systemd refused its quoted `WorkingDirectory=` line (`path is not absolute`), and the unit's stderr file
+  `~/.bag/run/service.log` sat in a folder only the bag service made, so every start failed until systemd gave up.
+  `WorkingDirectory=` is now a bare path, and `bag host install service` makes `~/.bag/run` (mode 0700) before it
+  prints the agent, on macOS too. On Linux, run step 6c again after the upgrade.
+- **The login agent takes a home path with a percent sign, and refuses one it cannot hold.** The Linux unit's
+  `StandardError=` log path now doubles a `%`, as `WorkingDirectory=` does, so a home such as `~/my%bag` gets a working
+  log file instead of one systemd reads as a specifier. A home path holding a line break is now refused for the Linux
+  unit, and one holding any other control character for the macOS plist, before any text is printed; before, it wrote a
+  unit or a plist that would not load.
+- **A local send to an identity with no key record says how to fix it.** When the recipient identity of a local send
+  has neither a key record nor an address record copy in the home, the refusal is still `resolve-failed`, and now
+  names the fix as a command you can paste, with that identity's own relays: "run `bag keys rotate <name> --relay
+  <relay>...` once for <label>, then send again".
+- **`identities.json` is never read through a symbolic link.** The bag commands and the bag service now read
+  `<home>/identities.json` only as a regular file at its own path. A link there is refused (the commands with
+  `identities-invalid`, the service with `usage`), and the refusal says to replace the link with a 0600 copy of the
+  file it points to. No bag command makes such a link.
+- **`status` with a message id no longer fails on an odd audit line.** A line of the identity's audit log whose detail
+  is not a JSON object is read as no detail, so `status(id)` answers instead of turning into a tool error.
+
+- **The telemetry report counts every MCP tool by name.** The tools added in 0.4.2 and the enterprise tools were
+  counted as `other`; the schema now names every tool the MCP server registers, and a test fails the build when a new
+  tool is not named. A report can now be up to 4,352 bytes (from 4,096), so the longer names fit; reports from earlier
+  versions are accepted as before.
+- **A window's own grant renews while the window is bound, with no `y`, even when the window is idle.** It pauses while
+  the identity is lent to the command line or held for an act, tries once when it comes back, and stops when the window
+  unbinds or closes. Near the end of the agent's login a renewal waits for the agent's allowed time instead of being
+  refused, and the last grant ends at or before the login's end, at most 5 minutes before it, never after it.
+- **The agent's prompt for a new grant says who asks.** Above the grant it prints a note such as `note from the
+  requester: "jane in omp asks for a new grant after the grant ended"`: the identity, the kind of window and the
+  reason, written by the bag service, never by the window. The window's answer meanwhile says nothing was sent, and to
+  send again once you answer `y`. The grant lines (renewed, asked, granted, refused) are in the identity's own audit
+  log.
+- **An old session key is revoked at the agent.** After a regrant the old key's address is kept in
+  `<home>/run/revoke-intents.json` and sent to the agent at once; one the agent could not take is sent again at the next
+  start or regrant, and an older agent's refusal keeps it until its grant ends. The file is read only as a 0600 file of
+  yours in a 0700 `run/`, else a policy line says why.
+
+Known limits:
+
+- **A sub-agent shares its session's pairing**:
+  in stdio mode a sub-agent uses its session's bag connection and can wait on or cancel that session's pairing; every answer stays yours.
+- **A plain server does not read the sessions' answered list.** A plain (non-session) bag server, or a reply you
+  send after `bag inbox`, may answer a root message that a session already answered, since the relay hands its
+  unexpired messages over again, even when the plain server starts after the session ended; and both may answer one
+  that arrives while a session holds the desk. The sessions see what such a server took only at the next time a
+  session takes the desk. Use either sessions or a plain server for one identity, not both, even one after the other.
+- **A grant the old key passed on lives to its own end.** The revoke ends the old key's own grants; a grant the agent
+  signed for another key at the old key's request lasts until that grant's end, at most 8 hours. The bag service
+  itself never asks for one.
+- **An old window key is not revoked.** A window's old key lives only in the service's memory, gets no revoke at the
+  agent, and lapses at its grant's end, at most 8 hours.
+- **A restart asks again.** A service restart ends the identity's session at the agent, so the first bind
+  after it asks a `y` again, as in 0.4.0.
+- **Near an agent window's end a send can ask one `y` up to 5 minutes early.** A renewal waits for the agent's renewal
+  pace (5 minutes), so the last grant can end up to one pace before the agent's login does, never after it; a later
+  release, with the agent telling the service its login's end, removes the gap.
+- **A sub-agent is marked at its first call.** A connection bound by the typed `use` hook is marked at its first
+  call; Codex has no typed hook, so its sub-agents are marked at the bind.
+
 ## v0.4.1: 2026-11-13
 
 The cut tagged v0.4.1, `@usebag/bag` 0.4.1.

@@ -8,7 +8,8 @@ import { MemoryRelay } from './support/relay.ts'
 import { cli } from './support/run.ts'
 
 // bag mcp through run(): the server of @usebag/enterprise-client on a transport the test holds (the host's end written
-// by hand, JSON-RPC frames in and out), against the recorded fake instance. Exactly the three tools; a bad or used code
+// by hand, JSON-RPC frames in and out), against the recorded fake instance. Exactly the four tools (identities from
+// packages/home's reads, which this command passes); identities on an empty home a count of 0; a bad or used code
 // answers its reason with the code scrubbed; the command returns 0 only once the host closed the transport, and the
 // CLI wrote nothing to stdout (the transport's) or stderr the whole time.
 
@@ -49,7 +50,8 @@ function host() {
 describe('bag mcp', () => {
   it('is in the usage text', () => {
     expect(USAGE).toContain('  mcp [--dir <home>]\n')
-    expect(USAGE).toContain('claude mcp add bag -- npx -y @usebag/bag@<version> mcp')
+    expect(USAGE).toContain('claude mcp add bag -- npx -y --package=<that file> bag mcp')
+    expect(USAGE).not.toContain('npx -y @usebag/bag@')
   })
 
   it('serves exactly connect, sign_in and status; refuses a bad and a used code, scrubbed; returns at the close', async () => {
@@ -81,7 +83,9 @@ describe('bag mcp', () => {
     expect(init.result).toBeDefined()
     h.t.onmessage?.({ jsonrpc: '2.0', method: 'notifications/initialized' })
     const listed = await h.request('tools/list')
-    expect(listed.result?.tools?.map((t) => t.name)).toEqual(['connect', 'sign_in', 'status'])
+    expect(listed.result?.tools?.map((t) => t.name)).toEqual(['connect', 'sign_in', 'status', 'identities'])
+    const ids = (await h.request('tools/call', { name: 'identities', arguments: {} })).result
+    expect(JSON.parse((ids?.content ?? [])[0]?.text ?? '{}')).toMatchObject({ bound: false, identities: 0 })
     const call = async (args: Record<string, unknown>) => {
       const r = (await h.request('tools/call', { name: 'connect', arguments: args })).result
       return { text: (r?.content ?? []).map((c) => c.text).join('\n'), isError: r?.isError === true }

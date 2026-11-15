@@ -352,7 +352,7 @@ describe('L3 and L4 (CLI): one session of every command on a scratch home', () =
     }
     const R = relay.url
     const keygen = async (name: string): Promise<string> => {
-      const r = await run('keygen', name, '--dir', home)
+      const r = await run('keygen', '--new', name, '--dir', home)
       expect(r.code, redacted(r)).toBe(0)
       return r.out[0] as string
     }

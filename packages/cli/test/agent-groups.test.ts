@@ -65,6 +65,7 @@ const keygen = (h: AgentHome, name: string) =>
   cli(
     testIo(new MemoryRelay()),
     'keygen',
+    '--new',
     name,
     '--custody',
     'agent',
@@ -106,10 +107,11 @@ describe('keygen --custody agent: the pointer is written when the principal or t
     const fake = new FakeSecurity()
     const io = { ...testIo(new MemoryRelay()), security: fake.run }
     const h = agentHome(home())
-    const kc = (await cli(io, 'keygen', 'kc', '--custody', 'keychain', '--dir', h.dir)).out[0] as string
+    const kc = (await cli(io, 'keygen', '--new', 'kc', '--custody', 'keychain', '--dir', h.dir))
+      .out[0] as string
     hold({ ...h, address: kc }, 'kc', 1)
     const args = ['again', '--custody', 'agent', '--principal', 'kc', '--dir', h.dir]
-    const made = await cli(io, 'keygen', ...args)
+    const made = await cli(io, 'keygen', '--new', ...args)
     expect([made.code, made.out]).toEqual([0, [kc]])
     expect(noRefusal(made.err)).toBe(true)
   })

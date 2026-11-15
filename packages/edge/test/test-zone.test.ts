@@ -17,7 +17,7 @@ import {
   testZoneOrigin,
 } from '../src/test-zone.ts'
 
-// The test zone switch (decision 61): off unless BAG_TEST_ZONE_FILE is set; on, pilot.bag.dev's TXT comes from the
+// The test zone switch: off unless BAG_TEST_ZONE_FILE is set; on, pilot.bag.dev's TXT comes from the
 // zone file, a mapped test-zone domain's records from its loopback origin, and a loopback relay literal passes the
 // guard. Every case is also run with the switch off, where nothing differs from before.
 

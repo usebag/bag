@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   AcError,
@@ -260,6 +260,14 @@ describe('FrontDesk on one principal directory', () => {
     expect(calls).toHaveLength(2)
   })
 
+  it('appendDurable narrows a ledger left wider than 0600', () => {
+    writeFileSync(join(tmp.dir, 'x'), 'a\n', { mode: 0o644 })
+    chmodSync(join(tmp.dir, 'x'), 0o644)
+    appendDurable(join(tmp.dir, 'x'), 'b\n', () => {})
+    expect(readFileSync(join(tmp.dir, 'x'), 'utf8')).toBe('a\nb\n')
+    expect(statSync(join(tmp.dir, 'x')).mode & 0o777).toBe(0o600)
+  })
+
   it('tells the server when it becomes the desk, at the start and at a handover', () => {
     const became: number[] = []
     const [a, b] = [desk(1, { onDesk: () => became.push(1) }), desk(2, { onDesk: () => became.push(2) })]
@@ -434,6 +442,101 @@ describe('FrontDesk on one principal directory', () => {
     expect(readFileSync(join(tmp.dir, 'desk-handled'), 'utf8')).toContain('aa'.repeat(32))
     await opener.openEnvelope((roots[1] as (typeof roots)[number]).bytes)
     expect(readFileSync(join(tmp.dir, 'desk-handled'), 'utf8')).not.toContain('aa'.repeat(32))
+  })
+
+  it('starts the desk and tells the server when a prune cannot write, reporting the fault', () => {
+    const old = T0 - DEFAULT_WINDOW.ttl - DEFAULT_WINDOW.skew - 1
+    writeFileSync(join(tmp.dir, 'desk-handled'), `${'aa'.repeat(32)} ${old}\n`) // a stale line: the prune writes
+    mkdirSync(join(tmp.dir, 'desk-handled.tmp')) // replaceDurable's temporary file cannot be opened
+    const faults: unknown[] = []
+    let told = 0
+    const a = desk(1, { onError: (e) => faults.push(e), onDesk: () => told++ })
+    a.start()
+    expect([a.desk, told, faults.length]).toEqual([true, 1, 1])
+    expect(readFileSync(join(tmp.dir, 'desk-handled'), 'utf8')).toBe(`${'aa'.repeat(32)} ${old}\n`)
+  })
+
+  it('releases a root whose line is written when the prune after it fails, reporting the fault', async () => {
+    const faults: unknown[] = []
+    const a = desk(1, { pruneEvery: 1, onError: (e) => faults.push(e) })
+    a.start()
+    const old = T0 - DEFAULT_WINDOW.ttl - DEFAULT_WINDOW.skew - 1
+    writeFileSync(join(tmp.dir, 'desk-handled'), `${'aa'.repeat(32)} ${old}\n`)
+    mkdirSync(join(tmp.dir, 'desk-handled.tmp'))
+    const root = message(newThread(rng))
+    const opener = a.wrap(agentOpener(new Map([[root.id, root.content]])), () => false)
+    expect(await opener.openEnvelope(root.bytes)).toEqual(root.content)
+    expect(faults.length).toBe(1)
+    expect(readFileSync(join(tmp.dir, 'desk-handled'), 'utf8')).toContain(root.id)
+  })
+
+  it('releases a root whose line is written when the prune after it fails and onError itself throws', async () => {
+    let offered = 0
+    const a = desk(1, {
+      pruneEvery: 1,
+      onError: () => {
+        offered++
+        throw new Error('a handler that throws')
+      },
+    })
+    a.start()
+    const old = T0 - DEFAULT_WINDOW.ttl - DEFAULT_WINDOW.skew - 1
+    writeFileSync(join(tmp.dir, 'desk-handled'), `${'aa'.repeat(32)} ${old}\n`)
+    mkdirSync(join(tmp.dir, 'desk-handled.tmp'))
+    const root = message(newThread(rng))
+    const opener = a.wrap(agentOpener(new Map([[root.id, root.content]])), () => false)
+    expect(await opener.openEnvelope(root.bytes)).toEqual(root.content)
+    expect(offered).toBe(1)
+    expect(readFileSync(join(tmp.dir, 'desk-handled'), 'utf8')).toContain(root.id)
+  })
+
+  it('keeps retrying when the timer start fails and onError itself throws', () => {
+    let broken = false
+    let offered = 0
+    live.add(1)
+    live.add(2)
+    const a = desk(1)
+    const b = new FrontDesk(tmp.dir, timers, {
+      lock: {
+        pid: 2,
+        start: 1,
+        alive: (p) => live.has(p),
+        startOf: () => 1,
+        fs: {
+          ...nodeLockFs,
+          write: (path, text) => {
+            if (broken) throw new Error('EIO')
+            nodeLockFs.write(path, text)
+          },
+        },
+      },
+      onError: () => {
+        offered++
+        throw new Error('a handler that throws')
+      },
+    })
+    a.start()
+    b.start()
+    broken = true
+    expect(() => timers.fire()).not.toThrow()
+    expect(offered).toBe(1)
+    expect(timers.live()).toEqual([DESK_RETRY_MS]) // still trying
+    broken = false
+    a.close()
+    timers.fire()
+    expect(b.desk).toBe(true)
+  })
+
+  it('writes the ledger 0600 though a temporary file a crash left behind is wider', () => {
+    const old = T0 - DEFAULT_WINDOW.ttl - DEFAULT_WINDOW.skew - 1
+    writeFileSync(join(tmp.dir, 'desk-handled'), `${'aa'.repeat(32)} ${old}\n${'bb'.repeat(32)} ${T0}\n`, {
+      mode: 0o600,
+    })
+    writeFileSync(join(tmp.dir, 'desk-handled.tmp'), 'left by a crash', { mode: 0o644 })
+    chmodSync(join(tmp.dir, 'desk-handled.tmp'), 0o644)
+    desk(1).start()
+    expect(readFileSync(join(tmp.dir, 'desk-handled'), 'utf8')).toBe(`${'bb'.repeat(32)} ${T0}\n`)
+    expect(statSync(join(tmp.dir, 'desk-handled')).mode & 0o777).toBe(0o600)
   })
 
   it('evicts a held root once its ts + ttl + skew is past', async () => {

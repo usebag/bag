@@ -81,10 +81,10 @@ const sized = (size: number, ...roots: string[]) => [
  * newest is 12 hours old), and the tests of the epochs ask for none.
  */
 async function bob(io: TestIo, dir: string, epoch = true): Promise<string> {
-  const address = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
+  const address = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
   if (epoch) {
     epochStore(dir).put(address, 1, sealingKeyFromSeed(new Uint8Array(32).fill(3)), T0, T0 + 86_400)
-    epochStore(dir).markPublished(address, 1) // a published epoch (fs/edge 8c976aa4: put keeps it unpublished)
+    epochStore(dir).markPublished(address, 1) // a published epoch (the store's put keeps it unpublished)
   }
   await publish(io, dir, ADDRESS)
   await publish(io, dir, accept('*'))
@@ -122,7 +122,7 @@ describe('record keep: the records signed again at half their ttl and republishe
     const second = held(relay, bobs, 'address')
     const secondAccept = held(relay, bobs, 'accept-from')
     expect([second.iat, secondAccept.iat]).toEqual([T0 + 1800, T0 + 1800])
-    // Unchanged but for its iat, and the max_bytes of 65,536, the old default, lifted to the envelope cap (W9).
+    // Unchanged but for its iat, and the max_bytes of 65,536, the old default, lifted to the envelope cap.
     const lifted = { ...content(firstAccept), max_bytes: MAX_ENVELOPE_BYTES }
     expect([content(second), content(secondAccept)]).toEqual([content(first), lifted])
     await pass(1800)
@@ -147,7 +147,7 @@ describe('record keep: the records signed again at half their ttl and republishe
     )
   })
 
-  it('lifts a held max_bytes of exactly 65,536 to the envelope cap and keeps 32,768 (W9)', async () => {
+  it('lifts a held max_bytes of exactly 65,536 to the envelope cap and keeps 32,768', async () => {
     const relay = new MemoryRelay()
     const io = keepIo(relay)
     const dir = home()
@@ -197,7 +197,7 @@ describe('record keep: the records signed again at half their ttl and republishe
     const person = keepIo(relay)
     const dir = home()
     const bobs = await bob(io, dir)
-    const carol = (await cli(io, 'keygen', 'carol', '--dir', dir)).out[0] as string
+    const carol = (await cli(io, 'keygen', '--new', 'carol', '--dir', dir)).out[0] as string
     const running = cli(io, ...keepArgs(dir, '--relay', RELAY))
     await pass(900)
     await publish(person, dir, [...ADDRESS, '--revoke', carol])
@@ -224,7 +224,7 @@ describe('record keep: the records signed again at half their ttl and republishe
     const io = keepIo(relay)
     const dir = home()
     const bobs = await bob(io, dir)
-    const carol = (await cli(io, 'keygen', 'carol', '--dir', dir)).out[0] as string
+    const carol = (await cli(io, 'keygen', '--new', 'carol', '--dir', dir)).out[0] as string
     const as = (who: string, ...more: string[]) =>
       cli(io, 'record', 'keep', '--as', who, ...more, '--dir', dir)
     expect(await as('carol', '--relay', RELAY, '--once')).toEqual({
@@ -331,7 +331,7 @@ describe('record keep: the records signed again at half their ttl and republishe
     const io = keepIo(relay)
     const dir = home()
     const bobs = await bob(io, dir)
-    const gone = (await cli(io, 'keygen', 'gone', '--dir', dir)).out[0] as string
+    const gone = (await cli(io, 'keygen', '--new', 'gone', '--dir', dir)).out[0] as string
     await pass(1)
     await publish(io, dir, [...ADDRESS, '--revoke', gone])
     relay.failRecordPublish.set(R2, new RelayError(null, 0, null, 'no answer'))
@@ -414,7 +414,7 @@ describe('record keep: the records signed again at half their ttl and republishe
     const io = keepIo(relay)
     const dir = join(tmp.dir, 'w') // short: a Unix socket path holds about 100 bytes
     const bobs = await bob(io, dir)
-    const pointer = ['keygen', 'jane', '--custody', 'agent', '--principal', 'bob', '--dir', dir]
+    const pointer = ['keygen', '--new', 'jane', '--custody', 'agent', '--principal', 'bob', '--dir', dir]
     expect((await cli(io, ...pointer)).code).toBe(0)
     const server = createServer((c) => c.on('error', () => undefined))
     await new Promise<void>((up) => server.listen(join(dir, 'agent.sock'), up))
@@ -615,7 +615,7 @@ describe('record keep: a new epoch before the republish, once the newest is 12 h
       `republished accept-from ${bobs} iat ${T0 + 5401} ${RELAY}`,
       `next ${T0 + 5401 + 1800}`,
     ])
-    // One epoch, minted once (fs/edge 8c976aa4: a failed publish is published again, never re-minted).
+    // One epoch, minted once (a failed publish is published again, never re-minted).
     expect(epochStore(dir).epochs(bobs)).toEqual([1])
     expect(epochStore(dir).epoch(bobs, 1)).toMatchObject({ iat: T0 + 3600, published: true })
     expect(held(relay, bobs, 'key')).toMatchObject({ iat: T0 + 3600 })

@@ -18,8 +18,8 @@ const ENDED = ['agent_revoked', 'agent_lapsed', 'signed-out']
 const WAITING = ['authorization_pending', 'agent_frozen', 'stale_generation', 'org_suspended', 'no-hop']
 
 /**
- * A refusal, with the exit status the commands give it (the contract's AGENT_EXIT): 1 refused or failed, 2 usage, 3
- * the session has ended, 4 waiting on a person of the organisation. Its detail never holds a token or a key.
+ * A refusal, with the exit status the commands give it: 1 refused or failed, 2 usage, 3 the session has ended,
+ * 4 waiting on a person of the organisation. Its detail never holds a token or a key.
  */
 export class EnterpriseError extends Error {
   readonly code: string

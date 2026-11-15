@@ -1,8 +1,10 @@
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -12,17 +14,18 @@ import { createConnection, createServer } from 'node:net'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { bridgeDirOf } from '../src/bridge.ts'
 import {
   ancestors,
   boundOf,
   endSession,
   hostPidOf,
+  moveSession,
   openChannel,
-  postBridge,
   postUse,
   psRow,
   safeDir,
+  sessionKey,
+  startOf,
   typedName,
   writeBound,
 } from '../src/channel.ts'
@@ -229,15 +232,12 @@ describe('the typed-word channel', () => {
       {
         use: async (n: string) => ({ bound: true as const, as: n }),
         typed: () => true,
-        bridge: () => '/b.consent',
       },
       log,
       103,
     )
     expect(ch).not.toBeNull()
     expect(await postUse(home, [9, 123], 'omp')).toEqual({ bound: true, as: 'omp' })
-    expect(await postBridge(home, [123])).toBe('/b.consent')
-    expect(await postBridge(home, [9])).toBeNull()
     const idx = JSON.parse(readFileSync(join(home, 'run', 'shim', '123.json'), 'utf8')) as { sock: string }
     const sock = join(home, 'run', 'shim', idx.sock)
     expect(statSync(sock).mode & 0o077).toBe(0)
@@ -281,7 +281,7 @@ describe('the typed-word channel', () => {
         home,
         1,
         2,
-        { use: async () => ({ bound: false as const, code: 'x' }), typed: () => false, bridge: () => null },
+        { use: async () => ({ bound: false as const, code: 'x' }), typed: () => false },
         log,
         10,
       ),
@@ -291,7 +291,7 @@ describe('the typed-word channel', () => {
         '/dev/null/x',
         1,
         2,
-        { use: async () => ({ bound: false as const, code: 'x' }), typed: () => false, bridge: () => null },
+        { use: async () => ({ bound: false as const, code: 'x' }), typed: () => false },
         log,
         103,
       ),
@@ -326,6 +326,98 @@ describe('the session files at exit', () => {
   })
 })
 
+describe('the session files of two Codex windows under one host process', () => {
+  // Codex 0.167 runs one server process for all of its TUI windows: both shims have host pid 9.
+  const [A, B] = ['0a1b2c3d-0000-4000-8000-00000000000a', '0a1b2c3d-0000-4000-8000-00000000000b']
+  const ring = (as: string) => ({ n: 1, as, unread: 1, speaking: true, at: null })
+
+  it('keys a window by <host pid>-<session id> for a uuid only, else by the host pid', () => {
+    expect(sessionKey(9, A)).toBe(`9-${A}`)
+    expect(sessionKey(9, A.toUpperCase())).toBe(`9-${A}`)
+    expect(sessionKey(9, null)).toBe(9)
+    expect(sessionKey(9, '../x')).toBe(9)
+    expect(sessionKey(9, `${A}.bound`)).toBe(9)
+  })
+
+  it('gives each window its own .bound and .ring, and an unbind or an exit removes only its own', () => {
+    const dir = join(home, 'run', 'shim')
+    const [ka, kb] = [sessionKey(9, A), sessionKey(9, B)]
+    writeBound(home, ka, 100, ['id-a'])
+    writeBound(home, kb, 200, ['id-b'])
+    writeRing(home, ka, 100, ring('id-a'))
+    writeRing(home, kb, 200, ring('id-b'))
+    for (const f of [`${ka}.ring-seen`, `${kb}.ring-seen`]) writeFileSync(join(dir, f), '1 1\n')
+    expect(JSON.parse(readFileSync(boundOf(home, ka), 'utf8'))).toEqual({ v: 1, as: ['id-a'], shim: 100 })
+    expect(JSON.parse(readFileSync(boundOf(home, kb), 'utf8'))).toEqual({ v: 1, as: ['id-b'], shim: 200 })
+    expect(JSON.parse(readFileSync(ringOf(home, ka), 'utf8')).as).toBe('id-a')
+    // B unbinds: A's file stays.
+    writeBound(home, kb, 200, [])
+    expect(existsSync(boundOf(home, kb))).toBe(false)
+    expect(existsSync(boundOf(home, ka))).toBe(true)
+    // A's shim exits: its four files go, B's ring and ring-seen stay; a shim never ends another window's key.
+    expect(endSession(home, kb, 100)).toBe(false)
+    expect(endSession(home, ka, 100)).toBe(true)
+    expect(readdirSync(dir).sort()).toEqual([`${kb}.ring`, `${kb}.ring-seen`])
+  })
+
+  it("writes the shim's start time into .bound when known, for wake-hook --end's check", () => {
+    writeBound(home, sessionKey(9, A), 100, ['id-a'], 'Fri Nov 13 01:00:00 2026')
+    expect(JSON.parse(readFileSync(boundOf(home, sessionKey(9, A)), 'utf8'))).toEqual({
+      v: 1,
+      as: ['id-a'],
+      shim: 100,
+      started: 'Fri Nov 13 01:00:00 2026',
+    })
+    expect(startOf(process.pid)).toMatch(/\d{4}$/)
+    expect(startOf(0x7ffffff0)).toBeNull()
+    writeBound(home, sessionKey(9, A), 100, [])
+  })
+
+  it("a second shim with the window's key (a sub-agent's) that binds and exits leaves the window's files", () => {
+    const dir = join(home, 'run', 'shim')
+    const k = sessionKey(9, A)
+    const parent = process.pid // alive
+    writeBound(home, k, parent, ['id-a'])
+    writeRing(home, k, parent, ring('id-a'))
+    writeFileSync(join(dir, `${k}.ring-seen`), `${parent} 1\n`)
+    // The second shim binds (the parent's identity or another) and rings: nothing of the window's is replaced.
+    writeBound(home, k, 777_001, ['id-a'])
+    writeRing(home, k, 777_001, ring('id-b'))
+    expect(JSON.parse(readFileSync(boundOf(home, k), 'utf8')).shim).toBe(parent)
+    expect(JSON.parse(readFileSync(ringOf(home, k), 'utf8'))).toMatchObject({ as: 'id-a', shim: parent })
+    // It unbinds and exits: it removes nothing, for nothing there names it.
+    writeBound(home, k, 777_001, [])
+    expect(endSession(home, k, 777_001)).toBe(false)
+    expect(readdirSync(dir).sort()).toEqual([`${k}.bound`, `${k}.ring`, `${k}.ring-seen`])
+    // The window's next ring is written: its wake still rings.
+    writeRing(home, k, parent, { ...ring('id-a'), n: 2 })
+    expect(JSON.parse(readFileSync(ringOf(home, k), 'utf8'))).toMatchObject({ n: 2, shim: parent })
+    // A window's shim that is gone no longer holds the key; and a host pid key keeps "the newest shim writes".
+    writeBound(home, k, 0x7ffffff0, ['x'])
+    writeBound(home, k, 777_001, ['id-b'])
+    expect(JSON.parse(readFileSync(boundOf(home, k), 'utf8')).shim).toBe(parent)
+    rmSync(boundOf(home, k))
+    writeBound(home, k, 0x7ffffff0, ['x'])
+    writeBound(home, k, 777_001, ['id-b'])
+    expect(JSON.parse(readFileSync(boundOf(home, k), 'utf8')).shim).toBe(777_001)
+    writeBound(home, 9, parent, ['cc'])
+    writeBound(home, 9, 777_001, ['cc'])
+    expect(JSON.parse(readFileSync(boundOf(home, 9), 'utf8')).shim).toBe(777_001)
+  })
+
+  it('moves a binding to the window key when a tool call names the window, or a new session starts in it', () => {
+    const dir = join(home, 'run', 'shim')
+    writeBound(home, 9, 100, ['id-a'])
+    moveSession(home, 9, sessionKey(9, A), 100, ['id-a'])
+    expect(readdirSync(dir)).toEqual([`9-${A}.bound`])
+    moveSession(home, sessionKey(9, A), sessionKey(9, B), 100, ['id-a'])
+    expect(readdirSync(dir)).toEqual([`9-${B}.bound`])
+    // Unbound: the old key's files go and nothing is written.
+    moveSession(home, sessionKey(9, B), sessionKey(9, A), 100, [])
+    expect(readdirSync(dir)).toEqual([])
+  })
+})
+
 describe('the ring file', () => {
   it('writes the shape, 0600, renamed over, and removes only its own', () => {
     mkdirSync(join(home, 'run', 'shim'), { recursive: true, mode: 0o700 })
@@ -348,25 +440,6 @@ describe('the ring file', () => {
     removeRing(home, 5, 6)
     expect(isLabel('..')).toBe(false)
     expect(isLabel('omp-3')).toBe(true)
-  })
-})
-
-describe('the omp bridge folder', () => {
-  it('takes only a 0700 <home>/run/shim/<connection>.consent of the user, not a link', () => {
-    const dir = join(home, 'run', 'shim', 'c-42.consent')
-    expect(bridgeDirOf(home, dir)).toBeNull()
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    expect(bridgeDirOf(home, dir)).toBe(dir)
-    expect(bridgeDirOf(home, 5)).toBeNull()
-    expect(bridgeDirOf(home, join(home, 'run', 'x.consent'))).toBeNull()
-    expect(bridgeDirOf(home, join(home, 'run', 'shim', 'a b.consent'))).toBeNull()
-    expect(bridgeDirOf(home, dir, 0)).toBeNull()
-    const loose = join(home, 'run', 'shim', 'c-43.consent')
-    mkdirSync(loose, { mode: 0o755 })
-    expect(bridgeDirOf(home, loose)).toBeNull()
-    const link = join(home, 'run', 'shim', 'c-45.consent')
-    symlinkSync(dir, link)
-    expect(bridgeDirOf(home, link)).toBeNull()
   })
 })
 
@@ -484,6 +557,7 @@ describe('run in process', () => {
       stderr: { write: (t: string) => (err += t) },
       signals: {
         once: (e, l) => handlers.set(e, l),
+        on: (e, l) => handlers.set(e, l),
         removeListener: (e) => handlers.delete(e),
       },
       ps: () => null,
@@ -613,11 +687,8 @@ describe('run in process', () => {
     }
   })
 
-  it('serves an omp session in process: the bridge capability, and the folder from the reply to the extension', async () => {
+  it('serves an omp session in process: the hello carries the omp pid capability, and the channel names no folder', async () => {
     const svc = new FakeService(home)
-    const folder = join(home, 'run', 'shim', 'c-7.consent')
-    mkdirSync(folder, { recursive: true, mode: 0o700 })
-    svc.bridgeDir = folder
     await svc.start()
     try {
       const a = io(['--dir', home, '--input-hook'])
@@ -632,11 +703,93 @@ describe('run in process', () => {
         }),
       )
       await svc.next((m) => m.method === 'initialize')
-      expect(await postBridge(home, [process.pid])).toBe(folder)
       expect(svc.hellos[0]?.client_capabilities).toEqual({
         experimental: { 'bag.dev/consent-bridge': { pid: expect.any(Number) } }, // the omp pid (item 7)
       })
-      expect(readdirSync(folder)).toEqual([])
+      // 0.4.2: no bridge folder; the channel's generation-one "bridge" request is gone (channel.ts).
+      expect(existsSync(join(home, 'run', 'shim', `${process.pid}.consent`))).toBe(false)
+      a.handlers.get('SIGINT')?.()
+      expect(await done).toBe(0)
+    } finally {
+      await svc.close()
+    }
+  })
+
+  it('on SIGUSR2 removes the session files and connects again unbound, and keeps serving', async () => {
+    const svc = new FakeService(home)
+    await svc.start()
+    try {
+      const a = io(['--dir', home])
+      const done = run(a.io)
+      await new Promise((r) => setTimeout(r, 30))
+      a.stdin.write(
+        frame({
+          jsonrpc: '2.0',
+          id: 0,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-code' } },
+        }),
+      )
+      await svc.next((m) => m.method === 'initialize')
+      for (let i = 0; i < 100 && !a.err().includes('"connected"'); i++)
+        await new Promise((r) => setTimeout(r, 10))
+      svc.notify('service/bound', { as: 'id-a', granted: 'dialog' })
+      const dir = join(home, 'run', 'shim')
+      const bound = () => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.bound')) : [])
+      for (let i = 0; i < 100 && bound().length === 0; i++) await new Promise((r) => setTimeout(r, 10))
+      expect(bound()).toHaveLength(1)
+      const onRelease = a.handlers.get('SIGUSR2')
+      onRelease?.()
+      expect(bound()).toEqual([])
+      // A second SessionEnd during the release: the one handler, still registered (on), takes it; nothing exits.
+      expect(a.handlers.get('SIGUSR2')).toBe(onRelease)
+      onRelease?.()
+      for (let i = 0; i < 200 && svc.hellos.length < 2; i++) await new Promise((r) => setTimeout(r, 10))
+      expect(svc.hellos.length).toBe(2)
+      expect(a.handlers.get('SIGUSR2')).toBe(onRelease)
+      a.handlers.get('SIGINT')?.()
+      expect(await done).toBe(0)
+      expect(a.handlers.has('SIGUSR2')).toBe(false)
+    } finally {
+      await svc.close()
+    }
+  })
+
+  it("a Codex sub-agent's shim (the window's sessionId, its own threadId) writes no wake files when it binds", async () => {
+    const svc = new FakeService(home)
+    await svc.start()
+    try {
+      const a = io(['--dir', home])
+      const done = run({ ...a.io, env: { HOME: home } })
+      await new Promise((r) => setTimeout(r, 30))
+      a.stdin.write(
+        frame({
+          jsonrpc: '2.0',
+          id: 0,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            clientInfo: { name: 'codex-mcp-client' },
+          },
+        }),
+      )
+      await svc.next((m) => m.method === 'initialize')
+      for (let i = 0; i < 100 && !a.err().includes('"connected"'); i++)
+        await new Promise((r) => setTimeout(r, 10))
+      const sid = '0a1b2c3d-0000-4000-8000-00000000000a'
+      const meta = { sessionId: sid, threadId: '0a1b2c3d-0000-4000-8000-0000000000ff' }
+      a.stdin.write(
+        frame({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'status', _meta: meta } }),
+      )
+      await svc.next((m) => m.method === 'tools/call')
+      svc.notify('service/bound', { as: 'id-a', granted: 'typed' })
+      for (let i = 0; i < 100 && !a.err().includes('"bound"'); i++)
+        await new Promise((r) => setTimeout(r, 10))
+      await new Promise((r) => setTimeout(r, 30))
+      const dir = join(home, 'run', 'shim')
+      expect(existsSync(dir) ? readdirSync(dir).filter((f) => /\.(bound|ring)$/.test(f)) : []).toEqual([])
+      expect(a.err()).toContain('"subagent"')
       a.handlers.get('SIGINT')?.()
       expect(await done).toBe(0)
     } finally {
@@ -672,7 +825,7 @@ describe('more edge branches', () => {
       home,
       321,
       654,
-      { use: async () => ({ bound: false as const, code: 'x' }), typed: () => true, bridge: () => null },
+      { use: async () => ({ bound: false as const, code: 'x' }), typed: () => true },
       () => {},
       103,
     )
@@ -711,7 +864,7 @@ describe('more edge branches', () => {
       stdin,
       stdout,
       stderr: { write: () => true },
-      signals: { once: () => {}, removeListener: () => {} },
+      signals: { once: () => {}, on: () => {}, removeListener: () => {} },
       ps: () => null,
     })
     stdin.end(JSON.stringify({ prompt: 5 }))
@@ -728,7 +881,7 @@ describe('more edge branches', () => {
       stdin: new PassThrough(),
       stdout: out2,
       stderr: { write: (t: string) => (err += t) },
-      signals: { once: () => {}, removeListener: () => {} },
+      signals: { once: () => {}, on: () => {}, removeListener: () => {} },
       ps: () => null,
       startService: () => false,
     })

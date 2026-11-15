@@ -3,6 +3,7 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -36,20 +37,8 @@ export const POLL_MS = 1000
  */
 export const SETTLE_MS = 300
 
-/**
- * The seconds a Codex Stop hook waits for mail (`--max`). Short on purpose: the hook is awaited inline in the turn
- * loop and takes no cancellation from pending input (codex-rs core/src/session/turn.rs, core/src/hook_runtime.rs
- * run_turn_stop_hooks), so a message the person types waits out the wait; only an interrupt (Esc) ends it. Codex's own
- * default hook timeout is 600 s (hooks/src/engine/discovery.rs, normalize_command_hook). A lever, not a measure: raise
- * it for an unattended session that waits on peers.
- */
-export const CODEX_STOP_WAIT = 30
-
-/**
- * The `timeout` of that hook in hooks.json, above CODEX_STOP_WAIT. A hook that timed out would fail and the turn end
- * anyway (codex-rs hooks/src/events/stop.rs), so the margin is not a correctness need.
- */
-export const CODEX_STOP_TIMEOUT = 60
+/** A Codex Stop hook's wait for mail (`--max`, s) and its timeout in hooks.json: packages/home's, which writes it. */
+export { CODEX_STOP_TIMEOUT, CODEX_STOP_WAIT } from '@usebag/home'
 
 /** The most of a Codex Stop hook's stdin that is read, in characters, and the longest it is waited for, in milliseconds. */
 const STDIN_MAX = 65_536
@@ -236,6 +225,18 @@ export async function sessionNameOf(io: Io, home: string, who: string, w: Wait):
  * escaped and is not taken. Anything else is CliError `bad-hook-input`.
  */
 async function stopSessionId(io: Io): Promise<string> {
+  const id = sessionIdIn(await hookInput(io))
+  if (id === null) {
+    throw new CliError(
+      'bad-hook-input',
+      'the hook input on stdin is not a JSON object with a string session_id',
+    )
+  }
+  return id
+}
+
+/** The hook's stdin, read as stopSessionId says. */
+async function hookInput(io: Io): Promise<string> {
   let text = ''
   const timer = setTimeout(() => io.release(), STDIN_MS)
   try {
@@ -244,19 +245,18 @@ async function stopSessionId(io: Io): Promise<string> {
   } finally {
     clearTimeout(timer)
   }
+  return text
+}
+
+/** The `session_id` of a hook's input text as stopSessionId takes it, or null. */
+function sessionIdIn(text: string): string | null {
   let id: unknown
   try {
     id = (JSON.parse(text) as { session_id?: unknown } | null)?.session_id
   } catch {
     id = /"session_id"\s*:\s*"([^"\\]+)"/.exec(text)?.[1]
   }
-  if (typeof id !== 'string') {
-    throw new CliError(
-      'bad-hook-input',
-      'the hook input on stdin is not a JSON object with a string session_id',
-    )
-  }
-  return id
+  return typeof id === 'string' ? id : null
 }
 
 /**
@@ -307,9 +307,11 @@ export async function wakeHook(
     print: { type: 'boolean' },
     session: { type: 'string' },
     identities: { type: 'string' },
+    end: { type: 'boolean' },
   } as const
   const p = parse(args, { positionals: [], options })
   const [file, principal, auto] = [str(p, 'identities'), str(p, 'as'), str(p, 'session')]
+  if (flag(p, 'end') && auto !== 'service') throw new UsageError('--end is for --session service only')
   if (file !== undefined && (principal !== undefined || auto !== undefined || str(p, 'dir') !== undefined)) {
     throw new UsageError('--identities takes no --as, --session or --dir: each identity is in the file')
   }
@@ -323,7 +325,7 @@ export async function wakeHook(
   const [max, code, print] = [whole(p, 'max', 3500, 2e6), whole(p, 'exit-code', 2, 255), flag(p, 'print')]
   const [end, signal, quiet] = [Date.now() + max * 1000, io.stopSignal(), flag(p, 'no-idle-wake')]
   if (file !== undefined) {
-    // One identity failing never stops the others (the design's section 7): it is skipped with one line.
+    // One identity failing never stops the others: it is skipped with one line.
     const bells: Bell[] = []
     for (const e of readIdentities(file).identities) {
       try {
@@ -340,8 +342,14 @@ export async function wakeHook(
   let name = principal as string
   if (auto === 'service') {
     // The bag service: this session's shim's ring file, while it is bound; an unbound session's hook ends at once.
-    const host = hostOf(home, process.ppid)
-    if (host === null || boundOf(home, process.ppid).length === 0) return 0
+    // A Codex window's shim keys its files by the window's session id, which the Stop hook's input carries (hostOf).
+    const sid = sessionIdIn(await hookInput(io))
+    if (flag(p, 'end')) {
+      endWindow(home, process.ppid, sid)
+      return 0
+    }
+    const host = hostOf(home, process.ppid, parentOf, sid)
+    if (host === null || boundOf(home, process.ppid, parentOf, answers, sid).length === 0) return 0
     const release = await lock(join(home, 'run', 'shim', `${host}.wake-hook.lock`), max, signal)
     if (release === null) return 0
     try {
@@ -511,6 +519,19 @@ function parentOf(pid: number): number | null {
   }
 }
 
+/** The start time of `pid` as ps prints it (lstart), or null; packages/shim channel.ts startOf writes the same. */
+function lstart(pid: number): string | null {
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return out === '' ? null : out
+  } catch {
+    return null
+  }
+}
+
 /** Whether pid answers kill 0 (EPERM: alive, another user's). */
 const answers = (pid: number): boolean => {
   try {
@@ -521,22 +542,73 @@ const answers = (pid: number): boolean => {
   }
 }
 
-/** The first of `ppid` and its ancestors (at most 8) with a shim's <home>/run/shim/<pid>.bound: the host's pid. */
+/** A Codex session id as the shim keys a window's files by it (packages/shim channel.ts SESSION_ID). */
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The key of this hook's window: the first of `ppid` and its ancestors (at most 8) with a shim's
+ * <home>/run/shim/<pid>-<session id>.bound (a Codex window: Codex runs one server process for all of its windows, and
+ * each window's shim keys its files by the window's session id, the `session_id` of this hook's input) or
+ * <home>/run/shim/<pid>.bound (one process per window: Claude Code, omp). `<pid>-<session id>` or the pid; null for none.
+ */
 export function hostOf(
   home: string,
   ppid: number,
   parent: (pid: number) => number | null = parentOf,
-): number | null {
+  sessionId: string | null = null,
+): number | string | null {
+  const sid = sessionId !== null && SESSION_ID_RE.test(sessionId) ? sessionId.toLowerCase() : null
   let pid: number | null = ppid
   for (let i = 0; i < 8 && pid !== null; i++, pid = parent(pid)) {
+    if (sid !== null && existsSync(join(home, 'run', 'shim', `${pid}-${sid}.bound`))) return `${pid}-${sid}`
     if (existsSync(join(home, 'run', 'shim', `${pid}.bound`))) return pid
   }
   return null
 }
 
 /**
- * The identities the shim of this hook's host is bound to, in bind order, or none: hostOf's
- * <home>/run/shim/<host pid>.bound, the shim's file (packages/shim channel.ts writeBound):
+ * wake-hook --session service --end, Codex's SessionEnd hook: ends the binding of the session that ended, and only that
+ * one. Codex sends SessionEnd (about a minute late, from its shared server process) when a window closes, quits or
+ * starts /new. Only <pid>-<session id>.bound of an ancestor pid counts, never <pid>.bound: when it names a live shim
+ * whose host is that pid (the shim's parent, or up to four launchers above it) and whose start time (ps lstart) is the
+ * file's `started`, so a reused pid is never signalled, the shim gets SIGUSR2, on which it ends
+ * its service connection (the binding and its pairings released, its files removed) and connects again unbound, so a
+ * window that started /new keeps a working bag and binds again. No such file (the shim already moved to the new
+ * session's key, or never bound): nothing. True when it signalled.
+ */
+export function endWindow(
+  home: string,
+  ppid: number,
+  sessionId: string | null,
+  parent: (pid: number) => number | null = parentOf,
+  alive: (pid: number) => boolean = answers,
+  signal: (pid: number) => void = (pid) => process.kill(pid, 'SIGUSR2'),
+  startOf: (pid: number) => string | null = lstart,
+): boolean {
+  if (sessionId === null || !SESSION_ID_RE.test(sessionId)) return false
+  const sid = sessionId.toLowerCase()
+  let pid: number | null = ppid
+  for (let i = 0; i < 8 && pid !== null; i++, pid = parent(pid)) {
+    const doc = shimDoc(join(home, 'run', 'shim', `${pid}-${sid}.bound`), alive)
+    if (doc === null) continue
+    let up: number | null = doc.shim as number
+    for (let j = 0; j < 5 && up !== null && up !== pid; j++) up = parent(up)
+    if (up !== pid) return false
+    // The shim's own start time in the file must be the pid's now: a pid reused by another process is never signalled.
+    if (typeof doc.started !== 'string' || doc.started !== startOf(doc.shim as number)) return false
+    try {
+      signal(doc.shim as number)
+      return true
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
+/**
+ * The identities the shim of this hook's window is bound to, in bind order, or none: hostOf's
+ * <home>/run/shim/<key>.bound, the shim's file (packages/shim channel.ts writeBound):
  * {"v":1,"as":["omp-3"],"shim":<pid>}. A file that does not parse, of another v, or whose shim is gone is none.
  */
 export function boundOf(
@@ -544,8 +616,9 @@ export function boundOf(
   ppid: number,
   parent: (pid: number) => number | null = parentOf,
   alive: (pid: number) => boolean = answers,
+  sessionId: string | null = null,
 ): string[] {
-  const host = hostOf(home, ppid, parent)
+  const host = hostOf(home, ppid, parent, sessionId)
   if (host === null) return []
   const doc = shimDoc(join(home, 'run', 'shim', `${host}.bound`), alive)
   if (doc === null || !Array.isArray(doc.as)) return []
@@ -565,17 +638,17 @@ function shimDoc(file: string, alive: (pid: number) => boolean): Record<string, 
 }
 
 /**
- * The wake of a session bound through the bag service: the shim writes <home>/run/shim/<host pid>.ring on each
+ * The wake of a session bound through the bag service: the shim writes <home>/run/shim/<key>.ring (hostOf) on each
  * service/ring, {"v":1,"n":<sequence>,"as":"<label>","unread":<n>,"speaking":<bool>,"at":"...","shim":<pid>}. Read
  * every poll while the .bound file is there (gone: exit 0, the session was unbound). A ring is new when its n is above
- * the last handled with its shim pid, kept in <host pid>.ring-seen as `<shim> <n>` (the first run takes the current
+ * the last handled with its shim pid, kept in <key>.ring-seen as `<shim> <n>` (the first run takes the current
  * ring as its baseline, so an old ring never wakes; another live shim's ring is new whatever its n); a ring of a dead shim, or one that does not parse, is not read. speaking true: the wake line and exit
  * `code`; speaking false: handled with no turn (the shim shows the quiet notice). The deadline ends it silently.
  */
 export async function watchRing(
   io: Io,
   home: string,
-  host: number,
+  host: number | string,
   w: { end: number; signal: AbortSignal; pollMs: number; code: number },
   alive: (pid: number) => boolean = answers,
 ): Promise<number> {
@@ -626,4 +699,42 @@ export async function watchRing(
     if (Date.now() >= w.end) return 0
     await delay(w.pollMs, undefined, { signal: w.signal }).catch(() => undefined)
   }
+}
+
+/**
+ * One live window's binding: the host's pid, the Codex session id when the file is keyed by one, the identities in
+ * bind order, and the shim's pid. (Kept at the end of this file, away from the hook's own code.)
+ */
+export interface BoundWindow {
+  readonly host: number
+  readonly session: string | null
+  readonly as: readonly string[]
+  readonly shim: number
+}
+
+/**
+ * Every live window binding of the home: <home>/run/shim/<host pid>.bound (Claude Code, omp: one process per window)
+ * and <home>/run/shim/<host pid>-<session id>.bound (a Codex window, keyed by its session id, a uuid: Codex runs one
+ * server process for all of its windows), each as boundOf takes it (v 1, a live shim, labels); by host pid, then
+ * session. Status --home's reader.
+ */
+export function boundWindows(home: string, alive: (pid: number) => boolean = answers): BoundWindow[] {
+  // The session part is the shim's SESSION_ID, case-insensitive as there (its writer lowercases it in the name).
+  const KEY = /^([1-9][0-9]*)(?:-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?\.bound$/i
+  let files: string[]
+  try {
+    files = readdirSync(join(home, 'run', 'shim'))
+  } catch {
+    return []
+  }
+  const out: BoundWindow[] = []
+  for (const f of files) {
+    const m = KEY.exec(f)
+    if (m === null) continue
+    const doc = shimDoc(join(home, 'run', 'shim', f), alive)
+    if (doc === null || !Array.isArray(doc.as)) continue
+    const as = doc.as.filter((l): l is string => typeof l === 'string' && LABEL_RE.test(l))
+    if (as.length > 0) out.push({ host: Number(m[1]), session: m[2] ?? null, as, shim: doc.shim as number })
+  }
+  return out.sort((a, b) => a.host - b.host || (a.session ?? '').localeCompare(b.session ?? ''))
 }

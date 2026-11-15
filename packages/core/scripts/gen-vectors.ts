@@ -1266,7 +1266,7 @@ function fetchVerdict(
 }
 
 /**
- * The fetch-proof cases (the Q-8 ruling's vectors): bob, jane's recipient, fetches E1 at ACME_RELAY. Each case
+ * The fetch-proof cases: bob, jane's recipient, fetches E1 at ACME_RELAY. Each case
  * changes what the caller signed, the headers or the relay's accepted bases, and states its verdict. A relays entry is
  * scheme and authority only, and the relay compares the audience byte for byte with its accepted set, so a trailing
  * slash, a path, :443 or an upper-case host is a refusal.

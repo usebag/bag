@@ -23,7 +23,7 @@ describe('keygen and address: keys through the edge key store, addresses printed
   it('makes a 0600 key file in a 0700 directory and prints only the address, which address prints again', async () => {
     const io = testIo(new MemoryRelay())
     const dir = home()
-    const made = await cli(io, 'keygen', 'alice', '--dir', dir)
+    const made = await cli(io, 'keygen', '--new', 'alice', '--dir', dir)
     expect(made.code).toBe(0)
     expect(made.out).toHaveLength(1)
     expect(isAddress(made.out[0])).toBe(true)
@@ -37,12 +37,12 @@ describe('keygen and address: keys through the edge key store, addresses printed
   it('never overwrites a key file, and refuses a name that could leave the directory', async () => {
     const io = testIo(new MemoryRelay())
     const dir = home()
-    const first = await cli(io, 'keygen', 'bob', '--dir', dir)
-    const again = await cli(io, 'keygen', 'bob', '--dir', dir)
+    const first = await cli(io, 'keygen', '--new', 'bob', '--dir', dir)
+    const again = await cli(io, 'keygen', '--new', 'bob', '--dir', dir)
     expect(again.code).toBe(1)
     expect(again.err[0]).toMatch(/^bag: EEXIST: file already exists, open '.*bob\.json'$/)
     expect((await cli(io, 'address', 'bob', '--dir', dir)).out).toEqual(first.out)
-    const bad = await cli(io, 'keygen', '../escape', '--dir', dir)
+    const bad = await cli(io, 'keygen', '--new', '../escape', '--dir', dir)
     expect(bad.code).toBe(1)
     expect(bad.err[0]).toContain('bag: error: fs-keys: a key name is 1 to 64 of [a-z0-9._-]')
     expect((await cli(io, 'address', 'nobody', '--dir', dir)).err[0]).toMatch(/^bag: ENOENT: /)
@@ -51,13 +51,13 @@ describe('keygen and address: keys through the edge key store, addresses printed
   it('finds the home in --dir, else AC_HOME, else HOME/.bag, else refuses', async () => {
     const a = home()
     const viaEnv = testIo(new MemoryRelay(), { AC_HOME: a })
-    const made = await cli(viaEnv, 'keygen', 'carol')
+    const made = await cli(viaEnv, 'keygen', '--new', 'carol')
     expect((await cli(testIo(new MemoryRelay()), 'address', 'carol', '--dir', a)).out).toEqual(made.out)
     const h = home()
     const viaHome = testIo(new MemoryRelay(), { HOME: h })
-    const dave = await cli(viaHome, 'keygen', 'dave')
+    const dave = await cli(viaHome, 'keygen', '--new', 'dave')
     expect((await cli(viaHome, 'address', 'dave', '--dir', join(h, '.bag'))).out).toEqual(dave.out)
-    expect((await cli(testIo(new MemoryRelay()), 'keygen', 'erin')).err[0]).toBe(
+    expect((await cli(testIo(new MemoryRelay()), 'keygen', '--new', 'erin')).err[0]).toBe(
       'bag: usage: no home directory: pass --dir, or set AC_HOME or HOME',
     )
   })
@@ -67,7 +67,7 @@ describe('record: signed address and accept-from records, at the clock, to stdou
   it('signs an address record with relays, the sealing key when asked, and the ttl (a day by default)', async () => {
     const io = testIo(new MemoryRelay())
     const dir = home()
-    const address = (await cli(io, 'keygen', 'alice', '--dir', dir)).out[0] as string
+    const address = (await cli(io, 'keygen', '--new', 'alice', '--dir', dir)).out[0] as string
     const plain = await cli(io, 'record', 'address', 'alice', '--relay', `${RELAY}/`, '--dir', dir)
     expect(plain.code).toBe(0)
     const r = verifyRecord(parseRecord(plain.out[0] as string), T0)
@@ -111,7 +111,7 @@ describe('record: signed address and accept-from records, at the clock, to stdou
   it('refuses an address record without a relay, with a ttl over a day, or with a relay that is not a URL', async () => {
     const io = testIo(new MemoryRelay())
     const dir = home()
-    await cli(io, 'keygen', 'alice', '--dir', dir)
+    await cli(io, 'keygen', '--new', 'alice', '--dir', dir)
     expect((await cli(io, 'record', 'address', 'alice', '--dir', dir)).err[0]).toBe(
       'bag: usage: --relay is required',
     )
@@ -125,8 +125,8 @@ describe('record: signed address and accept-from records, at the clock, to stdou
   it('writes a rotation with --rotated-from, countersigned by the old key, and refuses itself and an unknown name', async () => {
     const io = testIo(new MemoryRelay())
     const dir = home()
-    const org = (await cli(io, 'keygen', 'org', '--dir', dir)).out[0] as string
-    const next = (await cli(io, 'keygen', 'org-2', '--dir', dir)).out[0] as string
+    const org = (await cli(io, 'keygen', '--new', 'org', '--dir', dir)).out[0] as string
+    const next = (await cli(io, 'keygen', '--new', 'org-2', '--dir', dir)).out[0] as string
     const args = ['--relay', RELAY, '--sealing-key', '--ttl', '600', '--dir', dir]
     const prev = parseRecord((await cli(io, 'record', 'address', 'org', ...args)).out[0] as string)
     const rotated = await cli(io, 'record', 'address', 'org-2', ...args, '--rotated-from', 'org')
@@ -150,8 +150,8 @@ describe('record: signed address and accept-from records, at the clock, to stdou
   it('signs an accept-from record with its roots or the wildcard, its size limit and its retention', async () => {
     const io = testIo(new MemoryRelay())
     const dir = home()
-    const bob = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
-    const alice = (await cli(io, 'keygen', 'alice', '--dir', dir)).out[0] as string
+    const bob = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
+    const alice = (await cli(io, 'keygen', '--new', 'alice', '--dir', dir)).out[0] as string
     const args = ['--max-bytes', '65536', '--ttl', '604800', '--dir', dir]
     const r = await cli(io, 'record', 'accept-from', 'bob', '--root', alice, '--root', bob, ...args)
     expect(verifyRecord(parseRecord(r.out[0] as string), T0)).toMatchObject({
@@ -177,8 +177,8 @@ describe('record: signed address and accept-from records, at the clock, to stdou
   it('refuses a non-terminal caller that drops a held root, confirms the drop on a terminal (83c)', async () => {
     const io = testIo(new MemoryRelay())
     const dir = home()
-    const bob = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
-    const alice = (await cli(io, 'keygen', 'alice', '--dir', dir)).out[0] as string
+    const bob = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
+    const alice = (await cli(io, 'keygen', '--new', 'alice', '--dir', dir)).out[0] as string
     const args = ['--max-bytes', '65536', '--ttl', '604800', '--dir', dir]
     // Seed the home copy (bob's accept-from record in the home) with [alice, bob]: no drop, so this write needs no
     // terminal.
@@ -216,7 +216,7 @@ describe('publish and health: the relay calls that need no identity', () => {
     const relay = new MemoryRelay()
     const io = testIo(relay)
     const dir = home()
-    const alice = (await cli(io, 'keygen', 'alice', '--dir', dir)).out[0] as string
+    const alice = (await cli(io, 'keygen', '--new', 'alice', '--dir', dir)).out[0] as string
     const file = join(dir, 'alice.json')
     await cli(
       io,
@@ -242,8 +242,8 @@ describe('publish and health: the relay calls that need no identity', () => {
     const relay = new MemoryRelay()
     const io = testIo(relay)
     const dir = home()
-    const alice = (await cli(io, 'keygen', 'alice', '--dir', dir)).out[0] as string
-    const gone = (await cli(io, 'keygen', 'gone', '--dir', dir)).out[0] as string
+    const alice = (await cli(io, 'keygen', '--new', 'alice', '--dir', dir)).out[0] as string
+    const gone = (await cli(io, 'keygen', '--new', 'gone', '--dir', dir)).out[0] as string
     const other = 'http://127.0.0.1:10'
     const file = join(dir, 'alice.json')
     const relays = ['--relay', RELAY, '--relay', other]
@@ -264,7 +264,7 @@ describe('publish and health: the relay calls that need no identity', () => {
     const io = testIo(relay)
     const dir = home()
     const notRecord = join(dir, 'x.json')
-    await cli(io, 'keygen', 'x', '--dir', dir)
+    await cli(io, 'keygen', '--new', 'x', '--dir', dir)
     writeFileSync(notRecord, '{"kind":"address"}')
     expect((await cli(io, 'publish', RELAY, notRecord)).err[0]).toBe(
       'bag: bad-record: an address record has exactly its eleven members',

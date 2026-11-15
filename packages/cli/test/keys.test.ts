@@ -58,7 +58,7 @@ describe('keys list (L4)', () => {
       ['amy', 'file'],
       ['dan', 'keychain'],
     ] as const) {
-      const r = await cli(io, 'keygen', name, '--custody', custody, '--dir', dir)
+      const r = await cli(io, 'keygen', '--new', name, '--custody', custody, '--dir', dir)
       expect(r.code).toBe(0)
       made.set(name, r.out[0] as string)
     }
@@ -98,7 +98,7 @@ describe('keys list (L4)', () => {
     const fake = new FakeSecurity()
     const io = { ...testIo(new MemoryRelay()), security: fake.run }
     const dir = join(tmp.dir, `home-${n++}`)
-    const amy = (await cli(io, 'keygen', 'amy', '--dir', dir)).out[0]
+    const amy = (await cli(io, 'keygen', '--new', 'amy', '--dir', dir)).out[0]
     const held = generateEdgeKeys(io.rng)
     new HomeCustody(dir).agent.create('zed', held)
     const listed = await cli(io, 'keys', 'list', '--dir', dir)
@@ -145,7 +145,7 @@ describe('keys list (L4)', () => {
 
   it('as a process, prints its lines with a clean stderr: no SQLite ExperimentalWarning', async () => {
     const dir = join(tmp.dir, `home-${n++}`)
-    const made = await cli(testIo(new MemoryRelay()), 'keygen', 'amy', '--dir', dir)
+    const made = await cli(testIo(new MemoryRelay()), 'keygen', '--new', 'amy', '--dir', dir)
     expect(made.code).toBe(0)
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: tmp.dir }
     delete env.AC_HOME
@@ -190,7 +190,7 @@ const ROTATION = generateEdgeKeys(systemRng).signing.address
 
 /** A home with the key file `bob`, and bob's keys. */
 async function bobHome(io: TestIo, dir: string): Promise<{ keys: EdgeKeys; address: string }> {
-  const address = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
+  const address = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
   return { keys: new HomeCustody(dir).keys('bob'), address }
 }
 
@@ -339,7 +339,8 @@ describe('keys rotate', () => {
     const dir = join(tmp.dir, 'k') // short: a Unix socket path holds about 100 bytes
     const { keys, address } = await bobHome(io, dir)
     expect(
-      (await cli(io, 'keygen', 'jane', '--custody', 'agent', '--principal', 'bob', '--dir', dir)).code,
+      (await cli(io, 'keygen', '--new', 'jane', '--custody', 'agent', '--principal', 'bob', '--dir', dir))
+        .code,
     ).toBe(0)
     hold(relay, keys)
     const server = createServer((c) => c.on('error', () => undefined))
@@ -445,7 +446,8 @@ function tried(opener: OpenerLike, address: string, sealingKey: Uint8Array): unk
 /** A home with bob in `custody` and bob's epoch 2 (no epoch 1: its horizon has passed), and what bob holds. */
 async function prunable(io: TestIo, custody: 'file' | 'keychain') {
   const dir = join(tmp.dir, `home-${n++}`)
-  const address = (await cli(io, 'keygen', 'bob', '--custody', custody, '--dir', dir)).out[0] as string
+  const address = (await cli(io, 'keygen', '--new', 'bob', '--custody', custody, '--dir', dir))
+    .out[0] as string
   const epoch = generateSealingKey(rng)
   epochStore(dir).put(address, 2, epoch, T0, T0 + DAY)
   return { dir, address, epoch }
@@ -551,7 +553,7 @@ describe('keys prune', () => {
       expect(snapshot(dir)).toEqual(before)
     }
     const bare = join(tmp.dir, `home-${n++}`)
-    await cli(io, 'keygen', 'bob', '--dir', bare)
+    await cli(io, 'keygen', '--new', 'bob', '--dir', bare)
     await refused(
       bare,
       'bob',
@@ -596,9 +598,10 @@ describe('keys prune', () => {
   it('refuses window-open while an ac login window holds the identity, as keys rotate does', async () => {
     const io = testIo(new MemoryRelay())
     const dir = join(tmp.dir, 'p') // short: a Unix socket path holds about 100 bytes
-    const address = (await cli(io, 'keygen', 'bob', '--dir', dir)).out[0] as string
+    const address = (await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).out[0] as string
     expect(
-      (await cli(io, 'keygen', 'jane', '--custody', 'agent', '--principal', 'bob', '--dir', dir)).code,
+      (await cli(io, 'keygen', '--new', 'jane', '--custody', 'agent', '--principal', 'bob', '--dir', dir))
+        .code,
     ).toBe(0)
     epochStore(dir).put(address, 2, generateSealingKey(rng), T0, T0 + DAY)
     const server = createServer((c) => c.on('error', () => undefined))

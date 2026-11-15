@@ -21,10 +21,10 @@ import {
   verifyHandleRecord,
   verifyRecord,
 } from '@usebag/core'
-import { HomeCustody, RelayError } from '@usebag/edge'
+import { HomeCustody, RelayError, readAuditLines, SqliteStore, verifyAuditLog } from '@usebag/edge'
 import { afterAll, describe, expect, it } from 'vitest'
 import { USAGE } from '../src/cli.ts'
-import { epochStore } from '../src/home.ts'
+import { CLI_AUDIT, epochStore } from '../src/home.ts'
 import { stableNode } from '../src/packaged.ts'
 import { addTrust, readTrust } from '../src/trust.ts'
 import { T0, type TestIo, tempDir, testIo } from './support/io.ts'
@@ -52,7 +52,7 @@ async function world() {
   const io = testIo(relay)
   const dir = join(tmp.dir, `home-${n++}`)
   const elsewhere = join(tmp.dir, `inviter-${n}`)
-  const inviter = (await cli(io, 'keygen', 'inviter', '--dir', elsewhere)).out[0] as string
+  const inviter = (await cli(io, 'keygen', '--new', 'inviter', '--dir', elsewhere)).out[0] as string
   const accept = ['--accept', inviter, '--accept', 'domain:usuals.test']
   const args = ['jane', '--domain', DOMAIN, '--relay', RELAY, ...accept, '--dir', dir]
   const tree = join(dir, 'serve', DOMAIN, '.well-known', 'bag')
@@ -63,7 +63,7 @@ async function world() {
 
 /** An address of a key made in a home of its own: a peer of jane's. */
 async function other(io: TestIo, name: string): Promise<string> {
-  return (await cli(io, 'keygen', name, '--dir', join(tmp.dir, `${name}-${n++}`))).out[0] as string
+  return (await cli(io, 'keygen', '--new', name, '--dir', join(tmp.dir, `${name}-${n++}`))).out[0] as string
 }
 
 type World = Awaited<ReturnType<typeof world>>
@@ -278,6 +278,18 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
       `unchanged address ${jane} ${RELAY}`,
       `unchanged accept-from ${jane} ${RELAY}`,
     ])
+    // Audited as kept, not failed: decision accept, outcome unchanged, for each record of that run.
+    const last = readAuditLines(join(w.dir, 'state', 'jane', CLI_AUDIT))
+      .map((l) => JSON.parse(l) as { event: string; decision: string; detail: string | null })
+      .filter((l) => l.event === 'policy')
+      .slice(-2)
+      .map((l) => [l.decision, JSON.parse(l.detail as string)])
+    expect(last).toEqual(
+      ['address', 'accept-from'].map((record) => [
+        'accept',
+        { step: 'publish', record, relay: RELAY, outcome: 'unchanged' },
+      ]),
+    )
   })
 
   it('a peer seals to the key record; a refresh 11 h on rotates; the old epoch opens', async () => {
@@ -591,8 +603,8 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
     const w = await world()
     const first = await cli(w.io, 'onboard', ...w.args)
     const jane = (first.out[1] as string).split(' ')[2] as string
-    const rot = (await cli(w.io, 'keygen', 'rot', '--dir', w.dir)).out[0] as string
-    const gone = (await cli(w.io, 'keygen', 'gone', '--dir', w.dir)).out[0] as string
+    const rot = (await cli(w.io, 'keygen', '--new', 'rot', '--dir', w.dir)).out[0] as string
+    const gone = (await cli(w.io, 'keygen', '--new', 'gone', '--dir', w.dir)).out[0] as string
     const last = join(w.dir, 'records', 'jane.address.json')
     const at = ['--relay', RELAY, '--sealing-key', '--out', last, '--dir', w.dir]
     w.io.time.now += 1
@@ -620,9 +632,9 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
 
   it('keeps the rotation key and revoked list of the served record; refuses another key and a link', async () => {
     const w = await world()
-    const org = (await cli(w.io, 'keygen', ORG, '--dir', w.dir)).out[0] as string
-    const rot = (await cli(w.io, 'keygen', 'rot', '--dir', w.dir)).out[0] as string
-    const gone = (await cli(w.io, 'keygen', 'gone', '--dir', w.dir)).out[0] as string
+    const org = (await cli(w.io, 'keygen', '--new', ORG, '--dir', w.dir)).out[0] as string
+    const rot = (await cli(w.io, 'keygen', '--new', 'rot', '--dir', w.dir)).out[0] as string
+    const gone = (await cli(w.io, 'keygen', '--new', 'gone', '--dir', w.dir)).out[0] as string
     mkdirSync(dirname(w.orgFile), { recursive: true })
     const at = ['--relay', RELAY, '--out', w.orgFile, '--dir', w.dir]
     await cli(w.io, 'record', 'address', ORG, '--rotation-key', rot, '--revoke', gone, ...at)
@@ -632,7 +644,7 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
     expect(served).toMatchObject({ key: org, rotation_key: rot, revoked: [gone] })
 
     // A served record edited on the host (here its rotation key) fails the core's check, and nothing is carried.
-    const evil = (await cli(w.io, 'keygen', 'evil', '--dir', w.dir)).out[0] as string
+    const evil = (await cli(w.io, 'keygen', '--new', 'evil', '--dir', w.dir)).out[0] as string
     writeFileSync(w.orgFile, readFileSync(w.orgFile, 'utf8').replace(rot, evil))
     const forged = await cli(w.io, 'onboard', ...w.args)
     expect([forged.code, forged.out.slice(2)]).toEqual([1, []])
@@ -640,7 +652,7 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
     expect(parseRecord(readFileSync(w.orgFile))).toMatchObject({ rotation_key: evil })
 
     // A served record that names rotated_from is refused, as record keep refuses one, and the file stays as it is.
-    const old = (await cli(w.io, 'keygen', 'old', '--dir', w.dir)).out[0] as string
+    const old = (await cli(w.io, 'keygen', '--new', 'old', '--dir', w.dir)).out[0] as string
     await cli(w.io, 'record', 'address', ORG, '--rotated-from', 'old', ...at)
     const rotation = readFileSync(w.orgFile)
     const rotated = await cli(w.io, 'onboard', ...w.args)
@@ -690,6 +702,34 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
     expect(ran.out).toContain(`failed accept-from ${jane} ${other} unreachable`)
     expect(ran.out).toContain(`trust ${w.inviter}`)
     expect(ran.out.some((l) => l.startsWith('chain '))).toBe(true)
+  })
+
+  it('audits each address and accept-from publish at each relay, a failed one with its code, in an anchored file', async () => {
+    const w = await world()
+    const other = 'http://203.0.113.10'
+    w.relay.failRecordPublish.set(other, new RelayError(null, 0, null, 'connect ECONNREFUSED'))
+    expect((await cli(w.io, 'onboard', ...w.args, '--relay', other)).out).toContain(`trust ${w.inviter}`)
+    const state = join(w.dir, 'state', 'jane')
+    const lines = readAuditLines(join(state, CLI_AUDIT))
+    const publishes = lines
+      .map((l) => JSON.parse(l) as { event: string; decision: string; detail: string | null })
+      .filter((l) => l.event === 'policy')
+      .map((l) => [l.decision, JSON.parse(l.detail as string)])
+    const line = (record: string, relay: string, outcome: string) => [
+      outcome === 'ok' ? 'accept' : 'reject',
+      { step: 'publish', record, relay, outcome },
+    ]
+    expect(publishes).toEqual([
+      line('address', RELAY, 'ok'),
+      line('accept-from', RELAY, 'ok'),
+      line('address', other, 'unreachable'),
+      line('accept-from', other, 'unreachable'),
+    ])
+    const store = new SqliteStore(join(state, 'edge.sqlite'), { lock: false })
+    const anchor = store.auditAnchorGet(CLI_AUDIT)
+    store.close()
+    expect(anchor).toMatchObject({ seq: lines.length })
+    expect(verifyAuditLog(lines, anchor)).toMatchObject({ ok: true })
   })
 
   it('a relay down fails after the files are written, and running it again completes the publish', async () => {
@@ -759,8 +799,8 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
     const first = await cli(w.io, 'onboard', ...w.args)
     expect(first.code).toBe(3)
     const jane = (first.out[1] as string).split(' ')[2] as string
-    const rot = (await cli(w.io, 'keygen', 'rot', '--dir', w.dir)).out[0] as string
-    const gone = (await cli(w.io, 'keygen', 'gone', '--dir', w.dir)).out[0] as string
+    const rot = (await cli(w.io, 'keygen', '--new', 'rot', '--dir', w.dir)).out[0] as string
+    const gone = (await cli(w.io, 'keygen', '--new', 'gone', '--dir', w.dir)).out[0] as string
     const byHand = join(w.dir, 'by-hand.json')
     const at = ['--relay', RELAY, '--sealing-key', '--out', byHand, '--dir', w.dir]
     w.io.time.now += 1
@@ -782,7 +822,7 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
     expect(file).toMatchObject({ rotation_key: rot, revoked: [gone], iat: T0 + 61 })
 
     // One that names rotated_from is not signed again: its countersignature covers its iat (as record keep refuses).
-    await cli(w.io, 'keygen', 'old', '--dir', w.dir)
+    await cli(w.io, 'keygen', '--new', 'old', '--dir', w.dir)
     w.io.time.now += 1
     await cli(w.io, 'record', 'address', 'jane', '--rotated-from', 'old', ...at)
     await cli(w.io, 'publish', RELAY, byHand, '--dir', w.dir)

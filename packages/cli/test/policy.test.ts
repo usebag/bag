@@ -44,7 +44,7 @@ async function world(): Promise<World> {
   const dir = join(tmp.dir, `home-${n++}`)
   const [alice, bob, carol] = await Promise.all(
     ['alice', 'bob', 'carol'].map(
-      async (who) => (await cli(io, 'keygen', who, '--dir', dir)).out[0] as string,
+      async (who) => (await cli(io, 'keygen', '--new', who, '--dir', dir)).out[0] as string,
     ),
   )
   for (const who of ['alice', 'bob', 'carol']) {

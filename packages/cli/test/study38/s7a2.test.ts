@@ -9,13 +9,13 @@ import { cli } from '../support/run.ts'
 // 0, the pointer's field EQUALS the setting (not a substring), and the `keys list` line names the setting as a whole
 // word while the line of an identity made without `--recovery` names neither value; and three refusals: an unknown
 // value exits 1 and makes no pointer, `--recovery` without `--custody agent` exits 1, and a pointer without the field
-// still lists. Prediction 2 of 2 and 3 of 3; the line is red on anything less. S7 (a), as measured at c3778a6, is not
+// still lists. Prediction 2 of 2 and 3 of 3; the line is red on anything less. S7 (a), as measured then, is not
 // edited by this file.
 //
-// This file is the registered one, committed on main before any run of it and before any build (14:25 UTC (15:25 Madrid),
-// 225ce2b), where the two positive arms were `it.fails`, red 0 of 2, with a plain sibling asserting the recorded red
-// reason ("Unknown option '--recovery'"). At the build head the two arms are plain and the
-// sibling is gone: it said only what main did. The three refusals are plain tests, on main and after the build.
+// This file is the registered one, committed on main before any run of it and before any build (14:25 UTC (15:25
+// Madrid)), where the two positive arms were `it.fails`, red 0 of 2, with a plain sibling asserting the recorded red
+// reason ("Unknown option '--recovery'"). At the build head the two arms are plain and the sibling is gone: it said
+// only what main did. The three refusals are plain tests, on main and after the build.
 
 const tmp = tempDir('study38-s7a2')
 afterAll(() => tmp.cleanup())
@@ -43,15 +43,15 @@ async function fields(io: Io, dir: string, name: string): Promise<string[] | nul
 async function fresh(): Promise<{ io: Io; dir: string }> {
   const dir = home()
   const io = testIo(new MemoryRelay())
-  expect((await cli(io, 'keygen', 'jane-keys', '--dir', dir)).code).toBe(0)
-  expect((await cli(io, 'keygen', 'rec-3', ...AGENT, '--dir', dir)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'jane-keys', '--dir', dir)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'rec-3', ...AGENT, '--dir', dir)).code).toBe(0)
   return { io, dir }
 }
 
 /** One positive arm: `name` made with `--recovery <setting>`; true when all of S7 (a2)'s three conditions hold. */
 async function arm(name: string, setting: string): Promise<boolean> {
   const { io, dir } = await fresh()
-  const made = await cli(io, 'keygen', name, ...AGENT, '--recovery', setting, '--dir', dir)
+  const made = await cli(io, 'keygen', '--new', name, ...AGENT, '--recovery', setting, '--dir', dir)
   const file = join(dir, 'agent', `${name}.json`)
   const field =
     made.code === 0 ? (JSON.parse(readFileSync(file, 'utf8')) as { recovery?: unknown }).recovery : undefined
@@ -83,9 +83,9 @@ describe('S7 (a2): the recovery setting round-trips, by equality and as a whole 
 describe('S7 (a2): the three refusals hold, on main and after the build (3 of 3)', () => {
   it('an unknown value exits 1 and makes no pointer; --recovery without --custody agent exits 1; a pointer without the field lists', async () => {
     const { io, dir } = await fresh()
-    const unknown = await cli(io, 'keygen', 'rec-4', ...AGENT, '--recovery', 'bogus', '--dir', dir)
+    const unknown = await cli(io, 'keygen', '--new', 'rec-4', ...AGENT, '--recovery', 'bogus', '--dir', dir)
     const noPointer = (await fields(io, dir, 'rec-4')) === null
-    const outside = await cli(io, 'keygen', 'rec-5', '--recovery', 'personal', '--dir', dir)
+    const outside = await cli(io, 'keygen', '--new', 'rec-5', '--recovery', 'personal', '--dir', dir)
     const noKey = (await fields(io, dir, 'rec-5')) === null
     const plain = await fields(io, dir, 'rec-3')
     const held = [

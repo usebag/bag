@@ -1,6 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
-import { CliError, shq, UsageError } from '../args.ts'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   applyChange,
   type Before,
@@ -10,15 +9,15 @@ import {
   stateAfter,
   stateOf,
   View,
-} from '../changes.ts'
-import { addIdentity, type Identities, type Identity, readIdentities } from '../identities.ts'
-import type { Io } from '../io.ts'
-import { needTty } from '../policy.ts'
-import type { Staged } from '../stage.ts'
-import { bagLink, child, ompLinks } from './host-install.ts'
-import { type Host, tableOf, userChanges, userNotes } from './host-user.ts'
+} from './changes.ts'
+import { bagLink, child, type Host, type HostProcess, type Json, ompLinks, shq } from './host-common.ts'
+import { tableOf, userChanges, userNotes } from './host-user.ts'
+import { addIdentity, type Identities, type Identity, readIdentities } from './identities.ts'
+import { askWithRecheck, HomeError, type HomeIo } from './ports.ts'
+import { proposalRows, proposalsText } from './proposals.ts'
+import { type Build, stage, stagedMains } from './stage.ts'
 
-// host migrate (docs/bag-service.md section 10; the review memos' migration rows): moves every per-folder bag entry
+// host migrate: moves every per-folder bag entry
 // that this home wrote to the user-scope shim of the bag service, on one y. Only entries whose --dir is this home (by
 // realpath) and whose identity is in it are moved; any other entry is listed and left. Each identity's relay settings
 // go into <home>/identities.json (a label there with other settings, or two entries of one label that differ, is a
@@ -26,8 +25,8 @@ import { type Host, tableOf, userChanges, userNotes } from './host-user.ts'
 // <home>/proposals.json (a default the service proposes, never a binding). Every path
 // is backed up and journalled in <home>/migrate/<stamp>.json before the first write; host migrate --undo <stamp> puts
 // each back. Old keep jobs are retired by the person: one bootout line per job. Nothing here runs launchctl or cron.
-
-type Json = Record<string, unknown>
+// Both ask their question with what they planned against read again after the yes (askWithRecheck): a file that
+// changed while the person was asked refuses busy, nothing written. The package is staged only after the yes.
 
 /** One per-folder entry found: where, for which host, and the identity it runs. */
 interface Found {
@@ -39,11 +38,20 @@ interface Found {
   readonly flags: readonly string[]
 }
 
-/** RELAYS and RENDEZVOUS of <home>/install/<name>.env (the install page's settings), read as text, never sourced. */
-function installEnv(home: string, name: string): { relays: string[]; rendezvous: string | null } | null {
+/**
+ * RELAYS and RENDEZVOUS of <home>/install/<name>.env (the install page's settings), read as text, never sourced; the
+ * file's path goes into `seen`.
+ */
+function installEnv(
+  home: string,
+  name: string,
+  seen: Set<string>,
+): { relays: string[]; rendezvous: string | null } | null {
+  const file = join(home, 'install', `${name}.env`)
+  seen.add(file)
   let text: string
   try {
-    text = readFileSync(join(home, 'install', `${name}.env`), 'utf8')
+    text = readFileSync(file, 'utf8')
   } catch {
     return null
   }
@@ -130,7 +138,7 @@ const inHome = (home: string, name: string): boolean =>
   ['keys', 'keychain', 'agent'].some((d) => existsSync(join(home, d, `${name}.json`)))
 
 /** The UTC stamp of now: 20261112T124500Z. */
-const stampOf = (io: Io): string =>
+const stampOf = (io: HomeIo): string =>
   new Date(io.clock.now() * 1000)
     .toISOString()
     .replace(/[-:]/g, '')
@@ -159,30 +167,56 @@ function dropHooks(events: Json, mark: string): boolean {
   return changed
 }
 
-/** host migrate [--project <dir>...] [--sandbox] [--dir <home>]: see above. `m` is the staged package (stage.ts). */
-export async function migrate(
-  io: Io,
-  m: Staged,
-  home: string,
-  given: readonly string[],
-  sandbox: boolean,
-): Promise<number> {
-  needTty(io, 'host migrate')
+/** How a precondition is named when it changed while asked: relative to the home, ~/ under the person's home. */
+function nameOf(home: string, HOME: string | undefined, path: string): string {
+  for (const [base, prefix] of [
+    [home, ''],
+    [HOME, '~/'],
+  ] as const) {
+    if (base === undefined) continue
+    const r = relative(base, path)
+    if (r !== '' && r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r)) return `${prefix}${r}`
+  }
+  return path
+}
+
+/** What host migrate takes: the home, the folders given, the sandbox word, the package to stage, and the node and ids. */
+export interface MigrateInput {
+  readonly home: string
+  readonly given: readonly string[]
+  readonly sandbox: boolean
+  readonly build: Build
+  readonly proc: HostProcess
+}
+
+/**
+ * host migrate [--project <dir>...] [--sandbox] [--dir <home>]: see above. The plan names the staged entries
+ * (stagedMains); the package is staged after the yes, before the journal.
+ */
+export async function migrate(io: HomeIo, input: MigrateInput): Promise<void> {
+  const { home, given, sandbox, build, proc } = input
   const HOME = io.env.HOME
-  if (!HOME) throw new UsageError('no HOME: host migrate edits the user-scope files under $HOME')
+  if (!HOME) throw new HomeError('usage', 'no HOME: host migrate edits the user-scope files under $HOME')
   const me = real(home)
   const hm = resolve(home) // written as the person names it; `hm`, its realpath, only compared
-  if (me === null) throw new CliError('ENOENT', `no home ${home}`)
+  if (me === null) throw new HomeError('ENOENT', `no home ${home}`)
   const st = lstatSync(me)
-  if (st.uid !== process.getuid?.() || (st.mode & 0o022) !== 0) {
-    throw new CliError(
+  if (st.uid !== proc.uid || (st.mode & 0o022) !== 0) {
+    throw new HomeError(
       'unsafe-path',
       `${me} is not this user's own home (owner, or group or other may write it)`,
     )
   }
+  const m = stagedMains(home, build)
   const found: Found[] = []
   const left: string[] = []
   const view = new View()
+  // The files read beside the view's, which the question's answer is checked against.
+  const seen = new Set<string>()
+  const read = (file: string): Json | null => {
+    seen.add(file)
+    return jsonAt(file)
+  }
   const consider = (folder: string, host: Host, file: string, args: unknown): Identity | null => {
     const e = perFolder(args)
     if (e === null) {
@@ -200,8 +234,8 @@ export async function migrate(
       return null
     }
     // install/<label>.env, where there, is the source of truth for the relays and the rendezvous: a committed entry
-    // the person once approved may carry others (the red team's C3). Trust roots are shown, whatever their source.
-    const env = installEnv(hm, e.label)
+    // the person once approved may carry others (C3). Trust roots are shown, whatever their source.
+    const env = installEnv(hm, e.label, seen)
     const flags: string[] = []
     let identity: Identity = { ...e, home: hm }
     if (env !== null) {
@@ -235,7 +269,7 @@ export async function migrate(
   }
   for (const folder of folders(hm, given)) {
     const mcp = join(folder, '.mcp.json')
-    const bag = (jsonAt(mcp)?.mcpServers as Json | undefined)?.bag as { args?: unknown } | undefined
+    const bag = (read(mcp)?.mcpServers as Json | undefined)?.bag as { args?: unknown } | undefined
     const e = bag === undefined ? null : consider(folder, 'claude-code', mcp, bag.args)
     if (e !== null) {
       view.json(mcp, `${mcp}: mcpServers.bag (${e.label}) out`, (d) => delete (d.mcpServers as Json).bag)
@@ -248,7 +282,7 @@ export async function migrate(
       }
     }
     const omp = join(folder, '.omp', 'mcp.json')
-    const obag = (jsonAt(omp)?.mcpServers as Json | undefined)?.bag as { args?: unknown } | undefined
+    const obag = (read(omp)?.mcpServers as Json | undefined)?.bag as { args?: unknown } | undefined
     const o = obag === undefined ? null : consider(folder, 'omp', omp, obag.args)
     if (o !== null) {
       view.json(omp, `${omp}: mcpServers.bag (${o.label}) out`, (d) => delete (d.mcpServers as Json).bag)
@@ -279,8 +313,8 @@ export async function migrate(
   }
   if (found.length === 0) {
     for (const line of [...left, 'nothing to migrate: no per-folder bag entry of this home was found'])
-      io.out(line)
-    return 0
+      io.say(line)
+    return
   }
   // Each identity once in the bag service's <home>/identities.json (the existing entry format, every entry this home).
   // Two folder entries of one label with other settings are a label collision, refused before anything is written. A
@@ -310,18 +344,18 @@ export async function migrate(
   })
   const stamp = stampOf(io)
   const propFile = join(hm, 'proposals.json')
-  const props = jsonAt(propFile) ?? { version: 1, proposals: [] }
-  const rows = (props.proposals as Json[] | undefined) ?? []
+  const rows = proposalRows(read(propFile))
   const add = found
     .map((f) => ({ folder: f.folder, host: f.host, label: f.identity.label, from: 'migrate', stamp }))
     .filter((r) => !rows.some((x) => x.folder === r.folder && x.host === r.host))
   view.set({
     path: propFile,
-    text: `${JSON.stringify({ version: 1, proposals: [...rows, ...add] }, null, 2)}\n`,
+    text: proposalsText([...rows, ...add]),
     mode: 0o600,
     note: `${propFile}: proposed ${add.map((r) => `${r.label} (${r.host})`).join(', ') || 'none new'}`,
   })
-  for (const host of [...new Set(found.map((f) => f.host))]) userChanges(view, io, m, hm, host, sandbox)
+  for (const host of [...new Set(found.map((f) => f.host))])
+    userChanges(view, io.env, proc.node, m, hm, host, sandbox)
   const changes = view.changes()
   const jobs = keepJobs(HOME)
   const question = [
@@ -338,7 +372,13 @@ export async function migrate(
     ...left.map((l) => `  left ${l}`),
     'migrate?',
   ].join('\n')
-  if (!(await io.confirm(question))) throw new CliError('declined', 'nothing was changed')
+  const planned = [...new Set([...seen, ...view.read, ...changes.map((c) => c.path)])]
+  const check = () => ({
+    ...Object.fromEntries(planned.map((p) => [nameOf(hm, HOME, p), stateOf(p)])),
+    'keep jobs': keepJobs(HOME),
+  })
+  if (!(await askWithRecheck(io, question, check))) throw new HomeError('declined', 'nothing was changed')
+  stage(home, build, proc.pid)
   // The journal first, with every backup, then the edits; a run cut short is undone from it.
   const dir = join(hm, 'migrate')
   mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -348,34 +388,36 @@ export async function migrate(
     after: stateAfter(c),
   }))
   const journal = join(dir, `${stamp}.json`)
-  applyChange({
-    path: journal,
-    text: `${JSON.stringify({ version: 1, stamp, home: hm, entries }, null, 2)}\n`,
-    mode: 0o600,
-    note: '',
-  })
+  applyChange(
+    {
+      path: journal,
+      text: `${JSON.stringify({ version: 1, stamp, home: hm, entries }, null, 2)}\n`,
+      mode: 0o600,
+      note: '',
+    },
+    proc.pid,
+  )
   for (const c of changes) {
-    applyChange(c)
-    io.out(`wrote ${c.note}`)
+    applyChange(c, proc.pid)
+    io.say(`wrote ${c.note}`)
   }
-  io.out(
+  io.say(
     `keep-alive is your choice per identity, the default for ${labelsOf(found)}; for one kept alive always: bag identity keep-alive on <name>`,
   )
-  io.out(`journal ${journal}`)
-  for (const l of left) io.out(`left ${l}`)
+  io.say(`journal ${journal}`)
+  for (const l of left) io.say(`left ${l}`)
   for (const host of [...new Set(found.map((f) => f.host))])
-    for (const l of userNotes(io, hm, host, sandbox)) io.out(l)
-  const uid = process.getuid?.() ?? '<uid>'
+    for (const l of userNotes(io.env, hm, host, sandbox)) io.say(l)
+  const uid = proc.uid ?? '<uid>'
   for (const j of jobs) {
-    io.out(
+    io.say(
       `retire the old keep job in a terminal (the service keeps records now): launchctl bootout gui/${uid}/${basename(j, '.plist')} && mv ${shq(j)} ~/.Trash/`,
     )
   }
-  io.out('a crontab line that runs record keep, if you set one up, is retired with crontab -e')
-  io.out(
+  io.say('a crontab line that runs record keep, if you set one up, is retired with crontab -e')
+  io.say(
     'close the windows of the migrated folders and open them again: they start the shim, and their identity is proposed',
   )
-  return 0
 }
 
 /** --dir of an entry's args, unresolved (the hook command names the home as the entry wrote it). */
@@ -401,22 +443,25 @@ function keepJobs(HOME: string): string[] {
 /**
  * host migrate --undo <stamp> [--dir <home>]: every journalled path put back as it was, last edit first, after one y.
  * A path changed since the migration (another install, the person's own edit) refuses stale-record before anything
- * is put back, naming it; the journal is kept, marked undone.
+ * is put back, naming it; the journal is kept, marked undone. `pid` names what is written beside and renamed over.
  */
-export async function undo(io: Io, home: string, stamp: string): Promise<number> {
-  needTty(io, 'host migrate --undo')
+export async function undo(io: HomeIo, home: string, stamp: string, pid: number): Promise<void> {
   if (!/^\d{8}T\d{6}Z$/.test(stamp))
-    throw new UsageError(`--undo takes a stamp such as 20261112T124500Z, not ${JSON.stringify(stamp)}`)
+    throw new HomeError(
+      'usage',
+      `--undo takes a stamp such as 20261112T124500Z, not ${JSON.stringify(stamp)}`,
+    )
   const file = join(resolve(home), 'migrate', `${stamp}.json`)
   const j = jsonAt(file) as {
     entries?: { path: string; before: Before; after: string }[]
     undone?: string
   } | null
-  if (j === null || !Array.isArray(j.entries)) throw new CliError('not-found', `no migration journal ${file}`)
-  if (j.undone !== undefined) throw new CliError('exists', `${file} was undone at ${j.undone}`)
+  if (j === null || !Array.isArray(j.entries))
+    throw new HomeError('not-found', `no migration journal ${file}`)
+  if (j.undone !== undefined) throw new HomeError('exists', `${file} was undone at ${j.undone}`)
   const moved = j.entries.filter((e) => stateOf(e.path) !== e.after)
   if (moved.length > 0) {
-    throw new CliError(
+    throw new HomeError(
       'stale-record',
       `changed since the migration, so not put back: ${moved.map((e) => e.path).join(', ')}; nothing was changed`,
     )
@@ -426,10 +471,15 @@ export async function undo(io: Io, home: string, stamp: string): Promise<number>
     ...j.entries.map((e) => `  ${e.path}`),
     'undo?',
   ].join('\n')
-  if (!(await io.confirm(question))) throw new CliError('declined', 'nothing was changed')
-  for (const e of [...j.entries].reverse()) {
-    restore(e.path, e.before)
-    io.out(`restored ${e.path}`)
+  const entries = j.entries
+  const check = () =>
+    Object.fromEntries(
+      [file, ...entries.map((e) => e.path)].map((p) => [nameOf(resolve(home), io.env.HOME, p), stateOf(p)]),
+    )
+  if (!(await askWithRecheck(io, question, check))) throw new HomeError('declined', 'nothing was changed')
+  for (const e of [...entries].reverse()) {
+    restore(e.path, e.before, pid)
+    io.say(`restored ${e.path}`)
   }
   const at = new Date(io.clock.now() * 1000).toISOString()
   const change: Change = {
@@ -438,11 +488,9 @@ export async function undo(io: Io, home: string, stamp: string): Promise<number>
     mode: 0o600,
     note: '',
   }
-  applyChange(change)
-  io.out(
-    `undone ${stamp}: the per-folder servers start again with their sessions; stop the bag service first if it runs`,
-  )
-  return 0
+  applyChange(change, pid)
+  const service = 'if the bag service runs, stop it before a session opens in these folders'
+  io.say(`undone ${stamp}: the per-folder servers start again with their sessions; ${service}`)
 }
 
 /** The labels of the entries found, once each. */

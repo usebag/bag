@@ -14,7 +14,7 @@ import { measure, notRun, RawWire, type Reply } from './support-a.ts'
 // run or simulated, with the agent as a real child process (`node packages/cli/src/main.ts login`, a test home made by
 // another child, a fake terminal on the child's stdin that types the `y`):
 //   G3 (e), a real kill: SIGKILL of the child mid-window, then the 23 requests of g3's arms (10 signs, 10 opens, a
-//     register, a `grant`, a `resign`); signatures and openings served after it counted (gate 70d4165, line 502).
+//     register, a `grant`, a `resign`); signatures and openings served after it counted.
 //   G3 (d), the real clock: a 5-second window ended by login's own timer, read past its end by the wall clock, then the
 //     same 23 (`--window 60` was named; the file stays under about 20 s; 5 s, not 3, so the in-window
 //     steps finish well before the end).

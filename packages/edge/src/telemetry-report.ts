@@ -12,15 +12,15 @@ import {
   type SetName,
 } from './telemetry-schema.ts'
 
-// The client's report (spec/SPEC.md Appendix B 111; the telemetry design note's §5): one machine's
+// The client's report (spec/SPEC.md Appendix B 111): one machine's
 // counts for one UTC day, every home summed, built into exactly one schema-1 report. A count family keeps its largest
 // cells, one fewer than its cap (MAX_CELLS), and sums the rest into its `other` cell, `other` at every level; a
 // duration family keeps its keys of the most calls, one fewer than MAX_KEYS, and sums the rest into `other` bucket by
-// bucket (the red team's F-size). Every count is then the largest power of two not above it, at most 2^19, and ties
-// keep the sets' order, so the same counts make the same bytes. build is the package's version, or from source the
-// checkout's commit, when the build list holds it, else `other`; node is the major from the list, else `other`; host is
-// the kind with the most of the day's MCP sessions, `other` on a tie or with none. Every string in a report is a
-// member's name, the date, the id or a value of the schema's sets.
+// bucket (so that a report always fits MAX_BYTES). Every count is then the largest power of two not above it, at most
+// 2^19, and ties keep the sets' order, so the same counts make the same bytes. build is the package's version, or from
+// source the checkout's commit, when the build list holds it, else `other`; node is the major from the list, else
+// `other`; host is the kind with the most of the day's MCP sessions, `other` on a tie or with none. Every string in a
+// report is a member's name, the date, the id or a value of the schema's sets.
 
 /**
  * A day's counts: each counted leaf by its key, the member's name and the set values below it joined by spaces (a
@@ -207,7 +207,7 @@ function keyUnit(key: string): string {
 }
 
 /**
- * The machine's host kind, the coordinator's rule of 2026-11-02: the kind with the most sessions in the day's counts
+ * The machine's host kind: the kind with the most sessions in the day's counts
  * (the MCP servers' `sessions`), `other` on a tie or when there are none.
  */
 function hostOf(cells: Cells): string {
@@ -246,7 +246,7 @@ function memberValue(name: string, m: Member, cells: Cells, day: string, facts: 
 /**
  * The report for the UTC date `day`, exactly as it would be sent, from that day's cells and the machine's facts: the
  * schema's members in its order, each count family within MAX_CELLS, each duration family within MAX_KEYS, every
- * count a power of two. At its caps it fits MAX_BYTES (deploy/telemetry measures the worst case).
+ * count a power of two. At its caps it fits MAX_BYTES (the Worker's tests measure the worst case).
  */
 export function buildTelemetryReport(day: string, cells: Cells, facts: TelemetryFacts): TelemetryReport {
   const report: Record<string, unknown> = {}

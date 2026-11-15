@@ -43,7 +43,7 @@ async function world(homeName = 'home'): Promise<World> {
   mkdirSync(userHome, { recursive: true })
   const memory = new MemoryRelay()
   const io = testIo(memory, { HOME: userHome })
-  expect((await cli(io, 'keygen', 'bob', '--dir', dir)).code).toBe(0)
+  expect((await cli(io, 'keygen', '--new', 'bob', '--dir', dir)).code).toBe(0)
   return { io, memory, dir, project, userHome }
 }
 
@@ -570,7 +570,7 @@ describe('host install codex --mode mcp --session auto:codex: the session table 
   })
 })
 
-// The plain identity, the default of --mode mcp since Dilip's 'plain codex' (2026-11-12): the args of the
+// The plain identity, the default of --mode mcp since 2026-11-12: the args of the
 // claude-code entry, so a Codex session can pair; the session form stays behind --session auto:codex.
 describe('host install codex --mode mcp: the plain identity in ~/.codex/config.toml and its Stop hook', () => {
   const table = (dir: string, args = server(dir, [ROOT])) =>
@@ -804,7 +804,7 @@ describe('host install claude-code --identities: many identities in one server',
   async function two(): Promise<World & { carol: string; file: string; mcp: string; settings: string }> {
     const w = await world()
     const carol = join(w.userHome, 'carol-home')
-    expect((await cli(w.io, 'keygen', 'carol', '--dir', carol)).code).toBe(0)
+    expect((await cli(w.io, 'keygen', '--new', 'carol', '--dir', carol)).code).toBe(0)
     const [mcp, settings] = [join(w.project, '.mcp.json'), join(w.project, '.claude', 'settings.json')]
     return { ...w, carol, file: join(w.userHome, '.bag-identities', 'project.json'), mcp, settings }
   }
@@ -913,7 +913,7 @@ describe('host install claude-code --identities: many identities in one server',
       1,
       'bag: exists: identity bob is in the file with other settings: edit or remove it first',
     ])
-    expect((await cli(w.io, 'keygen', 'dave', '--dir', w.dir)).code).toBe(0)
+    expect((await cli(w.io, 'keygen', '--new', 'dave', '--dir', w.dir)).code).toBe(0)
     const shared = await multi(w, '--as', 'dave', '--dir', w.dir)
     expect(shared.err[0]).toBe(
       `bag: home-shared: identities[1].home ${w.dir} is another identity's: one home per identity`,
@@ -1046,7 +1046,7 @@ describe('host install claude-code --identities: many identities in one server',
     const w = await two()
     expect((await install(w, 'claude-code', '--project', w.project)).code).toBe(0)
     expect((await asCarol(w)).code).toBe(0)
-    expect((await cli(w.io, 'keygen', 'dave', '--dir', join(w.userHome, 'dave-home'))).code).toBe(0)
+    expect((await cli(w.io, 'keygen', '--new', 'dave', '--dir', join(w.userHome, 'dave-home'))).code).toBe(0)
     expect((await multi(w, '--as', 'dave', '--dir', join(w.userHome, 'dave-home'))).code).toBe(0)
     const [mcp, settings] = [text(w.mcp), text(w.settings)]
     expect(await removing(w, '--label', 'dave')).toEqual({

@@ -7,7 +7,7 @@ import { P, type TestServer, testServer, until } from './support/fixtures.ts'
 import { seededRng } from './support/ports.ts'
 import { type AgentHome, agentHome, eventually, grantedSession, sessionServer } from './support/sessions.ts'
 
-// A grant the agent no longer holds (r11 red team 1): after ac logout and a new ac login the session's old hop is not in
+// A grant the agent no longer holds: after ac logout and a new ac login the session's old hop is not in
 // the new window's grant-set. The session finds out (a probe), asks a new grant (one more y) under a fresh key, since
 // the logout revoked the old one (spec/SPEC.md §13.5, "Re-grant after a revocation"), opens its edge again and
 // registers its threads again, so a reply on a thread it sent on before the logout still reaches it.

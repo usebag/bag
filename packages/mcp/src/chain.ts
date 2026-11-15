@@ -13,11 +13,18 @@ import type { Logger } from './log.ts'
 // and swaps it in for every later send, subscription and fetch; the array the edge was first given is never changed.
 // Chains are public, but the command line, the command's output and its stderr are never logged.
 
-/** Where a session's chain comes from: a file, a command, or under agent custody the agent's renewal (agent.ts). */
+/**
+ * Where a session's chain comes from: a file, a command, or under agent custody the agent's renewal (agent.ts), with
+ * the earliest time its pace allows the next one (`allowedAt`), so no read is spent inside it.
+ */
 export type ChainSource =
   | { readonly kind: 'file'; readonly path: string }
   | { readonly kind: 'command'; readonly command: string }
-  | { readonly kind: 'agent'; readonly renew: () => Promise<readonly Hop[]> }
+  | {
+      readonly kind: 'agent'
+      readonly renew: () => Promise<readonly Hop[]>
+      readonly allowedAt?: () => number
+    }
 
 export type Env = Readonly<Record<string, string | undefined>>
 
@@ -185,9 +192,10 @@ export class ChainKeeper {
     this.#o = options
   }
 
-  /** Schedules the first read: 60 s before the earliest exp, or now when that is past. */
+  /** Schedules the first read: 60 s before the earliest exp, or now when that is past, and never inside the pace. */
   start(): void {
-    this.#schedule(Math.max(this.#o.clock.now(), earliestExp(this.#o.edge.auth) - CHAIN_LEAD_S))
+    const lead = earliestExp(this.#o.edge.auth) - CHAIN_LEAD_S
+    this.#schedule(Math.max(this.#o.clock.now(), lead, this.#allowed()))
   }
 
   /** Reads the source again now and returns the outcome; a call while a read runs shares it. */
@@ -246,9 +254,19 @@ export class ChainKeeper {
     if (!this.#stopped) {
       const lead = exp - CHAIN_LEAD_S
       const wait = Math.min(CHAIN_RETRY_S * 2 ** Math.max(0, this.#misses - 1), CHAIN_RETRY_MAX_S)
-      this.#schedule(now < lead ? lead : now + wait)
+      // An agent's pace refuses a renewal before its allowed time (rate-limited), so the next read is at the lead or
+      // the retry, or at the pace's end when that is later: one read at the first allowed time, never retries that
+      // all fall inside the pace. Near the window's end the pace's end can fall after exp: the chain then ends there,
+      // at most one pace before the window, and nothing more is read or asked.
+      this.#schedule(Math.max(now < lead ? lead : now + wait, this.#allowed()))
     }
     return outcome
+  }
+
+  /** The earliest time an agent source's pace allows a read; none for a file or a command. */
+  #allowed(): number {
+    const s = this.#o.source
+    return s.kind === 'agent' && s.allowedAt !== undefined ? s.allowedAt() : Number.NEGATIVE_INFINITY
   }
 
   #adopt(candidate: readonly Hop[]): string {

@@ -21,9 +21,9 @@ describe('e2e scenario 16: delegation with the CLI on one machine', () => {
     }
     const [alice, session, bob] = (
       await Promise.all([
-        cli('keygen', 'alice', ...A),
-        cli('keygen', 'alice-session', ...A),
-        cli('keygen', 'bob', ...B),
+        cli('keygen', '--new', 'alice', ...A),
+        cli('keygen', '--new', 'alice-session', ...A),
+        cli('keygen', '--new', 'bob', ...B),
       ])
     ).map((r) => ok(r)[0] as string) as [string, string, string]
     const publish = async (home: string, ...record: string[]): Promise<string> => {

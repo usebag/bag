@@ -46,6 +46,9 @@ repository, and the server loads 8 packages of their tree, which a test gates (b
 `--session auto|<name> --principal <agent identity> --grant-caveat <caveat>...` replaces `--as`, `--auth` and `--mailbox`
 (`--grant-exp <unix s|+s>` is optional; none asks for 8 hours and halves the life until the login window admits it).
 The principal is an agent identity of the home (`ac keygen --custody agent`), and an `ac login` window must be open.
+`keygen --custody agent` puts the identity in the bag service's list, `<home>/identities.json`, when a relay is known
+(its install settings' or the list's first entry's); with none, the step that lists it is `bag identity relays <name>`,
+with `--relay` once for each relay the identity uses, run on a terminal, with one `y`.
 Each server is its own agent session:
 
 - **Name.** `auto` names the session `s-<16 hex>`, a hash of the principal's address and the pid and start time of the
@@ -125,9 +128,10 @@ without it the tool is not listed, and `--allow-session-delegation` alone does n
 `delegate` is the one tool that grants authority: a hop it signs lets another key act under this identity within the
 hop's caveats until its expiry. So, since 2026-10-26 08:20 UTC (09:20 Madrid), the server lists it only when
 started with `--allow-delegate`; without the flag `tools/list`
-shows fifteen tools (`send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `status`, `facts`, `lookup`, `pair_invite`,
-`pair_accept`, `pair_cancel`, `connect`, `sign_in`, `enterprise_status`; sixteen with the flag; a session lists no pair tool, below,
-"Tools") and a call to
+shows twenty-seven tools (`send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `status`, `facts`, `lookup`, `pair_invite`,
+`pair_accept`, `pair_cancel`, `identities`, `identity_remove`, `identity_relays`, `keep_alive`, `local_delivery`,
+`unpair`, `names`, `identity_create`, `telemetry`, `host_wire`, `service`, `connect`, `sign_in`, `sign_out`, `enterprise_status`; twenty-eight with the flag; a session lists no pair tool
+and none of the home's acts, below, "Tools" and "The home's acts") and a call to
 `delegate` is the SDK's `MCP error -32602: Tool delegate not found`. With it:
 
 - `caveats` needs at least one entry. `[]` (all of this identity's authority) is refused by the input schema
@@ -140,11 +144,53 @@ shows fifteen tools (`send`, `receipts`, `inbox`, `wait`, `ask`, `handoff`, `sta
   `openWorldHint: false` (it calls no relay), so a host that approves read-only tools without asking does not approve
   it. The server's instructions say that the tool exists only when the operator allows it.
 
-No MCP tool changes trust, releases, drops, pairs, edits policy, adds a trust root or writes the
-name book. `delegate` grants authority rather than changing trust, and the operator's flag keeps it
-behind a gate: that is where the exception rests. Pairing is the other exception, since 2026-10-29:
-`pair_invite` and `pair_accept` drive it, but every approval is a
-dialog the person answers and the model cannot (below, "Tools"). The CLI's `delegate`, which a person types, is unchanged.
+No MCP tool releases, drops or edits policy. `delegate` grants authority rather than changing trust, and the
+operator's flag keeps it behind a gate: that is where the exception rests. Pairing is the second exception, since
+2026-10-29: `pair_invite` and `pair_accept` drive it, but every approval is a dialog the person answers and the model
+cannot (below, "Tools"). The home's acts are the third (below, "The home's acts"): `unpair` takes a root out of trust,
+`names` writes the name book, and the others change the home, each only after the person's Yes in a dialog of that
+window. The CLI's `delegate`, which a person types, is unchanged.
+
+### The home's acts
+
+A server of its own identity (never a session) lists the acts on the home that the command line has, done by the same
+code (packages/home), so that an agent never needs a terminal for them:
+
+| tool | input | does |
+|---|---|---|
+| `identities` | `full?: true` | each identity of the server by label with its address. In a bag service window bound to no identity each address is short (`ed25519:` and its first 8 and last 4 hex), which is no address; `full: true` asks the person once whether to show the full addresses in that window, held for that window's life only, never on disk |
+| `identity_remove` | `name` (another identity's label) | removes another identity of the home, as `bag identity remove` does: never the one the window acts as, and only while no window is bound to it |
+| `identity_relays` | `relays` (the whole list) | sets the identity's relays in the service's identities file |
+| `keep_alive` | `word: on, off or default` | the person's keep-alive word for the identity |
+| `local_delivery` | `word: status, on, off, hide or show`, `name?` | reads or sets local delivery; `status` asks nothing |
+| `unpair` | `root` | ends a pairing of the identity, as `bag unpair` does, at its own relays |
+| `names` | `verb: list, add or forget`, `name?`, `address?`, `replace?` | the name book; `list` asks nothing |
+| `host_wire` | `host: claude-code or omp`, `folder?` (only the window's own), `action?: wire or unwire`, `label?` (unwire only) | proposes one identity for the window's own folder: a row of the home's `proposals.json` (folder, host, label, `from: host_wire`, a stamp), which the bag service reads at once, so every new window in that folder has it preset in its bind dialog. A proposal never binds (the person's Yes or typed `use NAME` still does), and nothing is written into the folder: no per-folder server, so the bag service keeps holding the identity. The question says every new window in the folder will propose that identity, the folder whole on its own line (one that does not fit is refused to the command line). The identity is the person's: they type its label in the dialog (no default, placeholder or expected value from any argument), unless the window made exactly one identity with `identity_create` that is still that label's, which the question then names; the tool takes no label. Codex is wired in the command line. A label given to wire is refused, as is a refused `proposals.json` (not a 0600 regular file of this user). The wire's result ends with one local read, never a relay: the bag service keeps the identity's records at its relays, or, with no copy of its address record in the home, that it has published none yet (`bag onboard` does). `action: unwire` takes the folder's proposal for that host out, and an earlier bag's server entry and its wake hook (or link) out of the window's own folder, every other entry staying; it may take the label, and asks first, naming the folder and the identity |
+| `service` | none | writes the bag service's login agent (launchd on macOS, the systemd user unit on Linux) from home's fixed template, every path from the home, after the person's Yes to a question that says it starts bag at every login; it never loads it: the result's last line is the one command the person runs to load it. Another home's agent refuses `exists` |
+| `identity_create` | `label`, `relays` (1 to 3 URLs) | a new identity of the home in a key file on every platform (the command line offers the Keychain), with its service entry naming those relays; the question says the Yes publishes it and shows the label and every relay whole, both checked before it (a long label with long relays that do not fit together is refused to the command line). After the Yes, and never before, it publishes the identity's first records to those relays as onboard does (its first key record, a null-sealing address record, an accept-from naming only itself; the home keeps their copies), one line per record and relay; when no relay takes one it refuses with the relay's code, and the identity stays. It neither binds the window nor wires a host or folder; the bag service serves it at once |
+| `telemetry` | `word: status, on, off or forget` | the machine's telemetry switch (HOME/.bag), as `bag telemetry` does: `on` asks first, naming what is sent and where; `off` and `status` ask nothing, and `off` never waits on an `on` question; `forget` asks nothing either: it turns telemetry off first, keeping the install id, then has the endpoint erase every report sent under it; on a failure sending stays off and the id is kept, so `forget` again retries; `off`'s line says to use `forget` instead to also erase the reports already sent (off keeps them up to 90 days); no answer or refusal carries the install id (`id=set` or `id=none`); `preview` and `send` stay in the command line |
+
+Every act that changes something asks the person first, in a dialog of that window, with its own short question (a
+title and at most 3 lines of 60 characters, naming the act and the identity; the command line keeps its own longer
+text), off, hide, keep-alive and names included, which ask nothing on a terminal, and goes on only on an explicit Yes;
+the ask's own limits apply per act (3 answered and 6 unanswered per 10 minutes per window). The result is `{lines}`,
+what the act said in order; a refusal carries the lines done before it. In the bag service, `unpair` and
+`identity_relays` hold the identity quiet (its unit suspended, as a lend to the command line suspends it) only from the
+Yes until the act has written, then give it back as the command line's return does, also when the act fails.
+`identity_remove` holds the identity it removes quiet the same way, alone (busy while a window is bound to it), and is
+refused `held` before its question while another window uses it; at the give-back the service fails that identity's
+held local mail to its senders. A window bound to no identity runs `status`, `use`, `identities`, `identity_create`,
+`telemetry`, `host_wire` and `service` only; a bound window of any custody runs `telemetry` too (the machine's setting), never `identity_create`. The bag service starts on a home with no identity (no
+`identities.json` yet, or one that lists none) with no unit: a window there reaches only those seven, every other tool answering `not-bound`,
+until `identity_create` adds one, which the service reads at once and `use` then binds. Each window keeps, in memory and
+for its life only, the label and address of each identity it made; no tool's answer shows that record, and `host_wire`
+reads it, checking at its question that the address is still that label's in the home. The service reads the home's
+`proposals.json` (rows that `host_wire` and `bag host migrate` write) at its start and at each reread of the identities
+file: a row presets the bind dialog of a window whose folder is exactly the row's, for any host, when its label is an
+identity of the home that is not lent; a row of no identity is logged once and presets nothing, and a row whose folder
+is gone stays in the file until `action: unwire` takes it out. A file that is not a 0600 regular file of this user (a
+link included), or a home group or other may write, is read as no proposals, with one policy line in each identity's
+audit log.
 
 ### Many identities in one server (`--identities`)
 
@@ -376,9 +422,19 @@ they were until its end, so that they tell no one how it ended: a later
 request goes unconsumed, and its sender's wait ends `no-answer` at that end. An inviter on a client from before that
 closes the invitation, and a later request is refused 403 at the relay, which `pair_accept` reports as `invite-expired`,
 "invite used, cancelled or expired: ask your peer for a new one". A host that
-ends the tool call during a dialog ends the pairing as `cancelled`: it fails closed. One pairing runs per server, so a
-second `pair_invite` or `pair_accept` is refused `busy`, "a pairing is running: resume it, wait for it to end, or cancel
-it with pair_cancel if your person asks". `pair_cancel` (since 2026-11-12) ends it on the person's word: an invitation
+ends the tool call during a dialog ends the pairing as `cancelled`: it fails closed. A host that cancels a first call
+at any point (omp's own timeout, for one) ends the pairing that call started at once, as `pair_cancel` does, since the
+dropped result was its only handle: the audit says `cancelled` with `reason` `client-abort`, and the next call starts
+afresh. One pairing runs per server, so a second `pair_invite` or `pair_accept` is refused `busy`, "a pairing is
+running: resume it, wait for it to end, or cancel it with pair_cancel if your person asks"; in the window that started
+it (in stdio, the identity whose pairing runs) `busy` instead says to call the running tool with `resume` alone and
+carries a fresh `resume`, except while that window's last pairing has ended and its edge winds down (at most 30 s):
+then `busy` says "the last pairing is still closing; try again in a few seconds". A resume token serves one call: a resume or a `busy` answer replaces it, every answer that
+leaves the pairing running carries the next one, and none works once the pairing has ended and answered. A window
+starts at most 6 pairings in 600 s; the next start is refused `rate-limited` and starts nothing. In stdio mode a
+sub-agent uses its session's bag connection, so it is the same window: it can wait on or cancel that session's
+pairing, and every answer stays the person's. `pair_cancel` (since 2026-11-12) ends it on the person's word, asking
+nothing: an invitation
 that no request has reached yet is withdrawn (I's address record (the one-time invitation identity, never the inviter's own) re-signed with no sealing key, so the code meets
 `invite-expired` on the other side), the only time an invitation's records change before its end, and only before any
 request was checked, so it tells no requester how its check digits went. Every pairing dialog is at most
@@ -440,9 +496,9 @@ is shown only for a peer this server has resolved by handle.
 | `handoff` | `to: address`, `threads: id[]` (1 to 64), `note?: string` | the send's result and `handed_off: id[]`; a held handoff `{held, id, rule, to, type, note}` and `handed_off: []` (it is never kept waiting: a recipient that does not resolve is `resolve-failed`) | move a process, wake anything, forward earlier messages, bind anything at the receiver |
 | `status` | none | `{address, mailbox, principal, root, chain_hops, relays, trust_roots, honor, accept_types, default_handler, max_tool_seconds, names: [{name, address}], trust_file, counts: {accepted, routed, queued, rejected, quarantined, in_flight, unread}, rejected_by_code, copies_already_received_via_another_relay, last_audit_seq, edge_errors, last_edge_error, subscriptions: [{relay, state, refusals, last_code, last_at}], chain, keep_alive, started_at, uptime_s, waiting, peers, policy: {quarantined, pending, counts: [{rule, outcome, n}]}, doorbell_path, model, main_session, host_facts, network: {https, http, no_proxy, active}}`; `model` and `main_session` come from the host facts (`facts`, below), null when the host gives none, and `host_facts` is their file's state; `network` is the proxy this server sends through, each as `scheme://host:port` and never its user or password, `active` false when a proxy is set but Node does not send through it (packages/cli/README.md, "Behind a proxy"); `doorbell_path` is the doorbell's absolute path (above), a fact before the file exists; `trust_file` is the number of roots `<home>/trust.json` adds (a count, never the addresses); `waiting` lists this identity's own sends waiting for their recipient to resolve, each as `send` answers it; `peers` is `[{address, relays[]}]`, the relays each principal of an accepted message came by; `copies_already_received_via_another_relay` counts the second copies of a message already accepted from another of this identity's relays, which are not rejections and are not in `rejected` or `rejected_by_code`; `policy` is counts only; `chain` is null for a self-rooted principal, `keep_alive` null without `--keep-alive-records`; `subscriptions` below, "When the relay refuses the mailbox" | change anything, call a relay, release or drop a held send |
 | `facts` | `as?` | `{sub_session?, identity: {label, address, mailbox, principal}, main_session, host_facts: {state, detail, path, host, updated_at, age_s, host_version, session_id, host_pid, own_host, model, cost_usd, context_percent, context_tokens, not_provided, invalid}, bag: {relays, pid, started_at, uptime_s, doorbell_path}, report_rule}`: what the host (omp, Claude Code) wrote in `host-facts.json` beside the doorbell, each figure `{value, updated_at, age_s}` or `{value: null, note}` ("not provided by <host>"); `state` is `fresh`, `stale` (over 600 s old, values kept), `missing` or `malformed`; `sub_session` comes first when the host marked this a spawned sub-session (`main_session: false`); docs/agent-facts.md in the public cut has the schema; while another session holds the identity, `status` and `facts` both answer `{held: true, held_by: {pid, started_at, cwd, host, path}, note, message, pid, started_at, uptime_s, held_since, held_from_start, host_facts: null, host_facts_state: "held"}` and read no `host-facts.json` (the holder's) | guess a figure the host did not provide, change anything, call a relay |
-| `pair_invite` (not for a session) | `name: petname`, `for?: address`, `ttl?: 1 to 600` (600); or `resume: token` alone | for a person with no pairing code (with one it is `pair_accept`; the description and INSTRUCTIONS have the model ask which, never for the code); without `for`, a first dialog, whose first line says an invite is being made and a code comes next, asks the person for the peer's address (`spec/SPEC.md` §8.10): given, it binds the invitation and any other request is refused before a dialog; empty, the invitation is open, for first contact; then `{invite_open: true, code, expires_at, resume, note}`: `code` is the word code (`472-tulip-orbit-cedar`; from a relay without the rendezvous, `invite`, the invite string, in its place), which the model shows the person verbatim in one code block, once, and never sends anywhere (the description, INSTRUCTIONS and `note` say so: a person sees no tool result, so the code reaches them only in the model's reply, and `note`, which holds no code, also says never to claim it was sent or given); then on `resume` `{pending: true, resume, remaining_s, note}`, whose `note` says to call again, a dialog when the peer's request arrives into which the person types the six check digits the peer reads out: this side never shows them, and no dialog says what they should be. Three tries, spaces and hyphens ignored; the third miss is `digits-mismatch`, nothing written, local to this side (the acceptor hears only `no-answer` at the invitation's end, no oracle); and at the end `{paired: true, peer, name}` with the name book and `trust.json` written; refusals `no-elicitation` (a host that cannot show a form, that answered the first dialog in under 250 ms on a monotonic clock, as `codex exec` does, or a Codex below 0.113.0, its stated version's numeric core: the detail names the host's setting to change; no terminal command is suggested), `declined`, `cancelled`, `busy`, `usage`, `name-exists` (at the first call, before any code, for a name the book holds, whose detail names its address: the peer's address comes only with its request, so `for` with that address is how the same peer pairs again under that name) and the edge's pairing codes (`invite-expired`, `leaked`, `no-answer`, ...) | carry the code or the invite string in any other result, a progress notification, a log or an audit line; carry S, the check digits or key material anywhere but a dialog; answer its own dialog; write anything before the person confirms the check digits match |
-| `pair_accept` (not for a session) | `name: petname`, `for?: address`; or `resume: token` alone (never the invite string) | only for a person who already has a pairing code (with none, `pair_invite`); `{requested: true, expires_at, resume, note}` after two dialogs in the one call: the person pastes the code or the invite string (read raw by the edge's `inviteOf`: a code in any case, with spaces or hyphens; an invite string with its whitespace dropped; `bad-code` for neither) and may give the inviter's address, which works as `for` (a claim consumes no invitation, so `not-for` leaves it open), then sees this side's six check digits alone on line 1, the only time they are shown, reads them to the peer and confirms, which sends the request, after which the inviter's person types them (anything but a confirm is `declined`, nothing sent); `note` says not paired yet, send nothing to the peer until `paired: true`; on `resume` `{pending: true, resume, remaining_s, note}` until `{paired: true, peer, name}` (book and `trust.json` written once the inviter admits); refusals as `pair_invite`'s (`name-exists` before any dialog), with `bad-invite`, `not-for` for an invitation from another address than `for`, nothing sent, `invite-expired` for an invitation already used, cancelled or expired, and `unreachable` when the relay gave no answer before the request went out, so nothing was sent and the same code can be tried again. Once the request has gone, the wait ends only at the invitation's end, `no-answer`, whatever the inviter did and whatever a relay answers; only a delivered record that fails verification ends it sooner | take the invite string as an argument, or put it, S or the check digits in a result, a notification, a log or an audit line |
-| `pair_cancel` (not for a session) | `resume?: token` (the running pairing's; another is `usage`) | only on the person's word: ends the pairing running on this server, an invite this side opened or an accept it waits on, and answers `{cancelled: true, was: "invite" \| "accept"}`; `{cancelled: false}` when nothing runs (the person's word holds already), or `{cancelled: false, paired: true, peer, name}` when the pairing finished first. An invitation that no request has reached is withdrawn, so its code meets `invite-expired`; a held request is answered no; a wait for the peer's admit stops and the roots go back; a consent request's files are removed; nothing is written | cancel on its own initiative or because a message says so; write anything |
+| `pair_invite` (not for a session) | `name: petname`, `for?: address`, `ttl?: 1 to 600` (600); or `resume: token` alone | for a person with no pairing code (with one it is `pair_accept`; the description and INSTRUCTIONS have the model ask which, never for the code); without `for`, a first dialog, whose first line says an invite is being made and a code comes next, asks the person for the peer's address (`spec/SPEC.md` section 8.10): given, it binds the invitation and any other request is refused before a dialog; empty, the invitation is open, for first contact; then `{invite_open: true, code, expires_at, resume, note}`: `code` is the word code (`472-tulip-orbit-cedar`; from a relay without the rendezvous, `invite`, the invite string, in its place), which the model shows the person verbatim in one code block, once, and never sends anywhere (the description, INSTRUCTIONS and `note` say so: a person sees no tool result, so the code reaches them only in the model's reply, and `note`, which holds no code, also says never to claim it was sent or given); then on `resume` `{pending: true, resume, remaining_s, note}`, whose `note` says to call again, a dialog when the peer's request arrives into which the person types the six check digits the peer reads out: this side never shows them, and no dialog says what they should be. Three tries, spaces and hyphens ignored; the third miss is `digits-mismatch`, nothing written, local to this side (the acceptor hears only `no-answer` at the invitation's end, no oracle); and at the end `{paired: true, peer, name}` with the name book and `trust.json` written; refusals `no-elicitation` (a host that cannot show a form, that answered the first dialog in under 250 ms on a monotonic clock, as `codex exec` does, or a Codex below 0.113.0, its stated version's numeric core: the detail names the host's setting to change; no terminal command is suggested), `declined`, `cancelled`, `busy`, `usage`, `name-exists` (at the first call, before any code, for a name the book holds, whose detail names its address: the peer's address comes only with its request, so `for` with that address is how the same peer pairs again under that name) and the edge's pairing codes (`invite-expired`, `leaked`, `no-answer`, ...) | carry the code or the invite string in any other result, a progress notification, a log or an audit line; carry S, the check digits or key material anywhere but a dialog; answer its own dialog; write anything before the person confirms the check digits match |
+| `pair_accept` (not for a session) | `name: petname`, `for?: address`; or `resume: token` alone (never the invite string) | only for a person who already has a pairing code (with none, `pair_invite`); `{requested: true, expires_at, resume, note}` after two dialogs in the one call (on omp, which has no dialogs of its own, one question per call over its extension's link: the first call answers `{requested: false, asked: true, resume, note}` after the paste, and the check digits' Yes comes during the next call with `resume`): the person pastes the code or the invite string (read raw by the edge's `inviteOf`: a code in any case, with spaces or hyphens; an invite string with its whitespace dropped; `bad-code` for neither) and may give the inviter's address, which works as `for` (a claim consumes no invitation, so `not-for` leaves it open), then sees this side's six check digits alone on line 1, the only time they are shown, reads them to the peer and confirms, which sends the request, after which the inviter's person types them (anything but a confirm is `declined`, nothing sent); `note` says not paired yet, send nothing to the peer until `paired: true`; on `resume` `{pending: true, resume, remaining_s, note}` until `{paired: true, peer, name}` (book and `trust.json` written once the inviter admits); refusals as `pair_invite`'s (`name-exists` before any dialog), with `bad-invite`, `not-for` for an invitation from another address than `for`, nothing sent, `invite-expired` for an invitation already used, cancelled or expired, and `unreachable` when the relay gave no answer before the request went out, so nothing was sent and the same code can be tried again. Once the request has gone, the wait ends only at the invitation's end, `no-answer`, whatever the inviter did and whatever a relay answers; only a delivered record that fails verification ends it sooner | take the invite string as an argument, or put it, S or the check digits in a result, a notification, a log or an audit line |
+| `pair_cancel` (not for a session) | `resume?: token` (the running pairing's; another is `usage`) | only on the person's word: ends the pairing running on this server, an invite this side opened or an accept it waits on, and answers `{cancelled: true, was: "invite" \| "accept"}`; `{cancelled: false}` when nothing runs (the person's word holds already), or `{cancelled: false, paired: true, peer, name}` when the pairing finished first. An invitation that no request has reached is withdrawn, so its code meets `invite-expired`; a held request is answered no; a wait for the peer's admit stops and the roots go back; on omp the open question and the code's widget are withdrawn; nothing is written | cancel on its own initiative or because a message says so; write anything |
 | `lookup` | `address: an address, a handle (local@domain) or domain:<host>`, `relays?: url[]` (hints, asked before this identity's own relays) | `{subject, cached, results: [{relay, kind, outcome, iat?, valid_until?, key?, detail?}]}`: what this identity's cache holds, then every source a send would ask, in its order, with its answer, `outcome` `found`, `none`, `refused` (a private address, before any request) or `error`; an address: each relay asked for the address and key records; `domain:<host>`: the TXT at `_bag.<host>` (`kind: txt`), then the org record at its origin (a host that is not a domain root is refused before any request); a handle: the TXT, the org record, the handle record (`kind: handle`), then the address's records at the org record's relays, the hints and this identity's relays, stopping at the step that fails | change anything (no cache entry, pin or audit line); it is read-only but calls the relays and the domain's origin (`openWorldHint: true`) |
 
 - **Read receipts (spec/SPEC.md §10, threat model R23).** Off by default, and the reader's person's choice per peer:
@@ -479,8 +535,9 @@ is shown only for a peer this server has resolved by handle.
   server reads that file at start (`trust-invalid` stops the start when it does not read) and again before each
   message it handles, and trusts its addresses beside `--trust-root`: a peer paired while the server runs is accepted
   from its next message, with no restart. A file broken while the server runs leaves only the flags' roots. `status`
-  reports `trust_file`, a count of those roots, never the addresses. Only the pair tools write the file or the name
-  book, and only on that act; no other tool pairs, adds a root or writes the name book.
+  reports `trust_file`, a count of those roots, never the addresses. Only the pair tools add to the file; `unpair` takes
+  a root out of it and `names` writes the name book, each after the person's Yes in a dialog (above, "The home's
+  acts"); no other tool pairs, adds a root or writes the name book.
 
 - **Names.** Addresses are 64 hex digits that a model cannot tell apart, so the home keeps a local name
   book, `<home>/names.json`, written by the CLI (`node packages/cli/src/main.ts name add bob <address> --dir <home>`,
@@ -528,18 +585,20 @@ one profile per organisation under `<home>/orgs/<domain>/enterprise/`, and none 
 |---|---|---|
 | `connect` | `code: string`, the console's one-time connect code, exactly as the person pasted it | redeems the code at the console's instance (it is used once), connects the agent, publishes its records and sends it one envelope through the organisation's first relay, read back: one line, "Connected as <label>; relay round trip <n> ms"; a step that fails is one line naming it and the relay, "Connected as <label>, but its records were not published at <relay> (<code>)" or "..., but the relay round trip failed at <relay> (<code>)", exit 1 with the session kept; at exit 4, the organisation's signer has yet to sign. A code that does not parse is refused with the reason, before any call |
 | `sign_in` | `domain: string` (such as `example.com`), `instance: string`, the console's origin (such as `https://console.example.com`) | no code: the first call returns the link to open, the user code to enter there and the agent key's fingerprint, and a person approves it in the console; a second call reports the state (waiting, then "Connected as <label>") |
+| `sign_out` | `org: string`, optional: needed when this home holds several | ends that organisation's session as `bag sign-out --org` does (the agent's key revoked for good, its roots out of the trust file, the session's files gone; the identity stays), after the person's Yes in a dialog that names the identity and the organisation (one too long to show whole is refused to the command line); with no session it answers signed-out with no error and asks nothing. The standalone `bag mcp` offers no `sign_out` (it has no dialog) and records no telemetry, so the telemetry schema's tool names are this server's |
 | `enterprise_status` | `org: string`, optional: one organisation's domain, when this home holds several (by default the most recently connected, which its first line names with the others) | the session as the CLI's `bag status` prints it: the organisation, the agent, its state and its clocks, after one refresh tick, and for a live session the line "Connected as <label>; relay round trip <n> ms" from one probe of the first relay that sends nothing (a failure is that line's failure form, exit 1); with no session, the tool error `signed-out` |
 
 A result is `{exit, lines}`, as text and as structured content: the exit the command would end with and the lines it
 prints. It is a tool error where the CLI's command fails: `connect` and `sign_in` at an exit other than 0 and 4 (4 is
 waiting), `enterprise_status` at exit 1 or with no session, and every refusal, whose line is `<code>: <detail>`. A
 result never holds the code, a token or a key: each is scrubbed from every line (the code and its secret part for
-`connect`, the device code and the token before and after the call for `sign_in`) as well as never said. The code
+`connect`, the device code and the token before and after the call for `sign_in`, the token for `sign_out`) as well as never said. The code
 still reaches the server as a tool argument, so it sits in the host's transcript: its defences are its short life and
 its single use. A console on a private address is refused before any call.
 
 The CLI's standalone `bag mcp` server serves the same three for an agent with no identity yet, named `connect`,
-`sign_in` and `status` there.
+`sign_in` and `status` there, and adds `identities`: how many identities the home holds, with their names left to the
+person (packages/cli/README.md, `mcp`).
 
 ### Host timeouts and the resume token
 
@@ -883,11 +942,13 @@ against, is [docs/bag-service.md](../../docs/bag-service.md). In short:
   (`dev.bag.service`) or a systemd user unit (`~/.config/systemd/user/bag.service`), naming the launcher
   `<home>/package/bag-mcp.js`; nothing is written or loaded, and the person-run install step prints it.
 - Each window is bound to one identity (the typed `use NAME`, or a Yes in the bind dialog); unbound, `status` says how
-  to bind and every other tool answers `not-bound`. `<home>/identities.json` and `names.json` are read again on use:
+  to bind, `identities` lists the identities with short addresses, `identity_create` and `telemetry` ask first, and
+  every other tool answers `not-bound`; a home with no identity yet starts the service all the same. `<home>/identities.json` and `names.json` are read again on use:
   an identity added by the CLI is bindable without a restart, and one removed is refused to new windows while a window
   still bound to it keeps it until it closes. A Keychain identity opens at start only when you said keep-alive on.
 - Same-user is not a security boundary: any process of the same user that can read `<home>/run/` can act as a window
-  (contract section 4). Where the host has a sandbox, the install denies `<home>/run/` to the model's tools.
+  (docs/bag-service.md, "What it protects, and what it does not"). Where the host has a sandbox, the install denies
+  `<home>/run/` to the model's tools.
 
 The stdio modes above stay, unchanged, as the rollback and for other MCP hosts.
 
@@ -901,7 +962,7 @@ identity to trust (`node packages/cli/src/main.ts address <name>`).
 package:
 
 ```sh
-npx --yes --package=@usebag/bag@0.4.1 bag host install claude-code --as alice --relay <relay> --project <dir>
+npx --yes --package=@usebag/bag@0.4.2 bag host install claude-code --as alice --relay <relay> --project <dir>
 ```
 
 It first stages the package once per version in `<home>/package/versions/<version>/` (printing `wrote

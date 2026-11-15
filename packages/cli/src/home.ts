@@ -1,35 +1,31 @@
-import {
-  closeSync,
-  constants,
-  existsSync,
-  futimesSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  statSync,
-} from 'node:fs'
-import { connect } from 'node:net'
+import { closeSync, constants, futimesSync, mkdirSync, openSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { AcError, type Hop, type SealingKey } from '@usebag/core'
 import {
-  Audit,
-  acquireLock,
+  type Audit,
   Edge,
   type EdgeKeys,
   EpochOpener,
   FsAuditSink,
-  HomeCustody,
+  type HomeCustody,
   type InboxRow,
   KeyEpochStore,
   notePairs,
   type PolicyOptions,
   processStart,
   type RelayClient,
-  type SecurityRunner,
   SqliteStore,
   START_TOLERANCE,
 } from '@usebag/edge'
-import { CliError, UsageError } from './args.ts'
+import {
+  homeCustody as custodyOf,
+  cliAudit as homeCliAudit,
+  checkIdentity as identityIn,
+  loadKeys as keysIn,
+  checkNoWindow as noWindowIn,
+  windowOf as windowIn,
+} from '@usebag/home'
+import { UsageError } from './args.ts'
 import type { Io } from './io.ts'
 
 const { O_APPEND, O_CREAT, O_NOFOLLOW, O_NONBLOCK, O_WRONLY } = constants
@@ -43,37 +39,12 @@ const { O_APPEND, O_CREAT, O_NOFOLLOW, O_NONBLOCK, O_WRONLY } = constants
 /** The session id under which the CLI binds the threads it opens and routes what it receives. */
 export const CLI_SESSION = 'cli'
 
-/** The audit log of what the CLI signs outside an edge, in the identity's state directory, beside the edge's. */
-export const CLI_AUDIT = 'cli-audit.jsonl'
+/** The audit log of what the CLI signs outside an edge (packages/home's cliAudit, the same file and anchor). */
+export { CLI_AUDIT } from '@usebag/home'
 
-/**
- * The audit log a command that opens no edge writes (the last-mile rulings, section 5): a chain of its own, from the
- * genesis, because a hash chain takes one live writer and a live edge may hold audit.jsonl. Each line takes this file's
- * own lock, never one the open path waits on, and then puts this file's anchor in the edge store, opened without the
- * writer lock: its row is the set's record that the file must exist, which an edge checks at start and `audit verify`
- * reads. A crash between the two leaves the file a line ahead of its anchor, as the edge's own log can be.
- */
-export function cliAudit(home: string, name: string, io: Io): Pick<Audit, 'record'> {
-  const dir = join(home, 'state', name)
-  return {
-    record(entry) {
-      mkdirSync(dir, { recursive: true, mode: 0o700 })
-      const release = acquireLock(join(dir, 'cli-audit.lock'))
-      try {
-        const line = new Audit(new FsAuditSink(join(dir, CLI_AUDIT)), io.clock).record(entry)
-        const store = new SqliteStore(join(dir, 'edge.sqlite'), { lock: false })
-        try {
-          store.auditAnchorPut(CLI_AUDIT, { seq: line.seq, hash: line.hash }, io.clock.now())
-        } finally {
-          store.close()
-        }
-        return line
-      } finally {
-        release()
-      }
-    },
-  }
-}
+/** packages/home's cliAudit over the command line's clock: <home>/state/<name>/cli-audit.jsonl, anchored. */
+export const cliAudit = (home: string, name: string, io: Io): Pick<Audit, 'record'> =>
+  homeCliAudit(home, name, io.clock)
 
 /**
  * Whether a live MCP server that keeps its records alive holds the identity, by its mcp.lock: `keep_alive` true, and a
@@ -126,49 +97,19 @@ export function ring(path: string): void {
   }
 }
 
-/** The runner of an io without /usr/bin/security: every keychain call refuses ENOENT. */
-const noSecurity: SecurityRunner = () => {
-  throw Object.assign(new Error('keychain: this io runs no /usr/bin/security'), { code: 'ENOENT' })
-}
-
-/** The custodies of a home, which run /usr/bin/security through the io. */
-export function homeCustody(io: Io, home: string): HomeCustody {
-  return new HomeCustody(home, { run: io.security ?? noSecurity })
-}
+/** The custodies of a home, which run /usr/bin/security through the io (packages/home's homeCustody). */
+export const homeCustody = (io: Io, home: string): HomeCustody => custodyOf(io.security, home)
 
 /** Refuses a name the custody refuses, and an identity the home lacks (ENOENT: no key file, keychain or agent). */
-export function checkIdentity(io: Io, home: string, name: string): void {
-  homeCustody(io, home).holder(name)
-  if (!['keys', 'keychain', 'agent'].some((d) => existsSync(join(home, d, `${name}.json`))))
-    throw new CliError('ENOENT', `no identity ${name} in ${home}: no key file, keychain or agent pointer`)
-}
+export const checkIdentity = (io: Io, home: string, name: string): void => identityIn(io.security, home, name)
 
 /** The agent identity whose login window of this home is open on `address` (its socket accepts), else null. */
-export async function windowOf(io: Io, home: string, address: string): Promise<string | null> {
-  const sock = join(home, 'agent.sock')
-  if (!existsSync(sock)) return null
-  const held = homeCustody(io, home)
-    .agent.list()
-    .find((e) => e.address === address)
-  if (held === undefined) return null
-  const live = await new Promise<boolean>((done) => {
-    const s = connect(sock, () => {
-      s.destroy()
-      done(true)
-    })
-    s.on('error', () => done(false))
-  })
-  return live ? held.name : null
-}
+export const windowOf = (io: Io, home: string, address: string): Promise<string | null> =>
+  windowIn(io.security, home, address)
 
-/**
- * Refuses (window-open) a record of `address` while a login window of this home holds it: the agent re-signs the
- * address record it read at login when the window ends, so a record published meanwhile would be overwritten.
- */
-export async function checkNoWindow(io: Io, home: string, address: string): Promise<void> {
-  const name = await windowOf(io, home, address)
-  if (name !== null) throw new CliError('window-open', `a login window holds ${name}: run ac logout first`)
-}
+/** Refuses (window-open) a record of `address` while a login window of this home holds it. */
+export const checkNoWindow = (io: Io, home: string, address: string): Promise<void> =>
+  noWindowIn(io.security, home, address)
 
 /** A home's epoch key store: <home>/key-records, one directory per address. */
 export const epochStore = (home: string): KeyEpochStore => new KeyEpochStore(join(home, 'key-records'))
@@ -201,17 +142,8 @@ export function changeover(store: KeyEpochStore, address: string): boolean {
   return held.length === 0 || held.includes(1)
 }
 
-/**
- * The keys of an identity, from its custody (name and modes checked); the agent's are not-authorized. The class is
- * the edge's custodyOf, the one a bag service checks per call (custodyClass), so both refuse the same identities.
- */
-export function loadKeys(io: Io, home: string, name: string): EdgeKeys {
-  const custody = homeCustody(io, home)
-  if (custody.custodyOf(name) === 'agent') {
-    throw new AcError('not-authorized', `${name} is held by the agent, which signs a session's hops only`)
-  }
-  return custody.keys(name)
-}
+/** The keys of an identity, from its custody (packages/home's loadKeys); the agent's are not-authorized. */
+export const loadKeys = (io: Io, home: string, name: string): EdgeKeys => keysIn(io.security, home, name)
 
 /** An open edge for an identity, and how to close its store. */
 export interface OpenEdge {

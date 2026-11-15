@@ -24,7 +24,8 @@ async function home(...names: string[]): Promise<Home> {
   const io = testIo(new MemoryRelay())
   const dir = join(tmp.dir, `home-${n++}`)
   const addresses: Record<string, string> = {}
-  for (const name of names) addresses[name] = (await cli(io, 'keygen', name, '--dir', dir)).out[0] as string
+  for (const name of names)
+    addresses[name] = (await cli(io, 'keygen', '--new', name, '--dir', dir)).out[0] as string
   return {
     io,
     dir,

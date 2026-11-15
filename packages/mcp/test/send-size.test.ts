@@ -229,7 +229,8 @@ describe('rawTerminal', () => {
     tty.write(Buffer.from([0x03]))
     expect(await r.done).toBe(0)
     expect(tty.modes).toEqual([true, false])
-    // Raw mode comes after the start (the red team's read): its stdin line follows the start line, never precedes it.
+    // Raw mode comes after the start (so Ctrl-C stays SIGINT while the server starts): its stdin line follows the start
+    // line, never precedes it.
     const names = events(r).map((l) => l.event)
     expect(names.indexOf('start')).toBeGreaterThanOrEqual(0)
     expect(names.indexOf('stdin')).toBeGreaterThan(names.indexOf('start'))

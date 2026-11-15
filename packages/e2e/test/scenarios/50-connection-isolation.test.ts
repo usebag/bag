@@ -26,7 +26,7 @@ import { addressRecord, type Party, party, sleep, until, type World, world } fro
 //   50f  wss:// after A's HTTP calls: does B's WebSocket handshake resume A's session?
 //   50g  the claim: each identity's subscription is its own WebSocket on its own TCP connection, per relay
 //
-// 50a to 50f are informational (ruling of 2026-10-30: connection and TLS sharing at a shared
+// 50a to 50f are informational (connection and TLS sharing at a shared
 // relay is a documented residual, not a fix): each prints one `FACT 50x {...}` line and asserts only that the harness
 // saw what it sent, never the pooling or the resumption, which are Node's to change. Only 50g asserts, since it is the
 // one thing claimed. Measured on Node 24.4.1 on 2026-10-30: 50a one connection for both,

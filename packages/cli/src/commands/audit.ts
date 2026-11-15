@@ -51,7 +51,7 @@ export function audit(args: readonly string[], io: Io): number {
   } else if (check?.state === 'ahead') {
     io.out(`ahead: its anchor in ${store} is at line ${check.seq} of ${check.lines}`)
   }
-  // The anchor rows are the list of the files that must exist (the last-mile rulings, section 5): the rest of the set.
+  // The anchor rows are the list of the files that must exist: the rest of the set.
   let whole = true
   for (const a of anchors.filter((a) => a.name !== basename(file))) {
     const other = join(dirname(file), a.name)

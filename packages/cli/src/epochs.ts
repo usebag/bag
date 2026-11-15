@@ -190,7 +190,7 @@ export function staleLine(io: Io, home: string, address: string, tag: string): v
 }
 
 /**
- * Says that a swept identity came back from the copy in its home (ruling 4): the copy's date, since a revocation made
+ * Says that a swept identity came back from the copy in its home: the copy's date, since a revocation made
  * after it on another device is not in it, and a stale recovery copy.
  */
 export function healed(io: Io, home: string, record: AddressRecord): void {

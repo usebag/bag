@@ -35,14 +35,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseConfig } from '../src/config.ts'
 import { incompleteLine } from '../src/keepalive.ts'
 import {
-  BRIDGE_SHOW,
+  BUSY_HERE,
   CODEX_FLOOR,
   FAST_ANSWER_MS,
+  fitName,
   INCOMPLETE,
+  inviteLines,
   LAGGING,
+  makingLine,
   NOT_PAIRED,
   noDialog,
   PAIRING_CODES,
+  peerLines,
   SHOW_CODE,
   STILL_WAITING,
   shortAddress,
@@ -459,7 +463,10 @@ async function threeWrong({ alice, code, resume }: Requested): Promise<void> {
   expect((await alice.call('pair_invite', { resume })).value.error).toBe('digits-mismatch')
 }
 
-/** Ruling 9: what an inviter or the network may do while an acceptor waits; none of them may show on its side. */
+/**
+ * What an inviter or the network may do while an acceptor waits; none of them may show on its side, so a refusal reads
+ * as no answer (spec/SPEC.md 8.10).
+ */
 const whileWaiting: [string, (r: Requested) => Promise<void>][] = [
   ['three wrong tries', threeWrong],
   ['an inviter who never answers', async () => {}],
@@ -513,7 +520,7 @@ describe('typed digits', () => {
   })
 
   it.each(whileWaiting)(
-    "the acceptor's end is one event at its own expiry, whatever came: %s (ruling 9)",
+    "the acceptor's end is one event at its own expiry, whatever came: %s",
     async (_, happens) => {
       const r = await requested()
       const { i } = readInvite(r.invite)
@@ -542,7 +549,7 @@ describe('typed digits', () => {
     },
   )
 
-  it('a forged record of the inviter ends the wait at once: a decision, not a failed read (ruling 9)', async () => {
+  it('a forged record of the inviter ends the wait at once: a decision, not a failed read', async () => {
     const r = await requested()
     const signed = signRecord(P.alice.keys.signing, {
       kind: 'accept-from',
@@ -743,7 +750,7 @@ describe('pair_invite and pair_accept', () => {
       const out = await alice.call(tool, { name: 'bob' })
       expect(out.isError).toBe(true)
       expect(out.value.error).toBe('no-elicitation')
-      // The host's setting, never a silent decline and never a terminal command (Dilip's 'plain codex'; P5).
+      // The host's setting, never a silent decline and never a terminal command in a host window (P5).
       expect(out.value.detail).toBe(noDialog('other', 'none'))
     }
     expect([relay.records.size, relay.published, files(alice), steps(alice)]).toEqual([
@@ -872,17 +879,28 @@ describe('pair_invite and pair_accept', () => {
       ['pair_accept', { resume, for: P.bob.address }, 'usage'],
     ]
     const out = []
-    for (const [tool, args] of cases) out.push((await alice.call(tool, args)).value.error)
+    const busy: unknown[] = []
+    for (const [tool, args] of cases) {
+      const { value } = await alice.call(tool, args)
+      out.push(value.error)
+      if (value.error === 'busy') busy.push(value.resume)
+    }
     expect(out).toEqual(cases.map(([, , code]) => code))
     expect(alice.dialogs).toHaveLength(0)
+    // Busy in the window that started it carries a fresh token each time, and the one before it is dead.
+    expect(busy).toHaveLength(2)
+    expect(new Set([resume, ...busy]).size).toBe(3)
+    const next = busy.at(-1)
     // A resume call blocks at most the window, with a progress notification (which clean then scans), then answers
-    // pending with the same token.
-    const waiting = alice.call('pair_invite', { resume })
+    // pending with the next token.
+    const waiting = alice.call('pair_invite', { resume: next })
     await until(() => timers.live().includes(25_000) && timers.live().includes(15_000))
     timers.fire((ms) => ms === 15_000)
     await until(() => alice.seen.some((t) => t.includes('pair_invite: nothing yet, 15 s')))
     timers.fire((ms) => ms === 25_000)
-    expect((await waiting).value).toEqual({ pending: true, resume, remaining_s: 600, note: STILL_WAITING })
+    const pending = (await waiting).value
+    expect(pending).toEqual({ pending: true, resume: pending.resume, remaining_s: 600, note: STILL_WAITING })
+    expect([typeof pending.resume, pending.resume === next]).toEqual(['string', false])
     await clean(inviteOf(alice), null)
   })
 
@@ -1170,7 +1188,9 @@ describe('pair_invite and pair_accept', () => {
     const waiting = alice.call('pair_invite', { resume })
     await until(() => timers.live().includes(25_000))
     timers.fire((ms) => ms === 25_000)
-    expect((await waiting).value).toEqual({ pending: true, resume, remaining_s: 600, note: STILL_WAITING })
+    const pending = (await waiting).value
+    expect(pending).toEqual({ pending: true, resume: pending.resume, remaining_s: 600, note: STILL_WAITING })
+    expect(pending.resume).not.toBe(resume)
     expect(steps(alice).at(-1)).toBe('request reject bob not-for')
     expect(files(alice)).toEqual([null, null])
     await clean(invite, codeIn(bob.dialogs[1]))
@@ -1197,6 +1217,82 @@ describe('pair_invite and pair_accept', () => {
       'pair_accept',
     ])
     await clean(invite, codeIn(bob.dialogs[1]))
+  })
+
+  it('a first pair_invite cancelled by the client after its invitation went out ends the pairing: withdrawn, nothing written, it starts again', async () => {
+    const alice = await side(P.alice)
+    // Hold the invitation's accept-from: I's address record is at the relay, and the first call is still open.
+    const publish = relay.publish.bind(relay)
+    const held = Promise.withResolvers<void>()
+    let i = ''
+    relay.publish = async (url, bytes) => {
+      let r: { kind?: string; owner?: string } = {}
+      try {
+        r = JSON.parse(new TextDecoder().decode(bytes))
+      } catch {}
+      if (i === '' && r.kind === 'accept-from' && r.owner !== P.alice.address) {
+        i = String(r.owner)
+        await held.promise
+      }
+      return publish(url, bytes)
+    }
+    const ended = new AbortController()
+    const first = alice.call('pair_invite', { name: 'bob' }, ended.signal)
+    await until(() => i !== '')
+    ended.abort()
+    await expect(first).rejects.toThrow()
+    held.resolve()
+    await until(() => steps(alice).includes('refuse reject - cancelled'))
+    const lines = readFileSync(join(alice.home, 'state', 'alice', 'audit.jsonl'), 'utf8')
+      .split('\n')
+      .filter((l) => l.includes('"pair"') && l.includes('cancelled'))
+      .map((l) => JSON.parse(JSON.parse(l).detail) as Record<string, unknown>)
+    expect(lines).toEqual([{ step: 'refuse', code: 'cancelled', reason: 'client-abort' }])
+    await until(() => {
+      const bytes = relay.records.get(`${RELAY} ${i} address`)
+      return bytes !== undefined && (parseRecord(bytes) as AddressRecord).sealing_key === null
+    })
+    expect(files(alice)).toEqual([null, null])
+    relay.publish = publish
+    expect((await alice.call('pair_invite', { name: 'bob' })).value.invite_open).toBe(true)
+    await clean(inviteOf(alice), null)
+  })
+
+  it('a token dies at once on cancel; an end between calls is reported by it once, then it dies', async () => {
+    const { alice, bob, asked, invite, code, resume } = await requested()
+    // Alice's typed digits pair both sides while Bob has no call open: his end happens between his calls.
+    alice.person.push(() => accept({ digits: code }))
+    expect((await alice.call('pair_invite', { resume })).value.paired).toBe(true)
+    await until(() => files(bob)[0] !== null)
+    expect((await bob.call('pair_accept', { resume: asked.value.resume })).value).toMatchObject({
+      paired: true,
+    })
+    expect((await bob.call('pair_accept', { resume: asked.value.resume })).value.error).toBe('usage')
+    // A cancel kills the token at once.
+    const again = await alice.call('pair_invite', { name: 'carol' })
+    expect((await alice.call('pair_cancel', {})).value).toMatchObject({ cancelled: true })
+    expect((await alice.call('pair_invite', { resume: again.value.resume })).value.error).toBe('usage')
+    await clean(invite, code)
+  })
+
+  it('a window may start 6 pairings in 600 s: the seventh is rate-limited and asks nothing; past the 600 s it starts', async () => {
+    const bob = await side(P.bob)
+    for (let n = 0; n < 6; n++)
+      expect((await bob.call('pair_accept', { name: 'alice' })).value.error).toBe('cancelled')
+    expect(bob.dialogs).toHaveLength(6)
+    const seventh = await bob.call('pair_accept', { name: 'alice' })
+    expect(seventh.value).toEqual({
+      error: 'rate-limited',
+      detail: '6 pairings were started here lately: start again in 600 s',
+    })
+    expect((await bob.call('pair_invite', { name: 'alice' })).value.error).toBe('rate-limited')
+    expect(bob.dialogs).toHaveLength(6)
+    expect(bob.questions).toHaveLength(0)
+    expect(steps(bob)).toEqual(Array(6).fill('decline reject - cancelled'))
+    clock.t += 600
+    expect((await bob.call('pair_accept', { name: 'alice' })).value.error).toBe('cancelled')
+    expect(bob.dialogs).toHaveLength(7)
+    await clean(null, null)
   })
 
   it("refuses usage, naming the CLI's record keep, when the held key record has ended and none can be made current", async () => {
@@ -1320,7 +1416,7 @@ describe('no-elicitation for a host that showed no dialog', () => {
     ]
     for (const [kind, why] of all) {
       const text = noDialog(kind, why, '0.100.0')
-      // codex --version is Codex's own version check, which the ruling names; nothing of bag's.
+      // codex --version is Codex's own version check, which the detail names; nothing of bag's.
       const bare = text.replaceAll('codex --version', '')
       expect(bare, `${kind} ${why}`).not.toMatch(/\bbag [a-z]|--|terminal|untrusted|\.bag\b|~\//)
       expect(text).toContain('Do not call a pair tool again until they say it is changed.')
@@ -1451,7 +1547,7 @@ describe('a 403 root-not-accepted during pairing (reproductions)', () => {
     clock.t = T0 + 600
     expect((await bob.call('pair_accept', { resume: late.value.resume })).value.error).toBe('no-answer')
     clock.t = T0
-    // An inviter on a client from before ruling 9 closes I: the request's one publish meets it, and its 403 is mapped.
+    // An inviter on an older client closes I: the request's one publish meets it, and its 403 is mapped.
     relay.failPublish.set(RELAY, new RelayError('root-not-accepted', 403, null, 'closed'))
     answers()
     const again = await bob.call('pair_accept', { name: 'alice' })
@@ -1936,7 +2032,7 @@ describe('the compare, the codes and the listing', () => {
     await clean(null, null)
   })
 
-  it("carries the red team's load-bearing lines: the invite shown once, never sent; no terminal; a 403 is no ban", async () => {
+  it('carries the load-bearing lines: the invite shown once, never sent; no terminal; a 403 is no ban', async () => {
     const alice = await side(P.alice)
     const { tools } = await alice.client.listTools()
     const invite = tools.find((t) => t.name === 'pair_invite')?.description ?? ''
@@ -2029,148 +2125,72 @@ async function requestedFor(alice: Side, answer: () => Answer) {
   return { bob, invite, asked, resume }
 }
 
-describe('the consent bridge: a host with no elicitation answers through files (decision 83i)', () => {
-  const consentDir = (s: Side): string => join(s.home, 'state', s.party.name, 'consent')
-
-  /** Writes a live .bridge so the server treats the bridge as present (pid alive, fresh at the fake clock). */
-  function bridgeOn(s: Side): void {
-    const d = consentDir(s)
-    mkdirSync(d, { recursive: true })
-    const at = new Date(clock.t * 1000).toISOString()
-    writeFileSync(
-      join(d, '.bridge'),
-      JSON.stringify({ v: 1, pid: process.pid, host: 'omp', mode: 'tui', at }),
-    )
-  }
-
-  /** The one open consent request: its id and parsed body. */
-  function requestOf(s: Side): { id: string; req: Record<string, unknown> } {
-    const d = consentDir(s)
-    const f = readdirSync(d).find((x) => /^[0-9a-f]{16}\.json$/.test(x)) as string
-    return {
-      id: f.slice(0, 16),
-      req: JSON.parse(readFileSync(join(d, f), 'utf8')) as Record<string, unknown>,
-    }
-  }
-
-  /** The fake answerer: writes <id>.answer.json, stamped now (before expires_at). */
-  function answerConsent(s: Side, id: string, body: Record<string, unknown>): void {
-    const answered_at = new Date(clock.t * 1000).toISOString()
-    writeFileSync(
-      join(consentDir(s), `${id}.answer.json`),
-      JSON.stringify({ v: 1, id, answered_at, ...body }),
-    )
-  }
-
-  it('takes the fallback with no bridge, and with one asks through a pair-accept-code request', async () => {
+describe('no file bridge (0.4.2): a host with no elicitation and no service link', () => {
+  it('answers no-elicitation for both tools in the per-folder form, and makes no consent folder', async () => {
     const alice = await side(P.alice, false)
-    // No .bridge: today's no-elicitation answer with the bag pair line.
+    // A generation-one .bridge presence file no longer counts for anything.
+    const consent = join(alice.home, 'state', alice.party.name, 'consent')
+    mkdirSync(consent, { recursive: true })
+    writeFileSync(
+      join(consent, '.bridge'),
+      JSON.stringify({ v: 1, pid: process.pid, host: 'omp', mode: 'tui' }),
+    )
     expect((await alice.call('pair_accept', { name: 'bob' })).value.error).toBe('no-elicitation')
-    bridgeOn(alice)
-    const asked = await alice.call('pair_accept', { name: 'bob' })
-    expect(asked.value).toMatchObject({ asked: true })
-    expect(requestOf(alice).req).toMatchObject({ kind: 'pair-accept-code', peer: null, code: null })
-    // A refused paste ends the pairing declined, and removes the files.
-    const { id } = requestOf(alice)
-    answerConsent(alice, id, { accepted: false, code: null })
-    timers.fire()
-    expect((await alice.call('pair_accept', { resume: asked.value.resume })).value.error).toBe('declined')
-    expect(readdirSync(consentDir(alice)).filter((x) => x.endsWith('.json') && x !== '.bridge')).toEqual([])
+    expect((await alice.call('pair_invite', { name: 'bob' })).value.error).toBe('no-elicitation')
+    expect(readdirSync(consent)).toEqual(['.bridge'])
+    expect(relay.published).toEqual([])
+    expect(steps(alice)).toEqual([])
   })
 
-  it('shows the code only through a pair-invite-show request when it invites over the bridge: the result has none', async () => {
-    const alice = await side(P.alice, false)
-    bridgeOn(alice)
-    const invited = await alice.call('pair_invite', { name: 'carol' })
-    // The omp pty proof (2026-11-12): with the code in the result the model printed it; the host's dialog shows it.
-    expect(Object.keys(invited.value).sort()).toEqual(['expires_at', 'invite_open', 'note', 'resume'].sort())
-    expect(invited.value).toMatchObject({ invite_open: true, note: BRIDGE_SHOW })
-    const show = requestOf(alice).req
-    expect(show).toMatchObject({ kind: 'pair-invite-show' })
-    expect(typeof show.code).toBe('string')
-    expect(JSON.stringify(invited.value)).not.toContain(show.code as string)
-  })
-
-  it('still carries the code in the result with no bridge, where the dialog path shows nothing itself', async () => {
+  it('still carries the code in the result with dialogs, where the dialog path shows nothing itself', async () => {
     const alice = await side(P.alice)
     const invited = await alice.call('pair_invite', { name: 'carol' })
     expect(invited.value).toMatchObject({ invite_open: true, note: SHOW_CODE })
     expect(typeof (invited.value.code ?? invited.value.invite)).toBe('string')
   })
+})
 
-  it('times out a paste no one answers, at expires_at, as a declined pairing', async () => {
-    const alice = await side(P.alice, false)
-    bridgeOn(alice)
-    const asked = await alice.call('pair_accept', { name: 'bob' })
-    clock.t += 121 // past the consent's 120 s expires_at
-    timers.fire()
-    expect((await alice.call('pair_accept', { resume: asked.value.resume })).value.error).toBe('declined')
+describe('omp question lines with a 64-character petname', () => {
+  it('the peer address keeps a line of its own, whole, and every line fits 60 characters', () => {
+    const name = 'n'.repeat(64)
+    const lines = peerLines(P.bob.address, name).split('\n')
+    expect(lines[0]).toBe(shortAddress(P.bob.address))
+    expect(lines[1]).toBe(`named ${'n'.repeat(51)}...`)
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(60)
+    expect(`They will be named ${fitName(name, 35)} here.`.length).toBeLessThanOrEqual(60)
+    expect(fitName('bob', 35)).toBe('bob')
   })
 
-  // Fires the consent polls (250 ms) but not a resume's window (max-tool-seconds), so a resume blocks until the end.
-  const tick = (): void => timers.fire((ms) => ms < 1000)
-  const realWait = (ms = 5): Promise<void> => new Promise((r) => setTimeout(r, ms))
-
-  /** Polls (real time) for `s`'s open request of `kind`, ticking the consent polls, and returns it. */
-  async function nextRequest(s: Side, kind: string): Promise<{ id: string; req: Record<string, unknown> }> {
-    for (let i = 0; i < 400; i++) {
-      for (const f of readdirSync(consentDir(s)).filter((x) => /^[0-9a-f]{16}\.json$/.test(x))) {
-        const req = JSON.parse(readFileSync(join(consentDir(s), f), 'utf8')) as Record<string, unknown>
-        if (req.kind === kind) return { id: f.slice(0, 16), req }
-      }
-      tick()
-      await realWait()
-    }
-    throw new Error(`no ${kind} request for ${s.party.name}`)
-  }
-
-  it('pairs two bridge sides end to end through files only: no dialog, each person presses Yes', async () => {
-    const alice = await side(P.alice, false)
-    const bob = await side(P.bob, false)
-    bridgeOn(alice)
-    bridgeOn(bob)
-    const invited = await alice.call('pair_invite', { name: 'bob' })
-    // Alice reads the code in her host's dialog (the show request), never in the result, and hands it to Bob.
-    expect(invited.value.code ?? invited.value.invite).toBeUndefined()
-    const codeText = (await nextRequest(alice, 'pair-invite-show')).req.code as string
-    const aliceEnd = alice.call('pair_invite', { resume: invited.value.resume })
-    const asked = await bob.call('pair_accept', { name: 'alice' })
-    const bobEnd = bob.call('pair_accept', { resume: asked.value.resume })
-    // Bob pastes Alice's code (the code never a tool argument), then reads the digits out and presses Yes.
-    const paste = await nextRequest(bob, 'pair-accept-code')
-    answerConsent(bob, paste.id, { accepted: true, code: codeText })
-    tick()
-    const confirm = await nextRequest(bob, 'pair-accept')
-    expect(confirm.req).toMatchObject({ kind: 'pair-accept', peer: { name: 'alice' } })
-    const digits = confirm.req.code as string
-    expect(digits).toMatch(/^\d{3} \d{3}$/)
-    answerConsent(bob, confirm.id, { accepted: true, code: null })
-    tick()
-    // Alice types the six digits Bob read her, and presses Yes.
-    const compare = await nextRequest(alice, 'pair-accept')
-    expect(compare.req.code).toBeNull()
-    answerConsent(alice, compare.id, { accepted: true, code: digits })
-    tick()
-    expect((await bobEnd).value).toMatchObject({ paired: true, name: 'alice' })
-    expect((await aliceEnd).value).toMatchObject({ paired: true, name: 'bob' })
-    // Both sides trust the other's root and leave no consent files behind.
-    const roots = (h: string): Record<string, unknown> =>
-      (JSON.parse(readFileSync(join(h, 'trust.json'), 'utf8')) as { roots: Record<string, unknown> }).roots
-    expect(roots(bob.home)[P.alice.address]).toBeDefined()
-    expect(roots(alice.home)[P.bob.address]).toBeDefined()
-    for (const s of [alice, bob])
-      expect(readdirSync(consentDir(s)).filter((x) => x.endsWith('.json'))).toEqual([])
+  it("omp's invite widget keeps the code on a line of its own, whole, and every line fits 60 columns", () => {
+    const name = 'n'.repeat(64)
+    const code = '336-ladle-reach-lash'
+    const lines = inviteLines(name, code)
+    expect(lines[0]).toBe(`bag: your invite code for ${'n'.repeat(30)}...:`)
+    expect(lines[1]).toBe(`  ${code}`)
+    expect(lines.filter((l) => l.includes(code))).toEqual([`  ${code}`])
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(60)
+    expect(makingLine(name)).toBe(`bag: making a pairing code for ${'n'.repeat(26)}...`)
+    expect(makingLine(name).length).toBeLessThanOrEqual(60)
+    expect(inviteLines('bob', code)[0]).toBe('bag: your invite code for bob:')
+    expect(makingLine('bob')).toBe('bag: making a pairing code for bob')
+    // A short code takes no wrap hint; a long invite string (omp wraps it) is told to be copied as one line.
+    expect(inviteLines(name, code)).toHaveLength(3)
+    const long = `ac-peer1:${'A'.repeat(300)}`
+    const wrapped = inviteLines(name, long)
+    expect(wrapped).toEqual([lines[0], `  ${long}`, 'it wraps on screen: copy it all, as one line', lines[2]])
+    for (const l of [wrapped[0], wrapped[2], wrapped[3]]) expect((l as string).length).toBeLessThanOrEqual(60)
   })
+})
 
-  it('pair_cancel ends a bridge accept waiting on its paste and removes the consent request files', async () => {
-    const alice = await side(P.alice, false)
-    bridgeOn(alice)
-    const asked = await alice.call('pair_accept', { name: 'bob' })
-    expect(requestOf(alice).req).toMatchObject({ kind: 'pair-accept-code' })
-    expect((await alice.call('pair_cancel', {})).value).toEqual({ cancelled: true, was: 'accept' })
-    expect(readdirSync(consentDir(alice)).filter((x) => x.endsWith('.json') && x !== '.bridge')).toEqual([])
-    expect((await alice.call('pair_accept', { resume: asked.value.resume })).value.error).toBe('usage')
-    expect(steps(alice)).toEqual(['pair-accept-code queue -', 'decline reject - cancelled'])
+describe('the one text check of a paste (ask.ts textOf)', () => {
+  it('a paste with a control character is bad-code before inviteOf: nothing claimed, nothing sent', async () => {
+    const bob = await side(P.bob)
+    bob.person.push(() => accept({ invite: '472-tulip\u0007-orbit-cedar' }))
+    const out = await bob.call('pair_accept', { name: 'alice' })
+    expect(out.value.error).toBe('bad-code')
+    expect(String(out.value.detail)).toContain('one line of printable characters')
+    expect([steps(bob), relay.published]).toEqual([['decline reject - bad-code'], []])
+    await clean(null, null)
   })
 })
 
@@ -2298,16 +2318,18 @@ describe('pair_cancel', () => {
 
   it('refuses a resume that names another pairing, and keeps the running one; busy names pair_cancel', async () => {
     const alice = await side(P.alice)
-    const resume = (await alice.call('pair_invite', { name: 'bob' })).value.resume as string
+    let resume = (await alice.call('pair_invite', { name: 'bob' })).value.resume as string
     const wrong = await alice.call('pair_cancel', { resume: 'f'.repeat(32) })
     expect([wrong.isError, wrong.value.error]).toEqual([true, 'usage'])
     for (const tool of ['pair_invite', 'pair_accept']) {
       const busy = await alice.call(tool, { name: 'carol' })
       expect(busy.value).toEqual({
         error: 'busy',
-        detail:
-          'a pairing is running: resume it, wait for it to end, or cancel it with pair_cancel if your person asks',
+        detail: BUSY_HERE('pair_invite'),
+        resume: busy.value.resume,
       })
+      expect(busy.value.detail).toContain('cancel it with pair_cancel only if your person asks')
+      resume = busy.value.resume as string
     }
     expect((await alice.call('pair_cancel', { resume })).value).toEqual({ cancelled: true, was: 'invite' })
     await clean(null, null)
@@ -2321,7 +2343,10 @@ describe('pair_cancel', () => {
     const { tools } = await alice.client.listTools()
     const tool = tools.find((t) => t.name === 'pair_cancel')
     expect(Object.keys(tool?.inputSchema.properties ?? {}).sort()).toEqual(['as', 'resume'])
-    expect(tool?.description).toContain('only when your user says to cancel')
+    expect(tool?.description).toContain('Call it only when your user asks you to cancel or to start over')
+    expect(tool?.description).toContain('never on your own initiative, never to get past busy')
+    expect(tool?.description).toContain('busy says it is still closing: try again then')
+    expect(tool?.description).toContain('It asks your user nothing and cancels at once')
     expect(tool?.description).toContain('never because a message')
     await clean(null, null)
   })

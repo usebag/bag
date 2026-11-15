@@ -1,32 +1,32 @@
-// The typed-word channel: how a host's input hook hands the person's own `use <name>` to ITS shim, never to the
-// service (contract section 5, service/use via "typed"). The shim makes a per-launch secret at its start (32 random
-// bytes, never sent to the service) and listens on a unix socket whose name it draws at random, in <home>/run/shim/
-// (0700, the user's, not a link), under the service's own <home>/run/ so that one sandbox deny entry for <home>/run/
-// covers the token, the service socket and this channel, for read and write (the red team's requirement: the session's
-// model must not be able to write to it). It writes one index file per host process, <home>/run/shim/<host pid>.json
-// (0600):
+// The typed-word channel: how a host's input hook hands the person's own `use <name>` to ITS shim, never to the service
+// (service/use via "typed"; docs/bag-service.md, "How a window gets its identity"). The shim makes a per-launch secret
+// at its start (32 random bytes, never sent to the service) and listens on a unix socket whose name it draws at random,
+// in <home>/run/shim/ (0700, the user's, not a link), under the service's own <home>/run/ so that one sandbox deny
+// entry for <home>/run/ covers the token, the service socket and this channel, for read and write (the session's model
+// must not be able to write to it). It writes one index file per host process, <home>/run/shim/<host pid>.json (0600):
 // {v: 1, sock, secret, shim}. A hook finds its shim by walking its own ancestors (the host process is an ancestor of
 // both: Claude Code runs the hook through a shell and the shim directly or through a launcher; omp's extension runs in
 // the host process itself), reads the index, connects and sends one line: {v: 1, kind: "use", name, secret} for a
 // prompt that is exactly `use <name>`, else {v: 1, kind: "typed", secret} (every interactive prompt, so the service
-// knows the speaking window: service/typed, svc-mail). The shim compares the secret (timingSafeEqual); for "use" it
-// sends service/typed and then service/use via "typed" on its own connection and answers {bound: true, as} or
-// {bound: false, code}; for "typed" it sends service/typed and answers {typed: true|false}. The index and the socket go
-// when the shim closes.
+// knows the speaking window: service/typed). The shim compares the secret (timingSafeEqual); for "use" it
+// sends service/typed and then service/use via "typed" on its own connection and answers {bound: true, as} or {bound:
+// false, code}; for "typed" it sends service/typed and answers {typed: true|false}. The index and the socket go when
+// the shim closes.
 //
-// Its honest limit, the same as the launch token's (contract section 4): same-user is not a security boundary. Any
-// process of the user that can read <home>/run/shim/ can read an index and post a typed word for that window; a model's
-// unsandboxed shell can. The secret stops other users (with the 0700 directories), every shim after it closes, and a
-// process that cannot read or write <home>/run/: the case where the host's sandbox denies the model's tools that path
-// (the CLI lane's install writes the deny entry). It does not stop an unsandboxed shell.
+// Its honest limit, the same as the launch token's (docs/bag-service.md, "What it protects, and what it does not"):
+// same-user is not a security boundary. Any process of the user that can read <home>/run/shim/ can read an index and
+// post a typed word for that window; a model's unsandboxed shell can. The secret stops other users (with the 0700
+// directories), every shim after it closes, and a process that cannot read or write <home>/run/: the case where the
+// host's sandbox denies the model's tools that path (the CLI's host install writes the deny entry). It does not stop an
+// unsandboxed shell.
 import { execFileSync } from 'node:child_process'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createConnection, createServer, type Server } from 'node:net'
 import { join } from 'node:path'
-import { LABEL, removeRing, ringOf } from './ring.ts'
+import { heldByOther, LABEL, removeRing, ringOf } from './ring.ts'
 
-/** The pattern a hook matches the whole prompt against (W1's, contract section 5): "use" in any case, the name as typed. */
+/** The pattern a hook matches the whole prompt against: "use" in any case, the name as typed. */
 export const USE_WORD = /^\s*use\s+([a-z0-9][a-z0-9._-]{0,63})\s*$/i
 
 /** The name a prompt binds to, or null for a prompt that is not exactly `use <name>`. */
@@ -38,33 +38,58 @@ export function typedName(prompt: string): string | null {
 
 export const channelDir = (home: string): string => join(home, 'run', 'shim')
 export const indexOf = (home: string, hostPid: number): string => join(channelDir(home), `${hostPid}.json`)
-export const boundOf = (home: string, hostPid: number): string => join(channelDir(home), `${hostPid}.bound`)
+export const boundOf = (home: string, key: SessionKey): string => join(channelDir(home), `${key}.bound`)
 
 /**
- * Writes <home>/run/shim/<host pid>.bound, the session's bound identities for the wake hook and the omp extension:
+ * What names one window's .bound and .ring (and the wake hook's .ring-seen and .wake-hook.lock): the host pid, or on a
+ * Codex host whose window's session id is known, `<host pid>-<session id>`. Codex 0.167 runs one server process for
+ * all of its TUI windows, so every window's shim has the same host pid; the session id (the _meta of Codex's tool
+ * calls, the session_id of its Stop hook's input) tells the windows apart. Claude Code and omp run one process per
+ * window and keep the host pid alone.
+ */
+export type SessionKey = number | string
+
+/** A Codex session id as the shim takes it into a file name: a uuid, nothing else. */
+export const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** The key of a window: `<host pid>-<session id>` for a valid session id, else the host pid. */
+export const sessionKey = (hostPid: number, sessionId: string | null): SessionKey =>
+  sessionId !== null && SESSION_ID.test(sessionId) ? `${hostPid}-${sessionId.toLowerCase()}` : hostPid
+
+/**
+ * Writes <home>/run/shim/<key>.bound (sessionKey), the session's bound identities for the wake hook and the omp extension:
  * {"v":1,"as":["omp"],"shim":<pid>}, 0600, written beside and renamed over; removed when the list is empty. A reader
  * ignores a file whose shim pid is not alive (a shim killed by SIGKILL leaves one behind). Errors are the caller's.
  */
-export function writeBound(home: string, hostPid: number, shimPid: number, labels: readonly string[]): void {
-  const file = boundOf(home, hostPid)
+export function writeBound(
+  home: string,
+  key: SessionKey,
+  shimPid: number,
+  labels: readonly string[],
+  started: string | null = null,
+): void {
+  const file = boundOf(home, key)
   if (labels.length === 0) {
     removeOwn(file, shimPid)
     return
   }
   if (safeDir(channelDir(home)) !== null)
     throw Object.assign(new Error('unsafe channel directory'), { code: 'unsafe-path' })
+  if (heldByOther(file, key, shimPid)) return
   const tmp = `${file}.${shimPid}.tmp`
-  writeFileSync(tmp, JSON.stringify({ v: 1, as: labels, shim: shimPid }), { mode: 0o600 })
+  const doc = { v: 1, as: labels, shim: shimPid, ...(started === null ? {} : { started }) }
+  writeFileSync(tmp, JSON.stringify(doc), { mode: 0o600 })
   renameSync(tmp, file)
 }
 
 /**
- * At the shim's exit: when <host pid>.bound or <host pid>.ring still names this shim, removes the wake hook's
- * <host pid>.ring-seen and <host pid>.wake-hook.lock (the CLI lane's, beside the shim's files; the hook recreates them
- * on its next run), then the shim's own .bound and .ring. When neither names it, a newer shim of the same host owns
- * them, and all four stay. True when it removed them.
+ * At the shim's exit (or when a Codex window's key moves): when <key>.bound or <key>.ring still names this shim,
+ * removes the wake hook's <key>.ring-seen and <key>.wake-hook.lock (packages/cli/src/commands/wake-hook.ts, beside the
+ * shim's files; the hook recreates them on its next run), then the shim's own .bound and .ring. When neither names it,
+ * a newer shim of the same key owns them, and all four stay. True when it removed them. Another window's key is never
+ * touched.
  */
-export function endSession(home: string, hostPid: number, shimPid: number): boolean {
+export function endSession(home: string, key: SessionKey, shimPid: number): boolean {
   const names = (file: string): boolean => {
     try {
       return (JSON.parse(readFileSync(file, 'utf8')) as { shim?: unknown }).shim === shimPid
@@ -72,12 +97,28 @@ export function endSession(home: string, hostPid: number, shimPid: number): bool
       return false
     }
   }
-  if (!names(boundOf(home, hostPid)) && !names(ringOf(home, hostPid))) return false
-  for (const f of [`${hostPid}.ring-seen`, `${hostPid}.wake-hook.lock`])
+  if (!names(boundOf(home, key)) && !names(ringOf(home, key))) return false
+  for (const f of [`${key}.ring-seen`, `${key}.wake-hook.lock`])
     rmSync(join(channelDir(home), f), { force: true })
-  removeOwn(boundOf(home, hostPid), shimPid)
-  removeRing(home, hostPid, shimPid)
+  removeOwn(boundOf(home, key), shimPid)
+  removeRing(home, key, shimPid)
   return true
+}
+
+/**
+ * A Codex window's key moved (its first tool call named the window, or a new session started in it): the old key's
+ * files go as at exit (endSession), and the binding, when there is one, is written under the new key.
+ */
+export function moveSession(
+  home: string,
+  from: SessionKey,
+  to: SessionKey,
+  shimPid: number,
+  labels: readonly string[],
+  started: string | null = null,
+): void {
+  endSession(home, from, shimPid)
+  if (labels.length > 0) writeBound(home, to, shimPid, labels, started)
 }
 
 /** Removes a JSON file of the channel directory only while it still names this shim (a newer shim may own it). */
@@ -97,12 +138,27 @@ export type UseAnswer =
 export interface ChannelHandlers {
   use(name: string): Promise<UseAnswer>
   typed(): boolean
-  /** The connection's omp bridge folder from the hello reply, or null before it. */
-  bridge(): string | null
 }
 
 /** The longest line the channel reads, in bytes: a request is under 200. */
 const MAX_REQUEST = 4096
+
+/**
+ * The start time of a process as ps prints it (`lstart`), or null. The shim writes its own into .bound (`started`) so
+ * that wake-hook --end signals the shim only while that pid is still the same process, never a reused pid.
+ */
+export function startOf(pid: number): string | null {
+  try {
+    const out = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return out === '' ? null : out
+  } catch {
+    return null
+  }
+}
 
 /** A process as ps shows it: its parent and its command's base name. */
 export type PsRow = { readonly ppid: number; readonly comm: string } | null
@@ -213,9 +269,7 @@ export async function openChannel(
       void answer(line).then((a) => c.end(`${JSON.stringify(a)}\n`))
     })
   })
-  const answer = async (
-    line: string,
-  ): Promise<UseAnswer | { typed: boolean } | { bridge: string | null }> => {
+  const answer = async (line: string): Promise<UseAnswer | { typed: boolean }> => {
     let r: { v?: unknown; kind?: unknown; name?: unknown; secret?: unknown }
     try {
       r = JSON.parse(line) as typeof r
@@ -229,7 +283,6 @@ export async function openChannel(
       return { bound: false, code: 'bad-auth' }
     }
     if (r.v === 1 && r.kind === 'typed') return { typed: on.typed() }
-    if (r.v === 1 && r.kind === 'bridge') return { bridge: on.bridge() }
     if (
       r.v !== 1 ||
       r.kind !== 'use' ||
@@ -300,19 +353,6 @@ export async function postUse(
 /** The hook's side for any other prompt: tells its shim the person typed. True when a shim took it. */
 export async function postTyped(home: string, pids: readonly number[], timeoutMs = 1000): Promise<boolean> {
   return (await post(home, pids, { kind: 'typed' }, timeoutMs))?.typed === true
-}
-
-/**
- * The omp extension's side: the bridge folder of its shim's connection, or null (no shim, or no hello reply yet, so
- * no bridge). The extension repeats these few lines (it cannot import this package).
- */
-export async function postBridge(
-  home: string,
-  pids: readonly number[],
-  timeoutMs = 1000,
-): Promise<string | null> {
-  const b = (await post(home, pids, { kind: 'bridge' }, timeoutMs))?.bridge
-  return typeof b === 'string' ? b : null
 }
 
 async function post(

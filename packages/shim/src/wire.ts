@@ -1,25 +1,31 @@
-// The shim's side of the wire contract with the bag service (docs/bag-service.md, contract 1, lane svc-core): the
-// method names, the hello's shape, where the socket and the launch token are, and how a dialog's answer carries its
-// handle. Every name the contract fixes lives here and nowhere else in the shim.
+// The shim's side of the wire contract with the bag service (docs/bag-service.md, contract 1; the service's side is
+// packages/mcp/src): the method names, the hello's shape, where the socket and the launch token are, and how a
+// dialog's answer carries its handle. Every name the contract fixes lives here and nowhere else in the shim.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { HostKind } from './host.ts'
 
-/** The contract this shim speaks (section 7). */
+/** The wire contract version this shim speaks. */
 export const CONTRACT = 1
-/** The first request on every connection (section 5). */
+/** The first request on every connection. */
 export const HELLO = 'service/hello'
-/** A bind by the person's typed word or the shim's own choice dialog (W1). */
+/** A bind by the person's typed word or the shim's own choice dialog. */
 export const USE = 'service/use'
 /** Notifications from the service: a bind made, mail for a bound identity, a drain started. */
 export const BOUND = 'service/bound'
 export const RING = 'service/ring'
 export const DRAINING = 'service/draining'
-/** Shim to service: the person typed in this window (svc-mail's speaking window; params {}). */
+/** Shim to service: the person typed in this window (the service's speaking window; params {}). */
 export const TYPED = 'service/typed'
-/** Where a dialog carries its per-connection handle, and where the answer echoes it (section 5, "Dialogs"). */
+/** Where a dialog carries its per-connection handle, and where the answer echoes it (packages/shim/README.md, "Dialogs"). */
 export const HANDLE_META = 'bag.dev/dialog'
-/** The experimental client capability the shim adds for an omp host: the service writes its consents into a folder. */
+/**
+ * Set to true in params._meta of every tools/call the shim forwards once its connection is a Codex sub-agent's (one
+ * of its calls had the window's sessionId with a threadId of its own), so the service can keep that connection from
+ * ever being an identity's speaking one. A service that does not read it ignores it.
+ */
+export const SUBAGENT_META = 'bag.dev/subagent'
+/** The experimental client capability the shim adds for an omp host: {pid}, by which the service finds its link. */
 export const BRIDGE_CAPABILITY = 'bag.dev/consent-bridge'
 
 /** The shim's own version, sent in the hello: the package's (version.ts, replaced by the build). */
@@ -47,16 +53,16 @@ export function homeOf(argv: readonly string[], env: Env): string | null {
   return null
 }
 
-/** The run directory, socket and token file of a home (section 2). */
+/** The run directory, socket and token file of a home. */
 export const runDir = (home: string): string => join(home, 'run')
 export const socketOf = (home: string): string => join(home, 'run', 'service.sock')
 export const tokenFileOf = (home: string): string => join(home, 'run', 'service.token')
 
-/** The longest socket path this platform takes, in bytes, NUL excluded: 103 on macOS, 107 elsewhere (section 2). */
+/** The longest socket path this platform takes, in bytes, NUL excluded: 103 on macOS, 107 elsewhere. */
 export const maxSocketPath = (platform: string = process.platform): number =>
   platform === 'darwin' ? 103 : 107
 
-/** The socket path's refusal when it is too long for sun_path (section 2's detail), else null. */
+/** The socket path's refusal when it is too long for sun_path, else null. */
 export function socketPathProblem(path: string, platform: string = process.platform): string | null {
   const n = Buffer.byteLength(path, 'utf8')
   const max = maxSocketPath(platform)
@@ -67,7 +73,7 @@ export function socketPathProblem(path: string, platform: string = process.platf
 
 /**
  * The launch token of the running service: the first line of <home>/run/service.token when it is 64 lowercase hex,
- * else null. Read at each connect, held in memory for that hello only; never logged, never written (section 4).
+ * else null. Read at each connect, held in memory for that hello only; never logged, never written.
  */
 export function readToken(
   file: string,
@@ -104,6 +110,12 @@ export function withoutBagMeta(params: Record<string, unknown>): Record<string, 
   return out
 }
 
+/** A tools/call's params with the sub-agent mark added to its _meta, the host's own members kept. */
+export const withSubagent = (params: Record<string, unknown> | undefined): Record<string, unknown> => ({
+  ...params,
+  _meta: { ...(metaOf(params) ?? {}), [SUBAGENT_META]: true },
+})
+
 /** A result with the handle echoed in its _meta, for the service to match against the connection that asked. */
 export function withHandle(result: unknown, handle: string): Record<string, unknown> {
   const r = typeof result === 'object' && result !== null ? (result as Record<string, unknown>) : {}
@@ -117,7 +129,7 @@ export function bagCode(error: { readonly data?: unknown } | undefined): string 
 }
 
 /**
- * Whether the service that answered the hello still owns the home (the red team's recommendation): <home>/run/
+ * Whether the service that answered the hello still owns the home: <home>/run/
  * service.json names that pid and it is alive. Node cannot ask who holds the service's fcntl lock without taking it,
  * and a probe that took it would make a starting service exit busy, so this is the check short of the lock: it closes
  * a squat on the socket by a process that did not also rewrite service.json.

@@ -62,16 +62,16 @@ import { codeOf } from './tools.ts'
 export const KEEP_ALIVE_RETRY_S = 60
 export const KEEP_ALIVE_RETRY_MAX_S = 3600
 
-// Inside the bag service (RecordKeeperOptions.service), keep-alive is an opt-in per identity (the design note, section
-// 14), and two more rules hold. The choices live in the service's own table, <home>/run/keep-alive.json (0600, in the
-// 0700 run directory), {"v":1,"identities":{"<name>":{"keep":true|false|null,"used_at":<s>|null}}}. `keep` is the
-// person's word (the CLI writes it; setKeepAlive) and wins either way. With no word (null) the default is the lapse
-// semantics of a per-folder server: kept alive while a connection is bound to the identity, and until 24 hours after
-// its last connection closed (`used_at`, which markUsed writes at each close and unbind), then let lapse. A used_at
-// in the future counts as none, so a planted or skewed file never keeps an identity alive. The rule is read at every
-// cycle; an identity it rules off publishes nothing and is checked again each KEEP_ALIVE_OFF_CHECK_S. Second, each
-// cycle is due at an absolute wall-clock second, and the timer that waits for it is never longer than `tick_s`, so a
-// machine that slept past the second runs the cycle at the first tick after it wakes, not a whole timer later (a
+// Inside the bag service (RecordKeeperOptions.service), keep-alive is an opt-in per identity (docs/bag-service.md,
+// "Keep-alive"), and two more rules hold. The choices live in the service's own table, <home>/run/keep-alive.json
+// (0600, in the 0700 run directory), {"v":1,"identities":{"<name>":{"keep":true|false|null,"used_at":<s>|null}}}.
+// `keep` is the person's word (the CLI writes it; setKeepAlive) and wins either way. With no word (null) the default is
+// the lapse semantics of a per-folder server: kept alive while a connection is bound to the identity, and until 24
+// hours after its last connection closed (`used_at`, which markUsed writes at each close and unbind), then let lapse.
+// A used_at in the future counts as none, so a planted or skewed file never keeps an identity alive. The rule is read
+// at every cycle; an identity it rules off publishes nothing and is checked again each KEEP_ALIVE_OFF_CHECK_S. Second,
+// each cycle is due at an absolute wall-clock second, and the timer that waits for it is never longer than `tick_s`, so
+// a machine that slept past the second runs the cycle at the first tick after it wakes, not a whole timer later (a
 // monotonic timer does not count sleep). Third, every wait is jittered per identity (the re-sign by up to a tenth of
 // the ttl, as an --identities server does, and the retry waits by up to a quarter), so a home's identities never
 // publish in lockstep.

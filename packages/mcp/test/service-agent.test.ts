@@ -9,9 +9,10 @@ import { runPaths } from '../src/socket.ts'
 import { acceptFrom, fakeRecords, MemoryLog, P, RELAY, seededRng } from './support/fixtures.ts'
 import { type AgentHome, agentHome, CAVEAT } from './support/sessions.ts'
 
-// The bag service's agent identity end to end, with W1's real openAgentUnit and the fake agent of the session tests
-// (agentHome: an AgentServer on <home>/agent.sock holding jane, whose terminal the test types y into): the first bind
-// opens the unit (one y) and asks the window's grant (one y), and a send goes out under the window's grant.
+// The bag service's agent identity end to end, with the real openAgentUnit (session.ts) and the fake agent of the
+// session tests (agentHome: an AgentServer on <home>/agent.sock holding jane, whose terminal the test types y into):
+// the first bind opens the unit (one y) and asks the window's grant (one y), and a send goes out under the window's
+// grant.
 
 type Json = Record<string, unknown>
 
@@ -72,7 +73,7 @@ async function line(sock: string) {
   return { request, call }
 }
 
-describe("an agent identity in the service, through W1's openAgentUnit and a real agent", () => {
+describe('an agent identity in the service, through the real openAgentUnit and a real agent', () => {
   /** The service of agentHome's home holding jane (agent custody); `alive` counts this service's pid alive. */
   async function startJane(
     alive: (pid: number) => boolean = (pid) => pid === 4242,

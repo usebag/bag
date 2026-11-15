@@ -35,9 +35,10 @@ import {
   liftMaxBytes,
   RelayError,
 } from '@usebag/edge'
+import { auditedPublish } from '@usebag/home'
 import { CliError, flag, int, list, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { currentKey, epochDue, laggingLines, rotateEpoch } from '../epochs.ts'
-import { checkNoWindow, homeCustody, homeDir, loadKeys } from '../home.ts'
+import { checkNoWindow, cliAudit, homeCustody, homeDir, loadKeys } from '../home.ts'
 import type { Io } from '../io.ts'
 import { stableMains, stableNode } from '../packaged.ts'
 import { refuseReserved } from '../service-home.ts'
@@ -233,9 +234,11 @@ export async function onboard(args: readonly string[], io: Io): Promise<number> 
   const AC = acOf(home)
   const again = `${AC} onboard ${[...given, '--out', out, '--dir', home].map(sh).join(' ')}`
   const missed = new Map<RecordKind, unknown[]>()
+  // Each address and accept-from publish is one line in cli-audit.jsonl (auditedPublish), as identity_create writes.
+  const audit = cliAudit(home, name, io)
   const put = async (kind: RecordKind, url: string, send: () => Promise<unknown>): Promise<void> => {
     try {
-      await send()
+      await (kind === 'key' ? send() : auditedPublish(audit, kind, url, send))
       io.out(`published ${kind} ${agent} ${url}`)
     } catch (e) {
       if (!(e instanceof RelayError)) throw e
@@ -325,11 +328,16 @@ function warnPrivate(io: Io, url: string): void {
   io.err(`bag: warning: relay ${url} is a private address (${kind}); ${refuse}`)
 }
 
-/** The identity's address, made by keygen when the home lacks it; prints `key <name> <address> new|existing`. */
+/**
+ * The identity's address, made by keygen when the home lacks it; prints `key <name> <address> new|existing`. keygen
+ * runs with isTty false, so its default custody is a key file even at a Mac terminal (keygen.ts's defaultCustody):
+ * quiet itself keeps isTty, for record accept-from's question when a run drops a root.
+ */
 function ensureKey(io: Io, quiet: Io, home: string, name: string): string {
   const custody = homeCustody(io, home)
   const held = custody.list().find((e) => e.name === name)
-  if (held === undefined) keygen([name, '--dir', home], quiet)
+  // onboard's run is the person's word for a new identity (--new); its keys are key files, never the keychain (isTty).
+  if (held === undefined) keygen([name, '--new', '--dir', home], { ...quiet, isTty: false })
   const address = held?.address ?? custody.entry(name).address
   io.out(`key ${name} ${address} ${held === undefined ? 'new' : 'existing'}`)
   return address

@@ -53,7 +53,7 @@ function world(o: { platform?: NodeJS.Platform; keychain?: string | null; tty?: 
 describe('keygen: the default custody per platform', () => {
   it('darwin with a default keychain, a person at a terminal: a keychain item with the prompt access, one stderr line, the address only on stdout', async () => {
     const w = world({ platform: 'darwin', tty: true })
-    const r = await cli(w.io, 'keygen', 'alice', '--dir', w.home)
+    const r = await cli(w.io, 'keygen', '--new', 'alice', '--dir', w.home)
     expect(r.code).toBe(0)
     expect(r.out).toHaveLength(1)
     expect(r.err).toEqual(['keygen: alice is kept in the macOS keychain (bag:alice)', NO_RECOVERY])
@@ -72,7 +72,7 @@ describe('keygen: the default custody per platform', () => {
     ] as const
     for (const o of cases) {
       const w = world(o)
-      const r = await cli(w.io, 'keygen', 'alice', '--dir', w.home)
+      const r = await cli(w.io, 'keygen', '--new', 'alice', '--dir', w.home)
       expect([r.code, r.err]).toEqual([0, o.tty ? [NO_RECOVERY] : []])
       expect(existsSync(join(w.home, 'keys', 'alice.json'))).toBe(true)
       expect(existsSync(join(w.home, 'keychain'))).toBe(false)
@@ -81,9 +81,21 @@ describe('keygen: the default custody per platform', () => {
     expect(defaultCustody({ platform: 'darwin', isTty: true })).toBe('file') // no runner: no keychain
   })
 
+  it('onboard at a Mac terminal with a default keychain: key files, never a keychain item', async () => {
+    const w = world({ platform: 'darwin', tty: true })
+    const args = ['--domain', 'acme.test', '--relay', 'http://203.0.113.9', '--accept', 'domain:usuals.test']
+    const r = await cli(w.io, 'onboard', 'jane', ...args, '--dir', w.home)
+    expect(r.code).toBe(3) // written and published, not resolving yet: a fresh domain
+    for (const name of ['org-acme.test', 'jane'])
+      expect(existsSync(join(w.home, 'keys', `${name}.json`))).toBe(true)
+    expect(existsSync(join(w.home, 'keychain'))).toBe(false)
+    expect([w.hooks.defaults, w.fake.calls.length]).toEqual([0, 0])
+    expect(r.err.some((l) => l.includes('macOS keychain'))).toBe(false)
+  })
+
   it('--custody file keeps a key file on darwin and never asks for the default keychain', async () => {
     const w = world({ platform: 'darwin', tty: true })
-    expect((await cli(w.io, 'keygen', 'alice', '--custody', 'file', '--dir', w.home)).code).toBe(0)
+    expect((await cli(w.io, 'keygen', '--new', 'alice', '--custody', 'file', '--dir', w.home)).code).toBe(0)
     expect(existsSync(join(w.home, 'keys', 'alice.json'))).toBe(true)
     expect([w.hooks.defaults, w.fake.calls.length]).toEqual([0, 0])
   })
@@ -94,7 +106,7 @@ describe('keygen: the default custody per platform', () => {
     const io = Object.assign(w.io, {
       security: ((a, i) => (a[0] === '-i' ? answer(36) : run(a, i))) as SecurityRunner,
     })
-    const r = await cli(io, 'keygen', 'alice', '--dir', w.home)
+    const r = await cli(io, 'keygen', '--new', 'alice', '--dir', w.home)
     expect(r.code).toBe(1)
     expect(r.err[0]).toMatch(
       /^bag: EACCES: keychain: .*; on a host no one watches, run keygen again with --custody file$/,
@@ -105,7 +117,7 @@ describe('keygen: the default custody per platform', () => {
 
 describe('identity custody: the move both ways, verified before anything moves', () => {
   const made = async (w: ReturnType<typeof world>, custody: 'file' | 'keychain') => {
-    const r = await cli(w.io, 'keygen', 'alice', '--custody', custody, '--dir', w.home)
+    const r = await cli(w.io, 'keygen', '--new', 'alice', '--custody', custody, '--dir', w.home)
     expect(r.code).toBe(0)
     w.io.tty = true
     return r.out[0] as string
@@ -212,7 +224,9 @@ describe('identity custody: the move both ways, verified before anything moves',
       1,
       expect.stringMatching(/^bag: bad-key: alice has a key file and a keychain item with different keys/),
     ])
-    expect(w.io.asked).toEqual([]) // refused before the question
+    // The question comes before any key is read, so the two copies are compared after the yes: still nothing moved.
+    expect(w.io.asked).toHaveLength(1)
+    expect(w.io.asked.splice(0)[0]).toContain('is written already (an earlier run)')
     writeFileSync(keyFile, JSON.stringify({ suite: 1, sign_seed: sign, seal_priv: seal }))
     w.io.answers.push(true)
     const r = await cli(w.io, 'identity', 'custody', 'alice', '--to', 'file', '--dir', w.home)
@@ -258,7 +272,20 @@ describe('identity custody: the move both ways, verified before anything moves',
       'bag: usage: --keychain and --keychain-access go with --to keychain',
     )
     expect(
-      (await cli(w.io, 'keygen', 'ag', '--custody', 'agent', '--principal', 'alice', '--dir', w.home)).code,
+      (
+        await cli(
+          w.io,
+          'keygen',
+          '--new',
+          'ag',
+          '--custody',
+          'agent',
+          '--principal',
+          'alice',
+          '--dir',
+          w.home,
+        )
+      ).code,
     ).toBe(0)
     expect((await go('ag', '--to', 'keychain')).err[0]).toBe(
       'bag: not-authorized: ag is an agent identity: it holds no key to move',
