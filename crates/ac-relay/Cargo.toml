@@ -27,7 +27,7 @@ tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["fmt", "json", "std"] }
 # The HTTPS client of the domain resolver (src/resolver.rs): rustls on ring with webpki-roots, no gzip, no
 # cookies, no proxy support compiled in beyond ureq's own (turned off in code).
-ureq = { version = "=3.5.0", default-features = false, features = ["rustls"] }
+ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 futures-util = "=0.3.34"
