@@ -15,16 +15,27 @@ import { join } from 'node:path'
 import { type AcceptFromRecord, parseRecord, serializeRecord } from '@usebag/core'
 import {
   keepAddressCopy,
+  type RelayClient,
   RelayError,
   readAuditLines,
   SqliteStore,
   setKeepAlive,
   verifyAuditLog,
 } from '@usebag/edge'
-import { CLI_AUDIT, installClaude, migrate, readRemoved } from '@usebag/home'
+import { fetchTripwire, recordingRelay, relayTripwire } from '@usebag/edge/test-support'
+import {
+  CLI_AUDIT,
+  type HomeIo,
+  identityRelays,
+  installClaude,
+  keepFirstRecordsLocal,
+  migrate,
+  readRemoved,
+} from '@usebag/home'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { tableFor } from '../src/binding.ts'
 import { parseServerConfig, type ServerConfig } from '../src/config.ts'
+import { localWordPath } from '../src/local.ts'
 import { shortAddress } from '../src/pairing.ts'
 import { rereadOf, Service, type ServiceDeps } from '../src/service.ts'
 import { DIALOG_META } from '../src/socket.ts'
@@ -73,8 +84,21 @@ let log: MemoryLog
 const live: Service[] = []
 const sockets: Socket[] = []
 const others: TestServer[] = []
+/** The labels the file lists with relays [] (on this machine only), and the tripwire every one of them gets. */
+let localOnly: readonly string[] = []
+let wire = relayTripwire()
+/** The record source of a start that lists or makes an identity on this machine only (`here`, or localOnly). */
+let lookups = fetchTripwire()
+let here = false
+/** Set at a promotion's Yes: from then on an identity with relays [] gets this relay, not the tripwire. */
+let promoted: RelayClient | null = null
 
 beforeEach(() => {
+  localOnly = []
+  wire = relayTripwire()
+  lookups = fetchTripwire()
+  here = false
+  promoted = null
   root = mkdtempSync('/tmp/bsa-')
   home = join(root, 'h')
   mkdirSync(home, { mode: 0o700 })
@@ -95,7 +119,10 @@ function identitiesFile(ids: readonly [string, Party][]): string {
   const file = join(home, 'identities.json')
   const identities = ids.map(([label, p]) => {
     saveKeys(home, p)
-    return { label, key: p.name, home, relays: [RELAY], trust_roots: [P.bob.address] }
+    const here = localOnly.includes(label)
+    if (here)
+      keepFirstRecordsLocal({ clock, rng: seededRng(label) } as unknown as HomeIo, home, p.name, p.keys)
+    return { label, key: p.name, home, relays: here ? [] : [RELAY], trust_roots: [P.bob.address] }
   })
   writeFileSync(file, JSON.stringify({ version: 1, identities }), { mode: 0o600 })
   return file
@@ -107,8 +134,8 @@ async function start(ids: readonly [string, Party][], more: Partial<ServiceDeps>
   const s = await Service.start(config, home, {
     clock,
     rng: seededRng('acts'),
-    relayFor: () => relay,
-    records: fakeRecords(new Map()),
+    relayFor: (c) => (c.relays.length === 0 ? (promoted ?? wire) : relay),
+    records: here || localOnly.length > 0 ? () => lookups : fakeRecords(new Map()),
     timers,
     pid: 4242,
     alive: () => false,
@@ -423,6 +450,28 @@ describe('identity_remove through the tool', () => {
     expect(readRemoved(home)).toEqual([])
   })
 
+  it('removes an identity on this machine only: its dialog says no relay is told, and none is called', async () => {
+    localOnly = ['research']
+    const s = await start(ids, { pid: process.pid })
+    const w = await bound(s, 'personal')
+    const pending = call(w, 'identity_remove', { name: 'research' })
+    const d = await dialog(w)
+    expect(d.message).toBe(
+      [
+        'Remove research from this machine?',
+        `Address: ${shortAddress(P.carol.address)}`,
+        'Its files move to a folder; no relay is told.',
+      ].join('\n'),
+    )
+    expect(ACT_QUESTIONS.remove('research', P.carol.address, 0, true).title).toBe('Yes: remove research')
+    d.answer(true)
+    expect((await pending).lines).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^removed carol ed25519:/)]),
+    )
+    await until(() => s.unit('research') === null)
+    expect([wire.calls, lookups.calls]).toEqual([[], []])
+  })
+
   it("a window bound to the identity refuses held before any question: its lock is that unit's, not a quiet's", async () => {
     const s = await start(ids, { pid: process.pid })
     const w = await bound(s, 'personal')
@@ -497,6 +546,176 @@ describe('identity_relays through the tool', () => {
       log.lines.filter((l) => l.event === 'quiet' || l.event === 'quiet-end').map((l) => l.event),
     ).toEqual(['quiet', 'quiet-end'])
     await until(() => s.unit('personal')?.opened !== null && s.lent('personal') === null)
+  })
+})
+
+describe('identity_relays on an identity on this machine only: its promotion', () => {
+  it('asks to publish it, naming each relay and what one sees; no relay call until the Yes', async () => {
+    localOnly = ['personal']
+    const s = await start([['personal', P.alice]])
+    const w = await bound(s, 'personal')
+    // A second on from the records kept at its making: a copy of an equal iat is refused (keepAddressCopy).
+    clock.t += 1
+    const pending = call(w, 'identity_relays', { relays: [RELAY] })
+    const d = await dialog(w)
+    expect(d.message).toBe(
+      ['Publish personal at these relays?', RELAY, 'Each relay sees when mail arrives for it.'].join('\n'),
+    )
+    expect(ACT_QUESTIONS.relays('personal', [RELAY], true)?.title).toBe('Yes: publish personal')
+    const at = [...relay.records.keys()].filter((k) => k.includes(P.alice.address))
+    expect([wire.calls, lookups.calls, at]).toEqual([[], [], []])
+    const rec = recordingRelay(relay)
+    promoted = rec
+    d.answer(true)
+    const r = await pending
+    expect(r.lines).toEqual(expect.arrayContaining([`published address ${P.alice.address} ${RELAY}`]))
+    // In order: epoch 1's key record, an address record naming the new relays, then the accept-from.
+    const published: readonly { kind: string; address: string; relays: readonly string[] | null }[] =
+      rec.published
+    expect(published.map((p) => [p.kind, p.address, p.relays])).toEqual([
+      ['key', P.alice.address, null],
+      ['address', P.alice.address, [RELAY]],
+      ['accept-from', P.alice.address, null],
+    ])
+    expect(wire.calls).toEqual([])
+  })
+})
+
+describe('the relays a give-back finds in the file: taken at the reopen, with no restart', () => {
+  const RELAY2 = 'http://relay2.test'
+  /** The unit's relay client: the tripwire until the Yes, then the recorder (looked up at each call, not at start). */
+  const via = new Proxy({} as RelayClient, {
+    get: (_t, k) => {
+      const c = (promoted ?? wire) as unknown as Record<string | symbol, unknown>
+      const f = c[k]
+      return typeof f === 'function' ? f.bind(c) : f
+    },
+  })
+  const deps: Partial<ServiceDeps> = {
+    relayFor: () => via,
+    records: (client) => (promoted === null ? lookups : fakeRecords(new Map())(client)),
+  }
+  /** A recording relay over the memory relay; mail (no kind) goes past its record parse, its relay kept in `mail`. */
+  function recorder(): { rec: ReturnType<typeof recordingRelay>; mail: string[]; client: RelayClient } {
+    const rec = recordingRelay(relay)
+    const mail: string[] = []
+    const publish: RelayClient['publish'] = (url, bytes) => {
+      if ((JSON.parse(new TextDecoder().decode(bytes)) as { kind?: unknown }).kind !== undefined)
+        return rec.publish(url, bytes)
+      mail.push(url)
+      return relay.publish(url, bytes)
+    }
+    return { rec, mail, client: { ...rec, publish } }
+  }
+  /** bob off this machine, at RELAY, taking mail from anyone: his records put there directly, by no identity's call. */
+  async function bobAtRelay(): Promise<void> {
+    await publishAddress(relay, P.bob)
+    await relay.publish(RELAY, serializeRecord(acceptFrom(P.bob)))
+  }
+  /** The checks of a promoted identity in the same service lifetime: send, publish order, status, keeper, subscribe. */
+  async function live(s: Service, w: Line, r: ReturnType<typeof recorder>): Promise<void> {
+    await until(() => s.unit('personal')?.state === 'running' && s.lent('personal') === null)
+    expect(r.rec.calls).toContainEqual({ method: 'subscribe', url: RELAY })
+    const sent = await call(w, 'send', { to: [P.bob.address], type: 'chat.v1', body: 'hi' })
+    expect(sent.error, JSON.stringify(sent)).toBeUndefined()
+    expect(r.mail).toEqual([RELAY])
+    expect(r.rec.published.map((p) => [p.kind, p.address, p.relays])).toEqual([
+      ['key', P.alice.address, null],
+      ['address', P.alice.address, [RELAY]],
+      ['accept-from', P.alice.address, null],
+    ])
+    const line = (s.unit('personal') as NonNullable<ReturnType<Service['unit']>>).summary()
+    expect(line.relays).toEqual([RELAY])
+    expect(line).not.toHaveProperty('reach')
+    expect(JSON.stringify(await call(w, 'status'))).not.toContain('this machine only')
+    // A keeper exists: its next time is set (an ISO time; null with no keeper, as for relays []).
+    await until(() => typeof s.unit('personal')?.summary().keep_alive_next_at === 'string')
+    expect([wire.calls, lookups.calls]).toEqual([[], []])
+  }
+
+  it('a promotion by identity_relays: the reopened unit sends, subscribes and keeps its records', async () => {
+    localOnly = ['personal']
+    const s = await start([['personal', P.alice]], deps)
+    await bobAtRelay()
+    const w = await bound(s, 'personal')
+    clock.t += 1
+    const pending = call(w, 'identity_relays', { relays: [RELAY] })
+    const d = await dialog(w)
+    expect([wire.calls, lookups.calls]).toEqual([[], []])
+    const r = recorder()
+    promoted = r.client
+    d.answer(true)
+    expect((await pending).error).toBeUndefined()
+    await live(s, w, r)
+  })
+
+  it('a promotion by the CLI, through a lend and its return: the same', async () => {
+    localOnly = ['personal']
+    const s = await start([['personal', P.alice]], deps)
+    await bobAtRelay()
+    const cli = await connect(s, { host: 'cli', input_hook: false })
+    expect(
+      (await cli.request('service/lend', { label: 'personal', verb: 'identity-relays' })).result,
+    ).toBeDefined()
+    expect([wire.calls, lookups.calls]).toEqual([[], []])
+    const r = recorder()
+    promoted = r.client
+    clock.t += 1
+    const io = {
+      say: () => {},
+      warn: () => {},
+      ask: async () => true,
+      clock,
+      rng: seededRng('cli'),
+      env: { HOME: root },
+      relay: () => r.client,
+    } as unknown as HomeIo
+    await identityRelays(io, home, 'personal', [RELAY])
+    expect((await cli.request('service/return', { label: 'personal' })).result).toMatchObject({ open: true })
+    await live(s, await bound(s, 'personal'), r)
+  })
+
+  it('a published identity given other relays takes them at the reopen', async () => {
+    const r = recorder()
+    promoted = r.client
+    const s = await start([['personal', P.alice]], deps)
+    const w = await bound(s, 'personal')
+    const pending = call(w, 'identity_relays', { relays: [RELAY2] })
+    ;(await dialog(w)).answer(true)
+    expect((await pending).error).toBeUndefined()
+    await until(() => s.unit('personal')?.state === 'running' && s.lent('personal') === null)
+    const u = s.unit('personal') as NonNullable<ReturnType<Service['unit']>>
+    expect([u.config.relays, u.config.rendezvous]).toEqual([[RELAY2], RELAY2])
+    expect(u.summary().relays).toEqual([RELAY2])
+    expect((u.summary().subscriptions as { relay: string }[]).map((x) => x.relay)).toEqual([RELAY2])
+    await until(() => r.rec.calls.some((c) => c.method === 'subscribe' && c.url === RELAY2))
+  })
+
+  it('an entry changed while its label is open and listed: a reread leaves it, its next return takes it', async () => {
+    const r = recorder()
+    promoted = r.client
+    const s = await start([['personal', P.alice]], deps)
+    const file = join(home, 'identities.json')
+    const doc = JSON.parse(readFileSync(file, 'utf8')) as { identities: { relays: string[] }[] }
+    ;(doc.identities[0] as { relays: string[] }).relays = [RELAY2]
+    writeFileSync(file, JSON.stringify(doc), { mode: 0o600 })
+    // A hello re-reads the file (#refresh): an open label is not read again there.
+    const cli = await connect(s, { host: 'cli', input_hook: false })
+    expect(s.unit('personal')?.config.relays).toEqual([RELAY])
+    expect((await cli.request('service/lend', { label: 'personal', verb: 'pair' })).result).toBeDefined()
+    expect((await cli.request('service/return', { label: 'personal' })).result).toMatchObject({ open: true })
+    await until(() => s.unit('personal')?.state === 'running')
+    expect(s.unit('personal')?.summary().relays).toEqual([RELAY2])
+    await until(() => r.rec.calls.some((c) => c.method === 'subscribe' && c.url === RELAY2))
+  })
+
+  it('a give-back of an unchanged identity reopens with its config as it was', async () => {
+    const s = await start([['personal', P.alice]], deps)
+    const before = s.unit('personal')?.config
+    const cli = await connect(s, { host: 'cli', input_hook: false })
+    expect((await cli.request('service/lend', { label: 'personal', verb: 'pair' })).result).toBeDefined()
+    expect((await cli.request('service/return', { label: 'personal' })).result).toMatchObject({ open: true })
+    expect(s.unit('personal')?.config).toBe(before)
   })
 })
 
@@ -583,6 +802,51 @@ describe('identity_create through the tool, in a window bound to no identity', (
     d.answer(false)
     await asked
     expect(existsSync(join(home, 'keys', 'jane.json'))).toBe(false)
+  })
+
+  it('with relays [] it makes one here only: a 32-letter label fits, its records are kept, no relay call', async () => {
+    here = true
+    const s = await start([['personal', P.alice]])
+    const w = await connect(s, {})
+    const name = 'j'.repeat(32)
+    const made = call(w, 'identity_create', { label: name, relays: [] })
+    const d = await dialog(w)
+    const lines = [
+      `Make ${name} on this machine only?`,
+      'Nothing is published; it can talk to your other',
+      'identities here, and you can give it relays later.',
+    ]
+    expect(d.message).toBe(lines.join('\n'))
+    expect(lines.every((l) => l.length <= 60)).toBe(true)
+    d.answer(true)
+    const r = await made
+    const address = (r.lines as string[])[0] as string
+    expect(r.lines).toEqual([
+      address,
+      ...['key', 'address', 'accept-from'].map((k) => `kept ${k} ${address}`),
+    ])
+    expect(listed()).toEqual([
+      ['personal', [RELAY]],
+      [name, []],
+    ])
+    await until(() => s.unit(name)?.state === 'running')
+    expect([s.unit(name)?.records, s.unit(name)?.subscriptions.list()]).toEqual([null, []])
+    expect([...relay.records.keys()].some((k) => k.includes(address))).toBe(false)
+    expect([wire.calls, lookups.calls]).toEqual([[], []])
+  })
+
+  it('with relays [] and local delivery off, its result says how to turn it on', async () => {
+    mkdirSync(join(home, 'run'), { recursive: true, mode: 0o700 })
+    writeFileSync(localWordPath(home), JSON.stringify({ version: 1, local_delivery: 'off' }), { mode: 0o600 })
+    here = true
+    const s = await start([['personal', P.alice]])
+    const w = await connect(s, {})
+    const made = call(w, 'identity_create', { label: 'kim', relays: [] })
+    ;(await dialog(w)).answer(true)
+    expect(((await made).lines as string[]).at(-1)).toBe(
+      'local delivery is off on this machine: bag local-delivery on',
+    )
+    expect([wire.calls, lookups.calls]).toEqual([[], []])
   })
 
   it('after the Yes it publishes the first records to each named relay, one line each; nothing reaches a relay before it', async () => {

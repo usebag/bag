@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { generateEdgeKeys, keepAcceptCopy, RelayError, systemRng } from '@usebag/edge'
+import { relayTripwire } from '@usebag/edge/test-support'
 import { describe, expect, it } from 'vitest'
 import {
   addTrust,
@@ -113,6 +114,19 @@ describe('unpairRoot at the relays', () => {
     none.net.down.add(R1)
     await expect(none.run(stranger, [R1])).rejects.toBeInstanceOf(RelayError)
     expect(none.io.asked).toEqual([])
+  })
+
+  it('with no relays (on this machine only) a root nowhere is not-trusted, never an undefined throw, and no relay call', async () => {
+    const { home, keys } = homeWith('jane')
+    const tripwire = relayTripwire()
+    const io = Object.assign(fakeIo(), { relay: () => tripwire })
+    const stranger = generateEdgeKeys(systemRng).signing.address
+    const e = await unpairRoot(io, { home, as: 'jane', root: stranger, relays: [] }).catch((x: unknown) => x)
+    expect(e).toMatchObject({ code: 'not-trusted' })
+    expect(String((e as Error).message)).toContain(
+      `nor the accept-from of ${signer(keys, 'jane').address}; nothing was changed`,
+    )
+    expect(tripwire.calls).toEqual([])
   })
 
   it('a trusted root no record names: untrusted, not accepted, and a silent relay may still hold it (unreachable)', async () => {

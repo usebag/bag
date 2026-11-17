@@ -62,6 +62,24 @@ describe('addToServiceHome', () => {
     ])
   })
 
+  it("local: relays [] and no rendezvous, never the install env's or the first entry's", () => {
+    const home = folder()
+    env(home, 'jane', 'RELAYS="https://r1.example"\nRENDEZVOUS="https://meet.example"\n')
+    addToServiceHome(home, 'kim', ['https://r2.example'])
+    const file = join(home, 'identities.json')
+    expect(addToServiceHome(home, 'jane', [], undefined, true)).toBe(
+      `added jane to ${file} for the bag service (relays none: this machine only)`,
+    )
+    expect(readIdentities(file, true).identities.map((e) => [e.label, e.relays, e.rendezvous])).toEqual([
+      ['kim', ['https://r2.example'], undefined],
+      ['jane', [], undefined],
+    ])
+    // A later identity with no relay given does not inherit [] from a first entry on this machine only.
+    const solo = folder()
+    addToServiceHome(solo, 'jane', [], undefined, true)
+    expect(addToServiceHome(solo, 'kim')).toBeNull()
+  })
+
   it('a relay of install/<name>.env that is not a URL is usage, nothing written', () => {
     const home = folder()
     env(home, 'jane', 'RELAYS="nope"\n')

@@ -10,7 +10,8 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./agent": "./src/agent/index.ts"
+    "./agent": "./src/agent/index.ts",
+    "./test-support": "./test/support/tripwire.ts"
   },
   "scripts": {
     "test": "vitest run --coverage"

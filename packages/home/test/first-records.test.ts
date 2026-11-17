@@ -3,14 +3,22 @@ import { join } from 'node:path'
 import {
   acceptCopy,
   addressCopy,
+  KeyEpochStore,
   RelayError,
   readAuditLines,
   SqliteStore,
   verifyAuditLog,
 } from '@usebag/edge'
+import { relayTripwire } from '@usebag/edge/test-support'
 import { describe, expect, it } from 'vitest'
-import { CLI_AUDIT, createIdentity, OFFERED_AGAIN, publishFirstRecords } from '../src/index.ts'
-import { client, FakeRelay, fakeIo, folder } from './support.ts'
+import {
+  CLI_AUDIT,
+  createIdentity,
+  keepFirstRecordsLocal,
+  OFFERED_AGAIN,
+  publishFirstRecords,
+} from '../src/index.ts'
+import { client, FakeRelay, fakeIo, folder, homeWith, signer } from './support.ts'
 
 // A new identity's first records at its relays, as onboard makes them: the first epoch's key record, a null-sealing
 // address record, and an accept-from naming only itself; the home's copies kept. A key file only: no Keychain.
@@ -135,5 +143,59 @@ describe('publishFirstRecords', () => {
     expect(e).not.toBeInstanceOf(RelayError)
     expect(existsSync(join(home, 'keys', 'jane.json'))).toBe(true)
     expect(existsSync(join(home, 'records', 'jane.address.json'))).toBe(false)
+  })
+})
+
+describe('keepFirstRecordsLocal', () => {
+  /** An io whose relay client is the tripwire: any relay call records itself and fails. */
+  const noRelayIo = () => {
+    const tripwire = relayTripwire()
+    return Object.assign(fakeIo(), { relay: () => tripwire, tripwire })
+  }
+
+  it('keeps epoch 1 unpublished, an address copy with no relays, an accept-from of itself and one audit line', () => {
+    const home = folder()
+    const io = noRelayIo()
+    const address = createIdentity(io, home, 'jane', FILE)
+    expect(keepFirstRecordsLocal(io, home, 'jane')).toEqual([
+      `kept key ${address}`,
+      `kept address ${address}`,
+      `kept accept-from ${address}`,
+    ])
+    const store = new KeyEpochStore(join(home, 'key-records'))
+    expect(store.epochs(address)).toEqual([1])
+    expect(store.epoch(address, 1)).toMatchObject({ published: false, iat: io.now })
+    const copy = addressCopy(home, 'jane', address)
+    expect(copy).toMatchObject({ sealing_key: null, relays: [], revoked: [], rotated_from: null })
+    expect(acceptCopy(home, 'jane', address)?.roots).toEqual([address])
+    const lines = janeAudit(home)
+    expect(lines.map(eventOf)).toEqual([
+      {
+        event: 'policy',
+        decision: 'accept',
+        detail: expect.objectContaining({ step: 'keep-local', epoch: 1, published: false }),
+      },
+    ])
+    const store2 = new SqliteStore(join(home, 'state', 'jane', 'edge.sqlite'), { lock: false })
+    const anchor = store2.auditAnchorGet(CLI_AUDIT)
+    store2.close()
+    expect(verifyAuditLog(lines, anchor)).toMatchObject({ ok: true })
+    // Nothing was published: the tripwire saw no call, and the epoch is not marked published.
+    expect(io.tripwire.calls).toEqual([])
+    expect(existsSync(join(home, 'identities.json'))).toBe(false)
+  })
+
+  it('signs with the keys in hand, loading none, and a second call mints no new epoch', () => {
+    const { keys } = homeWith('jane')
+    // A home with no key file of jane: loading its keys would refuse ENOENT, so only the keys passed are used.
+    const home = folder()
+    const io = noRelayIo()
+    const address = signer(keys, 'jane').address
+    keepFirstRecordsLocal(io, home, 'jane', keys.jane)
+    io.now += 10
+    keepFirstRecordsLocal(io, home, 'jane', keys.jane)
+    expect(new KeyEpochStore(join(home, 'key-records')).epochs(address)).toEqual([1])
+    expect(addressCopy(home, 'jane', address)?.iat).toBe(io.now)
+    expect(io.tripwire.calls).toEqual([])
   })
 })

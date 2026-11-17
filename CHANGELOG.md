@@ -4,6 +4,64 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.4.3: 2026-11-17
+
+The cut tagged v0.4.3, `@usebag/bag` 0.4.3.
+
+- **`@usebag/bag` 0.4.3**, published from this cut (`npm view @usebag/bag@0.4.3 gitHead` names it).
+
+Changes after v0.4.2.
+
+- **An identity can live here only, on this machine.** When you make an identity, your agent asks where it lives,
+  published or here only, in one question: published first for your first identity, here only first for a second. Here
+  only, or `bag keygen <name> --local`, makes it with no relays and publishes nothing: the window asks `Make sam on this
+  machine only?`, and status shows `reach: this machine only`. It talks to your other identities on this machine from
+  its first message, after the one Allow per pair. Anything that would reach a relay (a send to someone off the machine,
+  a pairing code, a lookup, a login, `bag keys rotate`, `bag record keep <name>`, any command run `--as` it with a
+  `--relay`) is refused with `no-relays` and the way on: your agent is told `<name> is on this machine only: give it
+  relays with identity_relays, then send again`, and a command says `<name> is on this machine only: give it relays with
+  bag identity relays <name> --relay <url>, then run this again`; `bag record keep --identities` skips it (`skipped
+  <name>: on this machine only`). A local send to it whose key record and address record copy are both gone says `give
+  <name> relays with identity_relays, which publishes it`, not `bag keys rotate`. `bag identity remove`, `bag unpair`
+  and `bag host install` take it with no `--relay` (one given is refused), and the Codex worker line host install prints
+  for it is refused until it has relays. Giving it relays, with `bag identity relays` or your agent's `identity_relays`
+  after your Yes, publishes it; a relay sees its address for the first time then, and it is reachable there at once,
+  with no restart of the bag service. An identity an agent holds, or one
+  under a grant, cannot be made this way (`--custody agent --local` is a usage error); one kept in the Keychain can,
+  with `bag keygen <name> --local --custody keychain`. Making one is refused (`busy`) while an older bag service still
+  runs, until the update restarts it. bag 0.4.2 refuses an identities file that holds such an identity, so before going
+  back to 0.4.2, give it relays or remove it. An identity that was published is never given no relays:
+  remove it instead.
+
+- **A relays change takes effect at once.** Giving relays to an identity that already has them, with `bag identity
+  relays` or your agent's `identity_relays`, now reaches the running bag service: the identity reopens on its new
+  relays, with no restart. Before, a published identity's new relays waited for the bag service to restart.
+
+- **`bag host remove` refuses `--relay` and `--rendezvous`.** host remove writes no record and asks no relay, so
+  either flag, given for any identity, is a usage error (`host remove takes no --relay`), never silently ignored.
+
+- **`bag onboard` and `bag inbox --group` refuse an identity on this machine only.** onboard refuses one as the agent
+  or as the org key, before anything is written, since both publish at the relays. `bag inbox --group` refuses one
+  with `no-relays` before its key is read, so a Keychain identity raises no dialog for it.
+
+- **Mail delivered on this machine from an unknown root is refused.** A message from your own identities on this
+  machine is judged against this home's own roots only: one whose root is not among them is refused with
+  `untrusted-root`, and is never looked up (no DNS or well-known fetch for mail that never left the machine). This
+  holds for every identity, published or here only.
+
+- **The install page is the agent's again.** You paste the install prompt into your agent, and the agent fetches bag
+  with `npm pack` and checks its sha256 against the page itself, then checks the kept file again and runs
+  `bag host install <host> --user` from it; on a mismatch it stops and runs nothing. Your part is to approve what your
+  host asks, restart it when the agent says so, give it the install prompt again and create your identity with it.
+  The agent also loads the login agent and checks the bag service itself, after your yes, and can check the
+  package's npm signatures for you. You run a block yourself only when your host's sandbox refuses the agent's, on a
+  machine that had bag before (where `host migrate` asks your own `y`), or to preview telemetry's report, which shows
+  the machine's telemetry id.
+
+- **The omp extension is checked against its own process (since 0.4.2, missing from its notes).** The bag service
+  takes a registration as bag's omp extension only from the omp process at the other end of that connection (lsof on
+  macOS, ss and /proc on Linux, time-limited); any doubt refuses it.
+
 ## v0.4.2: 2026-11-15
 
 The cut tagged v0.4.2, `@usebag/bag` 0.4.2.
@@ -528,6 +586,7 @@ Changes after v0.3.0, for the next cut.
 ### identity remove: one identity out of a home that keeps others
 
 - **`bag identity remove <name> --relay <url>...` takes one identity out of a home and leaves the others working.**
+  From 0.4.3, an identity on this machine only is removed with no `--relay`, and a `--relay` given for one is refused.
   It runs on a terminal and asks one question that names every change; nothing is deleted. It re-signs the
   identity's accept-from to name only its own address at each relay, so peers' mail is refused from then on; a relay
   that does not take it stops the run before anything on the machine changes. It then takes out of `trust.json` only

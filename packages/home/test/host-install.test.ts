@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { keepAcceptCopy } from '@usebag/edge'
+import { relayTripwire } from '@usebag/edge/test-support'
 import { describe, expect, it } from 'vitest'
 import {
   copiedLines,
@@ -25,6 +26,7 @@ import {
   removeIdentities,
   removeOmp,
   type Staged,
+  saveIdentities,
   wiredAs,
 } from '../src/index.ts'
 import { acceptFrom, FakeRelay, fakeIo, folder, homeWith, publishAt, signer } from './support.ts'
@@ -434,6 +436,46 @@ describe('recordWarnings', () => {
       `warning: no address record at ${R2} for jane, and no relay or home copy holds one: run bag onboard first (docs/partner-install.md section 4); until then the relay refuses mail to jane`,
     ])
     expect(net.rootsAt(R2, signing.address)).toEqual([signing.address])
+  })
+
+  it('an identity on this machine only is wired, and no relay client is made for it, nothing republished', async () => {
+    const { home, keys } = homeWith('jane')
+    const signing = signer(keys, 'jane')
+    // Its home copy is there, as keepFirstRecordsLocal keeps it: a published identity's would be republished.
+    keepAcceptCopy(home, 'jane', acceptFrom(signing, [signing.address], 1_799_999_990))
+    saveIdentities(join(home, 'identities.json'), {
+      version: 1,
+      identities: [{ label: 'lab', key: 'jane', home, relays: [], keep_alive_records: true }],
+    })
+    const tripwire = relayTripwire()
+    let made = 0
+    const io = Object.assign(fakeIo(), {
+      relay: () => {
+        made++
+        return tripwire
+      },
+    })
+    const dir = folder()
+    const out: string[] = []
+    installClaude(p, m, dir, { ...who('jane', home), relays: [] }, out)
+    expect(out[0]).toBe(`wrote ${join(dir, '.mcp.json')}`)
+    expect(wiredAs(join(dir, '.mcp.json'))).toBe('jane')
+    expect(json(join(dir, '.claude', 'settings.json')).hooks.Stop).toHaveLength(1)
+    // The command's --relay does not make it a published one: its entry says this machine only.
+    expect(await recordWarnings(io, home, [R1], 'jane')).toEqual([
+      'lab: on this machine only, nothing republished',
+    ])
+    expect([made, tripwire.calls]).toEqual([0, []])
+    // A published identity's records still go out as today.
+    const net = new FakeRelay()
+    const published = homeWith('kim')
+    const kim = signer(published.keys, 'kim')
+    keepAcceptCopy(published.home, 'kim', acceptFrom(kim, [kim.address], 1_799_999_990))
+    const lines = await recordWarnings(fakeIo({ relay: net }), published.home, [R1], 'kim')
+    expect(lines[0]).toBe(
+      `republished the accept-from record of kim to ${R1} (it was at the home copy (${join(published.home, 'records')}); nothing re-signed)`,
+    )
+    expect(net.rootsAt(R1, kim.address)).toEqual([kim.address])
   })
 
   it("publishes the home's copy when no relay holds one, and names a relay that refuses it", async () => {

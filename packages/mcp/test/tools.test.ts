@@ -1,12 +1,19 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { MAX_ENVELOPE_BYTES, serializeRecord, signHop, verifyChain } from '@usebag/core'
+import { MAX_ENVELOPE_BYTES, MAX_RELAYS, serializeRecord, signHop, verifyChain } from '@usebag/core'
 import { RelayError, readTelemetrySpool, setTelemetry, systemRng, telemetryId } from '@usebag/edge'
 import { OFF_USE_FORGET } from '@usebag/home'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SESSION, TRUST_NOTE } from '../src/desk.ts'
 import { hostKind } from '../src/server.ts'
-import { bodyCharsFor, DELEGATE_MAX_SECONDS, INSTRUCTIONS, SIZE_NOTE, TOOL_NAMES } from '../src/tools.ts'
+import {
+  ACT_QUESTIONS,
+  bodyCharsFor,
+  DELEGATE_MAX_SECONDS,
+  INSTRUCTIONS,
+  SIZE_NOTE,
+  TOOL_NAMES,
+} from '../src/tools.ts'
 import {
   addressRecord,
   FakeClock,
@@ -105,6 +112,42 @@ describe('tools/list', () => {
     expect(tools.find((t) => t.name === 'identity_create')?.description).toContain(
       'its key is a file in the home; the bag command line offers the Keychain',
     )
+  })
+
+  it('identity_create takes relays [] up to MAX_RELAYS and says both; identity_relays the same', async () => {
+    const { tools } = await alice.client.listTools()
+    const create = tools.find((t) => t.name === 'identity_create')
+    const relays = ((create?.inputSchema.properties ?? {}) as Record<string, Record<string, unknown>>).relays
+    expect([relays?.minItems, relays?.maxItems]).toEqual([undefined, MAX_RELAYS])
+    expect(create?.description).toContain(
+      `(http or https, up to ${MAX_RELAYS}; none makes it on this machine only`,
+    )
+    const set = tools.find((t) => t.name === 'identity_relays')?.description
+    expect(set).toContain(`up to ${MAX_RELAYS}); for an identity on this machine only`)
+    for (const d of [create?.description, set]) expect(d).not.toContain('3 at most')
+  })
+
+  it('the dialogs of a local-only identity: made here only at a 32-letter label, published at its promotion', () => {
+    const name = 'a'.repeat(32)
+    const q = ACT_QUESTIONS.create(name, [])
+    expect(q).toEqual({
+      title: `Yes: make ${name} here only`,
+      message: [
+        `Make ${name} on this machine only?`,
+        'Nothing is published; it can talk to your other',
+        'identities here, and you can give it relays later.',
+      ].join('\n'),
+    })
+    for (const l of [q?.title ?? '', ...(q?.message.split('\n') ?? [])])
+      expect(l.length).toBeLessThanOrEqual(60)
+    // The promotion names each relay on one line, and what a relay then sees; two lines of relays do not fit.
+    const p = ACT_QUESTIONS.relays(name, ['relay-one.example.com', 'http://relay.test'], true)
+    expect(p?.message.split('\n')).toEqual([
+      `Publish ${name} at these relays?`,
+      'relay-one.example.com, http://relay.test',
+      'Each relay sees when mail arrives for it.',
+    ])
+    expect(ACT_QUESTIONS.relays(name, ['x'.repeat(40), 'y'.repeat(40)], true)).toBeNull()
   })
 
   it("telemetry says off keeps the reports sent and forget erases them, in the same words as off's line", async () => {

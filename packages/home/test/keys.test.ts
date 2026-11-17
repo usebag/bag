@@ -9,6 +9,9 @@ import {
   createAgentPointer,
   homeCustody,
   loadKeys,
+  localOnly,
+  refuseLocalOnly,
+  saveIdentities,
   windowOf,
 } from '../src/index.ts'
 import { fakeIo, homeWith } from './support.ts'
@@ -67,5 +70,49 @@ describe('windowOf and checkNoWindow', () => {
     } finally {
       await new Promise<void>((done) => server.close(() => done()))
     }
+  })
+})
+
+describe('localOnly and refuseLocalOnly', () => {
+  it('refuses (no-relays) a key whose entry has relays [], naming the promotion step; passes any other', () => {
+    const { home } = homeWith('jane', 'kim')
+    expect(localOnly(home, 'jane')).toBe(false)
+    expect(() => refuseLocalOnly(home, 'jane')).not.toThrow()
+    saveIdentities(join(home, 'identities.json'), {
+      version: 1,
+      identities: [
+        { label: 'lab', key: 'jane', home, relays: [] },
+        { label: 'kim', key: 'kim', home, relays: ['https://r1.example'] },
+      ],
+    })
+    expect(localOnly(home, 'jane')).toBe(true)
+    // The entry's label names the identity in both places (key jane, label lab); the key name appears nowhere.
+    expect(() => refuseLocalOnly(home, 'jane')).toThrow(
+      'no-relays: lab is on this machine only: give it relays with bag identity relays lab --relay <url>, then run this again',
+    )
+    let refusal = ''
+    try {
+      refuseLocalOnly(home, 'jane')
+    } catch (e) {
+      refusal = (e as Error).message
+    }
+    expect(refusal).toContain('lab is on this machine only')
+    expect(refusal).not.toContain('jane')
+    expect(() => refuseLocalOnly(home, 'kim')).not.toThrow()
+    expect(() => refuseLocalOnly(home, 'amy')).not.toThrow()
+  })
+
+  it('with no identities.json: not local-only, and nothing refused', () => {
+    const { home } = homeWith('jane')
+    expect(localOnly(home, 'jane')).toBe(false)
+    expect(() => refuseLocalOnly(home, 'jane')).not.toThrow()
+  })
+
+  it('a malformed identities.json: both refuse, naming the file', () => {
+    const { home } = homeWith('jane')
+    const file = join(home, 'identities.json')
+    writeFileSync(file, '{', { mode: 0o600 })
+    expect(() => localOnly(home, 'jane')).toThrow(`identities-invalid: ${file} is not JSON`)
+    expect(() => refuseLocalOnly(home, 'jane')).toThrow(`identities-invalid: ${file} is not JSON`)
   })
 })

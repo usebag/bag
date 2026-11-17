@@ -1,8 +1,10 @@
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { type CustodyTarget, generateEdgeKeys } from '@usebag/edge'
-import { homeCustody, loadKeys } from './keys.ts'
+import { keepFirstRecordsLocal } from './first-records.ts'
+import { homeCustody, loadKeys, localOnly } from './keys.ts'
 import { readWord, visibleLine } from './local.ts'
+import { byVersion } from './packaged.ts'
 import { HomeError, type HomeIo } from './ports.ts'
 import { addToServiceHome, RESERVED, refuseReserved } from './service-home.ts'
 
@@ -46,6 +48,47 @@ export function refuseSecond(home: string, name: string, allowNew: boolean): voi
   if (!allowNew && held.length > 0 && !held.includes(name)) throw new HomeError('exists', HOLDS_IDENTITIES)
 }
 
+/**
+ * The first bag service whose identities reader takes an entry with relays []. An older one, still running after an
+ * update, refuses the whole identities file with such an entry and keeps serving its old list.
+ */
+export const LOCAL_ONLY_SERVICE = '0.4.3'
+
+/** Whether pid answers kill 0; EPERM (a process of another user) reads as alive. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as { code?: unknown }).code === 'EPERM'
+  }
+}
+
+/**
+ * Refuses (busy) an identity on this machine only while <home>/run/service.json, read once, names a live bag service
+ * older than LOCAL_ONLY_SERVICE: no socket, no network. A missing or unreadable file, a pid that is not an integer or
+ * is gone, a version that is no strict X.Y.Z, and 0.0.0 (an unbuilt service) pass.
+ */
+function refuseOlderService(home: string): void {
+  let s: unknown
+  try {
+    s = JSON.parse(readFileSync(join(home, 'run', 'service.json'), 'utf8'))
+  } catch {
+    return
+  }
+  if (typeof s !== 'object' || s === null) return
+  const { pid, version } = s as { pid?: unknown; version?: unknown }
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 1 || !alive(pid)) return
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version) || version === '0.0.0') return
+  if (byVersion(version, LOCAL_ONLY_SERVICE) < 0)
+    throw new HomeError(
+      'busy',
+      `the running bag service (pid ${pid}) is bag ${version}, ` +
+        'which refuses an identities file that holds an identity on this machine only: ' +
+        'finish the update first (step P4 of the update page restarts it on the new version), then run this again',
+    )
+}
+
 /** How a new key-holding identity is made. */
 export interface CreateOptions {
   /** The custody it goes to. */
@@ -60,6 +103,11 @@ export interface CreateOptions {
   readonly refused?: (e: unknown) => unknown
   /** Its relays in the service entry (checked URLs); absent, the install env's or the file's first entry's. */
   readonly relays?: readonly string[]
+  /**
+   * On this machine only: the service entry has relays [] (never the inherited ones) and its first records are kept in
+   * the home, published nowhere (keepFirstRecordsLocal); identity relays promotes it later. Not with `relays`.
+   */
+  readonly local?: boolean
 }
 
 /**
@@ -70,6 +118,9 @@ export interface CreateOptions {
  */
 export function createIdentity(io: HomeIo, home: string, name: string, o: CreateOptions): string {
   refuseReserved(name)
+  if (o.local === true && (o.relays?.length ?? 0) > 0)
+    throw new HomeError('usage', `${name} on this machine only takes no relays`)
+  if (o.local === true) refuseOlderService(home)
   refuseSecond(home, name, o.allowNew)
   const keys = generateEdgeKeys(io.rng)
   try {
@@ -77,17 +128,32 @@ export function createIdentity(io: HomeIo, home: string, name: string, o: Create
   } catch (e) {
     throw o.refused === undefined ? e : o.refused(e)
   }
+  // Signed with the keys in hand, so a keychain identity raises no dialog; kept before the service entry names it.
+  const kept = o.local === true ? keepFirstRecordsLocal(io, home, name, keys) : []
   if (o.defaulted && o.into.custody === 'keychain')
     io.warn(`keygen: ${name} is kept in the macOS keychain (bag:${name})`)
   if (o.note !== undefined) io.warn(o.note)
   // The bag service serves <home>/identities.json: the new identity goes in it (service-home.ts).
-  const added = addToServiceHome(home, name, o.relays)
+  const added = addToServiceHome(home, name, o.relays, undefined, o.local === true)
   if (added !== null) io.warn(added)
   // An identity the bag service now serves is, with the word on, visible to the home's others: say how to hide it.
   const word = readWord(home)
   if (added !== null && word.on && !word.hidden.includes(name)) io.warn(visibleLine(name))
   io.say(keys.signing.address)
+  for (const line of kept) io.say(line)
   return keys.signing.address
+}
+
+/**
+ * Refuses (no-relays) an agent pointer to `principal` when its service entry has relays []: an agent identity is never
+ * on this machine only (spec/SPEC.md 9.2 item 4), and the pointer shares the principal's address.
+ */
+function refuseLocalPrincipal(home: string, principal: string): void {
+  if (localOnly(home, principal))
+    throw new HomeError(
+      'no-relays',
+      `${principal} is on this machine only, and an agent identity never is: give it relays with bag identity relays ${principal} --relay <url> first`,
+    )
 }
 
 /**
@@ -109,6 +175,7 @@ export function createAgentPointer(
   custody.holder(name)
   const held = ['keys', 'keychain'].map((d) => join(home, d, `${name}.json`)).find(existsSync)
   if (held !== undefined) throw new HomeError('EEXIST', `${name} is held already, by ${held}`)
+  refuseLocalPrincipal(home, principal)
   const keys = loadKeys(io.security, home, principal)
   custody.agent.create(name, keys, recovery)
   // As createIdentity: the bag service serves <home>/identities.json, and an agent identity opens there as a session of

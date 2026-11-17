@@ -11,11 +11,19 @@ import {
 import { createConnection, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { type Hop, serializeRecord } from '@usebag/core'
-import { type AuditEntry, parseAuditLine, RelayError, readAuditLines, verifyAuditLog } from '@usebag/edge'
+import {
+  type AuditEntry,
+  parseAuditLine,
+  type RelayClient,
+  RelayError,
+  readAuditLines,
+  verifyAuditLog,
+} from '@usebag/edge'
 import type { RevokeReply } from '@usebag/edge/agent'
+import { recordingRelay } from '@usebag/edge/test-support'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseServerConfig, type ServerConfig } from '../src/config.ts'
-import { Service } from '../src/service.ts'
+import { rereadOf, Service, type ServiceDeps } from '../src/service.ts'
 import { runPaths, type ServiceConnection } from '../src/socket.ts'
 import { acceptFrom, fakeRecords, MemoryLog, P, RELAY, seededRng, T0 } from './support/fixtures.ts'
 import { type AgentHome, agentHome, CAVEAT } from './support/sessions.ts'
@@ -56,7 +64,11 @@ async function until(what: string, test: () => boolean, ms = 5000): Promise<void
 async function start(
   window?: number,
   answer = 'y',
-  more: { readonly agentRevoke?: () => { revoke(s: string): Promise<RevokeReply>; close(): void } } = {},
+  more: Partial<ServiceDeps> & {
+    readonly agentRevoke?: () => { revoke(s: string): Promise<RevokeReply>; close(): void }
+    /** The service reads its identities file again (give-backs and hellos), as the real service does. */
+    readonly rereads?: boolean
+  } = {},
 ): Promise<{
   s: Service
   send: () => Promise<Json>
@@ -87,6 +99,7 @@ async function start(
     helloMs: 2000,
     drainCallsMs: 200,
     ...more,
+    ...(more.rereads === true ? { reread: rereadOf(file, config, home) } : {}),
   })
   service = s
   await s.opening
@@ -196,6 +209,32 @@ function published(home: string): string {
 }
 
 describe('regrant in place for an agent unit in the service', () => {
+  it("an agent unit's new relays are taken at its next give-back: its session's config, with their client", async () => {
+    const RELAY2 = 'http://relay2.test'
+    // One recorder per relays the service makes a client for: the unit's client must be the one for its relays.
+    const made = new Map<string, ReturnType<typeof recordingRelay>>()
+    const relayFor = (c: { readonly relays: readonly string[] }): RelayClient => {
+      const rec = recordingRelay(h.relay)
+      made.set(c.relays.join(' '), rec)
+      return rec
+    }
+    const { s } = await start(undefined, 'y', { relayFor, rereads: true })
+    const file = join(h.tmp.dir, 'identities.json')
+    const doc = JSON.parse(readFileSync(file, 'utf8')) as { identities: { relays: string[] }[] }
+    ;(doc.identities[0] as { relays: string[] }).relays = [RELAY2]
+    writeFileSync(file, JSON.stringify(doc), { mode: 0o600 })
+    const codes = h.codes().length
+    await (await s.quiet('jane', 'unpair'))()
+    await until('the reopen', () => s.unit('jane')?.state === 'running' && s.lent('jane') === null)
+    const u = s.unit('jane') as NonNullable<ReturnType<Service['unit']>>
+    expect([u.config.relays, u.config.rendezvous, u.summary().relays]).toEqual([[RELAY2], RELAY2, [RELAY2]])
+    // Still its session's config (the lend kept the session): no second y at the agent.
+    expect([u.config.session?.name, h.codes().length]).toEqual(['jane.service', codes])
+    await until('a subscribe through its client', () =>
+      (made.get(RELAY2)?.calls ?? []).some((c) => c.method === 'subscribe' && c.url === RELAY2),
+    )
+  })
+
   it('the unit chain is renewed with no y and its subscription is made again under it', async () => {
     const { s } = await start(3 * 3600) // the first grant clamps short of the window end, so a renewal extends it
     const u = s.unit('jane')

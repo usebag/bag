@@ -32,7 +32,7 @@ import { auditedPublish, newestAccept, ownRecord } from '@usebag/home'
 import { CliError, flag, int, list, type Parsed, parse, relayUrl, str, UsageError } from '../args.ts'
 import { EPOCH_EARLY, epochDue, healed, offerKey, rotateEpoch } from '../epochs.ts'
 import { checkNoWindow, cliAudit, homeDir, loadKeys, renewing, windowOf } from '../home.ts'
-import { keyOf, readIdentities } from '../identities.ts'
+import { keyOf, readIdentities, refuseLocalOnly } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { stableMains } from '../packaged.ts'
 import { confirmed, needTty } from '../policy.ts'
@@ -266,6 +266,7 @@ async function keep(args: readonly string[], io: Io): Promise<number> {
       throw new UsageError(`--identities takes an absolute path, not ${JSON.stringify(file)}`)
   } else {
     if (str(p, 'as') === undefined) throw new UsageError('--as is required')
+    refuseLocalOnly(resolve(homeDir(io, str(p, 'dir'))), str(p, 'as') as string)
     if (relays.length === 0) throw new UsageError('--relay is required')
   }
   const home = file === undefined ? resolve(homeDir(io, str(p, 'dir'))) : dirname(file)
@@ -393,6 +394,11 @@ async function keepOnce(
 async function keepIdentities(io: Io, file: string): Promise<number> {
   let first: unknown = null
   for (const e of readIdentities(file).identities) {
+    // A local-only identity has nothing published to keep alive: said, and no failure for the job.
+    if (e.relays.length === 0) {
+      io.out(`skipped ${e.label}: on this machine only`)
+      continue
+    }
     try {
       await keepOnce(io, e.home, keyOf(e), e.relays.map(relayUrl), () => 0)
     } catch (x) {

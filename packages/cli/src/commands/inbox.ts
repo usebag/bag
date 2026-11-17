@@ -38,6 +38,7 @@ import {
   receivingKeys,
 } from '../home.ts'
 import { viaHome } from '../home-io.ts'
+import { refuseLocalOnly } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { instant, NameBook, short } from '../names.ts'
 import { confirmed, loadRecords, needTty, type Quarantined, quarantinedLine, withRecords } from '../policy.ts'
@@ -301,6 +302,7 @@ export async function inbox(
   }
   if (g[0] === undefined) return receive(!once, {})
   if (act !== null || flag(p, 'quarantined')) throw new UsageError('--group: no release, drop, --quarantined')
+  refuseLocalOnly(home, name) // before the key read: a keychain identity raises no dialog to be refused
   // The identity's epoch-aware keys: its own mailbox, and the group-key messages sealed to its current epoch key,
   // which a member's opener opens again at each generation it holds.
   const [keys, store] = [receivingKeys(home, loadKeys(io, home, name)), groupStore(home, name)]

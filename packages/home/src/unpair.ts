@@ -77,7 +77,7 @@ export async function unpairRoot(io: HomeIo, { home, as, root, relays }: UnpairI
       return undefined
     })
   const held = await Promise.all(relays.map(read))
-  if (!trusted && silent.length === relays.length) throw silent[0]
+  if (!trusted && relays.length > 0 && silent.length === relays.length) throw silent[0]
   const lag = relays.filter((_, i) => held[i] === undefined)
   const records = held.filter((r): r is AcceptFromRecord => r !== null && r !== undefined)
   const newest = records.sort((a, b) => b.iat - a.iat)[0]
@@ -92,7 +92,7 @@ export async function unpairRoot(io: HomeIo, { home, as, root, relays }: UnpairI
   if (!trusted && !accepted) {
     throw new HomeError(
       'not-trusted',
-      `${root} is in neither ${home}/trust.json nor the accept-from of ${agent} at ${relays.join(' ')}; ` +
+      `${root} is in neither ${home}/trust.json nor the accept-from of ${agent}${relays.length === 0 ? '' : ` at ${relays.join(' ')}`}; ` +
         'nothing was changed',
     )
   }

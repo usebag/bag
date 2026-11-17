@@ -3,6 +3,7 @@ import { chmodSync, copyFileSync, mkdirSync, symlinkSync, writeFileSync } from '
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MAX_RELAYS } from '@usebag/core'
+import { RELAYS_CASES, relaysHome } from '@usebag/home/test-support'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { type Config, ConfigError, type ServerWide } from '../src/config.ts'
 import { LABEL, MAX_IDENTITIES, readIdentities } from '../src/identities.ts'
@@ -381,16 +382,35 @@ describe('readIdentities: each entry', () => {
     })
   })
 
-  it(`refuses relays absent, empty, over ${MAX_RELAYS}, repeated, not a list of strings, or not http(s) URLs`, () => {
+  it('takes relays [] as an identity on this machine only: its rendezvous is null', () => {
+    const [here] = readIdentities(file(one({ relays: [] })), WIDE).identities as Config[]
+    expect(here).toMatchObject({ label: 'personal', relays: [], rendezvous: null })
+    // A rendezvous given stands; the first relay is the default only when there is one.
+    expect(readIdentities(file(one()), WIDE).identities[0]?.rendezvous).toBe('https://r.test')
+  })
+
+  it('takes and refuses relays as the home reader does: one table for both readers', () => {
+    // A published key's relays [] is refused (it is removed, never demoted), word for word as the home reader says it.
+    for (const [i, c] of RELAYS_CASES.entries()) {
+      const dir = join(tmp.dir, `relays-${i}`)
+      mkdirSync(dir)
+      const { home } = relaysHome(dir, 'personal-key', c.published)
+      const doc = one({ home, key: 'personal-key', relays: c.relays })
+      if (c.taken) expect(readIdentities(file(doc), WIDE).identities, c.why).toHaveLength(1)
+      else expect(() => readIdentities(file(doc), WIDE), c.why).toThrow(ConfigError)
+      if (c.detail !== undefined) expect(message(doc), c.why).toBe(`usage: ${AT}: ${c.detail('personal')}`)
+    }
+  })
+
+  it(`refuses relays absent, over ${MAX_RELAYS}, repeated, not a list of strings, or not http(s) URLs`, () => {
     const over = Array.from({ length: MAX_RELAYS + 1 }, (_, i) => `https://r${i}.test`)
+    expect(message(one({ relays: undefined }))).toBe(`usage: ${AT}: relays is required`)
     for (const [relays, n, distinct] of [
-      [undefined, 0, 0],
-      [[], 0, 0],
       [over, MAX_RELAYS + 1, MAX_RELAYS + 1],
       [['https://r.test', 'https://r.test/'], 2, 1],
     ] as const) {
       expect(message(one({ relays }))).toBe(
-        `usage: ${AT}: relays is 1 to ${MAX_RELAYS} distinct relay URLs, not ${n} (${distinct} distinct)`,
+        `usage: ${AT}: relays is 0 to ${MAX_RELAYS} distinct relay URLs, not ${n} (${distinct} distinct)`,
       )
     }
     for (const relays of ['https://r.test', [5], {}]) {

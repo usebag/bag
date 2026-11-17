@@ -11,6 +11,7 @@ import {
 import { CliError, list, parse, relayUrl, str, UsageError } from '../args.ts'
 import { homeDir } from '../home.ts'
 import { homeIo, viaHome } from '../home-io.ts'
+import { localLabel } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { needTty } from '../policy.ts'
 import { connectService } from '../service.ts'
@@ -21,10 +22,11 @@ import { IDENTITY_CUSTODY_USAGE, identityCustody } from './identity-custody.ts'
 
 const S = { type: 'string' } as const
 const USAGE =
-  'identity remove <name> --relay <url>... [--to <dir>] [--project <dir>] [--dir <home>] | identity relays <name> --relay <url>... [--dir <home>] | identity keep-alive on|off|default <name> [--dir <home>]'
+  'identity remove <name> [--relay <url>...] [--to <dir>] [--project <dir>] [--dir <home>] | identity relays <name> --relay <url>... [--dir <home>] | identity keep-alive on|off|default <name> [--dir <home>]'
 
 /**
- * identity remove <name> --relay <url>... [--to <dir>] [--project <dir>] [--dir <home>]: a terminal first (no-tty
+ * identity remove <name> [--relay <url>...] [--to <dir>] [--project <dir>] [--dir <home>]: --relay required but for a
+ * local-only identity (relays [] in identities.json), which takes none and tells no relay; a terminal first (no-tty
  * before any network), the identity (ENOENT when gone), then refused held (a live MCP server's mcp.lock), window-open,
  * held for a keep job's plist (with the person's bootout line), exists for a --to that is not empty, and EXDEV for one
  * on another file system. Every relay is read (one that does not answer refuses, nothing changed); one question names
@@ -41,12 +43,19 @@ export async function identity(args: readonly string[], io: Io): Promise<number>
   if (verb === 'custody') return identityCustody(rest, io)
   if (verb !== 'remove') throw new UsageError(`${USAGE} | ${IDENTITY_CUSTODY_USAGE}`)
   const options = { relay: { ...S, multiple: true }, to: S, project: S, dir: S }
-  const p = parse(rest, { positionals: ['name'], options, required: ['relay'] })
+  const p = parse(rest, { positionals: ['name'], options })
   const name = p.positionals[0] as string
   const relays = [...new Set(list(p, 'relay').map(relayUrl))]
   if (relays.length > MAX_RELAYS) throw new UsageError(`--relay names more than ${MAX_RELAYS} relays`)
-  needTty(io, 'identity remove')
   const home = resolve(homeDir(io, str(p, 'dir')))
+  // A local-only identity (relays []) published nothing: it leaves with no relay told, and a --relay is refused.
+  const label = localLabel(home, name)
+  if (label !== null && relays.length > 0)
+    throw new UsageError(
+      `${label} is on this machine only: no relay holds its records; run it without --relay`,
+    )
+  if (label === null && relays.length === 0) throw new UsageError('--relay is required')
+  needTty(io, 'identity remove')
   const [to, project] = [str(p, 'to'), str(p, 'project')]
   await consumeUnserved(io, home)
   await viaHome(() =>

@@ -41,6 +41,7 @@ import {
   LOCAL_DECLINED,
   LOCAL_HIDDEN,
   LOCAL_PENDING,
+  noRelays,
   REQUESTED_NOTE,
   refuseLinks,
   SHOW_HOW,
@@ -463,7 +464,7 @@ export class Pairings {
       keys,
       ...key,
       ttl: a.ttl ?? MAX_INVITE_TTL,
-      rendezvous: this.#ctx.config.rendezvous,
+      rendezvous: this.#ctx.config.rendezvous ?? noRelays(this.#ctx.config),
       ...(only === undefined ? {} : { only }),
       opened: (text, exp) => {
         live.exp = exp
@@ -653,7 +654,7 @@ export class Pairings {
         // not-for below leaves it open.
         const invite = await inviteOf(
           this.#ports(live),
-          this.#ctx.config.rendezvous,
+          this.#ctx.config.rendezvous ?? noRelays(this.#ctx.config),
           pastedOf(form.invite, true),
         )
         // An invite string is read here, before any network call; a word code names its inviter only once claimed at
@@ -827,7 +828,7 @@ export class Pairings {
         keys,
         ...key,
         ttl: o.ttl,
-        rendezvous: o.relay ?? this.#ctx.config.rendezvous,
+        rendezvous: o.relay ?? this.#ctx.config.rendezvous ?? at,
         ...(o.only === undefined ? {} : { only: o.only }),
         opened: (text, exp) => {
           live.exp = exp
@@ -993,7 +994,11 @@ export class Pairings {
         return { requested: false, asked: true, resume: live.token, note: LINK_AGAIN }
       }
       live.paste = false
-      const v = await inviteOf(this.#ports(live), ctx.config.rendezvous, pastedOf(a.text, false))
+      const v = await inviteOf(
+        this.#ports(live),
+        ctx.config.rendezvous ?? noRelays(ctx.config),
+        pastedOf(a.text, false),
+      )
       refuseLinks(ctx, { to: v.inviter })
       if (live.only !== undefined && v.inviter !== live.only)
         throw new ToolError(
@@ -1101,7 +1106,7 @@ export class Pairings {
       keys,
       ...key,
       ttl: ttl ?? MAX_INVITE_TTL,
-      rendezvous: this.#ctx.config.rendezvous,
+      rendezvous: this.#ctx.config.rendezvous ?? noRelays(this.#ctx.config),
       ...(only === undefined ? {} : { only }),
       opened: (text, exp) => {
         live.exp = exp
@@ -1179,8 +1184,9 @@ export class Pairings {
    */
   async #keys(live: Live): Promise<{ keys: EdgeKeys; relay: string; key: { key?: KeyRecord } }> {
     const { config, clock, opened, log } = this.#ctx
+    // Before any key read or client call: every wire pairing (the console's too) passes here.
+    const relay = config.relays[0] ?? noRelays(config)
     const keys = new HomeCustody(config.home).keys(config.as)
-    const relay = config.relays[0] as string
     const at = keys.signing.address
     const store = new KeyEpochStore(join(config.home, 'key-records'))
     const none = store.epochs(at).length === 0
@@ -1239,7 +1245,7 @@ export class Pairings {
   #ports(live: Live, more: readonly string[] = []) {
     const { opened, clock, rng, pollMs, config } = this.#ctx
     const { home, as } = config
-    const own = [...config.relays, config.rendezvous, ...more]
+    const own = [...config.relays, ...[config.rendezvous ?? []].flat(), ...more]
     const guard = new RelayGuard({ own, allowPrivate: config.allowPrivateRelays })
     return {
       client: opened.client,

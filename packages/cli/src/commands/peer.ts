@@ -18,6 +18,7 @@ import {
 import { CliError, flag, int, list, type Parsed, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { currentKey, laggingLines } from '../epochs.ts'
 import { homeDir, loadKeys } from '../home.ts'
+import { refuseLocalOnly } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { instant, NAME, NameBook } from '../names.ts'
 import { confirmed, needTty } from '../policy.ts'
@@ -97,6 +98,7 @@ function common(p: Parsed, io: Io, what: string) {
     return book
   }
   const as = req(p, 'as')
+  refuseLocalOnly(home, as)
   const keys = loadKeys(io, home, as)
   const root = (address: string): string => (domain === undefined ? address : `domain:${domain}`)
   const also = domain === undefined ? '' : `, trusting every agent of ${domain}`

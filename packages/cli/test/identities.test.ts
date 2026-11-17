@@ -123,14 +123,13 @@ describe('the identities file: reading', () => {
       ],
       [one({ home: 'rel/home' }), bad('identities[0].home is not an absolute path')],
       [one({ home: undefined }), bad('identities[0].home is not an absolute path')],
-      [one({ relays: [] }), bad(`identities[0].relays is not a list of 1 to ${MAX_RELAYS} URLs`)],
       [
         one({ relays: 'https://r.example' }),
-        bad(`identities[0].relays is not a list of 1 to ${MAX_RELAYS} URLs`),
+        bad(`identities[0].relays is not a list of 0 to ${MAX_RELAYS} URLs`),
       ],
       [
         one({ relays: Array.from({ length: MAX_RELAYS + 1 }, (_, i) => `https://r${i}.example`) }),
-        bad(`identities[0].relays is not a list of 1 to ${MAX_RELAYS} URLs`),
+        bad(`identities[0].relays is not a list of 0 to ${MAX_RELAYS} URLs`),
       ],
       [
         one({ relays: ['ftp://r.example'] }),

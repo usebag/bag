@@ -70,7 +70,7 @@ export const HINTS = {
 const iso = (seconds: number): string => new Date(seconds * 1000).toISOString()
 
 export class Subscriptions {
-  readonly #relays: readonly string[]
+  #relays: readonly string[]
   readonly #clock: Clock
   readonly #log: Logger
   readonly #entries = new Map<string, Entry>()
@@ -87,6 +87,13 @@ export class Subscriptions {
   /** Aborts once every subscription has ended; a new signal after reset(). */
   get dead(): AbortSignal {
     return this.#dead.signal
+  }
+
+  /** New relays to follow (a changed identities entry, before its unit opens again): each one connecting afresh. */
+  follow(relays: readonly string[]): void {
+    this.#relays = relays
+    this.#entries.clear()
+    this.reset()
   }
 
   /** Every relay connecting afresh, as a started edge subscribes; a state that changes is logged. */

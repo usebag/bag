@@ -19,6 +19,7 @@ import {
 import { CliError, flag, list, type Parsed, parse, relayUrl, shq, str, UsageError } from '../args.ts'
 import { checkIdentity, homeDir } from '../home.ts'
 import { homeIo, viaHome } from '../home-io.ts'
+import { localLabel } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { stableNode } from '../packaged.ts'
 import { needTty } from '../policy.ts'
@@ -117,6 +118,9 @@ function hostCommand(args: readonly string[], io: Io): number | Promise<number> 
   if (host !== 'claude-code' && host !== 'codex' && host !== 'omp') {
     throw new UsageError(`no host ${JSON.stringify(host)}: the hosts are claude-code, codex and omp`)
   }
+  // host remove writes no record and asks no relay, so a relay flag given to it is refused, never ignored.
+  for (const f of ['relay', 'rendezvous'] as const)
+    if (verb === 'remove' && p.values[f] !== undefined) throw new UsageError(`host remove takes no --${f}`)
   const session = str(p, 'session')
   if (session !== undefined && !(host === 'codex' && str(p, 'mode') === 'mcp'))
     throw new UsageError('--session is for codex --mode mcp only')
@@ -196,8 +200,7 @@ function hostCommand(args: readonly string[], io: Io): number | Promise<number> 
   const name = str(p, 'as') as string
   const home = resolve(homeDir(io, str(p, 'dir')))
   checkIdentity(io, home, name)
-  const relays = list(p, 'relay').map(relayUrl)
-  if (relays.length === 0) throw new UsageError('--relay <url> is required, at least once')
+  const relays = installRelays(p, home, name)
   const roots = list(p, 'trust-root')
   for (const r of roots) trustedRoot(r)
   const meet = str(p, 'rendezvous')
@@ -261,8 +264,7 @@ async function hostOmp(p: Parsed, io: Io, verb: 'install' | 'remove'): Promise<n
   }
   const home = resolve(homeDir(io, str(p, 'dir')))
   checkIdentity(io, home, name)
-  const relays = list(p, 'relay').map(relayUrl)
-  if (relays.length === 0) throw new UsageError('--relay <url> is required, at least once')
+  const relays = installRelays(p, home, name)
   const roots = list(p, 'trust-root')
   for (const r of roots) trustedRoot(r)
   const meet = str(p, 'rendezvous')
@@ -281,6 +283,21 @@ async function hostOmp(p: Parsed, io: Io, verb: 'install' | 'remove'): Promise<n
   out.push(...(await recordWarnings(homeIo(io), home, relays, name)))
   for (const line of out) io.out(line)
   return 0
+}
+
+/**
+ * The --relay list of host install as <name>: at least one, but for an identity on this machine only (relays [] in
+ * identities.json), which takes none, so its host entry keeps relays [] (a --relay or --rendezvous is refused).
+ */
+function installRelays(p: Parsed, home: string, name: string): string[] {
+  const relays = list(p, 'relay').map(relayUrl)
+  const label = localLabel(home, name)
+  const refused = (flag: string): UsageError =>
+    new UsageError(`${label} is on this machine only: no relay holds its records; run it without ${flag}`)
+  if (label !== null && relays.length > 0) throw refused('--relay')
+  if (label !== null && str(p, 'rendezvous') !== undefined) throw refused('--rendezvous')
+  if (label === null && relays.length === 0) throw new UsageError('--relay <url> is required, at least once')
+  return relays
 }
 
 /**

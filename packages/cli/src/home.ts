@@ -26,6 +26,7 @@ import {
   windowOf as windowIn,
 } from '@usebag/home'
 import { UsageError } from './args.ts'
+import { refuseLocalOnly } from './identities.ts'
 import type { Io } from './io.ts'
 
 const { O_APPEND, O_CREAT, O_NOFOLLOW, O_NONBLOCK, O_WRONLY } = constants
@@ -181,6 +182,8 @@ export function openEdge(io: Io, o: OpenOptions): OpenEdge {
   // The keys first: the custody refuses a name that could leave the directory before any path is made from it.
   // The identity's own keys open with its epochs (receivingKeys); keys given (a group's admin, a member at a group's
   // mailbox, an inbox that made them epoch-aware already) are used as they are.
+  // Every edge here is a wire edge (a relay client): never for an identity on this machine only.
+  refuseLocalOnly(o.home, o.name)
   const keys = o.keys ?? receivingKeys(o.home, loadKeys(io, o.home, o.name))
   const auth = o.auth ?? []
   const last = auth.at(-1)

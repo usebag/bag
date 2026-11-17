@@ -518,12 +518,14 @@ export type EdgeErrorCode =
   | 'chain-mismatch'
   | 'chain-not-later'
   | 'no-held-record'
+  | 'no-relays'
 
 /**
  * A refusal of the edge's own, not a protocol verdict: `busy` when another writer holds an identity's state,
  * `truncated` or `diverged` when an audit log no longer matches its anchor, `chain-mismatch` or `chain-not-later`
  * when a renewed chain does not continue the current one (Edge.renewChain), and `no-held-record` when a swept
- * identity has no copy of its address record to continue from (custody/key-records.ts, lastAddress).
+ * identity has no copy of its address record to continue from (custody/key-records.ts, lastAddress), and `no-relays`
+ * when a key-record rotation names no relay (an identity on this machine only, KeyRecordAdmin.rotate).
  */
 export class EdgeError extends Error {
   readonly code: EdgeErrorCode

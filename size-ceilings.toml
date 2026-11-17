@@ -125,7 +125,7 @@ path = 'packages/home/src'
 # unit template after the Yes, about 40; host_wire's own-cwd and whole-folder checks, about 20; identity_create's relay
 # and label checks, about 20), 5216 plus 150 is 5366, and 5366 times 1.1 is 5902.6, rounded up. If head C's build
 # measures above 5903, a second decision entry from the measured figure comes before its gate, by the same rule.
-ceiling = 5903 # earlier 5324, 2786, 135
+ceiling = 6545 # raised 2026-11-16 from 5903 for local-only identities (row 68): measured 5850 on main 70ad16be plus the spec's upper estimate of 100, 5950, times 1.1 is 6545
 
 [ac-core]
 path = 'crates/ac-core/src'

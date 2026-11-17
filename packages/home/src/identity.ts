@@ -21,10 +21,11 @@ import {
 } from '@usebag/core'
 import { acceptCopy, liftMaxBytes, RelayError, setKeepAlive } from '@usebag/edge'
 import { namedStates, shortName, stateOf } from './check.ts'
+import { OFFERED_AGAIN, publishFirstRecords } from './first-records.ts'
 import { describeHolder, holder, refuseWhileHeld } from './held.ts'
 import { shq } from './host-common.ts'
 import { removeOmp } from './host-install.ts'
-import { type Identities, type Identity, readIdentities, saveIdentities } from './identities.ts'
+import { type Identities, type Identity, keyOf, readIdentities, saveIdentities } from './identities.ts'
 import { checkIdentity, checkNoWindow, homeCustody, loadKeys } from './keys.ts'
 import {
   dropLocalPairs,
@@ -300,7 +301,8 @@ export async function identityRemove(io: HomeIo, input: RemoveInput): Promise<vo
     join(keyDir, `${name}.json`), // last: a run again after a failed move still finds the identity
   ]
   const moves = candidates.filter((rel) => there(join(home, rel)))
-  const relayList = relays.join(' ')
+  // No relays (an identity on this machine only): no relay is named, nor told.
+  const atRelays = relays.length === 0 ? '' : ` at ${relays.join(' ')}`
   const locally = custody.list().some((e) => e.address !== agent && pairedLocally(home, agent, e.address))
   // Its held local mail: a running bag service that lent this identity to this act fails it to the senders at the
   // give-back, its rows left for it; else this act does, in each sender's own audit log.
@@ -331,8 +333,8 @@ export async function identityRemove(io: HomeIo, input: RemoveInput): Promise<vo
   const question = [
     `remove ${name} (${agent}) from ${home}:`,
     newest === null
-      ? `  no accept-from of ${agent} at ${relayList}: nothing to re-sign`
-      : `  its accept-from re-signed to name only ${agent}, at ${relayList}`,
+      ? `  no accept-from of ${agent}${atRelays}: nothing to re-sign`
+      : `  its accept-from re-signed to name only ${agent},${atRelays}`,
     `  trust.json: ${leave.length === 0 ? 'no root leaves' : `${leave.join(' ')} leave`}`,
     ...roots
       .filter((r) => !leave.includes(r))
@@ -418,7 +420,7 @@ export async function identityRemove(io: HomeIo, input: RemoveInput): Promise<vo
       }
     }
     if (failure !== null) throw failure
-  } else io.say(`no accept-from of ${agent} at ${relayList}: nothing to re-sign`)
+  } else io.say(`no accept-from of ${agent}${atRelays}: nothing to re-sign`)
   for (const r of roots) {
     const others = keptFor.get(r) ?? []
     if (others.length > 0) io.say(`kept trust ${r}: the accept-from of ${others.join(', ')} still names it`)
@@ -547,7 +549,8 @@ function partialLeft(parent: string, name: string, key: string): string | null {
  * Sets the relays of a bag service identity, its entry in <home>/identities.json (the service's file), to `next`
  * after one yes. A name the file lacks (a reused identity no folder wired, or a home with no file yet) is added, on
  * the yes; the same relays change nothing and ask nothing. Says `relays <name> <url>...` and the record keep line
- * that publishes its records at each of them.
+ * that publishes its records at each of them. On an entry with relays [] it is the promotion: it publishes them
+ * (publishFirstRecords' lines). No relays for an entry that has some is usage.
  */
 export async function identityRelays(
   io: HomeIo,
@@ -576,12 +579,36 @@ export async function identityRelays(
     io.say(`relays ${name} ${next.join(' ')} (unchanged)`)
     return
   }
+  if (next.length === 0) throw new HomeError('usage', `give ${name} at least one relay`)
+  const relaysOf = (relays: readonly string[]): Identities => ({
+    ...doc,
+    identities: doc.identities.map((x) => (x === e ? { ...x, relays: [...relays] } : x)),
+  })
+  if (e.relays.length === 0) {
+    // The promotion of an identity on this machine only: the relays written, then its first records published there
+    // (epoch 1 re-dated, a fresh address record naming them, the accept-from with the copy's roots). The kept address
+    // copy (relays []) is never the held record: the rotation would keep it as is.
+    const ask = `publish ${name} at ${next.join(' ')}: set its relays in ${file} and publish its key, address and accept-from records?`
+    if (!(await askWithRecheck(io, ask, check))) throw declined()
+    saveIdentities(file, relaysOf(next))
+    io.say(`relays ${name} ${next.join(' ')}`)
+    try {
+      return await publishFirstRecords(io, home, keyOf(e), next)
+    } catch (x) {
+      if (!(x instanceof HomeError)) throw x
+      const code = x.code
+      const why = x.message.slice(code.length + 2)
+      // The rotation's failure leaves epoch 1 stored, unpublished (key-records.ts): the next one publishes it.
+      const epoch = why.includes('its key and address record')
+        ? ` and its epoch 1 stays kept, unpublished: ${OFFERED_AGAIN}`
+        : ''
+      const kept = `its relays stay written${epoch}`
+      throw new HomeError(code, `${why}; ${kept}`)
+    }
+  }
   const question = `set the relays of ${name} in ${file}: ${e.relays.join(' ')} -> ${next.join(' ')}?`
   if (!(await askWithRecheck(io, question, check))) throw declined()
-  saveIdentities(file, {
-    ...doc,
-    identities: doc.identities.map((x) => (x === e ? { ...x, relays: [...next] } : x)),
-  })
+  saveIdentities(file, relaysOf(next))
   done()
 }
 

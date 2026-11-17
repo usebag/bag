@@ -59,6 +59,7 @@ import {
   IDENTITIES_NOTE,
   INSTRUCTIONS,
   machineTelemetry,
+  reachOf,
   registerTools,
   type ToolContext,
   ToolError,
@@ -211,7 +212,7 @@ export class Unit {
   state: 'starting' | 'running' | 'failed' = 'starting'
   /** Its address, read from its key even when it fails to open: what the guards compare with. */
   address: string | null = null
-  readonly #deps: ServerDeps
+  #deps: ServerDeps
   /** An --identities server's: the jittered resubscription and keep-alive. */
   readonly #multi: boolean
   /** What a session's tools answer before its first opening (session.ts). */
@@ -261,6 +262,13 @@ export class Unit {
         return unit.heldSince
       },
     }
+  }
+
+  /** A changed entry's config and the relay client made for it, before it opens again: its subscriptions follow. */
+  follow(config: Config, relay: RelayClient): void {
+    this.config = config
+    this.#deps = { ...this.#deps, relay }
+    this.subscriptions.follow(config.relays)
   }
 
   /** Opens it locally: keys, lock, store, edge, desk and keep-alive; nothing goes on the network. */
@@ -330,12 +338,15 @@ export class Unit {
     const { edge, client, signer, sealingKey, epochs } = o
     const { relays, home, as: name } = config
     const keeper = { edge, client, signer, sealingKey, epochs, relays, home, name, clock, timers, log }
+    // An identity on this machine only (relays []) has no records to keep alive: it publishes nothing.
     this.records =
-      deps.keeper !== undefined
-        ? deps.keeper({ ...keeper, rng }, config)
-        : config.keepAliveRecords
-          ? new RecordKeeper({ ...keeper, ...(this.#multi ? { rng } : {}) })
-          : null
+      relays.length === 0
+        ? null
+        : deps.keeper !== undefined
+          ? deps.keeper({ ...keeper, rng }, config)
+          : config.keepAliveRecords
+            ? new RecordKeeper({ ...keeper, ...(this.#multi ? { rng } : {}) })
+            : null
     const desk = new Desk(o.edge, o.store, timers)
     desk.delivered.add((m) => {
       for (const f of this.view.delivered) f(m)
@@ -570,6 +581,7 @@ export class Unit {
       state: this.state,
       code: this.state === 'failed' ? codeOf(this.failure) : null,
       relays: this.config.relays,
+      ...reachOf(this.config.relays),
       subscriptions: this.subscriptions.list(),
       unread: this.opened === null ? 0 : (this.desk as Desk).unread().length,
       keep_alive_next_at: this.records?.status().next_at ?? null,

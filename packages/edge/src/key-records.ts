@@ -17,7 +17,7 @@ import { errno } from './custody/files.ts'
 import type { KeyEpochStore } from './custody/key-records.ts'
 import type { Edge } from './edge.ts'
 import { heldSomewhere, type Lagging, type Offered, offerRecord } from './offer.ts'
-import type { Clock, EdgeKeys, Rng } from './ports.ts'
+import { type Clock, EdgeError, type EdgeKeys, type Rng } from './ports.ts'
 import { coreRng } from './sender.ts'
 
 // An individual's forward-secrecy lifecycle: the recipient edge publishes, each epoch, a short-lived key record
@@ -150,6 +150,12 @@ export class KeyRecordAdmin {
    */
   async rotate(): Promise<Rotation> {
     const { clock, keys, store } = this.#o
+    // An empty offer passes heldSomewhere, so with no relay the epoch would be marked published: refuse first.
+    if (this.#o.relays.length === 0)
+      throw new EdgeError(
+        'no-relays',
+        `${this.address} names no relay: give it relays before a rotation publishes it`,
+      )
     const now = clock.now()
     const held = this.#o.held ?? null
     // First, before any epoch is kept, so a bad-rotation refusal leaves nothing half-done.

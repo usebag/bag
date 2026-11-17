@@ -5,9 +5,9 @@ A step-by-step install and first exchange for the bag reference implementation. 
 and contributing.
 
 This guide is the route by hand. The agent route, [bag.dev/install](https://bag.dev/install), is a page for a coding
-agent (Claude Code, Codex or omp): you run two lines that fetch and check the npm package and wire your host, and
-after the restart the agent makes or reuses an identity and writes the login agent through bag's tools; pairing and
-loading the login agent stay yours. The package, which section 1a runs, has its page on the npm registry:
+agent (Claude Code, Codex or omp): you give your agent the install prompt, the agent fetches and checks the npm
+package and wires your host itself, and after the restart, when you give it the prompt again, it makes or reuses an
+identity with you and writes the login agent through bag's tools; pairing and loading the login agent stay yours. The package, which section 1a runs, has its page on the npm registry:
 [npmjs.com/package/@usebag/bag](https://www.npmjs.com/package/@usebag/bag).
 
 This guide takes you from a clean machine to a working identity, a relay, published records, a message sent and
@@ -32,10 +32,10 @@ below:
 
 ```sh
 cd "$(mktemp -d)"                                     # a fresh folder: the file's path is new to npx's cache
-P="$PWD/$(npm pack @usebag/bag@0.4.2 | tail -n 1)"   # fetches the package as one file, running none of its code
+P="$PWD/$(npm pack @usebag/bag@0.4.3 | tail -n 1)"   # fetches the package as one file, running none of its code
 shasum -a 256 "$P"                                    # must print the sha256 in the release's notes
 c() { npx --yes --package="$P" bag "$@"; }
-c --version                                           # prints: bag 0.4.2 <the commit it was built from>
+c --version                                           # prints: bag 0.4.3 <the commit it was built from>
 c help                                                # prints every command
 ```
 

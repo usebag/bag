@@ -38,7 +38,7 @@ import {
   saveIdentities,
 } from './identities.ts'
 import { LABEL } from './index.ts'
-import { homeCustody } from './keys.ts'
+import { homeCustody, localLabel } from './keys.ts'
 import { type Mains, versionLine } from './packaged.ts'
 import { HomeError, type HomeIo } from './ports.ts'
 import type { Staged } from './stage.ts'
@@ -620,7 +620,9 @@ export function installCodex(
  * paired through the CLI floor has its records at the rendezvous relay only). Only
  * a record no relay and no copy holds is a warning, pointing to `bag onboard`: --keep-alive-records keeps records alive
  * but never makes the first ones (packages/mcp/src/keepalive.ts). A relay that does not answer is named as unchecked.
- * Never a refusal: a relay may be briefly away. The relays are reached through the caller's relay client.
+ * Never a refusal: a relay may be briefly away. The relays are reached through the caller's relay client. An identity
+ * on this machine only (its identities.json entry has relays []) is wired all the same, and nothing is read or
+ * republished for it: no relay client is made, and one line says so.
  */
 export async function recordWarnings(
   io: HomeIo,
@@ -628,6 +630,9 @@ export async function recordWarnings(
   relays: readonly string[],
   name: string,
 ): Promise<string[]> {
+  const local = localLabel(home, name)
+  if (local !== null || relays.length === 0)
+    return [`${local ?? name}: on this machine only, nothing republished`]
   const address = homeCustody(io.security, home).entry(name).address
   const client = io.relay({})
   const kinds = ['address', 'accept-from'] as const

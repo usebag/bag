@@ -51,7 +51,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
 
 ### Identities
 
-- **`keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--new] [--dir <home>]`**:
+- **`keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--new] [--local] [--dir <home>]`**:
   a signing key and a separate sealing key; prints the address only. `--custody keychain` keeps both in one item of
   the default macOS keychain or `--keychain`, read only after a dialog (`--keychain-access prompt`, the default) or by
   `/usr/bin/security` while the keychain is unlocked (`security`). `--keychain` and `--keychain-access` without
@@ -61,6 +61,11 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   identities already: use one of them, or pass --new for a new one", with nothing written. `--new` makes it; a fresh
   home needs no `--new`; a held name keeps its own refusal with or without it. `--custody agent` makes no key and
   needs no `--new` (it takes it with no effect), and `onboard` passes `--new` for the identities it makes.
+  `bag keygen <name> --local` makes it on this machine only: relays `[]` in `identities.json` and its first records kept
+  in the home, nothing published; `bag identity relays <name> --relay <url>` gives it relays later and publishes it.
+  `--custody agent --local` is `usage`. Until then `identity remove` and `unpair` of it take no `--relay` (one is
+  refused) and tell no relay, and every command that would reach a relay as it (send, inbox, peer, login, keys rotate,
+  record keep and the rest) is refused `no-relays` with that step.
 - **`address <name> [--dir <home>]`**: the identity's address. It reads no keychain and raises no dialog
   (`src/commands/address.ts`).
 - **`keys list [--dir <home>]`**: one line per identity, sorted by name, `<name> <address> <custody> <created>`: the
@@ -562,7 +567,9 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   request file that does not parse is read as absent and the poll (every 250 ms) goes on. The wait is 10 s for the
   session file and the request together, so it delays session start by at most 10 s, and only while a grant is pending
   (in `src/commands/wake-hook.ts`, `test/session-code.test.ts`). `host install claude-code` writes only the async wake-hook entries, not `session-code`: a stated debt; the plugin's `hooks/hooks.json` carries it.
-- **`host install <claude-code|codex|omp> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... (--project <dir> | --user) [--mode worker|mcp [--session auto:codex --grant-caveat <caveat>...]] [--dir <home>]`**:
+- **`host install <claude-code|codex|omp> --as <name> [--relay <url>...] [--rendezvous <url>] [--trust-root <address>]... (--project <dir> | --user) [--mode worker|mcp [--session auto:codex --grant-caveat <caveat>...]] [--dir <home>]`**
+  (`--relay` is required but for an identity on this machine only, which takes none: a `--relay` or `--rendezvous` for
+  it is refused, its entry keeps relays `[]` and nothing is republished):
   writes the MCP server's registration and, for Claude Code, the wake hooks, into the places the repo documents, and
   prints each file and the entries it added (no key is read; the entries hold paths, the name, relay URLs and trust
   roots). `claude-code --project <dir>` writes `<dir>/.mcp.json` (`mcpServers.bag = {command, args}`, as
@@ -626,8 +633,9 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
   - **The Codex file.** The table is found by its header with spaces or a quoted name, by a dotted key
     (`mcp_servers.bag.command = ...`) and by `bag = {...}` under `[mcp_servers]`; a match in a comment
     counts as there. The file is appended to in place (not a temp file and a rename), so it is not atomic.
-- **`host install claude-code --project <dir> --identities <file> --as <key> [--label <label>] --relay <url>...
-  [--rendezvous <url>] [--trust-root <address>]... [--dir <home>]`**: many identities in one server
+- **`host install claude-code --project <dir> --identities <file> --as <key> [--label <label>] [--relay <url>...]
+  [--rendezvous <url>] [--trust-root <address>]... [--dir <home>]`** (`--relay` is required but for an identity on this
+  machine only, which takes none and is recorded with relays `[]`): many identities in one server
   (`packages/mcp/README.md`, "Many identities in one server"). It adds the identity, labelled `--label` (default the key
   name), to the identities file and wires the project to the file: `.mcp.json`'s `bag` becomes `{command:
   <node>, args: [<mcp main>, "--identities", <file>]}` and the `SessionStart` and `Stop` hooks run `wake-hook
@@ -695,7 +703,7 @@ group store's layout is the edge's `GroupKeyStore` (`packages/edge/src/custody/g
     `packages/edge/src/pairing.ts`). A pairing needs the relay that holds the invitation and one listed relay; a listed
     relay that does not take a record prints `failed <kind> <address> <relay> <code>` and `record keep` carries it there
     (spec/SPEC.md Appendix B 110).
-- **`unpair <address|domain:<host>> --as <name> --relay <url>... [--dir <home>]`** (a relay that does not answer stops
+- **`unpair <address|domain:<host>> --as <name> [--relay <url>...] [--dir <home>]`** (`--relay` is required but for an identity on this machine only, which takes none) (a relay that does not answer stops
   nothing: the trust file changes, the others take the record, and it is named, exit 1; since
   2026-10-29): ends a pairing, or removes a root a typed `--accept` stored; the inverse of `peer`'s y
   (`src/commands/unpair.ts`). The trust invariant holds both ways: a root enters `trust.json` only by a person's
@@ -860,7 +868,7 @@ copy, which a rotation can race and revert; run `group keep` for a group, never 
 - The notice: while no choice is made, after a command a person runs at a terminal and after `host install`, once per
   machine, on stderr. Run from the package, it names the line for how bag was installed, read from
   `$HOME/.bag/install`: with exactly one package file of the running version (`usebag-bag-<version>-<16 hex>.tgz`,
-  as the three-line install keeps it), a line that checks the file's sha256 starts with those 16 hex, then runs bag
+  as the install page keeps it), a line that checks the file's sha256 starts with those 16 hex, then runs bag
   from it with `npx --yes --package=`, else prints STOP and runs nothing; with no such file and a settings file
   (`<name>.env`), `c telemetry preview` and how `c` comes to exist (a shell function: `. "$HOME/.bag/install/<name>.env"`
   first); otherwise, two files of one version included, the telemetry preview line of bag.dev/install's step 7.
@@ -875,7 +883,7 @@ is decided by the organisation's instance on the server, not by the client. The 
 `sign-in.ts` (sign-in and sign-out), `status.ts` (with no `--as`), `mcp.ts` and `refresher.ts`.
 
 A person gives their agent the prompt the console shows beside a minted connect code. The console fills in the exact
-version it pins (the current cut, `@usebag/bag@0.4.2`), never `@latest`:
+version it pins (the current cut, `@usebag/bag@0.4.3`), never `@latest`:
 
     1. Register once: claude mcp add bag -- npx -y @usebag/bag@<version> mcp (or run directly: BAG_ORG_CODE=<code> npx -y @usebag/bag@<version> connect)
     2. Paste the code into the chat and ask the agent to connect with the bag tool `connect`.
@@ -889,7 +897,7 @@ Without a code, the person gives the domain and the console's address instead, a
 Those are the lines the console prints. On a machine where bag was installed by bag.dev/install, run them from the
 package file whose sha256 that install checked instead, never from the registry by name: the install guide's "Connect an
 enterprise agent" gives them as `npx --yes --package="$F" bag connect` and `... bag sign-in ...`, with `F` the file its
-line 1 kept, and the bag tool `connect` that its line 2's shim serves.
+step 2 kept, and the bag tool `connect` that its step 3's shim serves.
 
 Exits, for every command here: 0 done, 1 refused or failed, 2 usage, 3 the session has ended or none exists, 4
 waiting on a person of the organisation or its signer. An error is one line on stderr, `bag: <code>: <detail>`.
@@ -961,10 +969,10 @@ waiting on a person of the organisation or its signer. An error is one line on s
   there is one; no session is not an error. `identities` says how many identities the home
   holds and leaves their names to the person, who picks one by typing `use` and its name in a window that runs the
   bag service. Neither changes anything or calls a relay beyond the health probes. Each tool's description is its
-  documentation, written for the agent that reads it. A person sets it up in three steps: check and install the
-  package (`npm pack @usebag/bag@<version>`, compare the file's sha256 with the one the install page pins, then
-  `npm install -g` that file), add the server to the host (`claude mcp add bag -- bag mcp`), and ask the agent; the
-  agent then needs no page and no command line. Each result holds only the lines the commands print; stdout is the
+  documentation, written for the agent that reads it. The way to set it up is the install prompt: the person pastes
+  "Fetch and follow the instructions to set me up on bag.dev from https://bag.dev/install" into their agent, which
+  fetches and checks the package and wires the host itself; the agent then needs no command line. For a machine with
+  no agent, see "Without an agent" at the end of this README. Each result holds only the lines the commands print; stdout is the
   transport, so the command prints nothing else. It runs until the host closes it or stdin ends.
 
 The home is `--dir`, else `AC_HOME`, else `~/.bag`, the same home as every other command. Each organisation's session
@@ -1127,3 +1135,21 @@ pseudo-terminal.
 
 `npm test -w packages/cli` (Vitest with coverage, `package.json`). The tests inject their own io (`src/io.ts`), which runs no
 `/usr/bin/security`, so no test reaches a real keychain unless it passes a runner.
+
+## Without an agent
+
+Not the install path; the install is the install prompt (above, under `mcp`). Where no agent is at hand, a person can
+run bag by hand from the same checked package file the install page keeps, through `npx`, never with
+`npm install -g`. Put the version and the sha256 that https://bag.dev/install names between the quotes. This fetches
+the package with `npm pack`, which runs none of its code, checks its sha256 and keeps it under a name that holds it:
+
+```sh
+V='THE VERSION'; PIN='THE SHA256'; mkdir -p -m 700 "$HOME/.bag" "$HOME/.bag/install" && cd "$HOME/.bag/install" && npm pack "@usebag/bag@$V" >/dev/null && SUM="$( (sha256sum "usebag-bag-$V.tgz" 2>/dev/null || shasum -a 256 "usebag-bag-$V.tgz") | cut -c1-64)" && echo "sha256: $SUM" && if [ "$SUM" = "$PIN" ]; then F="$HOME/.bag/install/usebag-bag-$V-$(printf %s "$SUM" | cut -c1-16).tgz" && mv "usebag-bag-$V.tgz" "$F" && echo "package: $F, sha256 matches"; else echo "STOP: this is not the published package: run nothing else"; fi
+```
+
+Every later run checks the kept file again first and runs nothing on a mismatch; put the command after `bag` in place
+of `--version`:
+
+```sh
+V='THE VERSION'; PIN='THE SHA256'; F="$HOME/.bag/install/usebag-bag-$V-$(printf %s "$PIN" | cut -c1-16).tgz"; [ "$( (sha256sum "$F" 2>/dev/null || shasum -a 256 "$F") | cut -c1-64)" = "$PIN" ] && (cd "$HOME/.bag/install" && npx --yes --package="$F" bag --version) || echo "STOP: the package file is not the checked one, or the command above failed (read its own lines)"
+```

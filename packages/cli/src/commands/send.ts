@@ -12,6 +12,7 @@ import { resolveHandle, withSession } from '@usebag/enterprise-client'
 import { CliError, flag, list, type Parsed, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { readChain } from '../chain.ts'
 import { CLI_SESSION, homeDir, type OpenEdge, openEdge } from '../home.ts'
+import { refuseLocalOnly } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { NameBook } from '../names.ts'
 import { loadRecords, type OrgRecords, withRecords } from '../policy.ts'
@@ -148,6 +149,9 @@ export async function send(args: readonly string[], io: Io): Promise<number> {
     },
   } as const
   const p = withSession(parse(args, spec), 'send', io, (d) => homeDir(io, d), UsageError)
+  // Before a handle is resolved (a well-known fetch), as openEdge does again before any relay.
+  const as = str(p, 'as')
+  if (as !== undefined) refuseLocalOnly(homeDir(io, str(p, 'dir')), as)
   // A --to that is neither an address nor a handle is a name: the book is read only then.
   const given = list(p, 'to')
   const book = given.every(unnamed) ? null : NameBook.load(homeDir(io, str(p, 'dir')))
