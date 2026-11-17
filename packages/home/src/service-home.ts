@@ -29,13 +29,15 @@ export function installEnv(
 /**
  * Adds `name` to <home>/identities.json when it is not there, and returns the line that says so; null when it is there
  * already, or when no relay is known (none given, no install env, no entry in the file): then nothing is written, and
- * identity relays adds it later.
+ * identity relays adds it later. `local`: an identity on this machine only, written with relays [] and no rendezvous,
+ * never the inherited relays.
  */
 export function addToServiceHome(
   home: string,
   name: string,
   relays: readonly string[] = [],
   rendezvous?: string,
+  local = false,
 ): string | null {
   const at = resolve(home)
   const file = join(at, 'identities.json')
@@ -44,9 +46,11 @@ export function addToServiceHome(
   const doc: Identities = existsSync(file) ? readIdentities(file, true, true) : { version: 1, identities: [] }
   if (doc.identities.some((e) => e.label === name)) return null
   const env = installEnv(at, name)
-  const use = relays.length > 0 ? [...relays] : (env?.relays ?? doc.identities[0]?.relays ?? [])
-  if (use.length === 0) return null
-  const meet = rendezvous ?? (relays.length > 0 ? undefined : (env?.rendezvous ?? undefined))
+  const use = local || relays.length > 0 ? [...relays] : (env?.relays ?? doc.identities[0]?.relays ?? [])
+  if (use.length === 0 && !local) return null
+  const meet = local
+    ? undefined
+    : (rendezvous ?? (relays.length > 0 ? undefined : (env?.rendezvous ?? undefined)))
   const next = addIdentity(
     doc,
     {
@@ -61,7 +65,7 @@ export function addToServiceHome(
     true,
   )
   if (next !== null) saveIdentities(file, next)
-  return `added ${name} to ${file} for the bag service (relays ${use.join(' ')})`
+  return `added ${name} to ${file} for the bag service (relays ${use.length === 0 ? 'none: this machine only' : use.join(' ')})`
 }
 
 /** The name suffixes the bag service's own files use under keys/ (an agent identity's session key: <label>.service.json). */

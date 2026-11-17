@@ -14,8 +14,9 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { type CaveatEvaluator, codingEvaluator, isAddress, MAX_RELAYS } from '@usebag/core'
-import { checkName, type TrustedRoot } from '@usebag/edge'
+import { checkName, KeyEpochStore, type TrustedRoot } from '@usebag/edge'
 import { LABEL } from './index.ts'
+import { homeCustody } from './keys.ts'
 import { HomeError } from './ports.ts'
 
 // The identities file: the identities one MCP server holds
@@ -114,6 +115,24 @@ function folder(home: string, at: string, platform: string): string {
   }
 }
 
+/** The refusal of relays [] for an identity that was published: its records are out, so it is not local-only. */
+export const publishedRefusal = (label: string): string => `${label} was published: remove it, not its relays`
+
+/**
+ * Whether key `key` of `home` has an epoch its key-records/ marks published, read from its custody's public entry (no
+ * key, no keychain dialog); false when the home does not hold it. Both identities.json readers refuse relays [] for one.
+ */
+export function hasPublished(home: string, key: string): boolean {
+  let address: string
+  try {
+    address = homeCustody(undefined, home).entry(key).address
+  } catch {
+    return false
+  }
+  const store = new KeyEpochStore(join(home, 'key-records'))
+  return store.epochs(address).some((n) => store.epoch(address, n).published)
+}
+
 /** One entry of the list, checked: identities-invalid, or home-shared for a home another entry holds. */
 function entry(e: unknown, at: string, homes: Set<string> | null, platform: string): Identity {
   if (!object(e)) throw bad(`${at} is not an object`)
@@ -128,9 +147,12 @@ function entry(e: unknown, at: string, homes: Set<string> | null, platform: stri
   if (homes?.has(home))
     throw new HomeError('home-shared', `${at}.home ${e.home} is another identity's: one home per identity`)
   homes?.add(home)
+  // No relays is an identity on this machine only: it publishes nothing until identity relays gives it some.
   const relays = e.relays
-  if (!strings(relays) || relays.length === 0 || relays.length > MAX_RELAYS)
-    throw bad(`${at}.relays is not a list of 1 to ${MAX_RELAYS} URLs`)
+  if (!strings(relays) || relays.length > MAX_RELAYS)
+    throw bad(`${at}.relays is not a list of 0 to ${MAX_RELAYS} URLs`)
+  if (relays.length === 0 && hasPublished(home, keyOf(e as unknown as Identity)))
+    throw bad(publishedRefusal(e.label))
   each(relays, relayUrl, `${at}.relays`)
   if (new Set(relays.map(relayUrl)).size !== relays.length) throw bad(`${at}.relays repeats a relay`)
   if (e.rendezvous !== undefined) each([e.rendezvous as string], relayUrl, `${at}.rendezvous`)

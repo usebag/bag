@@ -66,7 +66,9 @@ function agentPointer(p: Parsed, io: Io, home: string, name: string): number {
  * <identity>, which ac login then lets the agent hold for a window; makes no key (a keychain principal raises its one
  * dialog) and prints the address. --recovery writes the recovery setting into the pointer, a format field only.
  *
- * keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--dir <home>]: a new
+ * keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--local] [--dir <home>]:
+ * --local makes it on this machine only (relays [], its first records kept here, nothing published; usage with
+ * --custody agent). Either way, a new
  * signing key and a separate sealing key from the CSPRNG, kept by the custody chosen: a key file of the
  * edge's key store (0600 in 0700, never over an existing file), the default; or one macOS keychain item, in the
  * default keychain or --keychain, that no application may read without a dialog (--keychain-access prompt, the
@@ -92,10 +94,15 @@ export function keygen(args: readonly string[], io: Io): number {
       recovery: { type: 'string' },
       dir: { type: 'string' },
       new: { type: 'boolean' },
+      local: { type: 'boolean' },
     },
   })
   const [home, name] = [homeDir(io, str(p, 'dir')), p.positionals[0] as string]
   refuseReserved(name)
+  const local = flag(p, 'local') === true
+  // An agent identity is never local-only (spec/SPEC.md 9.2 item 4): it is its principal's address.
+  if (local && str(p, 'custody') === 'agent')
+    throw new UsageError('--local goes with --custody file or keychain')
   if (str(p, 'custody') === 'agent') return agentPointer(p, io, home, name) // --new changes nothing here
   refuseSecond(home, name, flag(p, 'new') === true)
   if (str(p, 'principal') !== undefined || str(p, 'recovery') !== undefined) {
@@ -119,6 +126,8 @@ export function keygen(args: readonly string[], io: Io): number {
       allowNew: flag(p, 'new') === true,
       refused,
       ...note,
+      // relays [] and the first records kept here, never the inherited relays (packages/home createIdentity)
+      ...(local ? { local: true } : {}),
     }),
   )
   return 0

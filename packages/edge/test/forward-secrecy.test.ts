@@ -287,6 +287,38 @@ describe('A failed publish leaves the epoch unpublished and is republished, not 
     expect(store.epoch(P.bob.address, 1).published).toBe(true)
   })
 
+  it('with no relays refuses no-relays before signing: a kept epoch stays unpublished, nothing is offered', async () => {
+    const clock = new FakeClock()
+    const store = keyStore()
+    // Epoch 1 kept unpublished, as an identity on this machine only keeps it.
+    store.put(P.bob.address, 1, new SealingKey(seed(0x30)), T0, T0 + DAY)
+    const published: unknown[] = []
+    const lines: unknown[] = []
+    const adm = new KeyRecordAdmin({
+      edge: {
+        publishRecord: async (record) => {
+          published.push(record)
+          return []
+        },
+        audit: {
+          record: (e) => {
+            lines.push(e)
+            throw new Error('a refused rotation writes no audit line')
+          },
+        },
+      },
+      keys: P.bob.keys,
+      store,
+      clock,
+      rng: seededRng('epoch'),
+      relays: [],
+    })
+    await expect(adm.rotate()).rejects.toMatchObject({ code: 'no-relays' })
+    expect(store.epochs(P.bob.address)).toEqual([1])
+    expect(store.epoch(P.bob.address, 1)).toMatchObject({ published: false, iat: T0 })
+    expect([published, lines]).toEqual([[], []])
+  })
+
   it('honours the keyLifetime, addressTtl and rotationKey options', async () => {
     const records = new FakeRecords()
     const clock = new FakeClock()

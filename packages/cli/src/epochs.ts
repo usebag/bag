@@ -25,6 +25,7 @@ import {
 } from '@usebag/edge'
 import { CliError } from './args.ts'
 import { cliAudit, epochStore } from './home.ts'
+import { refuseLocalOnly } from './identities.ts'
 import type { Io } from './io.ts'
 import { instant } from './names.ts'
 
@@ -145,6 +146,8 @@ export function laggingLines(io: Io, address: string, lagging: readonly Lagging[
  * it again (`step`, ac keys rotate by default).
  */
 export async function rotateEpoch(io: Io, o: RotateOptions): Promise<KeyRotation> {
+  // The last guard for every caller: an identity on this machine only publishes no epoch before its promotion.
+  refuseLocalOnly(o.home, o.name)
   const client = io.relay({})
   const address = o.keys.signing.address
   const publishRecord = async (record: AcRecord, urls: readonly string[]): Promise<null[]> => {

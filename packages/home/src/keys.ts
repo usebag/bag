@@ -3,6 +3,7 @@ import { connect } from 'node:net'
 import { join } from 'node:path'
 import { AcError } from '@usebag/core'
 import { type EdgeKeys, HomeCustody, type SecurityRunner } from '@usebag/edge'
+import { keyOf, readIdentities } from './identities.ts'
 import { HomeError } from './ports.ts'
 
 // An identity's keys in its home: a key file in <home>/keys, a macOS keychain item that <home>/keychain/<name>.json
@@ -36,6 +37,32 @@ export function loadKeys(security: SecurityRunner | undefined, home: string, nam
     throw new AcError('not-authorized', `${name} is held by the agent, which signs a session's hops only`)
   }
   return custody.keys(name)
+}
+
+/** Whether key `name` of `home` is on this machine only: its <home>/identities.json entry has relays []. */
+export function localOnly(home: string, name: string): boolean {
+  return localLabel(home, name) !== null
+}
+
+/** The label of key `name`'s entry when it has relays [] (on this machine only), else null. */
+export function localLabel(home: string, name: string): string | null {
+  const file = join(home, 'identities.json')
+  if (!existsSync(file)) return null
+  const e = readIdentities(file, true, true).identities.find((x) => keyOf(x) === name)
+  return e !== undefined && e.relays.length === 0 ? e.label : null
+}
+
+/**
+ * Refuses (no-relays) an act that would reach a relay as `name` while it is on this machine only: a command's --relay
+ * would publish it where identities.json never records, so the promotion goes through identity relays first.
+ */
+export function refuseLocalOnly(home: string, name: string): void {
+  const label = localLabel(home, name)
+  if (label !== null)
+    throw new HomeError(
+      'no-relays',
+      `${label} is on this machine only: give it relays with bag identity relays ${label} --relay <url>, then run this again`,
+    )
 }
 
 /** The agent identity whose login window of this home is open on `address` (its socket accepts), else null. */

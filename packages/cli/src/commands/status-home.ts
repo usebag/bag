@@ -141,7 +141,10 @@ export function homeLines(s: HomeStatus): string[] {
     `local_delivery ${s.local_delivery}`,
     ...s.identities.map(
       (i) =>
-        `identity ${i.label} key ${i.key} custody ${i.custody} served ${yes(i.served)} hidden ${yes(i.hidden)} open ${yes(i.open)} spooled ${i.spooled}`,
+        `identity ${i.label} key ${i.key} custody ${i.custody} served ${yes(i.served)} hidden ${yes(i.hidden)} open ${yes(i.open)} spooled ${i.spooled}${
+          // a served entry with relays [] is local-only; an unserved key file names no relays either way
+          i.served && i.relays.length === 0 ? ' relays none (this machine only)' : ''
+        }`,
     ),
     ...s.local_pairs.map((p) => `local_pair ${p.a} ${p.b}`),
     ...s.windows.map(

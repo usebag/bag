@@ -11,10 +11,12 @@ import {
 import { join, relative } from 'node:path'
 import { type AcceptFromRecord, decodeAddress, parseRecord, toHex } from '@usebag/core'
 import { keepAcceptCopy } from '@usebag/edge'
-import { afterAll, describe, expect, it } from 'vitest'
+import * as homeModule from '@usebag/home'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { USAGE } from '../src/cli.ts'
 import { addTrust, readTrust } from '../src/trust.ts'
 import { T0, tempDir, testIo } from './support/io.ts'
+import { makeLocalOnly, noRelay } from './support/local-only.ts'
 import { Network } from './support/network.ts'
 import { cli } from './support/run.ts'
 
@@ -23,6 +25,12 @@ import { cli } from './support/run.ts'
 // for the identity that stays, the wiring of the one that leaves comes out of its own folder only, a held identity is
 // refused, a one-identity home works, a run again is refused, and a Codex table is left to the person. In-process
 // relays by URL (support/network.ts), the test io's terminal answers and clock, temp directories only.
+
+// identityRemove is a pass-through spy (support/local-only.ts): the real act, watched for what the CLI passes it.
+vi.mock('@usebag/home', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@usebag/home')>()
+  return { ...real, ...(await import('./support/local-only.ts')).homeOverrides(real) }
+})
 
 const tmp = tempDir('identity-remove')
 afterAll(() => tmp.cleanup())
@@ -156,7 +164,7 @@ describe('identity remove <name>: one identity out of a shared home', () => {
     expect(moved.some((f) => f.startsWith('home/state/second/'))).toBe(true)
     expect(lstatSync(to).mode & 0o777).toBe(0o700)
     expect(USAGE).toContain(
-      '  identity remove <name> --relay <url>... [--to <dir>] [--project <dir>] [--dir <home>]\n',
+      '  identity remove <name> [--relay <url>...] [--to <dir>] [--project <dir>] [--dir <home>]\n',
     )
   })
 
@@ -378,5 +386,54 @@ describe('identity remove <name>: one identity out of a shared home', () => {
     expect(readdirSync(w.base).filter((e) => e.startsWith('bag-left-second-'))).toEqual([
       'bag-left-second-20261112T000000Z',
     ])
+  })
+})
+
+describe('identity remove of a local-only identity (relays [])', () => {
+  /** A home with sam on this machine only, on a terminal answering y, and a relay network that fails any call. */
+  async function localWorld() {
+    const net = noRelay()
+    const io = testIo(net)
+    io.tty = true
+    io.answers.push(true)
+    const base = join(tmp.dir, `l${n++}`)
+    const dir = join(base, 'home')
+    const sam = (await cli(io, 'keygen', 'sam', '--custody', 'file', '--dir', dir)).out[0] as string
+    makeLocalOnly(dir, 'sam')
+    return { net, io, base, dir, sam }
+  }
+
+  it('takes no --relay and contacts no relay', async () => {
+    const w = await localWorld()
+    const spy = vi.mocked(homeModule.identityRemove)
+    const before = spy.mock.calls.length
+    const ran = await cli(w.io, 'identity', 'remove', 'sam', '--to', join(w.base, 'left'), '--dir', w.dir)
+    expect(ran.code, ran.err.join(' ')).toBe(0)
+    expect(spy.mock.calls.length).toBe(before + 1)
+    expect(spy.mock.lastCall?.[1]).toMatchObject({ name: 'sam', relays: [] })
+    expect(w.net.calls).toEqual([])
+    expect(ran.out).toContain(`removed sam ${w.sam}: ${join(w.base, 'left')}`)
+    expect(existsSync(join(w.dir, 'keys', 'sam.json'))).toBe(false)
+  })
+
+  it('with --relay is refused with the reason: nothing removed, no relay asked', async () => {
+    const w = await localWorld()
+    const before = vi.mocked(homeModule.identityRemove).mock.calls.length
+    const ran = await cli(w.io, 'identity', 'remove', 'sam', '--relay', R1, '--dir', w.dir)
+    expect(ran.code).toBe(1)
+    expect(ran.err[0]).toBe(
+      'bag: usage: sam is on this machine only: no relay holds its records; run it without --relay',
+    )
+    expect(vi.mocked(homeModule.identityRemove).mock.calls.length).toBe(before)
+    expect(existsSync(join(w.dir, 'keys', 'sam.json'))).toBe(true)
+    expect(w.net.calls).toEqual([])
+  })
+
+  it('an identity with relays still needs --relay', async () => {
+    const w = await world([true])
+    const ran = await cli(w.io, 'identity', 'remove', 'second', '--dir', w.dir)
+    expect(ran.code).toBe(1)
+    expect(ran.err[0]).toBe('bag: usage: --relay is required')
+    expect(existsSync(join(w.dir, 'keys', 'second.json'))).toBe(true)
   })
 })

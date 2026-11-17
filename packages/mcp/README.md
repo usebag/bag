@@ -962,7 +962,7 @@ identity to trust (`node packages/cli/src/main.ts address <name>`).
 package:
 
 ```sh
-npx --yes --package=@usebag/bag@0.4.2 bag host install claude-code --as alice --relay <relay> --project <dir>
+npx --yes --package=@usebag/bag@0.4.3 bag host install claude-code --as alice --relay <relay> --project <dir>
 ```
 
 It first stages the package once per version in `<home>/package/versions/<version>/` (printing `wrote

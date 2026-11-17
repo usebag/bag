@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isAddress } from '@usebag/core'
-import { afterAll, describe, expect, it } from 'vitest'
+import * as homeModule from '@usebag/home'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { HOLDS_IDENTITIES, heldIdentities } from '../src/commands/keygen.ts'
 import { tempDir, testIo } from './support/io.ts'
+import { noRelay } from './support/local-only.ts'
 import { MemoryRelay } from './support/relay.ts'
 import { cli } from './support/run.ts'
 
@@ -12,6 +14,12 @@ afterAll(() => tmp.cleanup())
 let n = 0
 const home = (): string => join(tmp.dir, `home-${n++}`)
 const REFUSED = `bag: exists: ${HOLDS_IDENTITIES}`
+
+// createIdentity is watched (a pass-through spy) for the options keygen passes it.
+vi.mock('@usebag/home', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@usebag/home')>()
+  return { ...real, ...(await import('./support/local-only.ts')).homeOverrides(real) }
+})
 
 describe('keygen on a home that holds identities already: a new name needs --new', () => {
   it('a fresh home is unchanged: the first identity needs no --new', async () => {
@@ -105,5 +113,36 @@ describe('keygen on a home that holds identities already: a new name needs --new
       err: [],
     })
     expect(heldIdentities(dir)).toEqual(['jane', 'jane-agent', 'jane-agent-2'])
+  })
+})
+
+describe('keygen --local: an identity on this machine only', () => {
+  it('passes local: true to the home, contacts no relay, and the home writes relays []', async () => {
+    const net = noRelay()
+    const io = testIo(net)
+    const dir = home()
+    const made = await cli(io, 'keygen', 'sam', '--local', '--custody', 'file', '--dir', dir)
+    expect(made.code).toBe(0)
+    expect(isAddress(made.out[0])).toBe(true)
+    const create = vi.mocked(homeModule.createIdentity)
+    expect(create.mock.lastCall?.[2]).toBe('sam')
+    expect(create.mock.lastCall?.[3]).toMatchObject({ local: true, into: { custody: 'file' } })
+    expect(net.calls).toEqual([])
+    const doc = JSON.parse(readFileSync(join(dir, 'identities.json'), 'utf8'))
+    expect(doc.identities.find((e: { label: string }) => e.label === 'sam').relays).toEqual([])
+    // Without --local nothing says local.
+    expect((await cli(io, 'keygen', 'ann', '--new', '--custody', 'file', '--dir', dir)).code).toBe(0)
+    expect(create.mock.lastCall?.[3]).not.toHaveProperty('local')
+  })
+
+  it('--custody agent --local is usage: no pointer, nothing written', async () => {
+    const io = testIo(noRelay())
+    const dir = home()
+    expect((await cli(io, 'keygen', 'jane', '--dir', dir)).code).toBe(0)
+    const agent = ['--custody', 'agent', '--principal', 'jane', '--local', '--dir', dir]
+    const refused = await cli(io, 'keygen', 'jane-agent', ...agent)
+    expect(refused.code).toBe(1)
+    expect(refused.err[0]).toBe('bag: usage: --local goes with --custody file or keychain')
+    expect(existsSync(join(dir, 'agent', 'jane-agent.json'))).toBe(false)
   })
 })

@@ -4,6 +4,7 @@ import { DEFAULT_TTL, GROUP_RECORD_TTL, MAX_ENVELOPE_BYTES, MEMBERSHIP_SECONDS }
 import { GroupAdmin, GroupKeyStore } from '@usebag/edge'
 import { flag, int, list, type OptionSpec, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { homeDir, loadKeys, openEdge } from '../home.ts'
+import { refuseLocalOnly } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { NameBook } from '../names.ts'
 import { expiry } from './delegate.ts'
@@ -36,6 +37,7 @@ export async function group(args: readonly string[], io: Io): Promise<number> {
   const required = verb === 'create' ? ['relay', 'rotation-key'] : []
   const p = parse(rest, { positionals: ['name', ...spec[0]], options, required })
   const [[name, who], home] = [p.positionals as [string, string], homeDir(io, str(p, 'dir'))]
+  refuseLocalOnly(home, name) // before the key read: a keychain identity raises no dialog to be refused
   const [keys, store] = [loadKeys(io, home, name), groupStore(home, name)]
   const relays = store.state(keys.signing.address)?.relays ?? list(p, 'relay').map(relayUrl)
   const at = { home, name, keys, relay: relays[0] as string, client: io.relay({}), policy: SENDS_ONLY }

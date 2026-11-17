@@ -1,11 +1,15 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { addressCopy, KeyEpochStore } from '@usebag/edge'
+import { relayTripwire } from '@usebag/edge/test-support'
 import { describe, expect, it } from 'vitest'
 import {
   createAgentPointer,
   createIdentity,
   HOLDS_IDENTITIES,
   heldIdentities,
+  LOCAL_ONLY_SERVICE,
   readIdentities,
   refuseSecond,
   visibleLine,
@@ -130,6 +134,57 @@ describe('createIdentity', () => {
     expect(io2.lines).toEqual([])
   })
 
+  it('local: writes relays [], never the inherited ones, and keeps its first records, calling no relay', () => {
+    const home = folder()
+    // A relay is known two ways (the install env and another entry): a local identity takes neither.
+    mkdirSync(join(home, 'install'))
+    writeFileSync(join(home, 'install', 'jane.env'), 'RELAYS="https://r1.example"\n')
+    createIdentity(fakeIo(), home, 'kim', { ...FILE, allowNew: true, relays: ['https://r2.example'] })
+    const tripwire = relayTripwire()
+    const io = Object.assign(fakeIo(), { relay: () => tripwire })
+    const address = createIdentity(io, home, 'jane', { ...FILE, allowNew: true, local: true })
+    expect(tripwire.calls).toEqual([])
+    const file = join(home, 'identities.json')
+    const jane = readIdentities(file, true).identities.find((e) => e.label === 'jane')
+    expect(jane).toEqual({ label: 'jane', key: 'jane', home, relays: [], keep_alive_records: true })
+    expect(io.said).toEqual([
+      address,
+      `kept key ${address}`,
+      `kept address ${address}`,
+      `kept accept-from ${address}`,
+    ])
+    expect(io.warned[0]).toBe(`added jane to ${file} for the bag service (relays none: this machine only)`)
+    expect(new KeyEpochStore(join(home, 'key-records')).epoch(address, 1).published).toBe(false)
+    expect(addressCopy(home, 'jane', address)?.relays).toEqual([])
+  })
+
+  it('local in a keychain: kept with the keys in hand, one keychain write and no read (no dialog)', () => {
+    const home = folder()
+    const security = new FakeSecurity()
+    const io = fakeIo({ security: security.run })
+    const address = createIdentity(io, home, 'jane', {
+      into: { custody: 'keychain' },
+      defaulted: false,
+      allowNew: false,
+      local: true,
+    })
+    expect(security.calls).toBe(1)
+    expect(io.said.slice(1)).toEqual([
+      `kept key ${address}`,
+      `kept address ${address}`,
+      `kept accept-from ${address}`,
+    ])
+    expect(readIdentities(join(home, 'identities.json'), true).identities[0]?.relays).toEqual([])
+  })
+
+  it('local with relays is usage, and nothing is made', () => {
+    const home = folder()
+    expect(() =>
+      createIdentity(fakeIo(), home, 'jane', { ...FILE, local: true, relays: ['https://r1.example'] }),
+    ).toThrow('usage: jane on this machine only takes no relays')
+    expect(existsSync(join(home, 'keys'))).toBe(false)
+  })
+
   it('refuses a reserved name, a second identity without allowNew, and a name a custody holds', () => {
     const { home } = homeWith('jane')
     expect(() => createIdentity(fakeIo(), home, 'kim.service', { ...FILE, allowNew: true })).toThrow(
@@ -138,6 +193,48 @@ describe('createIdentity', () => {
     expect(() => createIdentity(fakeIo(), home, 'kim', FILE)).toThrow(`exists: ${HOLDS_IDENTITIES}`)
     expect(() => createIdentity(fakeIo(), home, 'jane', FILE)).toThrow(/EEXIST/)
     expect(createIdentity(fakeIo(), home, 'kim', { ...FILE, allowNew: true })).toMatch(/^ed25519:/)
+  })
+})
+
+describe('createIdentity local while an older bag service runs', () => {
+  // A pid that is gone: a child that has exited.
+  const dead = spawnSync('true').pid as number
+  const service = (pid: number, version: string) => JSON.stringify({ pid, version, contract: 1 })
+  const cases: [string, string | null, boolean][] = [
+    ['0.4.2, alive: refused', service(process.pid, '0.4.2'), false],
+    ['0.4.3, alive: taken', service(process.pid, LOCAL_ONLY_SERVICE), true],
+    ['0.4.4, alive: taken', service(process.pid, '0.4.4'), true],
+    ['0.0.0 (an unbuilt service), alive: taken', service(process.pid, '0.0.0'), true],
+    ['0.4.2, a dead pid: taken', service(dead, '0.4.2'), true],
+    ['no service.json: taken', null, true],
+    ['malformed JSON: taken', '{"pid": ', true],
+  ]
+  it.each(cases)('%s', (_, text, taken) => {
+    const { home } = homeWith('kim')
+    createIdentity(fakeIo(), home, 'kim2', { ...FILE, allowNew: true, relays: ['https://r1.example'] })
+    if (text !== null) {
+      mkdirSync(join(home, 'run'))
+      writeFileSync(join(home, 'run', 'service.json'), text)
+    }
+    const file = join(home, 'identities.json')
+    const before = readFileSync(file)
+    const records = () =>
+      existsSync(join(home, 'key-records')) ? readdirSync(join(home, 'key-records')) : []
+    const recordsBefore = records()
+    const act = () => createIdentity(fakeIo(), home, 'jane', { ...FILE, allowNew: true, local: true })
+    if (taken) {
+      expect(act()).toMatch(/^ed25519:/)
+      expect(readIdentities(file, true).identities.find((e) => e.label === 'jane')?.relays).toEqual([])
+      return
+    }
+    expect(act).toThrow(
+      `busy: the running bag service (pid ${process.pid}) is bag 0.4.2, ` +
+        'which refuses an identities file that holds an identity on this machine only: ' +
+        'finish the update first (step P4 of the update page restarts it on the new version), then run this again',
+    )
+    expect(existsSync(join(home, 'keys', 'jane.json'))).toBe(false)
+    expect(records()).toEqual(recordsBefore)
+    expect(readFileSync(file).equals(before)).toBe(true)
   })
 })
 
@@ -169,6 +266,15 @@ describe('createAgentPointer', () => {
     expect(readIdentities(file, true).identities).toMatchObject([
       { label: 'agent1', key: 'agent1', relays: ['https://r1.example'] },
     ])
+  })
+
+  it('refuses (no-relays) a pointer to a principal on this machine only, and makes no pointer', () => {
+    const home = folder()
+    createIdentity(fakeIo(), home, 'jane', { ...FILE, local: true })
+    expect(() => createAgentPointer(fakeIo(), home, 'agent1', 'jane')).toThrow(
+      'no-relays: jane is on this machine only, and an agent identity never is',
+    )
+    expect(existsSync(join(home, 'agent', 'agent1.json'))).toBe(false)
   })
 
   it('writes no identities.json when no relay is known, and says only the address', () => {

@@ -1328,6 +1328,34 @@ MAY still deliver mail between two of its own identities without that link ever 
    `status` reads; by the bag service when it holds the identity, else by the remove itself), and deleted; mail the
    removed identity sent is deleted, with no report left in the home, its sender being gone. The rest of its spool
    leaves the home with its state.
+6. **An identity on this machine only (added 2026-11-16, bag 0.4.3).** An edge MAY hold an identity with no relays (here
+   only, in the reference's words, where one with relays is published; the reference: an `identities.json` entry whose
+   `relays` is `[]`, its one marker, made by `identity_create` with no relays after the person's Yes, or by `bag keygen
+   <name> --local`). It is made locally and nothing of it is published: its first key record (epoch 1), the edge's own
+   copy of its address record (`sealing_key` null, `relays` `[]`) and an accept-from of itself are kept unpublished in
+   its own state, and no relay is called. Item 3 finds epoch 1 there, so local delivery to and from it works from the
+   first message. It opens with no subscription, no outbox flush and no keep-alive, and every act that would reach the
+   wire is refused (the reference: `no-relays`, saying `<label> is on this machine only: give it relays with
+   identity_relays, then send again` to a tool and `<label> is on this machine only: give it relays with bag identity
+   relays <label> --relay <url>, then run this again` to a command): a republish (`bag keys rotate`, `record keep
+   <name>`; `record keep --identities` skips it, `skipped <label>: on this machine only`), a pairing code
+   (`pair_invite`, `pair_accept`), a send, ask or handoff to a peer that is not an identity of the edge, a delegation, a
+   lookup, a login of it, and every command that names it with a relay of its own (the reference: `--as` with
+   `--relay`), which would publish it outside the promotion. A local send to it that finds neither its key record nor
+   its address record copy is refused (the reference: `resolve-failed`) with its promotion as the way on, `give <label>
+   relays with identity_relays, which publishes it`, never a republish. Giving it relays is its promotion (the
+   reference: `bag identity relays` or the `identity_relays` tool, after the person's Yes to a dialog that says it
+   publishes): the relays are written, epoch 1 is published again, re-dated, a fresh address record naming the new
+   relays is signed and published, then the accept-from. A relay sees the address for the first time then, never before.
+   The promotion takes effect in the running service at once: the reference's bag service reopens the identity with
+   its new relays, with no restart.
+   Item 4 still holds: an identity whose keys an agent holds, or whose authority is a grant, never has no relays, and no
+   agent pointer is made to one that has none. A keychain identity may have none, under item 5 (the reference makes it
+   only in a terminal, `bag keygen <name> --local --custody keychain`; the window makes file keys; `--custody agent`
+   with `--local` is a usage error, `--local goes with --custody file or keychain`). Removing or unpairing such an
+   identity calls no relay, and a relay given for it is refused (the reference: `<label> is on this machine only: no
+   relay holds its records; run it without --relay`). An identity that was published is never given no relays: it is
+   removed instead (the reference refuses such an entry: `<label> was published: remove it, not its relays`).
 
 ## 10. Security considerations
 

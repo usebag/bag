@@ -88,7 +88,9 @@ describe('unpair <root> --as <name> --relay <url>...: a root leaves both places 
       const r = acceptAt(w, url)
       expect([r.owner, r.roots, r.max_bytes, r.ttl, r.iat]).toEqual([w.jane, [w.carol], 4096, 3600, T0 + 2])
     }
-    expect(USAGE).toContain('  unpair <address|domain:<host>> --as <name> --relay <url>... [--dir <home>]\n')
+    expect(USAGE).toContain(
+      '  unpair <address|domain:<host>> --as <name> [--relay <url>...] [--dir <home>]\n',
+    )
   })
 
   it('lifts a held max_bytes of exactly 65,536 to the envelope cap, and keeps 32,768', async () => {

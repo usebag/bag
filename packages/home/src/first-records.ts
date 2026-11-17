@@ -1,10 +1,21 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { MAX_ENVELOPE_BYTES, serializeRecord, signRecord } from '@usebag/core'
+import {
+  generateSealingKey,
+  MAX_ADDRESS_TTL,
+  MAX_ENVELOPE_BYTES,
+  MAX_KEY_LIFETIME,
+  serializeRecord,
+  signRecord,
+  toHex,
+} from '@usebag/core'
 import {
   Audit,
+  acceptCopy,
   acquireLock,
   type Clock,
+  coreRng,
+  type EdgeKeys,
   FsAuditSink,
   heldSomewhere,
   KeyEpochStore,
@@ -103,7 +114,8 @@ export const OFFERED_AGAIN = 'will be offered again at the next rotation'
 const RETENTION = 604_800
 
 /**
- * Publishes the first records of `name` (a key file or keychain identity of `home`) to `relays`, through `client`: one
+ * Publishes the first records of `name` (a key file or keychain identity of `home`, or one on this machine only being
+ * promoted: its kept epoch 1 goes out re-dated, its accept-from keeps the copy's roots) to `relays`, through `client`: one
  * line per record and relay, `published <kind> <address> <url>`, or `failed <kind> <address> <url> <code>` for a relay
  * that did not take it. A record no relay takes refuses with the first relay's code; the identity stays, as onboard's
  * keys stay, and nothing after that record is published. The epoch key is kept before its record goes out, so a
@@ -173,10 +185,11 @@ export async function publishFirstRecords(
     )
   }
   keepAddressCopy(home, name, rotation.address)
+  // A promoted identity's accept-from goes on from its copy's roots; a new one names only itself.
   const accept = signRecord(keys.signing, {
     kind: 'accept-from',
     owner: address,
-    roots: [address],
+    roots: [...(acceptCopy(home, name, address)?.roots ?? [address])],
     max_bytes: MAX_ENVELOPE_BYTES,
     ttl: RETENTION,
     iat: io.clock.now(),
@@ -191,4 +204,65 @@ export async function publishFirstRecords(
     throw refused('accept-from', e)
   }
   keepAcceptCopy(home, name, accept)
+}
+
+/**
+ * Keeps the first records of `name`, an identity on this machine only (relays []), in its home and publishes none: no
+ * relay client is made. Epoch 1's key goes to key-records/ unpublished (none minted when an epoch is held), so the first
+ * local send seals to it and a promotion (identity relays) republishes it re-dated; the address copy has sealing_key
+ * null and relays []; the accept-from names only itself. One cli-audit line. `keys` are the ones in hand (keygen's), so a
+ * keychain identity raises no dialog. Never publishFirstRecords with []: an empty offer passes heldSomewhere and the
+ * rotation would mark the epoch published. Returns `kept key|address|accept-from <address>`.
+ */
+export function keepFirstRecordsLocal(
+  io: HomeIo,
+  home: string,
+  name: string,
+  keys: EdgeKeys = loadKeys(io.security, home, name),
+): readonly string[] {
+  const address = keys.signing.address
+  const now = io.clock.now()
+  const store = new KeyEpochStore(join(home, 'key-records'))
+  const held = store.epochs(address)[0]
+  if (held === undefined)
+    store.put(address, 1, generateSealingKey(coreRng(io.rng)), now, now + MAX_KEY_LIFETIME)
+  const epoch = held ?? 1
+  const record = store.epoch(address, epoch)
+  keepAddressCopy(
+    home,
+    name,
+    signRecord(keys.signing, {
+      kind: 'address',
+      key: address,
+      sealing_key: null,
+      relays: [],
+      rotation_key: null,
+      revoked: [],
+      ttl: MAX_ADDRESS_TTL,
+      iat: now,
+      rotated_from: null,
+    }),
+  )
+  const accept = signRecord(keys.signing, {
+    kind: 'accept-from',
+    owner: address,
+    roots: [address],
+    max_bytes: MAX_ENVELOPE_BYTES,
+    ttl: RETENTION,
+    iat: now,
+  })
+  keepAcceptCopy(home, name, accept)
+  cliAudit(home, name, io.clock).record({
+    event: PUBLISH_EVENT,
+    decision: 'accept',
+    from: address,
+    detail: {
+      step: 'keep-local',
+      epoch,
+      sealing_key: toHex(record.key.publicKey),
+      exp: record.exp,
+      published: record.published,
+    },
+  })
+  return ['key', 'address', 'accept-from'].map((k) => `kept ${k} ${address}`)
 }

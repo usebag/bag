@@ -6,6 +6,7 @@ import { CliError, flag, list, parse, relayUrl, str, UsageError } from '../args.
 import { readChain } from '../chain.ts'
 import { addressRecords, healed, newestOf, rotateEpoch } from '../epochs.ts'
 import { changeover, checkNoWindow, cliAudit, epochStore, homeCustody, homeDir, loadKeys } from '../home.ts'
+import { refuseLocalOnly } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { instant } from '../names.ts'
 import { groupStore } from './group.ts'
@@ -69,10 +70,12 @@ async function rotate(args: readonly string[], io: Io): Promise<number> {
       dir: { type: 'string' },
       'accept-loss': { type: 'boolean' },
     },
-    required: ['relay'],
   })
   const name = p.positionals[0] as string
   const home = homeDir(io, str(p, 'dir'))
+  // A local-only identity publishes nothing until it has relays: no key read, no relay asked.
+  refuseLocalOnly(home, name)
+  if (list(p, 'relay').length === 0) throw new UsageError('--relay is required')
   const keys = loadKeys(io, home, name)
   const address = keys.signing.address
   const given = [...new Set(list(p, 'relay').map(relayUrl))]

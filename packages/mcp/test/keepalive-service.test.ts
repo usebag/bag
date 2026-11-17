@@ -1,8 +1,11 @@
-import { statSync } from 'node:fs'
+import { statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseRecord, serializeRecord, signRecord, toHex } from '@usebag/core'
-import type { Edge } from '@usebag/edge'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { type Edge, KeyEpochStore } from '@usebag/edge'
+import { fetchTripwire, relayTripwire } from '@usebag/edge/test-support'
+import { type HomeIo, keepFirstRecordsLocal } from '@usebag/home'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { parseServerConfig, type ServerConfig } from '../src/config.ts'
 import {
   KEEP_ALIVE_LAPSE_S,
   KEEP_ALIVE_OFF_CHECK_S,
@@ -12,6 +15,7 @@ import {
   RecordKeeper,
   setKeepAlive,
 } from '../src/keepalive.ts'
+import { startIdentities } from '../src/server.ts'
 import {
   FakeClock,
   ManualTimers,
@@ -19,6 +23,7 @@ import {
   P,
   type Party,
   RELAY,
+  saveKeys,
   seededRng,
   T0,
   tempDir,
@@ -200,5 +205,51 @@ describe('the keep-alive in the service', () => {
     expect(waits[0]).not.toBe(waits[1])
     c.k.stop()
     d.k.stop()
+  })
+})
+
+describe('an identity on this machine only (relays []) in a server of its own identities (--identities)', () => {
+  it('has no keeper whatever keep_alive_records says: past a tick epoch 1 is unpublished, no relay call', async () => {
+    const h = home()
+    saveKeys(h, P.alice)
+    keepFirstRecordsLocal(
+      { clock, rng: seededRng('kept') } as unknown as HomeIo,
+      h,
+      P.alice.name,
+      P.alice.keys,
+    )
+    const file = join(tmp.dir, 'identities.json')
+    const entry = { label: 'here', key: P.alice.name, home: h, relays: [], keep_alive_records: true }
+    writeFileSync(file, JSON.stringify({ version: 1, identities: [entry] }), { mode: 0o600 })
+    const wire = relayTripwire()
+    const lookups = fetchTripwire()
+    const running = await startIdentities(parseServerConfig(['--identities', file], {}) as ServerConfig, {
+      clock,
+      rng: seededRng('here'),
+      relayFor: () => wire,
+      records: () => lookups,
+      timers,
+      pid: 4242,
+      alive: () => false,
+      log: new MemoryLog(),
+      resubscribeDelayMs: () => 0,
+    })
+    try {
+      await running.ready
+      const u = running.units.get('here')
+      expect(u?.records).toBeNull()
+      // Nothing reaches the epoch's rotation either (KeyRecordAdmin.rotate refuses no-relays on an empty list).
+      const epochs = u?.opened?.epochs
+      const rotate = epochs ? vi.spyOn(epochs, 'rotate') : null
+      clock.t += TTL
+      timers.fire()
+      await new Promise((r) => setTimeout(r, 20))
+      const store = new KeyEpochStore(join(h, 'key-records'))
+      const at = P.alice.address
+      expect(store.epochs(at).map((n) => store.epoch(at, n).published)).toEqual([false])
+      expect([wire.calls, lookups.calls, rotate?.mock.calls ?? []]).toEqual([[], [], []])
+    } finally {
+      await running.stop()
+    }
   })
 })

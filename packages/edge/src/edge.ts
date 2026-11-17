@@ -269,6 +269,8 @@ export class Edge {
       ...(options.resubscribeDelayMs === undefined ? {} : { resubscribeDelayMs: options.resubscribeDelayMs }),
       ...(options.doorbell === undefined ? {} : { doorbell: options.doorbell }),
       ...(options.localRoots === undefined ? {} : { localRoots: options.localRoots }),
+      // No relays: an identity on this machine only (spec/SPEC.md 9.2), whose local rows never resolve a chain's root.
+      localOnly: options.relays.urls.length === 0,
       accepted: (row) => {
         // A local row's receipt goes back on this machine only, never on the wire (spec/SPEC.md 9.2).
         const local = row.relay === LOCAL_RELAY

@@ -6,8 +6,11 @@ export {
   type Identity,
   keyOf,
   LABEL,
+  localLabel,
+  localOnly,
   MAX_IDENTITIES,
   readIdentities,
+  refuseLocalOnly,
   removeIdentity,
   saveIdentities,
 } from '@usebag/home'

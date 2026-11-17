@@ -40,6 +40,7 @@ import { CliError, int, list, parse, relayUrl, req, str, UsageError } from '../a
 import { readChain } from '../chain.ts'
 import { epochDue, healed, rotateEpoch, staleLine } from '../epochs.ts'
 import { changeover, epochStore, homeCustody, homeDir } from '../home.ts'
+import { refuseLocalOnly } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { instant, NameBook } from '../names.ts'
 import { groupStore } from './group.ts'
@@ -287,6 +288,7 @@ export async function login(args: readonly string[], io: Io): Promise<number> {
   if (window > WINDOW_MAX) throw new UsageError(`--window is at most ${WINDOW_MAX} seconds (8 hours)`)
   if (!io.isTty) throw new CliError('no-tty', 'login asks for each first grant on its own terminal')
   const home = homeDir(io, str(p, 'dir'))
+  refuseLocalOnly(home, req(p, 'as'))
   const address = agentAddress(io, home, req(p, 'as'))
   const file = str(p, 'device')
   const device = file === undefined ? null : deviceHop(home, file, address)

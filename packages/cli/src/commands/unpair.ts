@@ -3,6 +3,7 @@ import { unpairRoot } from '@usebag/home'
 import { list, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { homeDir } from '../home.ts'
 import { homeIo, viaHome } from '../home-io.ts'
+import { localLabel } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { needTty } from '../policy.ts'
 import { isTrustRoot } from '../trust.ts'
@@ -15,7 +16,8 @@ export { failed, heldBy } from '@usebag/home'
 const S = { type: 'string' } as const
 
 /**
- * unpair <address|domain:<host>> --as <name> --relay <url>... [--dir <home>]: a terminal first (no-tty
+ * unpair <address|domain:<host>> --as <name> [--relay <url>...] [--dir <home>]: --relay required but for a local-only
+ * identity (relays [] in identities.json), which takes none (a --relay is refused); a terminal first (no-tty
  * before any network); then trust.json and the accept-from at each relay are read, and nothing is written
  * until the y, after which every relay is read again (a change while asking is stale-record). A newest
  * record of `*` is accept-all (it admits every root, and none can leave it); a root neither holds is
@@ -26,16 +28,23 @@ const S = { type: 'string' } as const
  */
 export async function unpair(args: readonly string[], io: Io): Promise<number> {
   const options = { as: S, relay: { ...S, multiple: true }, dir: S }
-  const p = parse(args, { positionals: ['root'], options, required: ['as', 'relay'] })
+  const p = parse(args, { positionals: ['root'], options, required: ['as'] })
   const root = p.positionals[0] as string
   if (!isTrustRoot(root)) {
     throw new UsageError(`${JSON.stringify(root)} is not a root: an address, or domain:<host> with no port`)
   }
   const relays = [...new Set(list(p, 'relay').map(relayUrl))]
   if (relays.length > MAX_RELAYS) throw new UsageError(`--relay names more than ${MAX_RELAYS} relays`)
-  needTty(io, 'unpair')
   const home = homeDir(io, str(p, 'dir'))
   const as = req(p, 'as')
+  // A local-only identity (relays []) published no accept-from: it unpairs with no relay told, and a --relay is refused.
+  const label = localLabel(home, as)
+  if (label !== null && relays.length > 0)
+    throw new UsageError(
+      `${label} is on this machine only: no relay holds its records; run it without --relay`,
+    )
+  if (label === null && relays.length === 0) throw new UsageError('--relay is required')
+  needTty(io, 'unpair')
   await viaHome(() => unpairRoot(homeIo(io), { home, as, root, relays }))
   return 0
 }

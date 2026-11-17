@@ -9,21 +9,29 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { parseRecord } from '@usebag/core'
 import {
+  acceptCopy,
+  addressCopy,
   type EdgeKeys,
   generateEdgeKeys,
   HomeCustody,
   KeychainCustody,
+  KeyEpochStore,
   keepAcceptCopy,
   keepAliveChoice,
+  type RelayClient,
   systemRng,
 } from '@usebag/edge'
+import { recordingRelay, relayTripwire } from '@usebag/edge/test-support'
 import { describe, expect, it } from 'vitest'
 import {
+  addToServiceHome,
   addTrust,
   identityKeepAlive,
   identityRelays,
   identityRemove,
+  keepFirstRecordsLocal,
   NameBook,
   peersPath,
   type RemoveInput,
@@ -36,6 +44,7 @@ import {
 import {
   type Answer,
   acceptFrom,
+  client,
   FakeRelay,
   FakeSecurity,
   fakeIo,
@@ -124,6 +133,95 @@ describe('identityRelays', () => {
     expect(readFileSync(file, 'utf8')).toBe(before)
   })
 
+  it('no relays for an entry that has some is usage, nothing written', async () => {
+    const { home } = homeWith('jane')
+    const file = join(home, 'identities.json')
+    saveIdentities(file, { version: 1, identities: [entry('jane', home)] })
+    await expect(identityRelays(fakeIo(), home, 'jane', [])).rejects.toThrow(
+      'usage: give jane at least one relay',
+    )
+    expect(readIdentities(file, true).identities[0]?.relays).toEqual([R1])
+  })
+
+  it('on an identity on this machine only is the promotion: epoch 1 and an address record naming the relays', async () => {
+    const { home, keys } = homeWith('jane')
+    const address = signer(keys, 'jane').address
+    const file = join(home, 'identities.json')
+    const net = new FakeRelay()
+    // Before the promotion every relay call trips the wire; at the yes a recording stub over the network takes over.
+    const tripwire = relayTripwire()
+    const recorder = recordingRelay(client(net))
+    let relay: RelayClient = tripwire
+    const local = Object.assign(fakeIo(), { relay: () => relay })
+    addToServiceHome(home, 'jane', [], undefined, true)
+    keepFirstRecordsLocal(local, home, 'jane')
+    await identityRelays(local, home, 'jane', [])
+    expect(local.said).toEqual(['relays jane  (unchanged)'])
+    const epoch1 = new KeyEpochStore(join(home, 'key-records')).epoch(address, 1)
+    // A local pairing since: the accept-from copy names a root more, which the promotion keeps.
+    local.now += 5
+    keepAcceptCopy(home, 'jane', acceptFrom(signer(keys, 'jane'), [address, bob], local.now))
+    const yes = () => {
+      relay = recorder
+      return true
+    }
+    const io = Object.assign(fakeIo({ answer: yes, now: local.now + 5 }), { relay: () => relay })
+    await identityRelays(io, home, 'jane', [R1, R2])
+    expect(tripwire.calls).toEqual([])
+    // The order: key record, then the address record naming the new relays, then the accept-from; nothing before.
+    expect(recorder.calls.every((c) => c.method === 'publish')).toBe(true)
+    expect(recorder.published.map((p) => [p.kind, p.url, p.address, p.relays])).toEqual([
+      ['key', R1, address, null],
+      ['key', R2, address, null],
+      ['address', R1, address, [R1, R2]],
+      ['address', R2, address, [R1, R2]],
+      ['accept-from', R1, address, null],
+      ['accept-from', R2, address, null],
+    ])
+    expect(io.asked).toEqual([
+      `publish jane at ${R1} ${R2}: set its relays in ${file} and publish its key, address and accept-from records?`,
+    ])
+    expect(io.said).toEqual([
+      `relays jane ${R1} ${R2}`,
+      ...['key', 'address', 'accept-from'].flatMap((k) =>
+        [R1, R2].map((u) => `published ${k} ${address} ${u}`),
+      ),
+    ])
+    expect(readIdentities(file, true).identities[0]?.relays).toEqual([R1, R2])
+    const at = (url: string, kind: string) => {
+      const bytes = net.records.get(`${url} ${address} ${kind}`)
+      return bytes === undefined ? null : (parseRecord(bytes) as unknown as Record<string, unknown>)
+    }
+    for (const url of [R1, R2]) {
+      // Epoch 1 itself, re-dated: no new epoch was minted.
+      expect(at(url, 'key')).toMatchObject({ iat: io.now })
+      expect(at(url, 'key')?.sealing_key).toBe(Buffer.from(epoch1.key.publicKey).toString('hex'))
+      expect(at(url, 'address')).toMatchObject({ sealing_key: null, relays: [R1, R2], iat: io.now })
+      expect(at(url, 'accept-from')?.roots).toEqual([address, bob])
+    }
+    const store = new KeyEpochStore(join(home, 'key-records'))
+    expect(store.epochs(address)).toEqual([1])
+    expect(store.epoch(address, 1).published).toBe(true)
+    expect(addressCopy(home, 'jane', address)?.relays).toEqual([R1, R2])
+    expect(acceptCopy(home, 'jane', address)?.iat).toBe(io.now)
+  })
+
+  it('a promotion no relay takes says the relays stay written and epoch 1 stays kept, to be offered again', async () => {
+    const { home, keys } = homeWith('jane')
+    const address = signer(keys, 'jane').address
+    const net = new FakeRelay()
+    net.down.add(R1)
+    addToServiceHome(home, 'jane', [], undefined, true)
+    keepFirstRecordsLocal(fakeIo(), home, 'jane')
+    const io = fakeIo({ relay: net, now: 1_800_000_010 })
+    await expect(identityRelays(io, home, 'jane', [R1])).rejects.toThrow(
+      'unreachable: jane is made, but no relay took its key and address record (unreachable): nothing after it was ' +
+        'published; its relays stay written and its epoch 1 stays kept, unpublished: will be offered again at the next rotation',
+    )
+    expect(readIdentities(join(home, 'identities.json'), true).identities[0]?.relays).toEqual([R1])
+    expect(new KeyEpochStore(join(home, 'key-records')).epoch(address, 1).published).toBe(false)
+  })
+
   it('a chmod to the same mode with its mtime put back, while asked, is busy too', async () => {
     const { home } = homeWith('jane')
     const file = join(home, 'identities.json')
@@ -176,6 +274,18 @@ describe('identityRemove', () => {
     ])
     expect(existsSync(join(w.home, 'keys', 'jane.json'))).toBe(false)
     expect(existsSync(join(w.home, 'keys', 'kim.json'))).toBe(true)
+  })
+
+  it('with no relays (on this machine only): no relay is told, and no line names an empty relay list', async () => {
+    const w = removal(true, { relays: [] })
+    const tripwire = relayTripwire()
+    const io = Object.assign(w.io, { relay: () => tripwire })
+    await identityRemove(io, w.input)
+    expect(io.asked[0]).toContain(`  no accept-from of ${w.jane}: nothing to re-sign`)
+    expect(io.said[0]).toBe(`no accept-from of ${w.jane}: nothing to re-sign`)
+    expect([...io.asked, ...io.said].some((l) => / at (:|$)/m.test(l))).toBe(false)
+    expect(tripwire.calls).toEqual([])
+    expect(existsSync(join(w.home, 'keys', 'jane.json'))).toBe(false)
   })
 
   it('re-signs its accept-from to name only itself, drops its trust roots and names, and its service entry', async () => {

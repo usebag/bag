@@ -13,7 +13,8 @@
     "@usebag/edge": "0.0.0"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./test-support": "./test/support/index.ts"
   },
   "scripts": {
     "test": "vitest run --coverage"

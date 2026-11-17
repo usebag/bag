@@ -1,5 +1,6 @@
 import { mkdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { MAX_RELAYS } from '@usebag/core'
 import { generateEdgeKeys, systemRng } from '@usebag/edge'
 import { describe, expect, it } from 'vitest'
 import {
@@ -9,12 +10,14 @@ import {
   keyOf,
   MAX_IDENTITIES,
   PROFILES,
+  publishedRefusal,
   readIdentities,
   relayUrl,
   removeIdentity,
   saveIdentities,
   trustedRoot,
 } from '../src/index.ts'
+import { PUBLISHED_REFUSAL, RELAYS_CASES, relaysHome } from './fixtures/identities-relays.ts'
 import { folder } from './support.ts'
 
 // The identities file: read, checked whole, written whole; entries added and removed.
@@ -47,6 +50,33 @@ describe('relayUrl, trustedRoot and PROFILES', () => {
 describe('checkIdentities', () => {
   const h = (n: string) => join(folder(), n)
 
+  it('takes or refuses each relays case of the table both readers share', () => {
+    for (const c of RELAYS_CASES) {
+      const { home } = relaysHome(folder(), 'jane', c.published)
+      const d = doc({ label: 'jane', key: 'jane', home, relays: c.relays })
+      if (c.taken) expect(() => checkIdentities(d, 'linux'), c.why).not.toThrow()
+      else expect(() => checkIdentities(d, 'linux'), c.why).toThrow(/^identities-invalid: /)
+      if (c.detail !== undefined) expect(() => checkIdentities(d, 'linux'), c.why).toThrow(c.detail('jane'))
+    }
+    expect(publishedRefusal('jane')).toBe(PUBLISHED_REFUSAL('jane'))
+  })
+
+  it('refuses relays [] on a published key named by another spelling of its home: a trailing slash, a link', () => {
+    const { home } = relaysHome(folder(), 'jane', true)
+    const link = join(folder(), 'link')
+    symlinkSync(home, link)
+    for (const at of [`${home}/`, link, `${link}/`]) {
+      const d = doc({ label: 'jane', key: 'jane', home: at, relays: [] })
+      expect(() => checkIdentities(d, 'linux'), at).toThrow(PUBLISHED_REFUSAL('jane'))
+    }
+  })
+
+  it('takes an entry with no relays, an identity on this machine only, and one with MAX_RELAYS', () => {
+    const many = Array.from({ length: MAX_RELAYS }, (_, i) => `https://r${i}.example`)
+    const d = doc(entry('a', h('a'), { relays: [] }), entry('b', h('b'), { relays: many }))
+    expect(checkIdentities(d, 'linux').identities.map((e) => e.relays.length)).toEqual([0, MAX_RELAYS])
+  })
+
   it('takes a whole file, with every optional member, and keyOf names the key', () => {
     const one = entry('one', h('a'), {
       key: 'k1',
@@ -77,7 +107,15 @@ describe('checkIdentities', () => {
       [doc(entry('A', at)), 'identities[0].label is not'],
       [doc(entry('a', at, { key: 7 })), 'identities[0].key is not a string'],
       [doc(entry('a', 'relative')), 'identities[0].home is not an absolute path'],
-      [doc({ ...entry('a', at), relays: [] }), 'identities[0].relays is not a list of 1 to'],
+      [doc({ ...entry('a', at), relays: 'x' }), 'identities[0].relays is not a list of 0 to'],
+      [
+        doc({
+          ...entry('a', at),
+          relays: Array.from({ length: MAX_RELAYS + 1 }, (_, i) => `https://r${i}.example`),
+        }),
+        `identities[0].relays is not a list of 0 to ${MAX_RELAYS} URLs`,
+      ],
+      [doc({ ...entry('a', at), relays: [R1, R1] }), 'identities[0].relays repeats a relay'],
       [doc({ ...entry('a', at), relays: ['nope'] }), 'identities[0].relays: "nope" is not a URL'],
       [doc({ ...entry('a', at), relays: [R1, `${R1}/`] }), 'identities[0].relays repeats a relay'],
       [doc(entry('a', at, { rendezvous: 'nope' })), 'identities[0].rendezvous: "nope" is not a URL'],

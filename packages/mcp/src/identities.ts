@@ -2,6 +2,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync }
 import { isAbsolute, resolve } from 'node:path'
 import { MAX_RELAYS } from '@usebag/core'
 import { checkName } from '@usebag/edge'
+import { hasPublished } from '@usebag/home'
 import {
   type Config,
   ConfigError,
@@ -169,13 +170,19 @@ function identityOf(e: unknown, i: number, wide: ServerWide): Config {
   }
   const home = str(e, 'home', bad, true)
   if (home === undefined) throw bad('home is required')
-  const relays = (list(e, 'relays', bad) ?? []).map((r) => relayUrl(r, `${at}: relays`))
+  const listed = list(e, 'relays', bad)
+  if (listed === undefined) throw bad('relays is required')
+  const relays = listed.map((r) => relayUrl(r, `${at}: relays`))
   const distinctRelays = new Set(relays).size
-  if (relays.length === 0 || relays.length > MAX_RELAYS || distinctRelays < relays.length) {
+  // No relays is an identity on this machine only (spec/SPEC.md 9.2): it publishes nothing and talks locally.
+  if (relays.length > MAX_RELAYS || distinctRelays < relays.length) {
     throw bad(
-      `relays is 1 to ${MAX_RELAYS} distinct relay URLs, not ${relays.length} (${distinctRelays} distinct)`,
+      `relays is 0 to ${MAX_RELAYS} distinct relay URLs, not ${relays.length} (${distinctRelays} distinct)`,
     )
   }
+  // A published identity is removed, never demoted: its outbox and cached records would still reach relays.
+  if (relays.length === 0 && hasPublished(home, as))
+    throw bad(`${label} was published: remove it, not its relays`)
   const given = str(e, 'rendezvous', bad)
   const trustRootTexts = list(e, 'trust_roots', bad) ?? []
   const honor = [...new Set(list(e, 'honor', bad) ?? [])]
@@ -190,7 +197,7 @@ function identityOf(e: unknown, i: number, wide: ServerWide): Config {
     as,
     home,
     relays,
-    rendezvous: given === undefined ? (relays[0] as string) : relayUrl(given, `${at}: rendezvous`),
+    rendezvous: given === undefined ? (relays[0] ?? null) : relayUrl(given, `${at}: rendezvous`),
     trustRootTexts,
     trustRoots: trustRootTexts.map((t) => trustedRoot(t, `${at}: trust_roots`)),
     honor,

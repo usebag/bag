@@ -74,8 +74,11 @@ interface Window {
   readonly dialogs: string[]
 }
 
-/** A host window on the service socket, bound to `label` by the person's typed word; every dialog answered `yes`. */
-async function window(home: string, label: string, yes = true): Promise<Window> {
+/**
+ * A host window on the service socket, bound to `label` by the person's typed word (null: bound to none); every dialog
+ * answered `yes`.
+ */
+async function window(home: string, label: string | null, yes = true): Promise<Window> {
   const socket: Socket = createConnection(join(home, 'run', 'service.sock'))
   onTestFinished(() => void socket.destroy())
   await new Promise<void>((r) => socket.once('connect', () => r()))
@@ -113,7 +116,8 @@ async function window(home: string, label: string, yes = true): Promise<Window> 
     client_capabilities: { elicitation: { form: {} } },
   })
   expect(said.result, JSON.stringify(said)).toBeDefined()
-  expect((await request('service/use', { label, via: 'typed' })).result).toMatchObject({ bound: true })
+  if (label !== null)
+    expect((await request('service/use', { label, via: 'typed' })).result).toMatchObject({ bound: true })
   return {
     rings,
     dialogs,
@@ -266,5 +270,66 @@ describe('e2e intra-home: delivery between identities of one home', () => {
     }
     expect(published).toContain(wire.envelope.id)
     expect(readdirSync(join(home, 'run'))).toContain('local-peers.json')
+  }, 60_000)
+
+  it('(intra-home, local-only) made here only in a window: first touch asked once, no rotate, no relay', async () => {
+    const w = await world('intra-home-local')
+    const home = shortHome()
+    const alice = party('personal')
+    new FsKeyStore(join(home, 'keys')).save(alice.name, { signing: alice.signing, sealing: alice.sealing })
+    keepAddressCopy(home, alice.name, addressRecord(alice, { relays: [w.url] }))
+    const file = join(home, 'identities.json')
+    const entry = { label: alice.name, key: alice.name, home, relays: [w.url] }
+    writeFileSync(file, JSON.stringify({ version: 1, identities: [entry] }), { mode: 0o600 })
+    await service(home, file)
+    // identity_create in a window bound to none, with no relays: the here-only dialog, then the kept lines.
+    const none = await window(home, null)
+    const made = await none.call('identity_create', { label: 'sam', relays: [] })
+    expect(none.dialogs).toEqual([
+      'Make sam on this machine only?\nNothing is published; it can talk to your other\n' +
+        'identities here, and you can give it relays later.',
+    ])
+    const sam = (made.lines as string[])[0] as string
+    expect(made.lines).toEqual([sam, ...['key', 'address', 'accept-from'].map((k) => `kept ${k} ${sam}`)])
+    const listed = JSON.parse(readFileSync(file, 'utf8')) as { identities: Json[] }
+    expect(listed.identities.map((i) => [i.label, i.relays])).toEqual([
+      ['personal', [w.url]],
+      ['sam', []],
+    ])
+    const a = await window(home, 'personal')
+    const s = await window(home, 'sam')
+    expect(await s.call('status')).toMatchObject({
+      relays: [],
+      reach: 'this machine only',
+      subscriptions: [],
+    })
+    // The relay's request log from here: the first touch, its Allow and both deliveries add no line to it.
+    await sleep(200)
+    const heard = relayEvents(w.relay).length
+    // The first touch, sealed to sam's kept epoch 1: held, asked once in sam's window, delivered by its Yes.
+    const one = await a.call('send', { to: [sam], type: 'chat.v1', body: { text: 'one' } })
+    expect(one).toMatchObject({ delivery: 'local', pairing: 'requested' })
+    await s.call('status')
+    expect(s.dialogs).toEqual([
+      'personal on this machine wants to message sam. Allow both ways? Their messages stay on this machine, ' +
+        'never go to a relay, and reach each agent as mail from your own identity.',
+    ])
+    const got = (await s.call('wait', { timeout_s: 5 })).message as Json
+    expect(got).toMatchObject({ id: one.id, from: alice.address, via: 'local', body: { text: 'one' } })
+    const back = await s.call('send', { to: [alice.address], type: 'chat.v1', body: 'two' })
+    expect(back).toMatchObject({ delivery: 'local' })
+    expect(((await a.call('wait', { timeout_s: 5 })).message as Json).id).toBe(back.id)
+    await sleep(200)
+    expect(relayEvents(w.relay).slice(heard)).toEqual([])
+    // A wire send of sam's is refused before any relay.
+    expect(await s.call('send', { to: [party('bob').address], type: 'chat.v1', body: 'x' })).toMatchObject({
+      error: 'no-relays',
+      detail: 'sam is on this machine only: give it relays with identity_relays, then send again',
+    })
+    expect(s.dialogs).toHaveLength(1)
+    // The relay's log names neither sam's address nor either local envelope.
+    await sleep(200)
+    for (const id of [sam.slice('ed25519:'.length), one.id, back.id])
+      expect(w.relay.stderr()).not.toContain(id)
   }, 60_000)
 })

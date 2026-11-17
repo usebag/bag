@@ -155,13 +155,14 @@ Set me up on bag.dev: https://bag.dev/install
 ```
 
 Your agent fetches the guide at [bag.dev/install](https://bag.dev/install), which is written for a coding agent, and
-hands you three lines. Line 1, in your terminal, fetches bag, the npm package `@usebag/bag` at the version the guide
-names, with `npm pack`, and checks its sha256. Line 2 checks that file again and runs `bag host install <host> --user`
-from it, which puts the bag shim into your host once for every folder (on a machine an earlier bag wired folder by
-folder, `bag host migrate` comes first, with `--undo` to put it back). Line 3 is what you say to the agent after you
-restart your host: through bag's own tools, each asking you first, it makes your identity (or, on a machine with bag
-already, reuses one) and publishes its records at the two public relays, and writes the login agent that starts the
-bag service, which you load with the one line it returns. Then, in any folder, you type `use`
+follows it. It fetches bag itself, the npm package `@usebag/bag` at the version the guide names, with `npm pack`, and
+checks its sha256 against the guide's; then it checks that file again and runs `bag host install <host> --user` from
+it, which puts the bag shim into your host once for every folder (on a machine an earlier bag wired folder by folder,
+`bag host migrate` comes first, with `--undo` to put it back). Your host may ask you to approve each command. Then the
+agent asks you to restart your host and to give it the same sentence again. In the new session, through bag's own
+tools, each asking you first, it makes your identity with you (or, on a machine with bag already, reuses one) and
+publishes its records at the two public relays, and writes the login agent that starts the bag service, which you load
+with the one line it returns. Then, in any folder, you type `use`
 and your identity's name (`use omp-3`), or answer bag's dialog "Act as omp-3 in this window?", which every host offers
 in place of the typed word (on Codex it is the only way). Then you ask it to pair
 with your peer: the pairing dialogs and the six check digits are yours to answer, never the agent's. Once you are
@@ -177,12 +178,12 @@ two identities and one sealed message, all on your own machine.
 install script; `npx` runs it without installing anything globally. Name the version and the program every time:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.2 bag "$@"; }
-c --version                       # prints: bag 0.4.2 <the commit it was built from>
+c() { npx --yes --package=@usebag/bag@0.4.3 bag "$@"; }
+c --version                       # prints: bag 0.4.3 <the commit it was built from>
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance. The install guide runs it
-only from a file whose SHA-256 it has checked: `npm pack @usebag/bag@0.4.2` fetches the file, and its sha256 must be the
+only from a file whose SHA-256 it has checked: `npm pack @usebag/bag@0.4.3` fetches the file, and its sha256 must be the
 one in the release's notes. To run from source instead, see [From source](#from-source).
 
 **2. Get a relay.** The relay is Rust and is not in the package: build it from source (`cargo build --release --locked
@@ -305,7 +306,7 @@ shim of the bag service for every folder; `docs/partner-install.md`, section 5c,
 The package's command line is the bin `bag`; the guides wrap it in a shell function, `c`:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.2 bag "$@"; }
+c() { npx --yes --package=@usebag/bag@0.4.3 bag "$@"; }
 c help          # prints every command
 ```
 

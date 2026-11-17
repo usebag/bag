@@ -142,12 +142,13 @@ describe('ac logout', () => {
   })
 
   it('refuses a record that names no relay, and keeps it', async () => {
-    // The epoch at login re-signed the held record one second past its iat, so the logout's record is T0 + 2.
+    // A record that names no relay gets no epoch at login (the edge's rotate refuses no-relays with no relay, before
+    // signing), so the held record is not re-signed and the logout's record is T0 + 1.
     const relay = new MemoryRelay()
     const h = agentHome(dir())
     publishRecord(relay, h, { relays: [] })
     const w = await granted(relay, h)
-    const file = join(h.dir, `logout-record-${T0 + 2}.json`)
+    const file = join(h.dir, `logout-record-${T0 + 1}.json`)
     expect((await w.logout()).err).toEqual([
       `bag: the logout record is kept in ${file}; it revokes ${S}`,
       `bag: no-relays: the address record of ${h.address} names no relay`,

@@ -749,6 +749,27 @@ describe('host install: what it refuses', () => {
     )
   })
 
+  it.each<[string, boolean]>([
+    ['omp', true],
+    ['claude-code', false],
+    ['codex', false],
+  ])(
+    'host remove %s refuses --relay and --rendezvous as usage errors, printing nothing',
+    async (host, project) => {
+      const w = await world()
+      const args = project ? ['--as', 'bob', '--project', w.project] : ['--user']
+      for (const [flag, value] of [
+        ['--relay', RELAY],
+        ['--rendezvous', RELAY],
+      ] as const) {
+        const ran = await cli(w.io, 'host', 'remove', host, ...args, flag, value, '--dir', w.dir)
+        expect(ran.code).toBe(1)
+        expect(ran.err[0]).toBe(`bag: usage: host remove takes no ${flag}`)
+        expect(ran.out).toEqual([])
+      }
+    },
+  )
+
   it('refuses a scope the repo does not document: claude-code --user with --as, codex --project', async () => {
     const w = await world()
     expect((await install(w, 'claude-code', '--user')).err[0]).toBe(

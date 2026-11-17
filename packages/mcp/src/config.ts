@@ -127,8 +127,8 @@ export interface Config {
   readonly as: string
   readonly home: string
   readonly relays: readonly string[]
-  /** The relay pairing codes meet at (--rendezvous; the first of `relays` by default). */
-  readonly rendezvous: string
+  /** The relay pairing codes meet at (--rendezvous; the first of `relays` by default; null with no relays). */
+  readonly rendezvous: string | null
   /** The --trust-root values as given, and as the edge's policy takes them. */
   readonly trustRootTexts: readonly string[]
   readonly trustRoots: readonly TrustedRoot[]

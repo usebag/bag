@@ -247,4 +247,22 @@ describe('status --home: the whole home, one fact per line, read-only', () => {
     await svc.close()
     expect(ran.out).toContain(`service bag 0.4.1 pid 5151 contract 1 ${join(dir, 'run', 'service.sock')}`)
   })
+
+  it('a local-only identity (served, relays []) ends its line relays none (this machine only), and no relay line names it', async () => {
+    const { dir, io } = await home('on')
+    const entry = (label: string, relays: string[]) => ({ label, key: label, home: dir, relays })
+    writeFileSync(
+      join(dir, 'identities.json'),
+      JSON.stringify({ version: 1, identities: [entry('bob', [R9, R10]), entry('alice', [])] }),
+      { mode: 0o600 },
+    )
+    const ran = await cli(io, 'status', '--home', '--dir', dir)
+    expect(ran.out.filter((l) => l.startsWith('identity ') || l.startsWith('relay '))).toEqual([
+      'identity alice key alice custody file served yes hidden no open yes spooled 0 relays none (this machine only)',
+      'identity bob key bob custody file served yes hidden no open no spooled 2',
+      'identity carol key carol custody keychain served no hidden no open no spooled 0',
+      `relay ${R10} for bob`,
+      `relay ${R9} for bob`,
+    ])
+  })
 })

@@ -16,7 +16,15 @@ import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { ElicitRequestSchema, type ElicitResult } from '@modelcontextprotocol/sdk/types.js'
-import { type AddressRecord, buildEnvelope, newThread, parseEnvelope, parseRecord, SUITE } from '@usebag/core'
+import {
+  type AddressRecord,
+  buildEnvelope,
+  newThread,
+  parseEnvelope,
+  parseRecord,
+  SUITE,
+  signHop,
+} from '@usebag/core'
 import {
   type EdgeKeys,
   HomeCustody,
@@ -25,10 +33,11 @@ import {
   LOCAL_RELAY,
   readInvite,
 } from '@usebag/edge'
-import { readRemoved, recordRemoved } from '@usebag/home'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { fetchTripwire, relayTripwire } from '@usebag/edge/test-support'
+import { type HomeIo, keepFirstRecordsLocal, readRemoved, recordRemoved } from '@usebag/home'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LINK_ASK_MS } from '../src/ask.ts'
-import type { ServiceConnection } from '../src/binding.ts'
+import { pairingsOfTable, type ServiceConnection } from '../src/binding.ts'
 import { parseConfig, parseServerConfig, type ServerConfig } from '../src/config.ts'
 import { dropLocalPair, localPeersPath, localWordPath, spoolDir } from '../src/local.ts'
 import {
@@ -40,6 +49,7 @@ import {
   LINK_AGAIN,
   LINK_DIGITS,
   OLD_EXTENSION,
+  type Pairings,
   SHOW_EVERY_S,
 } from '../src/pairing.ts'
 import { type Running, startServer } from '../src/server.ts'
@@ -83,11 +93,19 @@ let relay: MemoryRelay
 let log: MemoryLog
 const live: Service[] = []
 const sockets: Socket[] = []
+/** The labels start lists with relays [] (on this machine only), and the tripwire every one of them gets. */
+let localOnly: readonly string[] = []
+let wire = relayTripwire()
+/** The record source (DNS, well-known, a relay's record) of every start with an identity on this machine only. */
+let lookups = fetchTripwire()
 
 beforeEach(() => {
   home = mkdtempSync('/tmp/bsl-')
   relay = new MemoryRelay()
   log = new MemoryLog()
+  localOnly = []
+  wire = relayTripwire()
+  lookups = fetchTripwire()
 })
 afterEach(async () => {
   for (const s of sockets.splice(0)) s.destroy()
@@ -127,7 +145,7 @@ async function start(
   prep: () => void = () => {},
 ): Promise<Service> {
   const ids: [string, Party][] = [['personal', P.alice], ['research', P.carol], ...others]
-  for (const [, p] of ids) {
+  for (const [label, p] of ids) {
     if (agent.includes(p)) new HomeCustody(home).agent.create(p.name, p.keys)
     else if (keychain.includes(p)) {
       mkdirSync(join(home, 'keychain'), { recursive: true, mode: 0o700 })
@@ -143,14 +161,22 @@ async function start(
         mode: 0o600,
       })
     } else saveKeys(home, p)
-    // The home's own copy of each address record, as onboard keeps it: where a local seal reads the sealing key.
-    keepAddressCopy(home, p.name, addressRecord(p))
+    // The home's own copy of each address record, as onboard keeps it: where a local seal reads the sealing key. An
+    // identity on this machine only has the first records identity_create keeps instead (epoch 1, unpublished).
+    if (!localOnly.includes(label)) keepAddressCopy(home, p.name, addressRecord(p))
+    else
+      keepFirstRecordsLocal(
+        { clock: new FakeClock(), rng: seededRng(label) } as unknown as HomeIo,
+        home,
+        p.name,
+        p.keys,
+      )
   }
   const identities = ids.map(([label, p]) => ({
     label,
     key: p.name,
     home,
-    relays: [RELAY],
+    relays: localOnly.includes(label) ? [] : [RELAY],
     trust_roots: [P.bob.address],
     ...entry,
   }))
@@ -160,8 +186,8 @@ async function start(
   const deps: ServiceDeps = {
     clock: new FakeClock(),
     rng: seededRng('service-local'),
-    relayFor: () => relay,
-    records: fakeRecords(new Map()),
+    relayFor: (c) => (c.relays.length === 0 ? wire : relay),
+    records: localOnly.length > 0 ? () => lookups : fakeRecords(new Map()),
     timers: new ManualTimers(),
     pid: 4243,
     alive: () => false,
@@ -382,6 +408,172 @@ describe('a local send to an identity with no key in this home', () => {
         `run \`bag keys rotate carol --relay ${RELAY}\` once for research, then send again`,
     })
     expect(String(refused.detail)).not.toContain('<') // a command a person pastes holds no placeholder
+  })
+})
+
+describe('an identity on this machine only (relays []): local mail, and no relay call before its promotion', () => {
+  const HERE = 'research is on this machine only: give it relays with identity_relays, then send again'
+  const ASK =
+    'personal on this machine wants to message research. Allow both ways? Their messages stay on this machine, never ' +
+    'go to a relay, and reach each agent as mail from your own identity.'
+
+  it('opens with no subscription and no keeper; a first send asks the Allow once, delivers, no rotate', async () => {
+    word(true)
+    localOnly = ['research']
+    const s = await start()
+    const u = s.unit('research')
+    expect(u?.config).toMatchObject({ relays: [], rendezvous: null })
+    expect([u?.records, u?.subscriptions.list()]).toEqual([null, []])
+    const a = await window(s, 'personal')
+    expect(((await call(a, 'status')).home as Json).identities).toEqual([
+      expect.objectContaining({ label: 'research', relays: [], reach: 'this machine only' }),
+    ])
+    const one = await call(a, 'send', chat([P.carol.address], 'one'))
+    expect(one).toMatchObject({ delivery: 'local', pairing: 'requested' })
+    const b = await window(s, 'research')
+    expect(await call(b, 'status')).toMatchObject({
+      relays: [],
+      reach: 'this machine only',
+      subscriptions: [],
+    })
+    expect(b.dialogs).toEqual([ASK])
+    // Sealed to epoch 1, which identity_create keeps unpublished: no resolve-failed asking for a rotation.
+    expect(((await call(b, 'wait', { timeout_s: 1 })).message as Json).id).toBe(one.id)
+    expect(await call(b, 'send', chat([P.alice.address], 'back'))).toMatchObject({ delivery: 'local' })
+    // A local ask's resume goes on with it: no no-relays for a call that only waits.
+    const asked = await call(b, 'ask', { to: P.alice.address, body: 'q', timeout_s: 0 })
+    expect(asked).toMatchObject({
+      timed_out: true,
+      resume: expect.any(String),
+      question: { delivery: 'local' },
+    })
+    const again = await call(b, 'ask', { resume: asked.resume, timeout_s: 0 })
+    expect([again.error, again.timed_out]).toEqual([undefined, true])
+    expect(b.dialogs).toEqual([ASK])
+    expect(log.lines.some((l) => JSON.stringify(l).includes('keys rotate'))).toBe(false)
+    expect([wire.calls, lookups.calls, onRelay()]).toEqual([[], [], []])
+  })
+
+  it('refuses every wire tool no-relays before any dialog, key read or relay call, the console ones too', async () => {
+    word(true)
+    localOnly = ['research']
+    const s = await start({}, { allow_delegate: true })
+    const b = await window(s, 'research')
+    for (const [tool, args] of [
+      ['send', chat([P.bob.address])],
+      ['ask', { to: P.bob.address, body: 'q', timeout_s: 0 }],
+      ['handoff', { to: P.bob.address, threads: ['a'.repeat(64)] }],
+      ['delegate', { to: P.bob.address, caveats: ['type=chat.*'], exp: '+60' }],
+      ['lookup', { address: P.bob.address }],
+      ['pair_invite', { name: 'bob' }],
+      ['pair_accept', { name: 'bob' }],
+      ['keep_alive', { word: 'on' }],
+    ] as const)
+      expect([tool, await call(b, tool, args)]).toEqual([
+        tool,
+        { error: 'no-relays', detail: HERE, as: 'research' },
+      ])
+    expect(b.dialogs).toEqual([])
+    // The console's pairing (Pairings.consoleInvite) passes no guard: its key read refuses it first.
+    expect(await call(b, 'pair_cancel')).toMatchObject({ cancelled: false })
+    const p = pairingsOfTable(s.table)[0] as Pairings
+    const epochs = s.unit('research')?.opened?.epochs
+    const rotate = epochs ? vi.spyOn(epochs, 'rotate') : null
+    await expect(
+      p.consoleInvite({ ttl: 600, opened: () => {}, ask: async () => false }),
+    ).rejects.toMatchObject({
+      code: 'no-relays',
+    })
+    const seen = [wire.calls, lookups.calls, onRelay(), relay.rendezvous.size, rotate?.mock.calls ?? []]
+    expect(seen).toEqual([[], [], [], 0, []])
+  })
+
+  it("an own agent's chained local mail to it is refused before policy; its sender reads the fix", async () => {
+    word(true)
+    localOnly = ['research']
+    allowedRow()
+    const rng = seededRng('chained')
+    // personal's agent key, under personal's hop: its root is personal, which research's allowed pair trusts locally.
+    const env = buildEnvelope({
+      from: P.session.keys.signing,
+      to: [{ address: P.carol.address, sealingKey: P.carol.keys.sealing.publicKey }],
+      auth: [signHop(P.alice.keys.signing, P.session.address, [], T0 + 3600)],
+      type: 'chat.v1',
+      thread: newThread((n) => rng.bytes(n)),
+      body: { text: 'chained' },
+      ts: T0,
+      rng: (n) => rng.bytes(n),
+    })
+    // Spooled before the start, as a send to research while it was closed leaves it: drained at its open.
+    const s = await start({}, {}, [], [], [], () => {
+      mkdirSync(spoolDir(home, 'carol'), { recursive: true, mode: 0o700 })
+      writeFileSync(join(spoolDir(home, 'carol'), `${env.envelope.id}.env`), env.bytes, { mode: 0o600 })
+    })
+    const a = await window(s, 'personal')
+    await until(() => readdirSync(spoolDir(home, 'carol')).filter((f) => f.endsWith('.env')).length === 0)
+    // No unit signs as the agent key, so the report goes to the chain's root (auth[0].iss): personal, which reads it.
+    expect([...s.units.values()].map((u) => u.address)).not.toContain(P.session.address)
+    expect(await call(a, 'status', { id: env.envelope.id })).toMatchObject({
+      delivery: 'local',
+      status: HERE,
+      reason: 'no-relays',
+    })
+    // no-relays is the mapping of the edge's policy-refused for a chained row at a receiver with relays [] (refusalOf).
+    const spool = log.lines.filter((l) => l.event === 'local-spool' && l.fields.label === 'research')
+    expect(spool.map((l) => l.fields.code)).toEqual(['no-relays'])
+    expect([wire.calls, lookups.calls]).toEqual([[], []])
+  })
+
+  it('a chained local row refused for another reason (untrusted-root) reaches its sender as that reason', async () => {
+    word(true)
+    localOnly = ['research']
+    allowedRow()
+    const rng = seededRng('chained-other')
+    // personal's own key under a root research does not trust locally: refused before the local-only rule is reached.
+    const env = buildEnvelope({
+      from: P.alice.keys.signing,
+      to: [{ address: P.carol.address, sealingKey: P.carol.keys.sealing.publicKey }],
+      auth: [signHop(P.org.keys.signing, P.alice.address, [], T0 + 3600)],
+      type: 'chat.v1',
+      thread: newThread((n) => rng.bytes(n)),
+      body: { text: 'other root' },
+      ts: T0,
+      rng: (n) => rng.bytes(n),
+    })
+    const s = await start({}, {}, [], [], [], () => {
+      mkdirSync(spoolDir(home, 'carol'), { recursive: true, mode: 0o700 })
+      writeFileSync(join(spoolDir(home, 'carol'), `${env.envelope.id}.env`), env.bytes, { mode: 0o600 })
+    })
+    const a = await window(s, 'personal')
+    await until(() => readdirSync(spoolDir(home, 'carol')).filter((f) => f.endsWith('.env')).length === 0)
+    const told = await call(a, 'status', { id: env.envelope.id })
+    expect(told).toMatchObject({ delivery: 'local', reason: 'untrusted-root' })
+    expect(told.status).not.toBe(HERE)
+    expect([wire.calls, lookups.calls]).toEqual([[], []])
+  })
+
+  it('refuses a lookup of its own address no-relays, relays hint or not: no relay or record is read', async () => {
+    word(true)
+    localOnly = ['research']
+    const s = await start()
+    const b = await window(s, 'research')
+    for (const args of [{ address: P.carol.address }, { address: P.carol.address, relays: [RELAY] }])
+      expect(await call(b, 'lookup', args)).toEqual({ error: 'no-relays', detail: HERE, as: 'research' })
+    expect([wire.calls, lookups.calls, onRelay()]).toEqual([[], [], []])
+  })
+
+  it('with no key record to seal to, the fix is its promotion, never a keys rotate that would publish it', async () => {
+    word(true)
+    localOnly = ['research']
+    const s = await start()
+    rmSync(join(home, 'key-records'), { recursive: true, force: true })
+    rmSync(join(home, 'records', 'carol.address.json'), { force: true })
+    const a = await window(s, 'personal')
+    const refused = await call(a, 'send', chat([P.carol.address]))
+    expect(refused).toMatchObject({ error: 'resolve-failed' })
+    expect(String(refused.detail)).toContain('give research relays with identity_relays, which publishes it')
+    expect(String(refused.detail)).not.toContain('keys rotate')
+    expect([wire.calls, lookups.calls]).toEqual([[], []])
   })
 })
 

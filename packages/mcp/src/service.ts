@@ -122,6 +122,8 @@ import {
   LOCAL_PER_DAY,
   LOCAL_PER_MINUTE,
   type LocalHome,
+  onlyHere,
+  reachOf,
   registerTools,
   type ServiceActs,
   type Sibling,
@@ -396,6 +398,20 @@ function writeWhole(path: string, body: string): void {
   renameSync(tmp, path)
 }
 
+/**
+ * A rejected local row's code as its sender is told: one with hops that a receiver on this machine only refused before
+ * policy is no-relays (the edge's localOnly rule, receiver.ts, whose audit cause is no-relays and whose fix names the
+ * mailbox; the sender's text names the label, onlyHere); any other, the row's reason. This is an inference, not a read
+ * of that audit cause: for a local row with hops at a receiver with relays [], policy.decide never runs, so that guard
+ * is the row's only source of policy-refused. Anything that comes to refuse it policy-refused first changes this.
+ */
+const refusalOf = (u: Unit, row: InboxRow, bytes: Uint8Array): string =>
+  row.state === 'rejected' &&
+  row.reason === 'policy-refused' &&
+  u.config.relays.length === 0 &&
+  parseEnvelope(bytes).auth.length > 0
+    ? 'no-relays'
+    : (row.reason ?? 'internal')
 /** One pair request's key in the asking set: its requester and recipient (labels hold no line break). */
 const askKey = (from: string, to: string): string => `${from}\n${to}`
 
@@ -1121,8 +1137,9 @@ export class Service implements ServiceHome {
    * Re-reads the identities file (each hello and each service/use, as names.json is read per use): an entry added since
    * is offered and bindable at once (a key file opens now); a label gone from the file is refused to new binds and
    * listed no more, and its unit stops once no window is bound to it (a bound window keeps acting as it until it
-   * closes or unbinds: never dropped under it). A changed entry of a label still listed takes effect at its next
-   * return or the next start. Never during a drain or for a lent label; an unreadable file changes nothing.
+   * closes or unbinds: never dropped under it). A changed entry of a label still listed is not taken here: its relays
+   * and rendezvous at its next give-back (#takeBack, #giveBack: #follow), the rest at the next start. Never during a
+   * drain or for a lent label; an unreadable file changes nothing.
    */
   #refresh(): void {
     if (this.#draining) return
@@ -1517,6 +1534,7 @@ export class Service implements ServiceHome {
                   label: u.config.label,
                   address: (own(u.config.label) as Own).address,
                   relays: u.config.relays,
+                  ...reachOf(u.config.relays),
                   open: u.opened !== null,
                   pair: this.#pairLine(label, u.config.label),
                 }))
@@ -1538,14 +1556,16 @@ export class Service implements ServiceHome {
         // is printed whole with the unit's own relays, each shell-quoted, so it can be pasted as it is.
         if (key === null) {
           const relays = (this.units.get(label) as Unit).config.relays
+          // On this machine only (relays []), a rotation would publish it: the way on is its promotion, by its Yes.
           const fix =
             relays.length === 0
-              ? `\`bag keys rotate ${shellWord(name)}\` with --relay and each of its relay URLs`
-              : `\`bag keys rotate ${shellWord(name)} ${relays.map((r) => `--relay ${shellWord(r)}`).join(' ')}\``
+              ? `give ${label} relays with identity_relays, which publishes it`
+              : `run \`bag keys rotate ${shellWord(name)} ${relays.map((r) => `--relay ${shellWord(r)}`).join(' ')}\`` +
+                ` once for ${label}`
           throw new ToolError(
             'resolve-failed',
             `${label} has no key record and no address record copy in this home, so a local send has nothing to seal ` +
-              `to: run ${fix} once for ${label}, then send again`,
+              `to: ${fix}, then send again`,
           )
         }
         return { address: x.address, sealingKey: key }
@@ -2065,8 +2085,9 @@ export class Service implements ServiceHome {
       return { spooled: true }
     }
     const row = await this.#ingest(o, bytes)
-    if (row.state === 'rejected')
-      throw new ToolError(row.reason ?? 'internal', `the identity ${label} refused it (${row.reason})`)
+    const why = refusalOf(u, row, bytes)
+    if (why === 'no-relays') throw new ToolError(why, onlyHere(label))
+    if (row.state === 'rejected') throw new ToolError(why, `the identity ${label} refused it (${row.reason})`)
     return { spooled: false }
   }
 
@@ -2091,8 +2112,8 @@ export class Service implements ServiceHome {
         const failed = row.state === 'rejected' && row.reason === 'open-failed'
         // Every refusal is logged with its code (the word off, the pair dropped, a key rotated); only open-failed is kept.
         if (row.state === 'rejected') {
-          this.#log.log('warn', 'local-spool', { label: u.config.label, code: row.reason ?? 'internal' })
-          this.#failedLocal(bytes, u.config.label, row.reason ?? 'internal')
+          this.#log.log('warn', 'local-spool', { label: u.config.label, code: refusalOf(u, row, bytes) })
+          this.#failedLocal(bytes, u.config.label, refusalOf(u, row, bytes))
         }
         unspool(file, failed)
       } catch (e) {
@@ -2113,7 +2134,9 @@ export class Service implements ServiceHome {
     const env = parseEnvelope(bytes)
     // The sender by its address, open or not (#addressOf reads its custody entry): one not open yet gets the line at
     // its open (s1: the start's expiry runs before any identity opens).
-    const sender = [...this.units.values()].find((x) => this.#addressOf(x) === env.from)
+    // An agent key's chained mail is its principal's to hear of (the chain's root), when no unit signs as the key.
+    const by = (a: string | undefined) => [...this.units.values()].find((x) => this.#addressOf(x) === a)
+    const sender = by(env.from) ?? by(env.auth[0]?.iss)
     const detail = { relay: LOCAL_RELAY, delivery: 'failed-local', reason, to: label }
     const entry: AuditEntry = { event: 'publish', decision: 'reject', id: env.id, from: env.from, detail }
     if (sender === undefined) return
@@ -2547,7 +2570,8 @@ export class Service implements ServiceHome {
     const unit = this.units.get(label) as Unit
     // The CLI may have moved or re-made it: its class is read again from the home, never kept from before the lend.
     this.#custody.set(label, classOf(this.home, unit.config.as))
-    if (!this.#exists(label)) {
+    const entry = this.#entry(label)
+    if (entry === null) {
       this.#release(label)
       await unit.stop()
       this.#removedAtReturn(label, unit)
@@ -2555,6 +2579,7 @@ export class Service implements ServiceHome {
       this.#log.log('info', 'return', { label, removed: true })
       return { returned: true, label, open: false, removed: true }
     }
+    this.#follow(unit, entry)
     // An agent identity with no session and no window bound to it was never opened (it opens at a bind, with its
     // agent's y): it goes back to that, as a Keychain identity does, never asking a y at a give-back. Reopened, its
     // preflight would refuse on this very lend, and the give-back would run to its deadline (a defect on main).
@@ -2639,12 +2664,14 @@ export class Service implements ServiceHome {
     const unit = this.units.get(label)
     if (unit === undefined) return
     this.#custody.set(label, classOf(this.home, unit.config.as))
-    if (!this.#exists(label)) {
+    const entry = this.#entry(label)
+    if (entry === null) {
       void unit.stop()
       this.#removedAtReturn(label, unit)
       this.units.delete(label)
       return
     }
+    this.#follow(unit, entry)
     // L7: wait on the CLI's identity lock only, then open (a key file) or go back to opening at the next bind.
     const poll = this.#deps.lockPollMs ?? REOPEN_MS
     const again = (): void => {
@@ -2686,7 +2713,7 @@ export class Service implements ServiceHome {
       this.#preflightSaid.delete(c.label)
       try {
         start = openAgentUnit(
-          { ...c, session: null },
+          { ...c, relays: unit.config.relays, rendezvous: unit.config.rendezvous, session: null },
           c.as,
           { caveats: this.grantCaveats(c.label), declined: 'type use and the name to ask again' },
           { clock: d.clock, rng: d.rng, timers: d.timers, pid: d.pid, alive: d.alive },
@@ -2705,7 +2732,9 @@ export class Service implements ServiceHome {
       start.close()
       throw Object.assign(e as object, { retry: false })
     }
-    return { config: start.config }
+    // The relays the unit holds now (#follow at a give-back), never a cached start's: they and its client stay paired.
+    const { relays, rendezvous } = unit.config
+    return { config: { ...start.config, relays, rendezvous } }
   }
 
   /**
@@ -2873,16 +2902,28 @@ export class Service implements ServiceHome {
     }
   }
 
-  /** Whether the identity is still in the identities file and in custody (re-read from disk). */
-  #exists(label: string): boolean {
+  /** The identity's entry, re-read from disk, while it is in the identities file and in custody; else null. */
+  #entry(label: string): Config | null {
     let list: ServerConfig['identities']
     try {
       list = this.#deps.reread?.() ?? this.#config.identities
     } catch {
-      return false
+      return null
     }
     const c = list.find((d) => d.label === label)
-    return c !== undefined && inCustody(this.home, c.as)
+    return c !== undefined && inCustody(this.home, c.as) ? c : null
+  }
+
+  /**
+   * A give-back's reopen takes the entry's relays and rendezvous as the file has them now (bag identity relays, or the
+   * identity_relays act, rewrote them during the lend): its relay client, edge, keeper and subscriptions are made from
+   * them, so relays [] given relays publishes and subscribes with no restart. An unchanged entry changes nothing.
+   */
+  #follow(unit: Unit, c: Config): void {
+    const was = unit.config
+    if (c.rendezvous === was.rendezvous && c.relays.join(' ') === was.relays.join(' ')) return
+    const next = { ...was, relays: c.relays, rendezvous: c.rendezvous }
+    unit.follow(next, this.#tracked(c.label, this.#deps.relayFor(next, this.#stop.signal)))
   }
 }
 

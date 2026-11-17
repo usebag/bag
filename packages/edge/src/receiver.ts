@@ -7,6 +7,7 @@ import {
   type Hop,
   isAcError,
   openSealed,
+  POLICY_REFUSED,
   type PolicyCode,
   parseEnvelope,
   type SealedContent,
@@ -86,6 +87,11 @@ export interface ReceiverOptions {
   readonly receipts?: Pick<Receipts, 'take'>
   /** Roots trusted for a row whose relay is LOCAL_RELAY only (the bag service's own injection, spec/SPEC.md 9.2). */
   readonly localRoots?: () => readonly string[]
+  /**
+   * The receiving identity is on this machine only (no relays): a LOCAL_RELAY row with hops is refused before policy,
+   * which would resolve its root's records at the network. False by default.
+   */
+  readonly localOnly?: boolean
 }
 
 /** The relay of a row the bag service injects between identities of one home: no relay URL can be it (not http). */
@@ -518,6 +524,18 @@ export class Receiver {
         })
       }
       const local = row.relay === LOCAL_RELAY ? (this.#o.localRoots?.() ?? []) : []
+      // A local row is judged by the local roots alone: one from another root is refused here, never resolved (a DNS
+      // TXT lookup and a well-known fetch for a domain root would reach the network for mail that never left the home).
+      if (row.relay === LOCAL_RELAY && !local.includes(chain.root))
+        return this.#reject(row, 'policy', 'untrusted-root', env, chain.root)
+      // A chain's root needs its address record for the revoked list: an identity on this machine only reads none.
+      if (row.relay === LOCAL_RELAY && this.#o.localOnly === true && env.auth.length > 0) {
+        const fix = `give ${mailbox} relays with identity_relays, then send again`
+        return this.#reject(row, 'policy', POLICY_REFUSED, env, chain.root, undefined, {
+          cause: 'no-relays',
+          fix,
+        })
+      }
       decision = await policy.decide(chain, env.auth, { ts: env.ts, now, waived, pinned, local })
     } catch (e) {
       // A verdict rejects; a local fault (the store, say) propagates, and the row stays received for recover().

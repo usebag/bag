@@ -59,9 +59,11 @@ export const USAGE = `bag: the bag v0 command line (pre-release)
 
 usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
 
-  keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--new] [--dir <home>]
+  keygen <name> [--custody file|keychain] [--keychain <file>] [--keychain-access prompt|security] [--new] [--local] [--dir <home>]
       a signing key and a separate sealing key; prints the address only. On a home that holds identities already, a
-      new name needs --new (else exists). --custody keychain keeps both in one item
+      new name needs --new (else exists). --local: on this machine only, relays [] and its first records kept
+      here, nothing published (identity relays gives it relays later; not with --custody agent). --custody
+      keychain keeps both in one item
       of a macOS keychain (the default keychain, or --keychain), which no application reads without a dialog
       (--keychain-access prompt, the default) or which /usr/bin/security reads while the keychain is unlocked
       (security, for a host no one watches); with no --custody, the keychain on macOS for a person at a terminal
@@ -126,7 +128,8 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
   pairings [--watch] [--org <domain>] [--dir <home>]
       the console's pairings for this machine's enterprise agent, once or every 15 s: peer invite's ceremony with
       the console's person typing the digits; a link the console revokes, or whose term ends, is unpaired
-  unpair <address|domain:<host>> --as <name> --relay <url>... [--dir <home>]
+  unpair <address|domain:<host>> --as <name> [--relay <url>...] [--dir <home>]
+      --relay is required but for an identity on this machine only, which takes none and tells no relay;
       the one way a root leaves: on a terminal, after one y, removes it from <home>/trust.json and from
       the newest accept-from of <name> (re-signed, max_bytes and ttl kept, published at each relay);
       refused accept-all under a held *, not-trusted when neither holds it. A root that onboard's cron
@@ -141,8 +144,9 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
   identity keep-alive on|off|default <name> [--dir <home>]
       on a terminal: whether the bag service keeps the identity's records alive, in <home>/run/keep-alive.json; on
       and off hold until changed, default leaves it to the service's rule; prints "keep-alive <name> on|off|default"
-  identity remove <name> --relay <url>... [--to <dir>] [--project <dir>] [--dir <home>]
-      takes one identity out of a home that may keep others, on a terminal after one y that names every change;
+  identity remove <name> [--relay <url>...] [--to <dir>] [--project <dir>] [--dir <home>]
+      --relay is required but for an identity on this machine only, which takes none and tells no relay; takes
+      one identity out of a home that may keep others, on a terminal after one y that names every change;
       nothing is deleted but local mail held for a pair of it, which is failed to its senders (by the bag service
       at its give-back when one runs) and dropped; its entry leaves <home>/identities.json. Its accept-from is re-signed to name only its own address at each relay (a relay that does
       not take it stops the run before anything local changes); trust.json loses the roots of that record no other
@@ -298,7 +302,9 @@ usage: ${programName('bag', 'packages/cli/src/main.ts')} <command> [options]
   wake-hook --identities <file> [--max <seconds>] [--exit-code <n>] [--no-idle-wake] [--print]
       the same for every identity of an identities file, each by its own doorbell; a ring names the identity's label
   session-code --as <principal> --session auto [--dir <home>]: for a synchronous SessionStart hook, prints the grant request's code as JSON
-  host install <claude-code|codex|omp> --as <name> --relay <url>... [--rendezvous <url>] [--trust-root <address>]... (--project <dir> | --user) [--mode worker|mcp [--session auto:codex --grant-caveat <caveat>...]] [--dir <home>]
+  host install <claude-code|codex|omp> --as <name> [--relay <url>...] [--rendezvous <url>] [--trust-root <address>]... (--project <dir> | --user) [--mode worker|mcp [--session auto:codex --grant-caveat <caveat>...]] [--dir <home>]
+      --relay is required but for an identity on this machine only, which takes none (a --relay or --rendezvous for
+      it is refused): its entry keeps relays [] and nothing is republished;
       claude-code --project <dir>: the MCP server in <dir>/.mcp.json and a SessionStart and a Stop wake-hook in
       <dir>/.claude/settings.json; codex --user [--mode worker|mcp]: worker (the default; Codex has no idle wake) prints
       the inbox --watch --exec 'codex exec ...' line and writes nothing, mcp writes ~/.codex/config.toml and a Stop

@@ -39,6 +39,7 @@ import { auditedPublish } from '@usebag/home'
 import { CliError, flag, int, list, parse, relayUrl, req, str, UsageError } from '../args.ts'
 import { currentKey, epochDue, laggingLines, rotateEpoch } from '../epochs.ts'
 import { checkNoWindow, cliAudit, homeCustody, homeDir, loadKeys } from '../home.ts'
+import { refuseLocalOnly } from '../identities.ts'
 import type { Io } from '../io.ts'
 import { stableMains, stableNode } from '../packaged.ts'
 import { refuseReserved } from '../service-home.ts'
@@ -134,6 +135,7 @@ export async function onboard(args: readonly string[], io: Io): Promise<number> 
   if (roots.length > MAX_ROOTS) throw new UsageError(`--accept names more than ${MAX_ROOTS} roots`)
   if (roots.includes(WILDCARD_ROOT) && roots.length > 1) throw new UsageError('--accept * stands alone')
   const home = resolve(homeDir(io, str(p, 'dir')))
+  refuseLocalOnly(home, name)
   const out = resolve(str(p, 'out') ?? join(home, 'serve', domain))
   const up = relative(out, home)
   if (up !== '..' && !up.startsWith(`..${sep}`) && !isAbsolute(up)) {
@@ -146,6 +148,8 @@ export async function onboard(args: readonly string[], io: Io): Promise<number> 
   if (orgKey === name) {
     throw new UsageError('--org-key names the agent itself: the org key is another identity')
   }
+  // The org key signs the served records and publishes at the relays: refused as the agent is, before any write.
+  refuseLocalOnly(home, orgKey)
   // The custody checks each name (1 to 64 of [a-z0-9._-]) before anything is written.
   const custody = homeCustody(io, home)
   for (const n of [orgKey, name]) custody.holder(n)
