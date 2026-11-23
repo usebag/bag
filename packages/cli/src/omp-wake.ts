@@ -912,11 +912,14 @@ export async function ompConfirm(
     withdrawn === undefined ? AbortSignal.timeout(ms) : AbortSignal.any([AbortSignal.timeout(ms), withdrawn])
   const t0 = now()
   const yes = await ui.confirm(title, message, { initialIndex: 1, signal }).catch(() => null)
+  // Any answer faster than a person (OMP_FAST_MS) is no answer, a Yes included: no host may answer for the person
+  // (0.4.4, as the service's unseenAnswer).
+  if (now() - t0 < OMP_FAST_MS) return null
   if (yes === true) return true
-  return yes === null || signal.aborted || now() - t0 < OMP_FAST_MS ? null : false
+  return yes === null || signal.aborted ? null : false
 }
 
-/** A confirm answered No faster than this (ms) was answered by no person (as the service's FAST_ANSWER_MS). */
+/** A confirm answered faster than this (ms), Yes or No, was answered by no person (as the service's FAST_ANSWER_MS). */
 export const OMP_FAST_MS = 250
 
 /**

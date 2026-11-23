@@ -440,7 +440,7 @@ telemetry.bag.dev; `telemetry-send.ts` is the only file with network code.
   sessions, `other` on a tie or with none. `telemetryReport(env, day)` is the
   preview: the machine's spool for the day under its id, or `PREVIEW_ID` (32 zeros) before `on`.
 - **The schema's copy**: `src/telemetry-schema.ts` copies the Worker's `src/schema.ts` and `builds.ts`, and
-  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (2b46de32). The Worker lives in usebag/infra at
+  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (85037b8c). The Worker lives in usebag/infra at
   `workers/telemetry/` since 0.4.2 (here, `deploy/telemetry/`, before), and from 0.4.2 the constant names a usebag/infra
   commit, so the edge cannot import the Worker's file. `test/telemetry-report.test.ts` imports the Worker's files where
   `TELEMETRY_WORKER_SRC` names them, fails on any difference, and runs the Worker's `checkReport` on the reports it

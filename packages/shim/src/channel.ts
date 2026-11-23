@@ -160,18 +160,33 @@ export function startOf(pid: number): string | null {
   }
 }
 
-/** A process as ps shows it: its parent and its command's base name. */
-export type PsRow = { readonly ppid: number; readonly comm: string } | null
+/**
+ * A process as ps shows it: its parent, its command's base name, and its owner's uid and controlling terminal (null
+ * for none: ps prints `??` on macOS, `?` on Linux). uid and tty are absent where a caller's row does not give them.
+ */
+export type PsRow = {
+  readonly ppid: number
+  readonly comm: string
+  readonly uid?: number
+  readonly tty?: string | null
+} | null
 
 export function psRow(pid: number): PsRow {
   try {
-    const out = execFileSync('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], {
+    const out = execFileSync('ps', ['-o', 'ppid=,uid=,tty=,comm=', '-p', String(pid)], {
       encoding: 'utf8',
       timeout: 2000,
       stdio: ['ignore', 'pipe', 'ignore'],
     })
-    const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(out)
-    return m === null ? null : { ppid: Number(m[1]), comm: (m[2] as string).split('/').at(-1) as string }
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(out)
+    if (m === null) return null
+    const tty = m[3] as string
+    return {
+      ppid: Number(m[1]),
+      uid: Number(m[2]),
+      tty: /^[?-]+$/.test(tty) ? null : tty,
+      comm: (m[4] as string).split('/').at(-1) as string,
+    }
   } catch {
     return null
   }
@@ -192,6 +207,49 @@ export function hostPidOf(ppid: number, ps: (pid: number) => PsRow = psRow): num
     pid = row.ppid
   }
   return pid
+}
+
+/** The variable omp's interactive TUI sets to its own pid at startup; every command it runs inherits it. */
+export const OWNER_ENV = 'PI_TERMINAL_OWNER_PID'
+
+const isOmp = (row: PsRow): row is NonNullable<PsRow> => row !== null && row.comm === 'omp'
+
+/**
+ * omp 19 runs a window's MCP servers under one shared agent core, an omp process with no terminal, so the parent walk
+ * (hostPidOf) ends at the core and not at the window whose extension holds the consent link and reads the wake files.
+ * The window's pid is then PI_TERMINAL_OWNER_PID, which omp sets on every MCP server it starts. It is taken only when
+ * the walk ended at an omp with no controlling terminal (`walked`) and the variable names another live omp of this
+ * user that has one; else null, and the walk stands. The variable is inherited by every command an omp window runs,
+ * so a Claude Code or an `omp -p` started from that window's shell carries it too: their walks end at claude, or at an
+ * omp that keeps the terminal, and the variable is never read for them. On omp 18 the walk ends at the window itself
+ * (it has the terminal), so nothing changes. Only ps rows are read (ppid, uid, tty, comm), never a command line.
+ */
+export function terminalOwner(
+  walked: number,
+  env: Readonly<Record<string, string | undefined>>,
+  ps: (pid: number) => PsRow = psRow,
+  uid: number = process.getuid?.() ?? -1,
+): number | null {
+  const raw = env[OWNER_ENV]
+  if (raw === undefined || !/^[1-9]\d{0,9}$/.test(raw)) return null
+  const owner = Number(raw)
+  if (owner === walked) return null
+  const host = ps(walked)
+  if (!isOmp(host) || host.tty !== null) return null
+  const row = ps(owner)
+  return isOmp(row) && row.uid === uid && typeof row.tty === 'string' ? owner : null
+}
+
+/**
+ * Whether another live shim already holds the window `owner`'s channel files (<owner>.json, .bound or .ring names a
+ * shim pid that is alive): then a shim that found `owner` only through the inherited variable does not take that key.
+ * The window's own shim starts with its session and holds it first. heldByOther guards a string key only, so the key
+ * goes to it as a string.
+ */
+export function ownerHeld(home: string, owner: number, shimPid: number): boolean {
+  return [indexOf(home, owner), boundOf(home, owner), ringOf(home, owner)].some((f) =>
+    heldByOther(f, String(owner), shimPid),
+  )
 }
 
 /** A hook's ancestors, nearest first, up to eight, stopping at pid 1. */

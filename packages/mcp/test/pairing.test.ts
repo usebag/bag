@@ -35,7 +35,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseConfig } from '../src/config.ts'
 import { incompleteLine } from '../src/keepalive.ts'
 import {
+  askUnseen,
   BUSY_HERE,
+  bindUnseen,
   CODEX_FLOOR,
   FAST_ANSWER_MS,
   fitName,
@@ -119,6 +121,14 @@ const accept = (content: Record<string, string | boolean>): ElicitResult => ({ a
 const stepping = (ms: number) => {
   let t = 0
   return () => (t += ms)
+}
+/**
+ * A monotonic clock whose step is set per dialog: an answer that sets `step` first makes its own dialog read as taking
+ * `step` (#form reads the clock before the dialog and after the answer).
+ */
+const perDialog = () => {
+  const c = { t: 0, step: 1000, mono: () => (c.t += c.step) }
+  return c
 }
 const iso = (s: number): string => new Date(s * 1000).toISOString()
 const EXP = iso(T0 + 600)
@@ -348,8 +358,8 @@ async function clean(invite: string | null, code: string | null): Promise<void> 
 }
 
 /** Alice invites and Bob accepts: up to the request held at Alice's server, before her compare dialog. */
-async function requested() {
-  const alice = await side(P.alice)
+async function requested(aliceMono?: () => number) {
+  const alice = await side(P.alice, true, [], aliceMono === undefined ? {} : { mono: aliceMono })
   const bob = await side(P.bob)
   const invited = await alice.call('pair_invite', { name: 'bob' })
   const invite = inviteOf(alice)
@@ -1358,19 +1368,112 @@ describe('no-elicitation for a host that showed no dialog', () => {
     await clean(null, null)
   })
 
-  // P3
-  it('a later dialog declined in 10 ms stays declined: the person saw the first', async () => {
+  // P3, 0.4.4: every form, not the first alone (the VS Code extension declined the six-digit dialog in 24 ms).
+  it.each([
+    ...answers,
+    ['accepted with No', () => accept({ confirm: false })],
+    ['accepted with Yes', () => accept({ confirm: true })],
+  ] as [string, () => Answer][])(
+    'the second form (the check-digits confirm) %s in 10 ms is no-elicitation: nothing sent or written',
+    async (_, answer) => {
+      const alice = await side(P.alice)
+      const c = perDialog()
+      const bob = await side(P.bob, true, [], { mono: c.mono, client: CODEX })
+      await alice.call('pair_invite', { name: 'bob' })
+      const invite = inviteOf(alice)
+      bob.person.push(
+        () => {
+          c.step = 1000
+          return accept({ invite })
+        },
+        () => {
+          c.step = 10
+          return answer()
+        },
+      )
+      const out = await bob.call('pair_accept', { name: 'alice' })
+      expect([out.value.error, out.value.detail]).toEqual(['no-elicitation', noDialog('codex', 'fast')])
+      expect(files(bob)).toEqual([null, null])
+      await clean(invite, codeIn(bob.dialogs[1]))
+    },
+  )
+
+  it('the second form declined at 300 ms is still the person: declined', async () => {
     const alice = await side(P.alice)
-    const bob = await side(P.bob, true, [], { mono: stepping(10), client: CODEX })
+    const c = perDialog()
+    const bob = await side(P.bob, true, [], { mono: c.mono, client: CODEX })
     await alice.call('pair_invite', { name: 'bob' })
     const invite = inviteOf(alice)
     bob.person.push(
       () => accept({ invite }),
-      () => ({ action: 'decline' }),
+      () => {
+        c.step = 300
+        return { action: 'decline' }
+      },
     )
     expect((await bob.call('pair_accept', { name: 'alice' })).value.error).toBe('declined')
     expect(files(bob)).toEqual([null, null])
     await clean(invite, codeIn(bob.dialogs[1]))
+  })
+
+  it('the first form accepted in 10 ms is unseen too: no host answers for the person (0.4.4)', async () => {
+    const alice = await side(P.alice)
+    const bob = await side(P.bob, true, [], { mono: stepping(10), client: CODEX })
+    await alice.call('pair_invite', { name: 'bob' })
+    const invite = inviteOf(alice)
+    bob.person.push(() => accept({ invite }))
+    expect((await bob.call('pair_accept', { name: 'alice' })).value.error).toBe('no-elicitation')
+    expect(files(bob)).toEqual([null, null])
+    expect(relay.records.get(`${RELAY} ${P.bob.address} accept-from`)).toBeUndefined()
+    await clean(invite, null)
+  })
+
+  it("the third form (the inviter's six digits) declined in 10 ms is no-elicitation: nothing written on either side", async () => {
+    const c = perDialog()
+    const { alice, bob, invite, code, asked, resume } = await requested(c.mono)
+    alice.person.push(() => {
+      c.step = 10
+      return { action: 'decline' }
+    })
+    const out = await alice.call('pair_invite', { resume })
+    expect(out.value.error).toBe('no-elicitation')
+    clock.t = T0 + 601
+    expect((await bob.call('pair_accept', { resume: asked.value.resume })).value.error).toBe('no-answer')
+    expect([files(alice), files(bob)]).toEqual([
+      [null, null],
+      [null, null],
+    ])
+    await clean(invite, code)
+  })
+
+  it('every text for an unseen answer ends asking the model not to call again: no budget stops a loop', () => {
+    for (const surface of [undefined, null, 'cli', 'claude-vscode', 'claude-desktop']) {
+      expect(bindUnseen(surface), String(surface)).toContain('Do not call')
+      for (const kind of ['claude-code', 'codex', 'omp', 'other']) {
+        expect(askUnseen(kind, surface), `${kind} ${surface}`).toContain('Do not call')
+        expect(noDialog(kind, 'fast', '', surface), `${kind} ${surface}`).toContain('Do not call')
+      }
+    }
+  })
+
+  it('noDialog: the surface changes the words only, and only for Claude Code', () => {
+    const plain = noDialog('claude-code', 'fast')
+    expect(noDialog('claude-code', 'fast', '', 'cli')).toBe(plain)
+    expect(noDialog('claude-code', 'fast', '', null)).toBe(plain)
+    expect(noDialog('codex', 'fast', '', 'claude-vscode')).toBe(noDialog('codex', 'fast'))
+    const vscode = noDialog('claude-code', 'fast', '', 'claude-vscode')
+    expect(vscode).toContain(
+      'This host answered the dialog at once, without showing it to your user, so nothing was written.',
+    )
+    expect(vscode).toContain(
+      "Claude Code's VS Code extension does this with every dialog (Claude Code issue 98256).",
+    )
+    expect(vscode).toContain(
+      'Your user pairs from Claude Code in a terminal, or with bag pair; typing use and the name still binds in this window.',
+    )
+    expect(noDialog('claude-code', 'fast', '', 'claude-desktop')).toContain(
+      'Claude Desktop does this with every dialog',
+    )
   })
 
   // P4: the numeric core against 0.113.0, any prerelease tag ignored; a compatibility gate, never a trust boundary.

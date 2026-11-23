@@ -338,6 +338,35 @@ describe('the hello', () => {
     )
   })
 
+  it('accepts a hello whose shim member carries a surface, known or not (the parser of 0.4.3 reads no member of shim)', async () => {
+    const s = await start()
+    for (const surface of ['claude-vscode', 'claude-desktop', 'cli', 'something-else', 7]) {
+      const l = await connect(s)
+      const r = await l.request(
+        'service/hello',
+        helloOf(s, { shim: { version: '0.4.4', pid: 4242, surface } }),
+      )
+      expect(r.result, JSON.stringify(r)).toBeDefined()
+    }
+  })
+
+  it("keeps the shim's surface on the connection when allow-listed, else none; a top-level surface is an unknown member", async () => {
+    const s = await start()
+    const surfaceOf = async (shim: Json | undefined): Promise<unknown> => {
+      await hello(s, shim === undefined ? {} : { shim })
+      return lastConn(s).surface
+    }
+    expect(await surfaceOf({ version: '0.4.4', pid: 1, surface: 'claude-vscode' })).toBe('claude-vscode')
+    expect(await surfaceOf({ version: '0.4.4', pid: 1, surface: 'claude-desktop' })).toBe('claude-desktop')
+    expect(await surfaceOf({ version: '0.4.4', pid: 1, surface: 'cli' })).toBe('cli')
+    expect(await surfaceOf({ version: '0.4.4', pid: 1, surface: 'vscode' })).toBeNull()
+    expect(await surfaceOf({ version: '0.4.3', pid: 1 })).toBeNull()
+    expect(await surfaceOf(undefined)).toBeNull()
+    const l = await connect(s)
+    expect(codeOf(await l.request('service/hello', helloOf(s, { surface: 'claude-vscode' })))).toBe('usage')
+    await l.closed
+  })
+
   it('checks the token before anything else: without it, an unknown member or a bad shape is bad-auth too', async () => {
     const s = await start()
     for (const params of [
@@ -1402,6 +1431,13 @@ async function call(l: Line, name: string, args: Json = {}): Promise<Json> {
   return JSON.parse(result.content?.[0]?.text ?? '{}') as Json
 }
 
+/**
+ * A person's pace (0.4.4): an answer sooner than FAST_ANSWER_MS after its dialog went out is unseen, and the service's
+ * dialog clocks are the real one here, so a scripted answer waits this long first.
+ */
+const PERSON_MS = 300
+const atPersonPace = (): Promise<void> => new Promise((r) => setTimeout(r, PERSON_MS))
+
 /** Answers every dialog this line client is sent: the address question with an empty Yes, every other cancelled. */
 function person(l: Line): void {
   const loop = async (): Promise<void> => {
@@ -1411,6 +1447,7 @@ function person(l: Line): void {
       const handle = (params._meta as Json)[DIALOG_META]
       const props = Object.keys(((params.requestedSchema as Json).properties as Json) ?? {})
       const result = props.join() === 'address' ? { action: 'accept', content: {} } : { action: 'cancel' }
+      await atPersonPace()
       l.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } })
     }
   }
@@ -2027,7 +2064,11 @@ describe("service.json's live counts: pairings, lends and asking", () => {
     const ctx = {
       config: { home },
       clock: { now: () => T0 },
-      mono: () => 0,
+      // A person's pace (0.4.4): each read moves a second, so the cancel below is the person's, not unseen.
+      mono: (
+        (t) => () =>
+          (t += 1000)
+      )(0),
       log: { log: () => {} },
       opened: null,
     } as unknown as ToolContext
@@ -2205,6 +2246,7 @@ describe('an empty home: the service starts with no identity and serves only the
     const req = await l.next((m) => m.method === 'elicitation/create')
     const params = req.params as Json
     const handle = (params._meta as Json)[DIALOG_META]
+    await atPersonPace()
     l.send({
       jsonrpc: '2.0',
       id: req.id,
@@ -2394,6 +2436,7 @@ describe('an empty home: the service starts with no identity and serves only the
       as: null,
     })
     const handle = ((req.params as Json)._meta as Json)[DIALOG_META]
+    await atPersonPace()
     l.send({ jsonrpc: '2.0', id: req.id, result: { action: 'cancel', _meta: { [DIALOG_META]: handle } } })
     expect(await on).toMatchObject({ error: 'cancelled', as: null })
     expect(await call(l, 'telemetry', { word: 'status' })).toEqual({
@@ -2403,6 +2446,7 @@ describe('an empty home: the service starts with no identity and serves only the
     // After a Yes, off removes the id and says how to have the reports already sent erased.
     const yes = call(l, 'telemetry', { word: 'on' })
     const again = await l.next((m) => m.method === 'elicitation/create')
+    await atPersonPace()
     l.send({
       jsonrpc: '2.0',
       id: again.id,

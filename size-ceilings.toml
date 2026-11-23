@@ -89,7 +89,7 @@ path = 'packages/mcp/src'
 # adds about 580 lines counted bottom-up from B part 1's measured 699 for six tools; 15236 plus 580 is 15816, and
 # 15816 times 1.1 is 17397.6, rounded up. The margin also covers the high estimate of 880 (16116). If C1 and C2 together
 # measure above 17398, a second decision entry from the measured figure comes before the gate, by the same rule.
-ceiling = 17398 # earlier 16000, 14276 14276, 12895, 8690, 7738, 6939, 6257, 5312, 4417 and 3910; raised 2026-10-27 from 3300 by 15 percent (the recommended 3,400 plus 15%); earlier 3300 (2026-10-26, from 2800); measured 2399, then 2363
+ceiling = 19187 # raised 2026-11-23 from 17398 for omp 19 and the dialog guard, 0.4.4: measured on main ac064894 17336, with lane A 4331ffa7 17336, with lane B 573bafc4 17442, with both 17442; 17442 times 1.1 is 19186.2, rounded up; earlier 17398, 16000, 14276 14276, 12895, 8690, 7738, 6939, 6257, 5312, 4417 and 3910; raised 2026-10-27 from 3300 by 15 percent (the recommended 3,400 plus 15%); earlier 3300 (2026-10-26, from 2800); measured 2399, then 2363
 
 [enterprise-client]
 path = 'packages/enterprise-client/src'
@@ -155,4 +155,4 @@ path = 'packages/shim/src'
 # First ceiling 2026-11-12, 2111, by the rule of the latest raises (the measured figure plus 10 percent, rounded up): the
 # bag service shim measured 1919 with this file's command on the change that set it, and 1919
 # times 1.1 is 2110.9. Proposed with the shim; it stands on the maintainer's decision entry.
-ceiling = 2111
+ceiling = 2427 # raised 2026-11-23 from 2111 for omp 19 and the dialog guard, 0.4.4: measured on main ac064894 2079, with lane A 4331ffa7 2183, with lane B 573bafc4 2102, with both 2206; 2206 times 1.1 is 2426.6, rounded up

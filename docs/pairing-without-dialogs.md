@@ -77,8 +77,10 @@ digits out; do not send them the same way you sent the code.
 
 When your host cannot show the pairing dialog, the `pair_invite` and `pair_accept` tools do not fail silently. They
 return `no-elicitation` with what to change in your host, never a terminal command (since 2026-11-12; before, they named
-a `pair` line). The same answer comes when the host answers the first dialog in under 250 ms, sooner than a person can
-(`codex exec` declines every dialog at once), and from a Codex older than 0.113.0. For Codex it names the interactive
+a `pair` line). The same answer comes when the host answers any of its dialogs in under 250 ms, sooner than a person can
+(`codex exec` declines every dialog at once, and so does Claude Code's VS Code extension, without showing it: Claude Code
+issue 98256), and from a Codex older than 0.113.0. In the VS Code extension or Claude Desktop the answer says so, and
+names Claude Code in a terminal, or `bag pair`, as the way to pair; typing use and the name still binds there. For Codex it names the interactive
 `codex` TUI rather than `codex exec`, Codex 0.113.0 or later, and an approval policy that lets MCP servers ask
 (`on-request`, the default, is enough); for omp, an interactive session that uses the bag service through bag's
 extension (a per-folder bag server cannot pair); for another host, its interactive form and the setting that lets MCP

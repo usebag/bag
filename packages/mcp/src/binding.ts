@@ -7,7 +7,7 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js'
 import type { Logger } from './log.ts'
 import { NAME } from './names.ts'
-import { FAST_ANSWER_MS, type Pairings, shortAddress } from './pairing.ts'
+import { bindUnseen, type Pairings, shortAddress, unseenAnswer } from './pairing.ts'
 import type { GrantSlot } from './regrant.ts'
 import { type ConnectionGrant, type WindowGrant, windowGrant } from './session.ts'
 import { type ToolContext, ToolError } from './tools.ts'
@@ -41,6 +41,8 @@ export interface ServiceConnection {
     readonly inputHook: boolean
     readonly raw: Readonly<Record<string, unknown>>
   }
+  /** The Claude Code surface from the hello (wording only); absent or null when none. */
+  readonly surface?: string | null
   readonly closed: boolean
   onClose(listener: () => void): () => void
   elicit(
@@ -462,6 +464,10 @@ export class Bindings {
       row.asking = false
     }
     if (conn.closed) throw new ToolError('cancelled', NOT_REACHED)
+    // The timing first (unseenAnswer): an answer faster than a person, of any kind, is no-elicitation. It binds nothing
+    // and leaves no refusal memory, so a host that answers for the person can neither bind nor refuse a label.
+    if (unseenAnswer(this.#mono() - t0, r?.action ?? 'cancel'))
+      throw new ToolError('no-elicitation', bindUnseen(conn.surface))
     const yes = r?.action === 'accept' ? r.content : undefined
     if (yes !== undefined) {
       const chosen = label ?? (typeof yes.identity === 'string' ? yes.identity : '')
@@ -472,8 +478,6 @@ export class Bindings {
       this.#check(conn, chosen)
       return this.#bind(conn, chosen, 'dialog')
     }
-    if (this.#mono() - t0 < FAST_ANSWER_MS)
-      throw new ToolError('no-elicitation', 'this host answered the bind dialog at once, without showing it')
     throw new ToolError('cancelled', NOT_REACHED)
   }
 

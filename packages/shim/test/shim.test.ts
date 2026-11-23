@@ -105,6 +105,31 @@ describe('the hello and initialize', () => {
     h.shim.close()
   })
 
+  it('carries the Claude Code surface (CLAUDE_CODE_ENTRYPOINT) inside shim when it is one of the three, else none', async () => {
+    const cases: [string | undefined, string | undefined][] = [
+      ['claude-vscode', 'claude-vscode'],
+      ['claude-desktop', 'claude-desktop'],
+      ['cli', 'cli'],
+      ['sdk-ts', undefined],
+      [undefined, undefined],
+    ]
+    for (const [value, surface] of cases) {
+      const h = harness(home, {
+        env: { CLAUDECODE: '1', ...(value === undefined ? {} : { CLAUDE_CODE_ENTRYPOINT: value }) },
+      })
+      await up(h)
+      const shim = (svc.hellos.at(-1) as { shim: Record<string, unknown> }).shim
+      expect(shim, String(value)).toEqual({
+        version: SHIM_VERSION,
+        pid: 4242,
+        ...(surface === undefined ? {} : { surface }),
+      })
+      // Never a top-level member: a service up to 0.4.3 refuses one it does not know.
+      expect(Object.keys(svc.hellos.at(-1) as object)).not.toContain('surface')
+      h.shim.close()
+    }
+  })
+
   it('reads the host kind from the environment first: OMPCODE beats CLAUDECODE; codex only from the client name', async () => {
     const h = harness(home, { env: { OMPCODE: '1', CLAUDECODE: '1' }, inputHook: true })
     await up(h)

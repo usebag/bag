@@ -221,6 +221,13 @@ async function call(l: Line, name: string, args: Json = {}): Promise<Json> {
   return JSON.parse(result.content?.[0]?.text ?? '{}') as Json
 }
 
+/**
+ * A person's pace (0.4.4): an answer sooner than FAST_ANSWER_MS after its dialog went out is unseen, and the service's
+ * dialog clocks are the real one here, so a scripted answer is sent this long after the dialog arrived.
+ */
+const PERSON_MS = 300
+const atPersonPace = (): Promise<void> => new Promise((r) => setTimeout(r, PERSON_MS))
+
 /** The next dialog of window `l`: its message, and how to answer it (Yes, or no answer). */
 async function dialog(l: Line): Promise<{ message: string; answer(yes: boolean): void }> {
   const req = await l.next((m) => m.method === 'elicitation/create')
@@ -230,7 +237,9 @@ async function dialog(l: Line): Promise<{ message: string; answer(yes: boolean):
     message: String(params.message),
     answer: (yes) => {
       const result = yes ? { action: 'accept', content: { confirm: true } } : { action: 'cancel' }
-      l.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } })
+      void atPersonPace().then(() =>
+        l.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } }),
+      )
     },
   }
 }
@@ -743,6 +752,7 @@ describe('identity_create through the tool, in a window bound to no identity', (
       ACT_QUESTIONS.create('jane', ['relay-one.example.com', 'http://relay.test:8080/r'])?.message,
     )
     const handle = (params._meta as Json)[DIALOG_META]
+    await atPersonPace()
     w.send({
       jsonrpc: '2.0',
       id: req.id,
@@ -1012,7 +1022,9 @@ describe("host_wire and unwire: a proposal for the window's own folder, for the 
       params,
       answer: (content) => {
         const result = content === null ? { action: 'cancel' } : { action: 'accept', content }
-        l.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } })
+        void atPersonPace().then(() =>
+          l.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } }),
+        )
       },
     }
   }
