@@ -39,7 +39,14 @@ interface Fake extends ServiceConnection {
 
 let n = 0
 function conn(
-  o: { elicit?: boolean; hook?: boolean; host?: string; cwd?: string; person?: Answer[] } = {},
+  o: {
+    elicit?: boolean
+    hook?: boolean
+    host?: string
+    cwd?: string
+    person?: Answer[]
+    surface?: string
+  } = {},
 ): Fake {
   const closers = new Set<() => void>()
   const c = {
@@ -47,6 +54,7 @@ function conn(
     host: o.host ?? 'claude-code',
     cwd: o.cwd ?? '/work/a',
     capabilities: { elicitation: o.elicit ?? true, inputHook: o.hook ?? false, raw: {} },
+    ...(o.surface === undefined ? {} : { surface: o.surface }),
     closed: false,
     dialogs: [] as ElicitRequestFormParams[],
     notices: [] as [string, Readonly<Record<string, unknown>>][],
@@ -147,6 +155,51 @@ describe('the ways into bound', () => {
     expect(await code(t.bindByDialog(conn({ person: [{ action: 'decline' }] }), 'omp'))).toBe(
       'no-elicitation',
     )
+  })
+
+  it('any answer within 250 ms, a Yes or a No included, is no-elicitation: nothing bound, no refusal remembered (0.4.4)', async () => {
+    // A clock whose step is the time each dialog takes: 10 ms (unseen) or 300 ms (a person).
+    let [t, step] = [0, 10]
+    const home = { home: '/h', identities: () => ids(['omp', 'home-key']), draining: false }
+    const b = new Bindings(home, { mono: () => (t += step), custody: () => 'home-key' })
+    for (const a of [{ action: 'decline' }, { action: 'cancel' }, new Error('gone'), yes] as Answer[]) {
+      const c = conn({ person: [a] })
+      expect(await code(b.bindByDialog(c, 'omp'))).toBe('no-elicitation')
+      expect(b.state(c)).toBe('unbound')
+    }
+    // An instant accept carrying No leaves no refusal: the person's slow Yes on the same connection binds at once after.
+    const c = conn({ person: [{ action: 'accept', content: { bind: false } }, yes] })
+    expect(await code(b.bindByDialog(c, 'omp'))).toBe('no-elicitation')
+    step = 300
+    expect((await b.bindByDialog(c, 'omp')).granted).toBe('dialog')
+    expect(c.dialogs).toHaveLength(2)
+    // At 300 ms an accept carrying No is the person's No, and it is remembered: the next use asks no dialog.
+    const d = conn({ person: [{ action: 'accept', content: { bind: false } }, yes] })
+    expect(await code(b.bindByDialog(d, 'omp'))).toBe('declined')
+    expect(await code(b.bindByDialog(d, 'omp'))).not.toBe('ok')
+    expect(d.dialogs).toHaveLength(1)
+  })
+
+  it('the surface changes the words only: the same outcomes on cli, claude-vscode, claude-desktop and none', async () => {
+    const texts: Record<string, string> = {}
+    for (const surface of ['cli', 'claude-vscode', 'claude-desktop', undefined]) {
+      let [t, step] = [0, 10]
+      const home = { home: '/h', identities: () => ids(['omp', 'home-key']), draining: false }
+      const b = new Bindings(home, { mono: () => (t += step), custody: () => 'home-key' })
+      const c = conn({ person: [{ action: 'decline' }, yes], ...(surface ? { surface } : {}) })
+      const e = await b.bindByDialog(c, 'omp').catch((x: unknown) => x)
+      expect((e as ToolError).code).toBe('no-elicitation')
+      texts[surface ?? 'none'] = (e as ToolError).message
+      step = 300
+      expect((await b.bindByDialog(c, 'omp')).granted).toBe('dialog')
+    }
+    expect(texts.cli).toBe(texts.none)
+    expect(texts.cli).toContain('this host answered the bind dialog at once, without showing it')
+    expect(texts['claude-vscode']).toContain("Claude Code's VS Code extension does this with every dialog")
+    expect(texts['claude-vscode']).toContain(
+      'Your user binds this window by typing use and the identity name in it.',
+    )
+    expect(texts['claude-desktop']).toContain('Claude Desktop does this with every dialog')
   })
 
   it('a connection with neither a dialog nor a hook cannot bind, and the refusal names what the person can do', async () => {

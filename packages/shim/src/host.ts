@@ -26,3 +26,16 @@ export function toolTimeoutMs(kind: HostKind): number | null {
 
 /** How long before the host's tool timeout a still-running call is answered with a resume token, in milliseconds. */
 export const RESUME_MARGIN_MS = 10_000
+
+/**
+ * The Claude Code surface, from CLAUDE_CODE_ENTRYPOINT (measured: cli in a terminal, claude-vscode under the VS Code
+ * extension, claude-desktop under Claude Desktop), or null for anything else or none. Sent in the hello's shim member;
+ * the service uses it to word a refusal only, never to decide (packages/mcp pairing.ts SURFACES, the same three).
+ */
+export type Surface = 'cli' | 'claude-vscode' | 'claude-desktop'
+const SURFACES: readonly string[] = ['cli', 'claude-vscode', 'claude-desktop']
+
+export function surfaceOf(env: Readonly<Record<string, string | undefined>>): Surface | null {
+  const v = env.CLAUDE_CODE_ENTRYPOINT
+  return v !== undefined && SURFACES.includes(v) ? (v as Surface) : null
+}

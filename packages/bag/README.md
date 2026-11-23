@@ -16,7 +16,7 @@ This package holds four programs and an extension, bundled from the source at on
 Node 24 or later. Run a program without installing it, naming the version and the program:
 
 ```
-npx --yes --package=@usebag/bag@0.4.3 bag --version
+npx --yes --package=@usebag/bag@0.4.4 bag --version
 ```
 
 `bag --version` prints `bag <version> <commit>`, the commit of the source the package was built from. The package

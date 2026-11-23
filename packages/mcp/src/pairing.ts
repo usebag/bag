@@ -244,11 +244,88 @@ export const CANCEL_WAIT_S = 30
 export const PAIR_POLL_MS = 1000
 
 /**
- * A first dialog declined, cancelled or failed sooner than this (ms, on the monotonic `mono`) was never seen by a
- * person: no-elicitation, not declined. codex exec declines a form in 0.5 to 0.6 ms, content and _meta null (measured
- * 2026-11-12); a person must see the form, read it and press a key.
+ * A dialog answered sooner than this (ms, on the monotonic `mono`) was never seen by a person: no-elicitation, never a
+ * decline, a refusal or a grant. codex exec declines a form in 0.5 to 0.6 ms, content and _meta null (measured
+ * 2026-11-12); the Claude Code VS Code extension declines every form in about 24 ms without showing it (Claude Code issue
+ * 98256, measured 2026-11-21); a person must see the form, read it and press a key.
  */
 export const FAST_ANSWER_MS = 250
+
+/**
+ * Whether a dialog's answer, `took` ms after the dialog went out, was seen by no person. The one place of the rule for
+ * every dialog bag sends (the bind dialog, each pairing form, each ask over elicitation): any answer that fast is
+ * unseen, an accept included (0.4.4: no host or hook may grant a bind or a pairing for the person). Taking an
+ * instant accept again is the one change `&& action !== 'accept'`.
+ */
+export function unseenAnswer(took: number, _action: string): boolean {
+  return took < FAST_ANSWER_MS
+}
+
+/** The Claude Code surfaces the shim reports (CLAUDE_CODE_ENTRYPOINT): the terminal, the VS Code extension, Desktop. */
+export const SURFACES = ['cli', 'claude-vscode', 'claude-desktop'] as const
+export type Surface = (typeof SURFACES)[number]
+
+/** A surface from the wire or the environment: one of SURFACES, else null. */
+export function surfaceOf(v: unknown): Surface | null {
+  return typeof v === 'string' && (SURFACES as readonly string[]).includes(v) ? (v as Surface) : null
+}
+
+/**
+ * The surface a dialog went to: a service connection's, from its own hello (never the service's environment, which
+ * the window that started the service passed down); with no connection (the stdio server, one window per process),
+ * this process's CLAUDE_CODE_ENTRYPOINT.
+ */
+export function surfaceIn(
+  env: Readonly<Record<string, string | undefined>> | undefined,
+  conn: { readonly surface?: string | null } | null | undefined,
+): Surface | null {
+  return conn != null ? surfaceOf(conn.surface) : surfaceOf(env?.CLAUDE_CODE_ENTRYPOINT)
+}
+
+/**
+ * The name of a Claude Code surface that answers every dialog without showing it (Claude Code issue 98256), or null.
+ * Wording only: bag sends its dialogs on every surface, so the day the host shows them, bag works with no release.
+ */
+function silentSurface(surface: string | null | undefined): string | null {
+  return surface === 'claude-vscode'
+    ? "Claude Code's VS Code extension"
+    : surface === 'claude-desktop'
+      ? 'Claude Desktop'
+      : null
+}
+
+/**
+ * The first sentences for a dialog answered at once on a silent surface, `what` being what was not done: what bag saw,
+ * then the host it is known of, never the host's internals as bag's own finding.
+ */
+function silentHead(surface: string | null | undefined, what: string): string | null {
+  const name = silentSurface(surface)
+  return name === null
+    ? null
+    : `This host answered the dialog at once, without showing it to your user, so ${what}. ${name} does this with every dialog (Claude Code issue 98256).`
+}
+
+/**
+ * The stop sentence every unseen answer's text ends with: an unseen answer spends no ask budget (no person saw it), so
+ * only these words stop the model from asking again and again.
+ */
+export const UNSEEN_STOP = 'Do not call it again until your user says this host shows its dialogs.'
+
+/** The bind dialog answered at once: today's line, or on a silent surface what the person can do instead. */
+export function bindUnseen(surface?: string | null): string {
+  const head = silentHead(surface, 'nothing was bound')
+  return head === null
+    ? `this host answered the bind dialog at once, without showing it. ${UNSEEN_STOP}`
+    : `${head} Your user binds this window by typing use and the identity name in it. ${UNSEEN_STOP}`
+}
+
+/** A question over elicitation (askPerson) answered at once: nothing was done, and what the person can do instead. */
+export function askUnseen(kind: string, surface?: string | null): string {
+  const head = silentHead(kind === 'claude-code' ? surface : null, 'nothing was done')
+  return head === null
+    ? `This host answered the question at once, without showing it to your user, so nothing was done. Tell your user. ${UNSEEN_STOP}`
+    : `${head} Your user answers it from Claude Code in a terminal; typing use and the name still binds in this window. ${UNSEEN_STOP}`
+}
 
 /** The first Codex release with the form renderer the pair dialogs need (PR #13621), as major.minor.patch. */
 export const CODEX_FLOOR = [0, 113, 0] as const
@@ -260,7 +337,7 @@ export function versionCore(version: string): number[] | null {
   return core === null || core.every((n) => n === 0) ? null : core
 }
 
-/** Why a pair tool answers no-elicitation: no form capability, a first dialog answered at once, a Codex too old. */
+/** Why a pair tool answers no-elicitation: no form capability, a dialog answered at once, a Codex too old. */
 type NoDialog = 'none' | 'fast' | 'version'
 
 /**
@@ -268,7 +345,10 @@ type NoDialog = 'none' | 'fast' | 'version'
  * path: the person changes it in the host itself, with no bag command. `codex --version` is the person's
  * own host's version check, not a way to pair.
  */
-export function noDialog(kind: string, why: NoDialog, version = ''): string {
+export function noDialog(kind: string, why: NoDialog, version = '', surface?: string | null): string {
+  const silent = kind === 'claude-code' ? silentHead(surface, 'nothing was written') : null
+  if (silent !== null)
+    return `${silent} Your user pairs from Claude Code in a terminal, or with bag pair; typing use and the name still binds in this window. ${UNSEEN_STOP}`
   const again =
     ' Tell your user which of these to change. Do not call a pair tool again until they say it is changed.' +
     (why === 'fast' ? ' If a pairing dialog did appear and was closed, call the tool again.' : '')
@@ -645,7 +725,6 @@ export class Pairings {
           `${this.#line('Paste the code or invite string your peer sent.', (l) => `As ${l}: paste your peer's code.`)}\nSpaces, hyphens and line breaks are fine.\nThey will be named ${fitName(live.name, 35)} here.`,
           { invite: { type: 'string', title: 'the code or invite string' }, ...ADDRESS },
           ['invite'],
-          true,
         )
         const only = a.for ?? addressIn(form)
         // One check of every pasted text (ask.ts textOf): printable, line breaks folded as the
@@ -868,7 +947,7 @@ export class Pairings {
       (l) => `As ${l}: make a code for a peer.`,
     )
     const message = `${head}\nTheir address, if known: only it can answer. Else empty.\nThey will be named ${live.name} here.`
-    return addressIn(await this.#form(live, extra, message, ADDRESS, [], true))
+    return addressIn(await this.#form(live, extra, message, ADDRESS, []))
   }
 
   /** A new resume token: 128 random bits, kept only in memory. */
@@ -1574,8 +1653,9 @@ export class Pairings {
 
   /**
    * One dialog of `properties`, those in `required` required: what the person gave on accept, else as #dialog says.
-   * The `first` dialog of a pairing not accepted within FAST_ANSWER_MS (monotonic) is no-elicitation: no person saw it.
-   * Later dialogs keep declined and cancelled at any speed, for a person who saw the first is in the loop.
+   * Any answer within FAST_ANSWER_MS (monotonic) of the dialog going out, on every form of a pairing, is no-elicitation
+   * (unseenAnswer): no person saw it, so it is neither a decline nor a grant, and nothing is written. Slower, a decline
+   * is the person's No and a cancel is cancelled.
    */
   async #form(
     live: Live,
@@ -1583,7 +1663,6 @@ export class Pairings {
     message: string,
     properties: Record<string, Field>,
     required: string[] = [],
-    first = false,
   ): Promise<Json> {
     const requestedSchema = { type: 'object' as const, properties, required }
     const [mono, failed] = [this.#ctx.mono ?? (() => performance.now()), [] as unknown[]]
@@ -1605,12 +1684,13 @@ export class Pairings {
       const name = e instanceof Error ? e.name : typeof e
       this.#ctx.log.log('warn', 'pair-dialog', { tool: live.tool, code: codeOf(e), name, ms })
     }
-    if (r.action === 'accept') return r.content ?? {}
-    if (first && took < FAST_ANSWER_MS) {
+    if (unseenAnswer(took, r.action)) {
       this.#ctx.log.log('info', 'pair-dialog', { tool: live.tool, code: 'no-elicitation', ms })
       const kind = live.conn?.host ?? this.#ctx.client?.().kind ?? 'other'
-      throw new ToolError('no-elicitation', noDialog(kind, 'fast'))
+      const surface = surfaceIn(this.#ctx.env, live.conn)
+      throw new ToolError('no-elicitation', noDialog(kind, 'fast', '', surface))
     }
+    if (r.action === 'accept') return r.content ?? {}
     if (r.action === 'decline') throw new ToolError('declined', 'the person declined: nothing was written')
     throw new ToolError('cancelled', 'the dialog was closed before an answer: nothing was written')
   }

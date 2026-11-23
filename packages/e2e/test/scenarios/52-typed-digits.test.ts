@@ -65,6 +65,8 @@ async function side(p: Party, dir: string, url: string): Promise<Side> {
   const dialogs: string[] = []
   const person: Person[] = []
   client.setRequestHandler(ElicitRequestSchema, async (r) => {
+    // A person's pace (0.4.4): an answer sooner than 250 ms after the dialog went out is unseen.
+    await new Promise((done) => setTimeout(done, 300))
     // pair_invite's address question, left empty: first contact.
     if (
       'requestedSchema' in r.params &&

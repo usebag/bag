@@ -32,12 +32,20 @@ import { type ToolContext, ToolError } from '../src/tools.ts'
 
 let homes = 0
 
+/** A monotonic clock that moves `ms` at each read: a dialog's answer reads as taking `ms`. */
+const pace = (ms: number): (() => number) => {
+  let t = 0
+  return () => (t += ms)
+}
+const personPace = (): (() => number) => pace(1000)
+
 /** A fake context and window: `elicit` answers the form, `link` answers over the omp link (null: no link). */
 function world(
   o: {
     elicit?: ((params: { message: string; requestedSchema: unknown }) => unknown) | null
     link?: ((q: LinkAsk) => LinkAnswer | null) | null
     mono?: () => number
+    surface?: string
   } = {},
 ) {
   const audit: Record<string, unknown>[] = []
@@ -49,6 +57,7 @@ function world(
     host: o.elicit == null ? 'omp' : 'claude-code',
     cwd: '/w',
     capabilities: { elicitation: o.elicit != null, inputHook: false, raw: {} },
+    ...(o.surface === undefined ? {} : { surface: o.surface }),
     closed: false,
     onClose: () => () => {},
     elicit: async (params: { message: string; requestedSchema: unknown }) => o.elicit?.(params),
@@ -57,7 +66,8 @@ function world(
   const ctx = {
     config: { home: `/home/${homes++}` },
     clock,
-    mono: o.mono ?? (() => 0),
+    // A person's pace by default: each read moves a second, so no dialog reads as answered at once (unseen).
+    mono: o.mono ?? personPace(),
     canElicit: () => o.elicit != null,
     log: { log: (...a: unknown[]) => logs.push(a) },
     opened: { edge: { audit: { record: (e: Record<string, unknown>) => audit.push(e) } } },
@@ -105,11 +115,12 @@ describe('askPerson: no answer is not a No (L1)', () => {
     expect(await askPerson(l.ctx, l.extra, confirm, l.conn)).toEqual({ said: 'none' })
     const no = world({ link: () => ({ accepted: false }) })
     expect(await askPerson(no.ctx, no.extra, confirm, no.conn)).toEqual({ said: 'no' })
-    let t = 0
-    const fast = world({ elicit: () => ({ action: 'decline' }), mono: () => (t += 10) })
-    expect(await askPerson(fast.ctx, fast.extra, confirm, fast.conn)).toEqual({ said: 'none' })
-    let u = 0
-    const slow = world({ elicit: () => ({ action: 'decline' }), mono: () => (u += 1000) })
+    // A decline faster than a person is unseen (0.4.4): no-elicitation, below.
+    const fast = world({ elicit: () => ({ action: 'decline' }), mono: pace(10) })
+    await expect(askPerson(fast.ctx, fast.extra, confirm, fast.conn)).rejects.toMatchObject({
+      code: 'no-elicitation',
+    })
+    const slow = world({ elicit: () => ({ action: 'decline' }), mono: pace(1000) })
     expect(await askPerson(slow.ctx, slow.extra, confirm, slow.conn)).toEqual({ said: 'no' })
     const cancel = world({ elicit: () => ({ action: 'cancel' }) })
     expect(await askPerson(cancel.ctx, cancel.extra, confirm, cancel.conn)).toEqual({ said: 'none' })
@@ -121,6 +132,73 @@ describe('askPerson: no answer is not a No (L1)', () => {
     expect(await askPerson(thrown.ctx, thrown.extra, confirm, thrown.conn)).toEqual({ said: 'none' })
     const empty = world({ elicit: () => ({ action: 'accept', content: {} }) })
     expect(await askPerson(empty.ctx, empty.extra, confirm, empty.conn)).toEqual({ said: 'none' })
+  })
+})
+
+describe('askPerson: an answer faster than a person is unseen (0.4.4)', () => {
+  const answers: [string, () => unknown][] = [
+    ['decline', () => ({ action: 'decline' })],
+    ['cancel', () => ({ action: 'cancel' })],
+    [
+      'a rejection',
+      () => {
+        throw new Error('host gone')
+      },
+    ],
+    ['accept with Yes', () => ({ action: 'accept', content: { confirm: true } })],
+    ['accept with No', () => ({ action: 'accept', content: { confirm: false } })],
+  ]
+
+  it('any answer within 250 ms (10 ms here), a Yes included, is no-elicitation: no policy line, no budget spent', async () => {
+    for (const [what, elicit] of answers) {
+      const w = world({ elicit, mono: pace(10) })
+      // More unseen asks than the window's unanswered cap: none is refused rate-limited, for none was spent.
+      for (let i = 0; i <= UNANSWERED_PER_WINDOW; i++)
+        await expect(askPerson(w.ctx, w.extra, confirm, w.conn), what).rejects.toMatchObject({
+          code: 'no-elicitation',
+        })
+      expect(w.audit, what).toEqual([])
+    }
+  })
+
+  it('at 300 ms the same answers are the person: No, none, yes, No', async () => {
+    const said = async (elicit: () => unknown) => {
+      const w = world({ elicit, mono: pace(300) })
+      return (await askPerson(w.ctx, w.extra, confirm, w.conn))?.said
+    }
+    expect(await said(() => ({ action: 'decline' }))).toBe('no')
+    expect(await said(() => ({ action: 'cancel' }))).toBe('none')
+    expect(await said(() => ({ action: 'accept', content: { confirm: true } }))).toBe('yes')
+    expect(await said(() => ({ action: 'accept', content: { confirm: false } }))).toBe('no')
+  })
+
+  it('the surface changes the words only: same results on cli, claude-vscode, claude-desktop and none', async () => {
+    const texts: Record<string, string> = {}
+    for (const surface of ['cli', 'claude-vscode', 'claude-desktop', undefined]) {
+      const fast = world({
+        elicit: () => ({ action: 'decline' }),
+        mono: pace(10),
+        ...(surface ? { surface } : {}),
+      })
+      const e = await askPerson(fast.ctx, fast.extra, confirm, fast.conn).catch((x: unknown) => x)
+      expect(e).toBeInstanceOf(ToolError)
+      expect((e as ToolError).code).toBe('no-elicitation')
+      texts[surface ?? 'none'] = (e as ToolError).message
+      const slow = world({
+        elicit: () => ({ action: 'accept', content: { confirm: true } }),
+        mono: pace(300),
+        ...(surface ? { surface } : {}),
+      })
+      expect(await askPerson(slow.ctx, slow.extra, confirm, slow.conn)).toEqual({ said: 'yes', text: null })
+    }
+    expect(texts.cli).toBe(texts.none)
+    expect(texts.cli).toContain('This host answered the question at once, without showing it to your user')
+    expect(texts['claude-vscode']).toContain(
+      "Claude Code's VS Code extension does this with every dialog (Claude Code issue 98256)",
+    )
+    expect(texts['claude-desktop']).toContain(
+      'Claude Desktop does this with every dialog (Claude Code issue 98256)',
+    )
   })
 })
 

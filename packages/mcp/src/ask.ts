@@ -1,5 +1,5 @@
 import type { ServiceConnection } from './binding.ts'
-import type { PairExtra } from './pairing.ts'
+import { askUnseen, type PairExtra, surfaceIn, unseenAnswer } from './pairing.ts'
 import { type ToolContext, ToolError } from './tools.ts'
 
 // askPerson (bag 0.4.2): the one way a tool asks the person
@@ -300,9 +300,6 @@ export function countStart(ctx: ToolContext, conn: ServiceConnection | undefined
   stampHome(HOME_STARTED, home, now)
 }
 
-/** A decline faster than this (ms) was never seen by a person (pairing.ts FAST_ANSWER_MS, measured codex exec). */
-const FAST_MS = 250
-
 /** The asks waiting on a person now, by home: every window of the home together (service.json's asking). */
 const ASKING = new Map<string, number>()
 /** Who hears a change of a home's count: the service of that home, which rewrites service.json. */
@@ -380,7 +377,7 @@ export async function askPerson(
     )
   }
   const host = conn?.host ?? ctx.client?.().kind ?? 'other'
-  let answer: Answer | null
+  let answer: Answer | Unseen | null
   // Counted from here until the ask ends, however it ends: service.json shows it, so a restart can tell it would cut it.
   const home = ctx.config.home
   asking(home, 1)
@@ -411,12 +408,22 @@ export async function askPerson(
         return { said: 'none' }
       }
       if (a.accepted === false) answer = { said: 'no' }
+      // On the link a fast answer (under OMP_FAST_MS) arrives as accepted null, folded by the extension (ompConfirm,
+      // ompInput) with a timeout, an Esc and a withdraw, and the link carries no timing: so it is none and spends the
+      // unanswered budget, where an unseen elicitation answer spends none. Telling them apart needs a field on the
+      // link from the extension, a link change outside 0.4.4.
       else if (a.accepted !== true) answer = { said: 'none' }
       else if (q.kind === 'confirm') answer = { said: 'yes', text: null }
       else answer = judged(q, textOf(a.text, q.max ?? MAX_PASTE, q.fold === true)) ?? { said: 'none' }
     }
   } finally {
     asking(home, -1)
+  }
+  // Answered faster than a person (pairing.ts unseenAnswer): no person saw the question, so nothing is done, and it
+  // spends no budget and writes no policy line; the service log has the dialog's line.
+  if (answer.said === 'unseen') {
+    ctx.log.log('info', 'consent-dialog', { act: q.act, code: 'no-elicitation', window })
+    throw new ToolError('no-elicitation', askUnseen(host, surfaceIn(ctx.env, conn)))
   }
   if (q.limit !== false && answer.said === 'none') {
     stamp(UNANSWERED, window, key, now)
@@ -436,9 +443,12 @@ function judged(q: Ask, text: string | null): Answer | null {
   return { said: 'yes', text: v }
 }
 
+/** An answer faster than a person (pairing.ts unseenAnswer): askPerson's no-elicitation, never an Answer. */
+type Unseen = { readonly said: 'unseen' }
+
 /**
- * The elicitation path: one form with one boolean or one string field. A No faster than a person, a cancel or a
- * failed dialog is none; a text that fails the check (line breaks folded) is asked once more, then none.
+ * The elicitation path: one form with one boolean or one string field. Any answer faster than a person is unseen; a
+ * cancel or a failed dialog is none; a text that fails the check (line breaks folded) is asked once more, then none.
  */
 async function viaElicit(
   ctx: ToolContext,
@@ -446,7 +456,7 @@ async function viaElicit(
   q: Ask,
   conn: ServiceConnection | undefined,
   mono: () => number,
-): Promise<Answer> {
+): Promise<Answer | Unseen> {
   const field =
     q.kind === 'confirm'
       ? { type: 'boolean' as const, title: q.title }
@@ -465,7 +475,8 @@ async function viaElicit(
       ctx.log.log('warn', 'consent-dialog', { act: q.act, name, ms: Math.round(mono() - t0) })
       return { action: 'cancel' as const, content: undefined }
     })
-    if (r.action === 'decline') return mono() - t0 < FAST_MS ? { said: 'none' } : { said: 'no' }
+    if (unseenAnswer(mono() - t0, r.action)) return { said: 'unseen' }
+    if (r.action === 'decline') return { said: 'no' }
     if (r.action !== 'accept') return { said: 'none' }
     const v = r.content?.[q.kind]
     if (q.kind === 'confirm')

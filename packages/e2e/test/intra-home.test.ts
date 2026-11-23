@@ -98,7 +98,11 @@ async function window(home: string, label: string | null, yes = true): Promise<W
         dialogs.push(String(params.message))
         const handle = (params._meta as Json)[DIALOG_META]
         const result = yes ? { action: 'accept', content: { confirm: true } } : { action: 'decline' }
-        send({ jsonrpc: '2.0', id: m.id, result: { ...result, _meta: { [DIALOG_META]: handle } } })
+        const reply = { jsonrpc: '2.0', id: m.id, result: { ...result, _meta: { [DIALOG_META]: handle } } }
+        // The person's Yes comes at a person's pace (0.4.4: any answer under 250 ms is unseen); the decline stands
+        // for a host's own instant answer, so it goes at once.
+        if (yes) setTimeout(() => send(reply), 300)
+        else send(reply)
       } else if (typeof m.id === 'number') waiters.get(m.id)?.(m)
     }
   })

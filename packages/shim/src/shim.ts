@@ -13,7 +13,7 @@
 // No key, no store, no token on disk: the launch token is read at each connect and kept only for that hello.
 import { randomBytes } from 'node:crypto'
 import { errorOf, type Id, isNotification, isRequest, isResponse, type Message, resultOf } from './frames.ts'
-import { type HostKind, hostKind, RESUME_MARGIN_MS, toolTimeoutMs } from './host.ts'
+import { type HostKind, hostKind, RESUME_MARGIN_MS, type Surface, surfaceOf, toolTimeoutMs } from './host.ts'
 import { isLabel, type Ring } from './ring.ts'
 import { absent, type Conn, type Connect } from './service.ts'
 import {
@@ -395,7 +395,7 @@ export class Shim {
       cwd: this.#d.cwd,
       client_capabilities: this.#capabilities(),
       input_hook: this.#inputHook && (this.#kind === 'claude-code' || this.#kind === 'omp'),
-      shim: { version: SHIM_VERSION, pid: this.#d.pid },
+      shim: this.#shimMember(),
     }
     let r: Message
     try {
@@ -467,6 +467,15 @@ export class Shim {
     return 'ok'
   }
 
+  /**
+   * The hello's shim member: version and pid, and the Claude Code surface (host.ts surfaceOf) when it is one of the
+   * three. Inside `shim` because every service up to 0.4.3 refuses an unknown top-level member of the hello and never
+   * reads `shim`'s contents: an older service ignores the surface.
+   */
+  #shimMember(): { version: string; pid: number; surface?: Surface } {
+    const surface = surfaceOf(this.#d.env)
+    return { version: SHIM_VERSION, pid: this.#d.pid, ...(surface === null ? {} : { surface }) }
+  }
   /**
    * The client capabilities for the hello: the host's, plus experimental["bag.dev/consent-bridge"] = {pid} for an omp
    * host without elicitation: the omp pid, by which the service finds that omp's registered consent link (0.4.2: it

@@ -71,6 +71,11 @@ async function serverWith(answer: () => ElicitResult) {
     alive: () => false,
     log: new MemoryLog(),
     resubscribeDelayMs: () => 0,
+    // A person's pace (0.4.4): each dialog reads as a second, never as answered at once (FAST_ANSWER_MS).
+    mono: (
+      (t) => () =>
+        (t += 1000)
+    )(0),
     env: { HOME: user },
   })
   const [a, b] = InMemoryTransport.createLinkedPair()

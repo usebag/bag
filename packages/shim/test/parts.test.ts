@@ -19,13 +19,17 @@ import {
   boundOf,
   endSession,
   hostPidOf,
+  indexOf,
   moveSession,
   openChannel,
+  ownerHeld,
+  type PsRow,
   postUse,
   psRow,
   safeDir,
   sessionKey,
   startOf,
+  terminalOwner,
   typedName,
   writeBound,
 } from '../src/channel.ts'
@@ -39,7 +43,7 @@ import {
   LineTooLong,
   parse,
 } from '../src/frames.ts'
-import { hostKind, toolTimeoutMs } from '../src/host.ts'
+import { hostKind, surfaceOf, toolTimeoutMs } from '../src/host.ts'
 import { isLabel, removeRing, ringOf, writeRing } from '../src/ring.ts'
 import { launchEnv, openServiceLog, run, type ShimIo, serviceEntry, startService } from '../src/run.ts'
 import { absent, socketConnect } from '../src/service.ts'
@@ -98,6 +102,11 @@ describe('host', () => {
     expect(hostKind({}, 'Claude Code')).toBe('claude-code')
     expect(hostKind({}, 'omp')).toBe('omp')
     expect(hostKind({}, 'opencode')).toBe('other')
+    expect(surfaceOf({ CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' })).toBe('claude-vscode')
+    expect(surfaceOf({ CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' })).toBe('claude-desktop')
+    expect(surfaceOf({ CLAUDE_CODE_ENTRYPOINT: 'cli' })).toBe('cli')
+    expect(surfaceOf({ CLAUDE_CODE_ENTRYPOINT: 'CLI' })).toBeNull()
+    expect(surfaceOf({})).toBeNull()
     expect(toolTimeoutMs('codex')).toBe(60_000)
     expect(toolTimeoutMs('claude-code')).toBeNull()
   })
@@ -192,7 +201,79 @@ describe('the typed-word channel', () => {
     expect(ancestors(50, ps)).toEqual([50, 40, 30])
     expect(ancestors(99, ps)).toEqual([99])
     expect(psRow(process.pid)?.ppid).toBe(process.ppid)
+    expect(psRow(process.pid)?.uid).toBe(process.getuid?.())
     expect(psRow(0x7ffffff0)).toBeNull()
+  })
+
+  // The two trees measured on 2026-11-23 (ps pid, ppid, tty, comm only): omp 19.1.0, three windows on ttys014-016 and
+  // one terminal-less core (the parent of window 1's shim and of the other two windows' shims); omp 18.20.0, each shim
+  // under its own window, which holds the terminal.
+  const ME = 501
+  const tree: Record<number, NonNullable<PsRow>> = {
+    90872: { ppid: 79942, comm: 'omp', uid: ME, tty: 'ttys014' },
+    90977: { ppid: 82787, comm: 'omp', uid: ME, tty: 'ttys015' },
+    91141: { ppid: 83618, comm: 'omp', uid: ME, tty: 'ttys016' },
+    90985: { ppid: 90872, comm: 'omp', uid: ME, tty: null },
+    8400: { ppid: 8045, comm: 'omp', uid: ME, tty: 'ttys006' },
+    67506: { ppid: 94415, comm: 'omp', uid: ME, tty: 'ttys008' },
+    62646: { ppid: 8400, comm: 'omp', uid: ME, tty: null },
+    5100: { ppid: 5000, comm: 'claude', uid: ME, tty: 'ttys006' },
+    5200: { ppid: 8400, comm: 'omp', uid: ME, tty: 'ttys006' },
+    6000: { ppid: 1, comm: 'omp', uid: 0, tty: 'ttys020' },
+    6100: { ppid: 1, comm: 'zsh', uid: ME, tty: 'ttys021' },
+    6200: { ppid: 1, comm: 'omp', uid: ME, tty: null },
+  }
+  const ps = (pid: number): PsRow => tree[pid] ?? null
+  const owner = (walked: number, value: string | undefined) =>
+    terminalOwner(walked, value === undefined ? {} : { PI_TERMINAL_OWNER_PID: value }, ps, ME)
+
+  it('takes omp 19 windows from PI_TERMINAL_OWNER_PID behind the terminal-less core', () => {
+    expect(hostPidOf(90985, ps)).toBe(90985) // the walk stops at the core: it is not a launcher
+    expect(owner(90985, '90872')).toBe(90872) // window 1, the core's own parent
+    expect(owner(90985, '90977')).toBe(90977) // windows 2 and 3: not ancestors of their shims
+    expect(owner(90985, '91141')).toBe(91141)
+  })
+
+  it('keeps the walk wherever the variable is unset, malformed, dead, foreign, not omp or has no terminal', () => {
+    expect(owner(90985, undefined)).toBeNull()
+    for (const bad of ['', 'abc', '0', '-90872', '90872x', ' 90872', '1e5', '12345678901']) {
+      expect(owner(90985, bad)).toBeNull()
+    }
+    expect(owner(90985, '424242')).toBeNull() // dead: ps has no row
+    expect(owner(90985, '6000')).toBeNull() // a live omp of another user
+    expect(owner(90985, '6100')).toBeNull() // a live process of this user that is not omp
+    expect(owner(90985, '6200')).toBeNull() // an omp with no terminal is not a window
+    expect(terminalOwner(90985, { PI_TERMINAL_OWNER_PID: '90977' }, ps, 0)).toBeNull() // not this user's
+  })
+
+  it('never reads the variable where the walk ends at a host with a terminal: omp 18, a nested omp, Claude Code', () => {
+    expect(owner(8400, '8400')).toBeNull() // omp 18: the owner is the parent; the walk already names it
+    expect(owner(67506, '67506')).toBeNull()
+    expect(owner(8400, '67506')).toBeNull() // even a different live window: the walk ended at a window
+    expect(owner(5200, '8400')).toBeNull() // `omp -p` run from window 8400's shell keeps the terminal
+    expect(owner(5100, '8400')).toBeNull() // Claude Code started from an omp window's shell inherits the variable
+    expect(owner(6100, '8400')).toBeNull() // a walk that ends at a shell
+    const old = (pid: number): PsRow => {
+      const row = tree[pid]
+      return row === undefined ? null : { ppid: row.ppid, comm: row.comm }
+    }
+    expect(terminalOwner(90985, { PI_TERMINAL_OWNER_PID: '90977' }, old, ME)).toBeNull() // rows without a tty
+    // The named residue: a terminal-less child omp of an omp 18 window takes its window; ownerHeld then keeps a live
+    // window shim's files from it (the run test "a second shim with the same owner").
+    expect(owner(62646, '8400')).toBe(8400)
+  })
+
+  it('sees an owner held while another live shim names its index, bound or ring file', () => {
+    mkdirSync(join(home, 'run', 'shim'), { recursive: true, mode: 0o700 })
+    expect(ownerHeld(home, 4242, 999_001)).toBe(false) // no file
+    for (const file of [indexOf(home, 4242), boundOf(home, 4242), ringOf(home, 4242)]) {
+      writeFileSync(file, JSON.stringify({ v: 1, shim: process.pid }), { mode: 0o600 })
+      expect(ownerHeld(home, 4242, 999_001)).toBe(true) // a live other shim
+      expect(ownerHeld(home, 4242, process.pid)).toBe(false) // this shim's own
+      writeFileSync(file, JSON.stringify({ v: 1, shim: 0x7ffffff0 }), { mode: 0o600 })
+      expect(ownerHeld(home, 4242, 999_001)).toBe(false) // a dead shim's leftover
+      rmSync(file)
+    }
   })
 
   it('writes the bound file for the wake hook, removes only its own, and refuses an unsafe directory', () => {
@@ -710,6 +791,264 @@ describe('run in process', () => {
       expect(existsSync(join(home, 'run', 'shim', `${process.pid}.consent`))).toBe(false)
       a.handlers.get('SIGINT')?.()
       expect(await done).toBe(0)
+    } finally {
+      await svc.close()
+    }
+  })
+
+  // omp 19 in process: the shim's parent is the terminal-less core 700_001, whose own parent is window 1 (700_005); the
+  // window this shim serves is 700_002, named only by PI_TERMINAL_OWNER_PID (not an ancestor: windows two and three).
+  const CORE = 700_001
+  const WINDOW_ONE = 700_005
+  const WINDOW = 700_002
+  const UID = 4242
+  const omp19: Record<number, NonNullable<PsRow>> = {
+    [CORE]: { ppid: WINDOW_ONE, comm: 'omp', uid: UID, tty: null },
+    [WINDOW_ONE]: { ppid: 1, comm: 'omp', uid: UID, tty: 'ttys014' },
+    [WINDOW]: { ppid: 1, comm: 'omp', uid: UID, tty: 'ttys015' },
+  }
+  const ompIo = (argv: string[], starts: Map<number, string>, more: Partial<ShimIo> = {}) =>
+    io(argv, {
+      env: { HOME: home, OMPCODE: '1', PI_TERMINAL_OWNER_PID: String(WINDOW) },
+      ppid: CORE,
+      ps: (pid) => omp19[pid] ?? null,
+      uid: UID,
+      startOf: (pid) => starts.get(pid) ?? null,
+      ...more,
+    })
+  const initOmp = (a: { stdin: PassThrough }) =>
+    a.stdin.write(
+      frame({
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'omp' } },
+      }),
+    )
+  const bridgeOf = (h: Record<string, unknown> | undefined) =>
+    (h?.client_capabilities as { experimental?: Record<string, unknown> } | undefined)?.experimental?.[
+      'bag.dev/consent-bridge'
+    ]
+  const waitFor = async (ok: () => boolean) => {
+    for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 10))
+  }
+
+  it('omp 19: keys the window by PI_TERMINAL_OWNER_PID behind the core, in the hello, the files and the hook', async () => {
+    const svc = new FakeService(home)
+    await svc.start()
+    try {
+      const a = ompIo(['--dir', home, '--input-hook'], new Map([[WINDOW, 'Mon Nov 23 00:10:00 2026']]))
+      const done = run(a.io)
+      await new Promise((r) => setTimeout(r, 30))
+      initOmp(a)
+      await svc.next((m) => m.method === 'initialize')
+      expect(bridgeOf(svc.hellos[0])).toEqual({ pid: WINDOW }) // the window, never the core
+      expect(existsSync(indexOf(home, WINDOW))).toBe(true)
+      expect(existsSync(indexOf(home, CORE))).toBe(false)
+      svc.notify('service/ring', { as: 'omp', speaking: true })
+      await waitFor(() => existsSync(ringOf(home, WINDOW)))
+      expect(JSON.parse(readFileSync(ringOf(home, WINDOW), 'utf8'))).toMatchObject({
+        as: 'omp',
+        shim: 999_001,
+      })
+      // The hook in the same tree finds this shim through the owner (it is not among the core's ancestors).
+      const stdin = new PassThrough()
+      const stdout = new PassThrough()
+      const h = ompIo(['hook', '--dir', home], new Map(), { stdin, stdout })
+      const p = run(h.io)
+      stdin.end(JSON.stringify({ prompt: 'use omp' }))
+      await p
+      expect(JSON.parse(String(stdout.read() ?? ''))).toEqual({
+        decision: 'block',
+        reason: 'bag: this session now acts as omp.',
+      })
+      expect(a.err()).toContain('"event":"host","from":"owner"')
+      a.handlers.get('SIGINT')?.()
+      expect(await done).toBe(0)
+    } finally {
+      await svc.close()
+    }
+  })
+
+  for (const [why, later] of [
+    ['dies', null],
+    ['is reused by another process (another start time)', 'Mon Nov 23 09:00:00 2026'],
+  ] as const) {
+    it(`omp 19: when the window ${why}, no bridge pid, no wake file, its own files gone, never the core`, async () => {
+      const svc = new FakeService(home)
+      await svc.start()
+      const starts = new Map([[WINDOW, 'Mon Nov 23 00:10:00 2026']])
+      const a = ompIo(['--dir', home, '--input-hook'], starts)
+      const done = run(a.io)
+      try {
+        await new Promise((r) => setTimeout(r, 30))
+        initOmp(a)
+        await svc.next((m) => m.method === 'initialize')
+        await waitFor(() => a.err().includes('"connected"'))
+        svc.notify('service/bound', { as: 'omp', granted: 'dialog' })
+        await waitFor(() => existsSync(boundOf(home, WINDOW)))
+        expect(existsSync(boundOf(home, WINDOW))).toBe(true)
+        if (later === null) starts.delete(WINDOW)
+        else starts.set(WINDOW, later)
+        svc.notify('service/ring', { as: 'omp', speaking: true })
+        await waitFor(() => a.err().includes('"event":"host-gone"'))
+        expect(a.err()).toContain('"event":"host-gone"')
+        expect(existsSync(ringOf(home, WINDOW))).toBe(false) // no wake file written
+        expect(existsSync(boundOf(home, WINDOW))).toBe(false) // this shim's own, removed
+        expect(existsSync(indexOf(home, WINDOW))).toBe(false) // the typed-word channel, closed
+        expect(existsSync(ringOf(home, CORE))).toBe(false) // never the core's pid in its place
+        expect(existsSync(boundOf(home, CORE))).toBe(false)
+        a.handlers.get('SIGUSR2')?.() // a release: the shim connects again and sends a new hello
+        await waitFor(() => svc.hellos.length >= 2)
+        expect(bridgeOf(svc.hellos[1])).toEqual({}) // the bridge with no pid: no window is named
+      } finally {
+        // Stopped whatever an assertion did: a shim left running keeps openChannel's umask for the tests after it.
+        a.handlers.get('SIGINT')?.()
+        expect(await done).toBe(0)
+        await svc.close()
+      }
+    })
+  }
+
+  it('omp 19: a second shim with the same owner keeps the walk while the first is alive, and takes it once it is dead', async () => {
+    const svc = new FakeService(home)
+    await svc.start()
+    try {
+      mkdirSync(join(home, 'run', 'shim'), { recursive: true, mode: 0o700 })
+      const first = { v: 1, sock: 'x', secret: 's', shim: process.pid } // a live shim: this test process
+      for (const f of [indexOf(home, WINDOW), boundOf(home, WINDOW), ringOf(home, WINDOW)])
+        writeFileSync(f, JSON.stringify(first), { mode: 0o600 })
+      const before = [indexOf(home, WINDOW), boundOf(home, WINDOW), ringOf(home, WINDOW)].map((f) =>
+        readFileSync(f, 'utf8'),
+      )
+      const starts = new Map([[WINDOW, 'Mon Nov 23 00:10:00 2026']])
+      const a = ompIo(['--dir', home, '--input-hook'], starts)
+      const done = run(a.io)
+      await new Promise((r) => setTimeout(r, 30))
+      initOmp(a)
+      await svc.next((m) => m.method === 'initialize')
+      expect(bridgeOf(svc.hellos[0])).toEqual({ pid: CORE }) // the walk, as before the change
+      svc.notify('service/ring', { as: 'omp', speaking: true })
+      await waitFor(() => existsSync(ringOf(home, CORE)))
+      const after = [indexOf(home, WINDOW), boundOf(home, WINDOW), ringOf(home, WINDOW)].map((f) =>
+        readFileSync(f, 'utf8'),
+      )
+      expect(after).toEqual(before) // the first shim's .json, .bound and .ring untouched
+      expect(a.err()).toContain('"event":"host","from":"parent","owner":"held"')
+      a.handlers.get('SIGINT')?.()
+      expect(await done).toBe(0)
+
+      // The first shim dead (a leftover naming a dead pid): the next shim takes the window.
+      const dead = { ...first, shim: 0x7ffffff0 }
+      for (const f of [indexOf(home, WINDOW), boundOf(home, WINDOW), ringOf(home, WINDOW)])
+        writeFileSync(f, JSON.stringify(dead), { mode: 0o600 })
+      const b = ompIo(['--dir', home, '--input-hook'], starts)
+      const done2 = run(b.io)
+      await new Promise((r) => setTimeout(r, 30))
+      initOmp(b)
+      await waitFor(() => svc.hellos.length >= 2)
+      expect(bridgeOf(svc.hellos.at(-1))).toEqual({ pid: WINDOW })
+      b.handlers.get('SIGINT')?.()
+      expect(await done2).toBe(0)
+    } finally {
+      await svc.close()
+    }
+  })
+
+  // The 23:31 UTC report: one local mail to new-omp-1 acted on by two omp 19 windows. Before this change every shim of
+  // the core keyed the core, so no window had a <window pid>.bound; omp-wake then watched the identity's doorbell in
+  // each window (omp-wake.ts ringMode), and one accepted mail woke them all. Each window now has its own key.
+  it('omp 19: two windows on one core, two keys: a typed use from window one binds shim one only, a ring wakes window one only', async () => {
+    const svc = new FakeService(home)
+    await svc.start()
+    try {
+      const starts = new Map([
+        [WINDOW_ONE, 'Mon Nov 23 00:09:00 2026'],
+        [WINDOW, 'Mon Nov 23 00:10:00 2026'],
+      ])
+      const env = (w: number) => ({ HOME: home, OMPCODE: '1', PI_TERMINAL_OWNER_PID: String(w) })
+      const a = ompIo(['--dir', home, '--input-hook'], starts, { env: env(WINDOW_ONE), pid: 999_101 })
+      const b = ompIo(['--dir', home, '--input-hook'], starts, { env: env(WINDOW), pid: 999_102 })
+      // One after the other: openChannel holds umask 077 across its listen, and two openings at once in one process
+      // would leave it there for every later test (a host runs one shim per process, so only a test can interleave).
+      const done = [run(a.io)]
+      await waitFor(() => existsSync(indexOf(home, WINDOW_ONE)))
+      done.push(run(b.io))
+      await waitFor(() => existsSync(indexOf(home, WINDOW)))
+      initOmp(a)
+      initOmp(b)
+      await waitFor(() => svc.hellos.length >= 2)
+      const connOf = (w: number) =>
+        svc.conns.find((c) => (bridgeOf(c.hello ?? undefined) as { pid?: number })?.pid === w)
+      const [one, two] = [connOf(WINDOW_ONE), connOf(WINDOW)]
+      expect(one).toBeDefined()
+      expect(two).toBeDefined()
+      expect(existsSync(indexOf(home, WINDOW_ONE)) && existsSync(indexOf(home, WINDOW))).toBe(true)
+      // The typed word from window one's hook (its omp-wake reads <window one>.json the same way).
+      const stdin = new PassThrough()
+      const stdout = new PassThrough()
+      const h = ompIo(['hook', '--dir', home], starts, { env: env(WINDOW_ONE), stdin, stdout })
+      const p = run(h.io)
+      stdin.end(JSON.stringify({ prompt: 'use new-omp-1' }))
+      await p
+      expect(JSON.parse(String(stdout.read() ?? ''))).toMatchObject({ decision: 'block' })
+      const uses = (c: typeof one) => c?.got.filter((m) => m.method === 'service/use').length ?? -1
+      expect(uses(one)).toBe(1)
+      expect(uses(two)).toBe(0)
+      // The service rings the connection bound to the identity (wake-router.ts ring): window one's file only.
+      one?.send({
+        jsonrpc: '2.0',
+        method: 'service/ring',
+        params: { as: 'new-omp-1', unread: 1, speaking: true },
+      })
+      await waitFor(() => existsSync(ringOf(home, WINDOW_ONE)))
+      expect(JSON.parse(readFileSync(ringOf(home, WINDOW_ONE), 'utf8'))).toMatchObject({
+        as: 'new-omp-1',
+        shim: 999_101,
+      })
+      expect(existsSync(ringOf(home, WINDOW))).toBe(false)
+      expect(existsSync(ringOf(home, CORE))).toBe(false)
+      a.handlers.get('SIGINT')?.()
+      b.handlers.get('SIGINT')?.()
+      expect(await Promise.all(done)).toEqual([0, 0])
+    } finally {
+      await svc.close()
+    }
+  })
+
+  it('omp 18: the owner is the parent, so the hello, the files and the log are as before the change', async () => {
+    const svc = new FakeService(home)
+    await svc.start()
+    try {
+      const win = 8400
+      const tree18: Record<number, NonNullable<PsRow>> = {
+        [win]: { ppid: 8045, comm: 'omp', uid: UID, tty: 'ttys006' },
+      }
+      const runOnce = async (env: Record<string, string>) => {
+        const a = io(['--dir', home, '--input-hook'], {
+          env,
+          ppid: win,
+          ps: (pid) => tree18[pid] ?? null,
+          uid: UID,
+          startOf: () => 'Mon Nov 23 00:10:00 2026',
+        })
+        const done = run(a.io)
+        await new Promise((r) => setTimeout(r, 30))
+        initOmp(a)
+        const n = svc.hellos.length
+        await waitFor(() => svc.hellos.length > n)
+        const hello = svc.hellos.at(-1)
+        const files = readdirSync(join(home, 'run', 'shim'))
+          .filter((f) => /\.(json|bound|ring)$/.test(f))
+          .sort()
+        a.handlers.get('SIGINT')?.()
+        expect(await done).toBe(0)
+        return { bridge: bridgeOf(hello), files, host: a.err().includes('"event":"host"') }
+      }
+      const without = await runOnce({ HOME: home, OMPCODE: '1' })
+      const withOwner = await runOnce({ HOME: home, OMPCODE: '1', PI_TERMINAL_OWNER_PID: String(win) })
+      expect(without).toEqual({ bridge: { pid: win }, files: [`${win}.json`], host: false })
+      expect(withOwner).toEqual(without)
     } finally {
       await svc.close()
     }

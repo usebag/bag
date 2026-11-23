@@ -136,6 +136,13 @@ const CHANGES: [string, () => void][] = [
   ['the sender hidden', () => hide('personal')],
 ]
 
+/**
+ * The person's pace on the service's monotonic clock: a scripted window's answer is the person's only when it comes
+ * after FAST_ANSWER_MS (0.4.4: any faster answer is unseen), so window() moves this skew 300 ms just before it sends an
+ * accept. A decline or a cancel it sends stays instant: these tests use them for a host's own answer, which is unseen.
+ */
+const pace = { skew: 0 }
+
 async function start(
   more: Partial<ServiceDeps> = {},
   entry: Json = {},
@@ -198,6 +205,7 @@ async function start(
     helloMs: 300,
     drainCallsMs: 200,
     returnWaitMs: 300,
+    mono: () => performance.now() + pace.skew,
     ...more,
   }
   prep() // the test's last change to the home before the service starts
@@ -223,7 +231,7 @@ interface Line {
 async function window(
   s: Service,
   label: string,
-  answer: boolean | null | 'never' | 'decline' | 'empty' = true,
+  answer: boolean | null | 'never' | 'decline' | 'empty' | 'cancel-late' = true,
   hello: Json = {},
 ): Promise<Line> {
   const line = await connected(s, label, hello)
@@ -237,13 +245,15 @@ async function window(
       line.dialogs.push(String(params.message))
       const handle = (params._meta as Json)[DIALOG_META]
       const result =
-        answer === null
+        answer === null || answer === 'cancel-late'
           ? { action: 'cancel' }
           : answer === 'decline'
             ? { action: 'decline' }
             : answer === 'empty'
               ? { action: 'accept', content: {} }
               : { action: 'accept', content: { confirm: answer } }
+      // 'cancel-late': the person saw the dialog and closed it, at a person's pace.
+      if (result.action === 'accept' || answer === 'cancel-late') pace.skew += 300
       line.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } })
     }
   })().catch(() => {})
@@ -923,7 +933,7 @@ describe("the local pair on first touch: the message waits for the person's Allo
     expect(a.count(isRing)).toBe(0)
   })
 
-  it('a re-ask with no answer (a fast decline, or a timeout or cancel) is cancelled, never declined (q2)', async () => {
+  it('a re-ask answered at once (a decline or a cancel faster than a person) is no-elicitation, never declined (q2, 0.4.4)', async () => {
     word(true)
     const s = await start()
     const a = await window(s, 'personal')
@@ -933,10 +943,15 @@ describe("the local pair on first touch: the message waits for the person's Allo
     for (const answer of ['decline', null] as const) {
       const w = await window(s, 'personal', answer)
       const r = await call(w, 'pair_invite', { for: P.carol.address })
-      expect([r.error, r.detail]).toEqual(['cancelled', 'the dialog was not answered: nothing was changed'])
+      expect(r.error).toBe('no-elicitation')
       // No answer is no re-ask: none counted, still declined.
       expect(pairs()).toMatchObject([{ state: 'declined', reasks: [] }])
     }
+    // Closed by the person after they saw it (a cancel at a person's pace, or a timeout): cancelled, nothing changed.
+    const late = await window(s, 'personal', 'cancel-late')
+    const r = await call(late, 'pair_invite', { for: P.carol.address })
+    expect([r.error, r.detail]).toEqual(['cancelled', 'the dialog was not answered: nothing was changed'])
+    expect(pairs()).toMatchObject([{ state: 'declined', reasks: [] }])
   })
 
   it("a decline slower than FAST_ANSWER_MS is the person's No on a local form: the pair declined (q2)", async () => {
@@ -2815,7 +2830,7 @@ describe('hidden: an identity kept apart (spec/SPEC.md 9.2 item 1)', () => {
     expect(await call(a, 'pair_invite', { for: P.alice.address })).toMatchObject({ hidden: false })
   })
 
-  it('hide and show with no answer (a fast decline, or a timeout or cancel) are cancelled, never declined (q2)', async () => {
+  it('hide and show answered at once (a decline or a cancel faster than a person) are no-elicitation, never declined (q2, 0.4.4)', async () => {
     word(true)
     const clock = new FakeClock()
     const s = await start({ clock })
@@ -2823,9 +2838,14 @@ describe('hidden: an identity kept apart (spec/SPEC.md 9.2 item 1)', () => {
     for (const answer of ['decline', null] as const) {
       const w = await window(s, 'personal', answer)
       const r = await call(w, 'pair_invite', { for: P.alice.address })
-      expect([r.error, r.detail]).toEqual(['cancelled', 'the dialog was not answered: nothing was changed'])
+      expect(r.error).toBe('no-elicitation')
       expect(fileWord()).toEqual({ version: 1, local_delivery: 'on' })
     }
+    // A hide closed by the person after they saw it: cancelled, the word unchanged.
+    const hideLate = await window(s, 'personal', 'cancel-late')
+    const h = await call(hideLate, 'pair_invite', { for: P.alice.address })
+    expect([h.error, h.detail]).toEqual(['cancelled', 'the dialog was not answered: nothing was changed'])
+    expect(fileWord()).toEqual({ version: 1, local_delivery: 'on' })
     // Hidden by a Yes; then a show with no answer is cancelled too, and personal stays hidden.
     expect(await call(await window(s, 'personal'), 'pair_invite', { for: P.alice.address })).toMatchObject({
       hidden: true,
@@ -2834,9 +2854,15 @@ describe('hidden: an identity kept apart (spec/SPEC.md 9.2 item 1)', () => {
       clock.t += SHOW_EVERY_S
       const w = await window(s, 'personal', answer)
       const r = await call(w, 'pair_invite', { for: P.alice.address })
-      expect([r.error, r.detail]).toEqual(['cancelled', 'the dialog was not answered: nothing was changed'])
+      expect(r.error).toBe('no-elicitation')
       expect(fileWord()).toMatchObject({ hidden: ['personal'] })
     }
+    // A show closed by the person after they saw it: cancelled, personal stays hidden.
+    clock.t += SHOW_EVERY_S
+    const showLate = await window(s, 'personal', 'cancel-late')
+    const v = await call(showLate, 'pair_invite', { for: P.alice.address })
+    expect([v.error, v.detail]).toEqual(['cancelled', 'the dialog was not answered: nothing was changed'])
+    expect(fileWord()).toMatchObject({ hidden: ['personal'] })
   })
 
   it('a No changes nothing', async () => {
@@ -4136,6 +4162,8 @@ describe("a Codex sub-agent's connection never speaks for the identity it binds"
     const req = await l.next((m) => m.method === 'elicitation/create')
     const handle = ((req.params as Json)._meta as Json)[DIALOG_META]
     const result = { action: 'accept', content: { bind: true }, _meta: { [DIALOG_META]: handle } }
+    // The bind dialog's clock is the service's real one: the person answers after FAST_ANSWER_MS (0.4.4).
+    await new Promise((r) => setTimeout(r, 300))
     l.send({ jsonrpc: '2.0', id: req.id, result })
     expect(await use).toMatchObject({ bound: true, as: label, granted: 'dialog' })
     return l

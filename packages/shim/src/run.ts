@@ -15,6 +15,7 @@ import {
   hostPidOf,
   moveSession,
   openChannel,
+  ownerHeld,
   type PsRow,
   postTyped,
   postUse,
@@ -22,13 +23,14 @@ import {
   safeDir,
   sessionKey,
   startOf,
+  terminalOwner,
   typedName,
   writeBound,
 } from './channel.ts'
 import { frame, Lines, LineTooLong, type Message } from './frames.ts'
 import { writeRing } from './ring.ts'
 import { socketConnect } from './service.ts'
-import { Shim } from './shim.ts'
+import { Shim, type ShimDeps } from './shim.ts'
 import { homeOf, maxSocketPath, ownsHome, readToken, socketOf, tokenFileOf } from './wire.ts'
 
 type Env = Readonly<Record<string, string | undefined>>
@@ -49,6 +51,9 @@ export interface ShimIo {
     removeListener(event: Signal, listener: () => void): unknown
   }
   readonly ps?: (pid: number) => PsRow
+  /** This user's uid and a process's start time (channel.ts startOf); tests pass their own. */
+  readonly uid?: number
+  readonly startOf?: (pid: number) => string | null
   /** Starts the service detached; tests pass their own. */
   readonly startService?: (home: string, env: Env, log: Log) => boolean
 }
@@ -175,15 +180,43 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
     if (ended || io.stdout.destroyed) return
     io.stdout.write(frame(m))
   }
-  const hostPid = hostPidOf(io.ppid, io.ps)
+  const walked = hostPidOf(io.ppid, io.ps)
+  const startedOf = io.startOf ?? startOf
+  // omp 19: the window is PI_TERMINAL_OWNER_PID when the walk ended at omp's terminal-less core (channel.ts
+  // terminalOwner), unless another live shim holds that window's files; then the walk stands, as before. The owner's
+  // start time is kept: the core can keep this shim after the window is gone, and a reused pid is another process.
+  let owner = terminalOwner(walked, io.env, io.ps, io.uid)
+  if (owner !== null && ownerHeld(home, owner, io.pid)) {
+    log('host', { from: 'parent', owner: 'held' })
+    owner = null
+  }
+  const ownerStart = owner === null ? null : startedOf(owner)
+  if (owner !== null && ownerStart === null) owner = null
+  if (owner !== null) log('host', { from: 'owner' })
+  const hostPid = owner ?? walked
   // The window's files' key: the host pid, or on Codex `<host pid>-<session id>` once a tool call names the window.
   let key: SessionKey = hostPid
   // This process's start time, in each .bound: wake-hook --end checks it before it signals (a reused pid is not us).
   const started = startOf(io.pid)
+  let channel: Channel | null = null
+  // Whether the window this shim keys by is still the process it was: always for a host found by the walk; for an owner,
+  // until its start time differs or it is gone. Then for good: no bridge pid in the hello, no wake file written, this
+  // shim's files of that key removed and its typed-word channel closed. Never the core's pid in its place.
+  let ownerGone = false
+  const hostLive = (): boolean => {
+    if (owner === null) return true
+    if (ownerGone) return false
+    if (startedOf(owner) === ownerStart) return true
+    ownerGone = true
+    endSession(home, key, io.pid) // only files naming this shim
+    channel?.close()
+    channel = null
+    log('host-gone', {})
+    return false
+  }
   // False for a Codex sub-agent's shim: it keeps no wake files (its window's shim has them; sub-agents fire no hooks).
   let wakes = true
-  let channel: Channel | null = null
-  const shim = new Shim({
+  const deps: ShimDeps = {
     connect: socketConnect(socketOf(home)),
     toHost,
     log,
@@ -198,7 +231,7 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
       // The ring lives in the channel directory: made 0700 or checked here, as for the .bound file.
       if (safeDir(channelDir(home)) !== null)
         throw Object.assign(new Error('unsafe'), { code: 'unsafe-path' })
-      if (wakes) writeRing(home, key, io.pid, r)
+      if (wakes && hostLive()) writeRing(home, key, io.pid, r)
     },
     consentBridge: true,
     hostPid,
@@ -206,7 +239,7 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
     owner: (pid) => ownsHome(home, pid, alive),
     boundChanged: (labels) => {
       try {
-        if (wakes) writeBound(home, key, io.pid, labels, started)
+        if (wakes && hostLive()) writeBound(home, key, io.pid, labels, started)
       } catch (e) {
         log('bound-file-failed', { code: (e as { code?: unknown }).code ?? 'error' })
       }
@@ -229,13 +262,23 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
       key = next
       log('window', { keyed: true })
     },
+  }
+  // Read by each hello (shim.ts #capabilities reads deps.hostPid when it builds one): absent once the owner is gone, so
+  // that hello names no window. A getter on the object the Shim keeps, so shim.ts is unchanged.
+  Object.defineProperty(deps, 'hostPid', {
+    get: () => (hostLive() ? hostPid : undefined),
+    enumerable: true,
   })
+  const shim = new Shim(deps)
   if (wantHook) {
     channel = await openChannel(
       home,
       hostPid,
       io.pid,
-      { use: (name) => shim.use(name), typed: () => shim.typed() },
+      {
+        use: (name) => (hostLive() ? shim.use(name) : Promise.resolve({ bound: false, code: 'host-gone' })),
+        typed: () => hostLive() && shim.typed(),
+      },
       log,
       maxSocketPath(),
     )
@@ -351,7 +394,10 @@ async function hook(io: ShimIo, rest: readonly string[]): Promise<number> {
     return 0
   }
   if (home === null) return 0
-  const pids = ancestors(io.ppid, io.ps)
+  // The same window as the shim's (serve): omp 19's owner first, only where the walk ends at omp's terminal-less core.
+  const owner = terminalOwner(hostPidOf(io.ppid, io.ps), io.env, io.ps, io.uid)
+  const walk = ancestors(io.ppid, io.ps)
+  const pids = owner === null ? walk : [owner, ...walk.filter((p) => p !== owner)]
   const name = typedName(prompt)
   if (name === null) {
     // Any other prompt: the person typed in this window, which makes it the speaking one (service/typed).

@@ -3,7 +3,7 @@
 // dialog's answer carries its handle. Every name the contract fixes lives here and nowhere else in the shim.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { HostKind } from './host.ts'
+import type { HostKind, Surface } from './host.ts'
 
 /** The wire contract version this shim speaks. */
 export const CONTRACT = 1
@@ -39,7 +39,8 @@ export interface Hello {
   readonly cwd: string
   readonly client_capabilities: Record<string, unknown>
   readonly input_hook: boolean
-  readonly shim: { readonly version: string; readonly pid: number }
+  /** The shim itself; surface (0.4.4) only when CLAUDE_CODE_ENTRYPOINT is one of host.ts's three, else absent. */
+  readonly shim: { readonly version: string; readonly pid: number; readonly surface?: Surface }
 }
 
 type Env = Readonly<Record<string, string | undefined>>

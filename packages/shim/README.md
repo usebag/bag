@@ -79,7 +79,22 @@ Paths and modes (the CLI's `host install` writes the matching sandbox entry; one
 `--input-hook` is passed by the installer only where it also wrote the hook; without it the channel stays off and the
 hello says `input_hook: false`. The host pid is the shim's parent, or past a launcher (sh, bash, zsh, env, npx, npm,
 pnpm, yarn, bunx, uvx) that one's parent, up to four steps. A hook walks its own ancestors (up to eight) and uses the
-first one with an index. Requests, one line each: `{"v":1,"kind":"use","name":"omp-3","secret":"<64 hex>"}`, answered
+first one with an index.
+
+omp 19 starts a window's MCP servers under one shared agent core, an omp process with no terminal, so that walk ends at
+the core, not at the window whose extension holds the consent link and reads the wake files. omp sets
+`PI_TERMINAL_OWNER_PID` to the window's pid on every server it starts, and the shim takes it as the host pid only when
+the walk ended at an omp with no controlling terminal and the variable names another live omp process of this user that
+has one (ps: ppid, uid, tty and the command's name, never a command line). A hook puts that pid first among its
+ancestors under the same test. The variable is inherited by every command an omp window runs, so a Claude Code or an
+`omp -p` started from that window's shell carries it too; their walks end at claude, or at an omp that keeps the
+terminal, and the variable is not read for them. On omp 18 the walk ends at the window itself, so nothing changes. When
+another live shim already holds the window's `.json`, `.bound` or `.ring`, the shim keeps the walk's pid, as before. The
+window's start time is kept: once the window is gone or its pid names another process, the shim's hello names no window,
+it writes no `.bound` or `.ring`, removes its own files of that key, closes its channel, and never uses the core's pid
+in its place.
+
+Requests, one line each: `{"v":1,"kind":"use","name":"omp-3","secret":"<64 hex>"}`, answered
 `{"bound":true,"as":"omp-3"}` or `{"bound":false,"code":"<bag code>"}`; `{"v":1,"kind":"typed","secret":"<64 hex>"}`,
 answered `{"typed":true|false}`. Any other kind (0.4.1's `bridge` included) is `{"bound":false,"code":"usage"}`.
 The secret is compared with `timingSafeEqual`; a wrong one is `bad-auth`.
@@ -96,6 +111,18 @@ directories), every shim after it closes, and a process that cannot read or writ
 host's sandbox denies the model's tools that path. On Claude Code that needs `sandbox.enabled` with
 `denyRead`/`denyWrite` for `<home>/run` (the permission rules alone stop only the built-in tools). Codex has no
 deny-read, and omp has no path sandbox: there the typed path is exactly as strong as same-user, which is none.
+
+The omp 19 owner pid has the same limit. A process of the user can start a shim with `PI_TERMINAL_OWNER_PID` naming
+another omp window; that shim's consent questions then show in that window, and it can take the window's files while
+the window's own shim is not running. It gains nothing a process of the user could not already do with the service
+token. One case follows from the rule itself: an omp with no terminal that a window started (a headless child omp)
+carries the window's pid too, so a shim it starts takes that window as its host when the window's own shim is not
+holding its files: its questions show in that window and its rings wake it. An `omp -p` started from the window's
+shell and detached from its terminal (nohup) is such an omp: if its shim starts before the window's own, it takes the
+window's key first, and the window's shim then keeps the walk. The held check runs once, at the shim's start: a shim
+that found its window held keeps the walk's pid for its whole life, even after the holder exits, so its window has no
+`.bound` of its own and omp's extension there wakes on the identity's doorbell, beside any other window bound to the
+same identity.
 
 ## The bound file, for the waiters
 

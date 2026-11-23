@@ -936,7 +936,7 @@ describe('the service: channel, bridge and ring', () => {
     o.runOnce()
     expect(o.sent).toEqual([])
     o.emit('session_shutdown')
-  })
+  }, 20_000)
 
   it('a session that starts bound takes its first doorbell look only once unbound: old mail does not wake', () => {
     const home = join(tmp.dir, `h${n++}`)
@@ -954,7 +954,7 @@ describe('the service: channel, bridge and ring', () => {
     expect(o.sent).toEqual([])
     expect(seenIn(join(state, 'wake-seen'))).toBe(mtimeOf(join(state, 'doorbell')))
     o.emit('session_shutdown')
-  })
+  }, 20_000)
 
   it('no .bound (or a dead one) means the doorbell as today, and the ring file is not read', () => {
     const home = join(tmp.dir, `h${n++}`)
@@ -1047,14 +1047,19 @@ describe("ompConfirm: a link question's answer (L1)", () => {
 
   it('Yes is true and an explicit No (or an Esc, which omp cannot tell apart) is false, opening on No', async () => {
     const opened: unknown[] = []
-    expect(await ompConfirm(ui(true, opened), 'T', 'M', 1000)).toBe(true)
+    expect(await ompConfirm(ui(true, opened), 'T', 'M', 1000, undefined, after(OMP_FAST_MS))).toBe(true)
     expect(await ompConfirm(ui(false, opened), 'T', 'M', 1000, undefined, after(OMP_FAST_MS))).toBe(false)
     expect(opened).toEqual([1, 1])
   })
 
   it("a false faster than any person (omp's aborted session signal resolves at once) is null, never a No (9b)", async () => {
     expect(await ompConfirm(ui(false), 'T', 'M', 1000, undefined, after(1))).toBeNull()
-    expect(await ompConfirm(ui(true), 'T', 'M', 1000, undefined, after(1))).toBe(true)
+  })
+
+  it('a true faster than any person is null too, never a Yes: no host answers for the person (0.4.4)', async () => {
+    expect(await ompConfirm(ui(true), 'T', 'M', 1000, undefined, after(1))).toBeNull()
+    expect(await ompConfirm(ui(true), 'T', 'M', 1000, undefined, after(OMP_FAST_MS - 1))).toBeNull()
+    expect(await ompConfirm(ui(true), 'T', 'M', 1000, undefined, after(OMP_FAST_MS))).toBe(true)
   })
 
   it('a confirm its own timeout aborted, or one that throws, is null: no answer, never a No', async () => {

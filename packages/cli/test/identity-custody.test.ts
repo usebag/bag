@@ -145,7 +145,9 @@ describe('identity custody: the move both ways, verified before anything moves',
     expect(w.fake.calls.map((c) => c.args[0])).toEqual(['-i', 'find-generic-password'])
     expect(readFileSync(join(w.trash, 'alice.json'), 'utf8')).toBe(text)
     expect(existsSync(keyFile)).toBe(false)
-    expect(statSync(join(w.home, 'keychain', 'alice.json')).mtimeMs).toBe(created)
+    // Kept to the microsecond: the copy's time is set by utimesSync from seconds (edge custody/home.ts), which drops the
+    // original's sub-microsecond digits; a lost mtime would be off by milliseconds or more.
+    expect(Math.abs(statSync(join(w.home, 'keychain', 'alice.json')).mtimeMs - created)).toBeLessThan(0.002)
     expect((await cli(w.io, 'address', 'alice', '--dir', w.home)).out).toEqual([address])
     const needles = JSON.parse(text) as { sign_seed: string; seal_priv: string }
     const printed = [...w.io.stdout, ...w.io.stderr, ...w.io.asked].join('\n')

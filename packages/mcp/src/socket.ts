@@ -13,6 +13,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { ConfigError } from './config.ts'
 import type { Logger } from './log.ts'
+import { type Surface, surfaceOf } from './pairing.ts'
 import { ToolError } from './tools.ts'
 
 // The bag service's socket side (docs/bag-service.md, "What runs"): the run directory, the single-service lock,
@@ -178,6 +179,8 @@ export interface Hello {
   readonly cwd: string
   readonly capabilities: Readonly<Record<string, unknown>>
   readonly inputHook: boolean
+  /** The Claude Code surface the shim reported (shim.surface), for wording only; null when none or unknown. */
+  readonly surface: Surface | null
 }
 
 /** One accepted connection, from its hello to its close. */
@@ -190,6 +193,8 @@ export interface ServiceConnection {
     readonly inputHook: boolean
     readonly raw: Readonly<Record<string, unknown>>
   }
+  /** The Claude Code surface from the hello (wording only, never a decision); absent or null when none. */
+  readonly surface?: string | null
   readonly closed: boolean
   onClose(listener: () => void): () => void
   elicit(
@@ -317,6 +322,9 @@ export class Connection implements ServiceConnection {
   }
   get cwd(): string {
     return this.#hello?.cwd ?? ''
+  }
+  get surface(): Surface | null {
+    return this.#hello?.surface ?? null
   }
   get capabilities() {
     const raw = this.#hello?.capabilities ?? {}
@@ -565,12 +573,15 @@ export class Connection implements ServiceConnection {
       return refuse(new StreamError('usage', 'input_hook is true or false'))
     const admitted = this.host_.admit()
     if (admitted !== null) return refuse(admitted)
+    // The shim's own member: its version and pid, and since 0.4.4 the Claude Code surface (CLAUDE_CODE_ENTRYPOINT),
+    // kept only when on the allow-list. An older service never read `shim`, so a newer shim's surface passes it.
     this.#hello = {
       contract: p.contract,
       host: p.host,
       cwd: p.cwd,
       capabilities: caps,
       inputHook: p.input_hook === true,
+      surface: isObject(p.shim) ? surfaceOf(p.shim.surface) : null,
     }
     if (this.#helloTimer !== null) clearTimeout(this.#helloTimer)
     this.#helloTimer = null

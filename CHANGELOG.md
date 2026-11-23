@@ -4,6 +4,28 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.4.4: 2026-11-23
+
+The cut tagged v0.4.4, `@usebag/bag` 0.4.4.
+
+- **`@usebag/bag` 0.4.4**, published from this cut (`npm view @usebag/bag@0.4.4 gitHead` names it).
+
+Changes after v0.4.3.
+
+- **bag works on omp 19.** omp 19 starts a window's tools under one shared process, so bag took that process for the
+  window: every pairing and every `use` by dialog answered that the host showed no dialog, and a message could wake no
+  window, or every omp 19 window whose folder names the identity, so one message could be acted on twice. bag now finds
+  the window from the pid omp hands its tools, only when the tool's parent is that shared process, and keeps omp 18,
+  Claude Code and Codex as they were.
+
+- **A dialog the host answers at once is never your answer.** Any answer to one of bag's dialogs (binding a window,
+  each pairing step, a question about a local act) that comes back faster than a person could read it, under 250 ms,
+  means the host did not show it: bag writes nothing, records no No and grants nothing, and says the dialog was not
+  shown. Before, only the first dialog of a pairing was checked, so the six-digit dialog declined at once by Claude Code's
+  VS Code extension read as a No. In the VS Code extension and Claude Desktop, which answer every dialog without showing
+  it (Claude Code issue 98256), the message says so and names the ways that work: Claude Code in a terminal, `bag pair`,
+  or typing use and the name.
+
 ## v0.4.3: 2026-11-17
 
 The cut tagged v0.4.3, `@usebag/bag` 0.4.3.
