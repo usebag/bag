@@ -4,7 +4,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { Message } from '../src/frames.ts'
 import type { Ring } from '../src/ring.ts'
 import { socketConnect } from '../src/service.ts'
-import { absentText, LOST_TEXT, RESUME_TOOL, Shim, type ShimDeps } from '../src/shim.ts'
+import {
+  ASK_WAIT_MS,
+  absentText,
+  LOST_TEXT,
+  RESUME_TOOL,
+  realTimers,
+  Shim,
+  type ShimDeps,
+} from '../src/shim.ts'
 import { readToken, SHIM_VERSION, SUBAGENT_META, socketOf, tokenFileOf } from '../src/wire.ts'
 import { dropHome, FakeService, shortHome } from './fake-service.ts'
 
@@ -430,6 +438,172 @@ describe('a service that is not there', () => {
     expect(r.result).toMatchObject({ serverInfo: { name: 'bag', version: '0.4.0' } })
     expect(h.shim.phase).toBe('up')
     h.shim.close()
+  })
+
+  it("asks this home's login agent and starts none of its own while the agent's copy comes up", async () => {
+    await svc.crash()
+    let asks = 0
+    let starts = 0
+    const h = harness(home, {
+      startWaitMs: 100,
+      askWaitMs: 3000,
+      ask: async () => {
+        asks++
+        setTimeout(() => void svc.start(), 400)
+        return true
+      },
+      start: () => {
+        starts++
+        return true
+      },
+    })
+    await up(h)
+    expect(h.shim.phase).toBe('up')
+    expect([asks, starts]).toEqual([1, 0])
+    expect(h.logs.some((l) => l.event === 'login-agent-late' || l.event === 'service-start')).toBe(false)
+    h.shim.close()
+  })
+
+  it('starts its own as before when no login agent was asked', async () => {
+    await svc.crash()
+    const order: string[] = []
+    const h = harness(home, {
+      startWaitMs: 3000,
+      ask: async () => {
+        order.push('ask')
+        return false
+      },
+      start: () => {
+        order.push('start')
+        setTimeout(() => void svc.start(), 100)
+        return true
+      },
+    })
+    await up(h)
+    expect(order).toEqual(['ask', 'start'])
+    expect(h.logs.find((l) => l.event === 'service-start')?.fields).toEqual({ launched: true })
+    h.shim.close()
+  })
+
+  it("starts its own after the login agent's wait, and says so in one line", async () => {
+    await svc.crash()
+    expect(ASK_WAIT_MS).toBe(20_000)
+    let askedAt = 0
+    let startedAt = 0
+    const h = harness(home, {
+      startWaitMs: 2000,
+      askWaitMs: 300,
+      ask: async () => {
+        askedAt = Date.now()
+        return true
+      },
+      start: () => {
+        startedAt = Date.now()
+        setTimeout(() => void svc.start(), 50)
+        return true
+      },
+    })
+    await up(h)
+    expect(h.shim.phase).toBe('up')
+    expect(startedAt - askedAt).toBeGreaterThanOrEqual(300)
+    expect(h.logs.filter((l) => l.event === 'login-agent-late')).toEqual([
+      { event: 'login-agent-late', fields: { waited_ms: 300 } },
+    ])
+    expect(h.logs.find((l) => l.event === 'service-start')?.fields).toEqual({ launched: true })
+    h.shim.close()
+  })
+
+  /** The test's clock: the shim's clock and timers run K times as fast as the wall clock, the defaults unchanged. */
+  function fastClock(k: number) {
+    const t0 = Date.now()
+    const now = (): number => t0 + (Date.now() - t0) * k
+    return { now, timers: { after: (ms: number, fn: () => void) => realTimers.after(ms / k, fn) } }
+  }
+  const instructions = (m: Message): string => (m.result as { instructions?: string }).instructions ?? ''
+
+  it("answers the host's initialize within the start wait while the login agent's start is awaited, then announces the tools", async () => {
+    await svc.crash()
+    const clock = fastClock(20)
+    let starts = 0
+    const h = harness(home, {
+      ...clock,
+      startWaitMs: 5000,
+      retryMs: () => 2000,
+      ask: async () => {
+        setTimeout(() => void svc.start(), 10_000 / 20) // the agent's copy serves at 10 s of the test's clock
+        return true
+      },
+      start: () => ++starts > 0,
+    })
+    const asked = clock.now()
+    h.shim.fromHost(INIT)
+    const r = await h.byId(0)
+    expect(clock.now() - asked).toBeLessThan(6000)
+    expect(instructions(r)).toBe('bag: the bag service is restarting; try again shortly.')
+    h.shim.fromHost({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    await h.next((m) => m.method === 'notifications/tools/list_changed')
+    expect(h.shim.phase).toBe('up')
+    expect(clock.now() - asked).toBeLessThan(ASK_WAIT_MS)
+    expect(starts).toBe(0)
+    h.shim.close()
+  })
+
+  it("still starts its own at 20 s of the test's clock after answering the initialize early", async () => {
+    await svc.crash()
+    const clock = fastClock(20)
+    let askedAt = 0
+    let startedAt = 0
+    const h = harness(home, {
+      ...clock,
+      startWaitMs: 5000,
+      retryMs: () => 2000,
+      ask: async () => {
+        askedAt = clock.now()
+        return true
+      },
+      start: () => {
+        startedAt = clock.now()
+        setTimeout(() => void svc.start(), 10)
+        return true
+      },
+    })
+    h.shim.fromHost(INIT)
+    const r = await h.byId(0)
+    expect(clock.now() - askedAt).toBeLessThan(6000)
+    expect(instructions(r)).toContain('restarting')
+    h.shim.fromHost({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    await h.next((m) => m.method === 'notifications/tools/list_changed')
+    expect(startedAt - askedAt).toBeGreaterThanOrEqual(ASK_WAIT_MS)
+    expect(h.logs.filter((l) => l.event === 'login-agent-late')).toEqual([
+      { event: 'login-agent-late', fields: { waited_ms: ASK_WAIT_MS } },
+    ])
+    h.shim.close()
+  })
+
+  it('twenty shims that find no service ask twenty times, spawn nothing, and all reach the one service', async () => {
+    await svc.crash()
+    let asks = 0
+    let starts = 0
+    let running = false
+    // The supervisor as launchd runs a job: at most one copy per label, a kickstart of a running or starting job a no-op.
+    const ask = async (): Promise<boolean> => {
+      asks++
+      if (!running) {
+        running = true
+        setTimeout(() => void svc.start(), 200)
+      }
+      return true
+    }
+    const shims = Array.from({ length: 20 }, () =>
+      harness(home, { startWaitMs: 100, askWaitMs: 5000, ask, start: () => ++starts > 0 }),
+    )
+    await Promise.all(shims.map((h) => up(h)))
+    // An initialize is answered by the start wait (100 ms here), so some connect after it: wait for every one.
+    for (let i = 0; i < 300 && !shims.every((h) => h.shim.phase === 'up'); i++)
+      await new Promise((r) => setTimeout(r, 10))
+    expect(shims.every((h) => h.shim.phase === 'up')).toBe(true)
+    expect([asks, starts]).toEqual([20, 0])
+    for (const h of shims) h.shim.close()
   })
 
   it('says a socket path too long for sun_path, and never tries it', async () => {

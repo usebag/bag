@@ -100,8 +100,8 @@ async fn mail_that_arrives_while_the_window_is_full_waits_for_an_ack() {
     s.stop().await;
 }
 
-#[tokio::test]
-async fn a_flood_of_pings_does_not_hold_off_the_auth_deadline() {
+/// One connection that pings without pause and never authenticates: the close code it reads, if any, and when.
+async fn flood_until_closed() -> (Option<u16>, Duration) {
     let config = Config {
         ping_interval: Duration::from_millis(100),
         idle_timeout: Duration::from_millis(200),
@@ -120,7 +120,28 @@ async fn a_flood_of_pings_does_not_hold_off_the_auth_deadline() {
         }
     };
     let took = started.elapsed();
-    assert_eq!(close, Some(4003), "no auth: closed for silence although it pinged");
-    assert!(took < Duration::from_secs(1), "{took:?}");
     s.stop().await;
+    (close, took)
+}
+
+#[tokio::test]
+async fn a_flood_of_pings_does_not_hold_off_the_auth_deadline() {
+    // Alone, the close 4003 is read about 200 ms in, on the first try. The relay sends it at the deadline and drops the
+    // socket while this client's pings still arrive, so the client's next ping is answered by a TCP reset; a client
+    // that reads late, as on a loaded machine, can have the unread close frame discarded with it and read nothing
+    // (once in the 0.4.5 gate, at a load average of 12 to 49; 4 of 20 in a scratch run that read 400 to 800 ms late
+    // while pinging, 0 of 10 when it stopped pinging at the deadline). So the flood runs up to three times, each on a
+    // new relay, and fails only when no try reads 4003 within 1 s. A deadline that the pings hold off sends no close
+    // while they last, so every try reads none and the test still fails.
+    let mut tries = Vec::new();
+    for _ in 0..3 {
+        let (close, took) = flood_until_closed().await;
+        tries.push((close, took));
+        if close == Some(4003) && took < Duration::from_secs(1) {
+            break;
+        }
+    }
+    let (close, took) = *tries.last().unwrap();
+    assert_eq!(close, Some(4003), "no auth: closed for silence although it pinged; every try: {tries:?}");
+    assert!(took < Duration::from_secs(1), "every try: {tries:?}");
 }

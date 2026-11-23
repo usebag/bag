@@ -32,6 +32,12 @@ The home is `--dir`, else `AC_HOME`, else `$HOME/.bag`.
   use the SDK). A cancellation from either side is passed on under the other side's id. Before a dialog is shown the
   shim checks that `<home>/run/service.json` names the pid that answered the hello and that it is alive; it never
   touches the service lock (a probe would make a starting service exit `busy`).
+- **No service, with this home's login agent installed** (its plist or unit names this home after `--dir`): the shim
+  checks that the supervisor loaded the job from that same file (`launchctl print`'s `path = `, systemd's
+  `FragmentPath`), asks it to start it (`/bin/launchctl kickstart gui/<uid>/dev.bag.service`, or `systemctl --user
+  start bag.service`) and starts none of its own while it waits up to 20 s; the host's `initialize` is answered as
+  restarting after 5 s meanwhile. Another file, a failed check, launchd's 113, a failed systemctl, or nothing within
+  20 s (logged `login-agent-late`), and it starts its own as below.
 - **No service.** The shim starts one through the scrubbed launch (`/bin/sh -c 'ulimit -c 0; exec node
   --disable-sigusr1 ...'`, an allow-listed environment, detached) from `<home>/package/current`, and waits up to 5 s.
   If none answers, `initialize` is answered by the shim, `tools/list` holds one tool, `status`, and every tool call

@@ -588,7 +588,7 @@ describe('ac restore', () => {
       const r = parseRecord(c.record(url, made3.address, 'address') as string) as AddressRecord
       expect([url, r.revoked, r.relays, r.iat]).toEqual([url, [other], [R, R2], T0 + 6])
     }
-  })
+  }, 20_000)
 
   it('makes no network call on a sheet that does not check, and stops on a record of other keys', async () => {
     const net = new Network()

@@ -1370,9 +1370,10 @@ MAY still deliver mail between two of its own identities without that link ever 
   so no relay or wire peer can link them; but a local pair joins two contexts the person may have kept apart. A
   message from one identity reaches the other's host session as mail from a trusted sender: still data, never an
   instruction, yet a model misled in one session can now reach the other. Allow a pair only for identities that are
-  meant to talk to each other, and hide one that must stay apart; a sender's local sends are bounded (the reference:
-  20 a minute, 200 a day). The same user is not a boundary either way: a process of that user could already act as
-  either identity, write the edge's local files, or take a host's consent link by registering first.
+  meant to talk to each other, and hide one that must stay apart; local sends are not rate limited, so what bounds a
+  misled model's reach is the person's Allow for each pair, hide and the word off; every local send is audited. The
+  same user is not a boundary either way: a process of that user could already act as either identity, write the
+  edge's local files, or take a host's consent link by registering first.
 - **Root compromise** is unsolved, for everyone. It is bounded by short-lived principal and
   session keys, by revocation in address records that live a day at most, and by countersigned rotation against
   pinned keys. A rotation key kept offline lets an org recover a lost or compromised root.

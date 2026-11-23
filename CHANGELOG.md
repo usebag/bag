@@ -4,6 +4,29 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.4.5: 2026-11-23
+
+The cut tagged v0.4.5, `@usebag/bag` 0.4.5.
+
+- **`@usebag/bag` 0.4.5**, published from this cut (`npm view @usebag/bag@0.4.5 gitHead` names it).
+
+Changes after v0.4.4.
+
+- **Sends between your own identities are no longer rate limited.** Before, one identity could make at most 20 local
+  sends a minute and 200 a day, and the next was refused as `to-own-identity` with the detail "rate: at most 20 local
+  sends a minute and 200 a day". Now no local send is refused for rate; sends through a relay keep their limits.
+
+- **How omp 19 hands bag's tools to the model.** Under omp 19 (19.1.0) bag's tools reach the model as tool commands, run
+  through omp's built-in bash tool, not as direct functions, so a window started with `--no-tools` has none of them;
+  under omp 18 (18.20.0) they are direct functions and stay with `--no-tools`. Start a window that uses bag with omp's
+  default tools, or at least its bash tool. See `docs/host-omp.md`, section 1.
+
+- **The service stays under its login agent through a restart.** When the bag service stopped for a restart while a
+  login agent was loaded, a window could start its own copy first; the login agent's copy then found the home taken,
+  exited, and was started again every 10 seconds for as long as the window's copy lived. A window now asks the login
+  agent to start the service and starts its own only if none answers within 20 seconds, and the login agent's copy that
+  finds the home taken waits for it and takes over, instead of exiting.
+
 ## v0.4.4: 2026-11-23
 
 The cut tagged v0.4.4, `@usebag/bag` 0.4.4.

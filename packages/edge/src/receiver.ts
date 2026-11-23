@@ -365,7 +365,9 @@ export class Receiver {
     for (;;) {
       if (stopped()) return
       const checked = guardCheck(this.#o.guard, url)
+      // Stopped during the guard's look-up, the subscription below would never see its signal abort.
       if (checked !== undefined) await checked
+      if (stopped()) return
       const failure = await this.#subscribe(url, signal, delivered)
       if (failure === null || stopped()) return
       const code = failure.code as AcErrorCode

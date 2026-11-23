@@ -48,6 +48,7 @@ import {
   HIDE_WORDS,
   LINK_AGAIN,
   LINK_DIGITS,
+  makingLine,
   OLD_EXTENSION,
   type Pairings,
   SHOW_EVERY_S,
@@ -56,14 +57,7 @@ import { type Running, startServer } from '../src/server.ts'
 import { CONSENT_BRIDGE, Service, type ServiceDeps } from '../src/service.ts'
 import { DIALOG_META, SUBAGENT_META } from '../src/socket.ts'
 import type { Peer } from '../src/socket-owner.ts'
-import {
-  HOME_NOTE,
-  HOME_OFF,
-  LOCAL_ASK_DAYS,
-  LOCAL_HELD_MAX,
-  LOCAL_PER_DAY,
-  LOCAL_PER_MINUTE,
-} from '../src/tools.ts'
+import { HOME_NOTE, HOME_OFF, LOCAL_ASK_DAYS, LOCAL_HELD_MAX } from '../src/tools.ts'
 import { SETTLE_MS } from '../src/wake-router.ts'
 import {
   addressRecord,
@@ -1505,7 +1499,7 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
     const asks = () => seen.filter((m) => m.method === 'service/consent-ask').map((m) => m.params as Json)
     const withdraws = () =>
       seen.filter((m) => m.method === 'service/consent-withdraw').map((m) => m.params as Json)
-    return { socket, reg, request, asks, withdraws }
+    return { socket, reg, request, asks, withdraws, seen }
   }
   const pairState = (): unknown =>
     (JSON.parse(readFileSync(localPeersPath(home), 'utf8')).pairs as Json[])[0]?.state
@@ -2082,10 +2076,38 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
     expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
   })
 
-  it('a first pair_invite cancelled before its first await resolves ends the pairing it started: client-abort, widget withdrawn', async () => {
+  const CLIENT_ABORT = {
+    decision: 'reject',
+    step: 'refuse',
+    code: 'cancelled',
+    reason: 'client-abort',
+    window: 'omp /w/personal',
+  }
+  /**
+   * The widget's shows on link `l` in the order it read them, each with whether a withdraw for it came after it. A show
+   * asked after its pairing ended is never withdrawn (the end withdrew the one it had), so withdrawn: false catches it.
+   */
+  const widget = (l: { seen: Json[] }): { message: unknown; withdrawn: boolean }[] =>
+    l.seen.flatMap((m, i) => {
+      const p = m.params as Json
+      if (m.method !== 'service/consent-ask' || p.kind !== 'show') return []
+      const after = l.seen.slice(i + 1)
+      const withdrawn = after.some(
+        (w) => w.method === 'service/consent-withdraw' && (w.params as Json).id === p.id,
+      )
+      return [{ message: p.message, withdrawn }]
+    })
+  /** Once the edge's run of the cancelled pairing has ended, a round trip on the link: every message before it is read. */
+  const settled = async (l: { request(m: string, p: Json): Promise<Json> }): Promise<void> => {
+    await until(() => log.lines.some((x) => x.event === 'pair-ended'), 10_000)
+    await l.request('service/consent-answer', { id: 'none', accepted: null })
+  }
+
+  it('a first pair_invite cancelled in the same write as its call ends the pairing at once: client-abort, no invitation, its widget withdrawn', async () => {
     const s = await start({ pairPollMs: 2 })
     const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
     const b = await omp(s, 'personal')
+    // The call and its cancel in one write: the SDK aborts the call's signal before the body runs.
     b.sendAll([
       {
         jsonrpc: '2.0',
@@ -2096,19 +2118,42 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
       { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 9109, reason: 'at once' } },
     ])
     await until(() => audited('pair').some((d) => d.code === 'cancelled'), 10_000)
-    expect(audited('pair').filter((d) => d.decision === 'reject')).toEqual([
-      {
-        decision: 'reject',
-        step: 'refuse',
-        code: 'cancelled',
-        reason: 'client-abort',
-        window: 'omp /w/personal',
-      },
-    ])
-    const shows = l.asks().filter((q) => q.kind === 'show')
-    expect(shows.length).toBeGreaterThan(0)
-    await until(() => shows.every((q) => l.withdraws().some((w) => w.id === q.id)))
+    await settled(l)
+    // The end alone: no invitation was opened for a call already cancelled.
+    expect(audited('pair')).toEqual([CLIENT_ABORT])
+    // Only the placeholder was shown, never a code, and it was withdrawn.
+    expect(widget(l)).toEqual([{ message: makingLine('bob'), withdrawn: true }])
     expect(b.count((m) => m.id === 9109)).toBe(0)
+    expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
+  }, 30_000)
+
+  it('a first pair_invite cancelled once its widget is up ends the pairing it started: client-abort, every show withdrawn', async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    // The invitation's accept-from held, so the call is still open when its cancel arrives.
+    const publish = relay.publish.bind(relay)
+    const held = Promise.withResolvers<void>()
+    relay.publish = async (url, bytes) => {
+      const r = recordOf(bytes)
+      if (r?.kind === 'accept-from' && r.owner !== P.alice.address) await held.promise
+      return publish(url, bytes)
+    }
+    raw(b, 9111, 'pair_invite', { name: 'bob' })
+    await until(() => l.asks().some((q) => q.kind === 'show'))
+    cancelCall(b, 9111)
+    // The cancel ended the pairing (its show withdrawn); then the held edge goes on and sees it.
+    await until(() => l.withdraws().length > 0)
+    relay.publish = publish
+    held.resolve()
+    await until(() => audited('pair').some((d) => d.code === 'cancelled'), 10_000)
+    await settled(l)
+    expect(audited('pair').filter((d) => d.decision === 'reject')).toEqual([CLIENT_ABORT])
+    const shown = widget(l)
+    expect(shown.length).toBeGreaterThan(0)
+    expect(shown.filter((x) => !x.withdrawn)).toEqual([])
+    expect(b.count((m) => m.id === 9111)).toBe(0)
     expect(await call(b, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true })
     expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
   }, 30_000)
@@ -2147,6 +2192,29 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
     })
     expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
     held.resolve()
+  }, 30_000)
+
+  it('a resume cancelled in the same write as its call ends at once: it holds no wait for max_tool_seconds', async () => {
+    const timers = new ManualTimers()
+    const s = await start({ pairPollMs: 2, timers })
+    await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const invited = await call(b, 'pair_invite', { name: 'bob' })
+    const before = timers.live()
+    b.sendAll([
+      {
+        jsonrpc: '2.0',
+        id: 9301,
+        method: 'tools/call',
+        params: { name: 'pair_invite', arguments: { resume: invited.resume } },
+      },
+      { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 9301, reason: 'at once' } },
+    ])
+    // The cancelled resume spent the token (so it ran); its window's timer and its progress are gone with it.
+    expect(await call(b, 'pair_invite', { resume: invited.resume })).toMatchObject({ error: 'usage' })
+    expect(timers.live()).toEqual(before)
+    expect(b.count((m) => m.id === 9301)).toBe(0)
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true })
   }, 30_000)
 
   it('a token dies at once on cancel: a resume while the cancel winds down is refused, and busy says it is closing', async () => {
@@ -2954,29 +3022,37 @@ describe('local mail (M2, M3, M4)', () => {
     expect(onRelay()).toEqual([])
   })
 
-  it('limits a sender to 20 local sends a minute and 200 a day, audited (S5)', async () => {
+  it('a wait cancelled in the same write as its call takes nothing: the message stays unread, and the next wait returns it', async () => {
+    const { a, b } = await paired()
+    const sent = await call(a, 'send', chat([P.carol.address], 'kept'))
+    b.sendAll([
+      {
+        jsonrpc: '2.0',
+        id: 9201,
+        method: 'tools/call',
+        params: { name: 'wait', arguments: { timeout_s: 1 } },
+      },
+      { jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 9201, reason: 'at once' } },
+    ])
+    // timeout_s 0 answers at once: the message, or null when the cancelled wait took it.
+    expect(((await call(b, 'wait', { timeout_s: 0 })).message as Json | null)?.id).toBe(sent.id)
+    expect(b.count((m) => m.id === 9201)).toBe(0)
+  })
+
+  it('never refuses a local send for rate: 210 sends from one identity inside one minute are all delivered', async () => {
+    // The injected clock stands still, so every send falls inside one minute and one day: past the old 20 a minute
+    // and 200 a day (removed 2026-11-23), none is refused and no rate-limit line is audited.
     const clock = new FakeClock()
     const { a } = await paired({ clock })
-    const rate = async (): Promise<Json> => call(a, 'send', chat([P.carol.address]))
-    for (let i = 0; i < LOCAL_PER_MINUTE; i++) expect(await rate()).toMatchObject({ delivery: 'local' })
-    const over = await rate()
-    expect([over.error, String(over.detail).startsWith('rate: at most 20 local sends a minute')]).toEqual([
-      'to-own-identity',
-      true,
-    ])
+    const start = clock.now()
+    const sent: Json[] = []
+    for (let i = 0; i < 210; i++) sent.push(await call(a, 'send', chat([P.carol.address])))
+    expect(clock.now() - start).toBeLessThan(60)
+    expect(sent.filter((r) => r.delivery !== 'local' || r.error !== undefined)).toEqual([])
+    expect(new Set(sent.map((r) => r.id)).size).toBe(210)
     const audit = readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8').split('\n')
-    expect(audit.filter((l) => l.includes('"rate-limit"') && l.includes('minute'))).toHaveLength(1)
-    clock.t += 60
-    expect(await rate()).toMatchObject({ delivery: 'local' })
-    // 21 counted so far; spread out, the day's 200 is the next bound.
-    for (let i = 21; i < LOCAL_PER_DAY; i++) {
-      clock.t += 4
-      expect(await rate()).toMatchObject({ delivery: 'local' })
-    }
-    clock.t += 4
-    expect(String((await rate()).detail)).toContain('200 a day')
-    clock.t += 86_400
-    expect(await rate()).toMatchObject({ delivery: 'local' })
+    expect(audit.filter((l) => l.includes('rate-limit'))).toEqual([])
+    expect(audit.filter((l) => l.includes('delivered-local'))).toHaveLength(210)
     expect(onRelay()).toEqual([])
   }, 60_000)
 

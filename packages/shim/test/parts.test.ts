@@ -45,7 +45,17 @@ import {
 } from '../src/frames.ts'
 import { hostKind, surfaceOf, toolTimeoutMs } from '../src/host.ts'
 import { isLabel, removeRing, ringOf, writeRing } from '../src/ring.ts'
-import { launchEnv, openServiceLog, run, type ShimIo, serviceEntry, startService } from '../src/run.ts'
+import {
+  askLoginAgent,
+  type Exec,
+  launchEnv,
+  loginAgentOf,
+  openServiceLog,
+  run,
+  type ShimIo,
+  serviceEntry,
+  startService,
+} from '../src/run.ts'
 import { absent, socketConnect } from '../src/service.ts'
 import { backoff, realTimers } from '../src/shim.ts'
 import {
@@ -1228,5 +1238,245 @@ describe('more edge branches', () => {
     out2.emit('error', Object.assign(new Error('io'), { code: 'EIO' }))
     expect(await done).toBe(0)
     expect(err).toContain('"reason":"stdout-error"')
+  })
+})
+
+describe("the login agent of this home (bag host install service's files)", () => {
+  // The login agent's text as packages/home writes it, pinned by the CLI's own fixtures for the home /Users/x/.bag.
+  const fixture = (name: string): string =>
+    readFileSync(new URL(`../../cli/test/fixtures/${name}`, import.meta.url), 'utf8')
+  const xml = (t: string): string =>
+    t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  function plist(user: string, forHome: string): void {
+    mkdirSync(join(user, 'Library', 'LaunchAgents'), { recursive: true })
+    const text = fixture('launch-agent-plist.txt').replaceAll('/Users/x/.bag', xml(forHome))
+    writeFileSync(join(user, 'Library', 'LaunchAgents', 'dev.bag.service.plist'), text)
+  }
+  function unit(user: string, forHome: string): void {
+    mkdirSync(join(user, '.config', 'systemd', 'user'), { recursive: true })
+    const word = forHome
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/%/g, '%%')
+      .replace(/\$/g, '$$$$')
+    const text = fixture('systemd-unit.txt').replaceAll('/Users/x/.bag', word)
+    writeFileSync(join(user, '.config', 'systemd', 'user', 'bag.service'), text)
+  }
+  const systemctl = (f: string): boolean => f === '/usr/bin/systemctl'
+
+  it('on macOS: the plist whose --dir is exactly this home, kickstarted by label and uid; another home never', () => {
+    const env = { HOME: home }
+    expect(loginAgentOf(`${home}/.bag`, env, 'darwin', 501)).toBeNull()
+    plist(home, `${home}/.bag`)
+    expect(loginAgentOf(`${home}/.bag`, env, 'darwin', 501)).toEqual({
+      file: join(home, 'Library', 'LaunchAgents', 'dev.bag.service.plist'),
+      check: ['/bin/launchctl', 'print', 'gui/501/dev.bag.service'],
+      ask: ['/bin/launchctl', 'kickstart', 'gui/501/dev.bag.service'],
+      launchd: true,
+    })
+    for (const other of [`${home}/.bag2`, `${home}/.ba`, `${home}`, `${home}/.bag/x`])
+      expect(loginAgentOf(other, env, 'darwin', 501)).toBeNull()
+    expect(loginAgentOf(`${home}/.bag`, env, 'linux', 501, systemctl)).toBeNull()
+    expect(loginAgentOf(`${home}/.bag`, env, 'darwin', undefined)).toBeNull()
+    expect(loginAgentOf(`${home}/.bag`, {}, 'darwin', 501)).toBeNull()
+    // A home that XML escapes is compared unescaped; the substring of another home's path does not count.
+    plist(home, `${home}/a&b <"c">`)
+    expect(loginAgentOf(`${home}/a&b <"c">`, env, 'darwin', 501)?.launchd).toBe(true)
+    plist(home, `/elsewhere${home}/.bag`)
+    expect(loginAgentOf(`${home}/.bag`, env, 'darwin', 501)).toBeNull()
+  })
+
+  it('on Linux: the unit whose ExecStart --dir is exactly this home, started by systemctl --user; another home never', () => {
+    const env = { HOME: home }
+    expect(loginAgentOf(`${home}/.bag`, env, 'linux', 1000, systemctl)).toBeNull()
+    unit(home, `${home}/.bag`)
+    expect(loginAgentOf(`${home}/.bag`, env, 'linux', 1000, systemctl)).toEqual({
+      file: join(home, '.config', 'systemd', 'user', 'bag.service'),
+      check: ['/usr/bin/systemctl', '--user', 'show', '-p', 'FragmentPath', 'bag.service'],
+      ask: ['/usr/bin/systemctl', '--user', 'start', 'bag.service'],
+      launchd: false,
+    })
+    expect(loginAgentOf(`${home}/.bag`, env, 'linux', 1000, () => false)).toBeNull()
+    expect(loginAgentOf(`${home}/.bag2`, env, 'linux', 1000, systemctl)).toBeNull()
+    unit(home, `${home}/50% "q" $x\\y`)
+    expect(loginAgentOf(`${home}/50% "q" $x\\y`, env, 'linux', 1000, systemctl)?.launchd).toBe(false)
+  })
+
+  /** A supervisor that loaded the job from `loaded` (null: none) and answers the start with `status`. */
+  const supervisor = (
+    calls: { file: string; args: readonly string[]; env: Record<string, string> }[],
+    loaded: string | null,
+    status: number | null,
+    checkStatus: number | null = loaded === null ? 113 : 0,
+  ): Exec => {
+    return async (file, args, env) => {
+      calls.push({ file, args, env })
+      if (args[0] === 'print')
+        return {
+          status: checkStatus,
+          out:
+            loaded === null
+              ? ''
+              : `gui/501/dev.bag.service = {\n\tactive count = 1\n\tpath = ${loaded}\n\tstderr path = /x/service.log\n}\n`,
+        }
+      if (args[1] === 'show') return { status: checkStatus, out: `FragmentPath=${loaded ?? ''}\n` }
+      return { status, out: '' }
+    }
+  }
+  const plistFile = (): string => join(home, 'Library', 'LaunchAgents', 'dev.bag.service.plist')
+  const unitFile = (): string => join(home, '.config', 'systemd', 'user', 'bag.service')
+
+  it("asks with a fixed command and environment, and reads launchd's and systemd's answers", async () => {
+    const calls: { file: string; args: readonly string[]; env: Record<string, string> }[] = []
+    const env = { HOME: home, NODE_OPTIONS: '--require x', PATH: '/evil', XDG_RUNTIME_DIR: '/run/user/501' }
+    const events: string[] = []
+    const log = (e: string) => events.push(e)
+    expect(
+      await askLoginAgent(`${home}/.bag`, env, 'darwin', 501, supervisor(calls, plistFile(), 0), log),
+    ).toBe(false)
+    expect(calls).toEqual([]) // no agent for this home: nothing is run
+    plist(home, `${home}/.bag`)
+    const darwin = async (status: number | null) =>
+      askLoginAgent(`${home}/.bag`, env, 'darwin', 501, supervisor(calls, plistFile(), status), log)
+    expect([
+      await darwin(0),
+      await darwin(37),
+      await darwin(null),
+      await darwin(113),
+      await darwin(-1),
+    ]).toEqual([true, true, true, false, false])
+    const small = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home, XDG_RUNTIME_DIR: '/run/user/501' }
+    expect(calls.slice(0, 2)).toEqual([
+      { file: '/bin/launchctl', args: ['print', 'gui/501/dev.bag.service'], env: small },
+      { file: '/bin/launchctl', args: ['kickstart', 'gui/501/dev.bag.service'], env: small },
+    ])
+    expect(events).toEqual(Array(5).fill('login-agent-asked'))
+    unit(home, `${home}/.bag`)
+    const linux = async (status: number | null) =>
+      askLoginAgent(`${home}/.bag`, env, 'linux', 1000, supervisor(calls, unitFile(), status), log, systemctl)
+    expect([await linux(0), await linux(5), await linux(null)]).toEqual([true, false, false])
+    expect(calls.slice(-2).map((c) => [c.file, ...c.args])).toEqual([
+      ['/usr/bin/systemctl', '--user', 'show', '-p', 'FragmentPath', 'bag.service'],
+      ['/usr/bin/systemctl', '--user', 'start', 'bag.service'],
+    ])
+  })
+
+  it('never kickstarts a job the supervisor loaded from another file, or when it cannot say which', async () => {
+    // A scratch HOME's file names this home, but the live job came from the person's real ~/Library: no ask at all.
+    const calls: { file: string; args: readonly string[]; env: Record<string, string> }[] = []
+    const env = { HOME: home }
+    const log = () => {}
+    plist(home, `${home}/.bag`)
+    unit(home, `${home}/.bag`)
+    const real = '/Users/person/Library/LaunchAgents/dev.bag.service.plist'
+    const cases: [string, Exec][] = [
+      ['loaded from another path', supervisor(calls, real, 0)],
+      ['not loaded (print fails 113)', supervisor(calls, null, 0)],
+      ['print killed at its bound', supervisor(calls, plistFile(), 0, null)],
+      ['print could not run', supervisor(calls, plistFile(), 0, -1)],
+      [
+        'a format with no path line',
+        async (file, args, e) => {
+          calls.push({ file, args, env: e })
+          return { status: 0, out: 'gui/501/dev.bag.service = {\n\tprogram = /x\n}\n' }
+        },
+      ],
+    ]
+    for (const [why, exec] of cases)
+      expect(await askLoginAgent(`${home}/.bag`, env, 'darwin', 501, exec, log), why).toBe(false)
+    expect(calls.every((c) => c.args[0] === 'print')).toBe(true)
+    calls.length = 0
+    const other = '/home/person/.config/systemd/user/bag.service'
+    for (const exec of [
+      supervisor(calls, other, 0),
+      supervisor(calls, null, 0, 0),
+      supervisor(calls, unitFile(), 0, 1),
+    ])
+      expect(await askLoginAgent(`${home}/.bag`, env, 'linux', 1000, exec, log, systemctl)).toBe(false)
+    expect(calls.every((c) => c.args[1] === 'show')).toBe(true)
+    // The file the supervisor names is this one: then, and only then, it is asked.
+    expect(
+      await askLoginAgent(`${home}/.bag`, env, 'darwin', 501, supervisor(calls, plistFile(), 0), log),
+    ).toBe(true)
+    expect(calls.at(-1)?.args).toEqual(['kickstart', 'gui/501/dev.bag.service'])
+  })
+
+  it('a shim whose home has a loaded login agent asks it and never spawns; with none it spawns as before', async () => {
+    const svc = new FakeService(home)
+    try {
+      plist(home, home)
+      const execs: string[][] = []
+      let spawns = 0
+      const shimIo = (exec: Exec): ShimIo => ({
+        argv: ['--dir', home],
+        env: { HOME: home, CLAUDECODE: '1' },
+        cwd: home,
+        pid: 999_301,
+        ppid: process.pid,
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: { write: () => {} },
+        signals: { once: () => {}, on: () => {}, removeListener: () => {} },
+        ps: () => null,
+        uid: 501,
+        platform: 'darwin',
+        exec,
+        startService: () => {
+          spawns++
+          void svc.start()
+          return true
+        },
+      })
+      const connected = async (io: ShimIo): Promise<void> => {
+        const done = run(io)
+        const out: string[] = []
+        io.stdout.on('data', (d: Buffer) => out.push(d.toString()))
+        ;(io.stdin as PassThrough).write(
+          frame({
+            jsonrpc: '2.0',
+            id: 0,
+            method: 'initialize',
+            params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'claude-code' } },
+          }),
+        )
+        for (let i = 0; i < 300 && !out.join('').includes('"serverInfo"'); i++)
+          await new Promise((r) => setTimeout(r, 10))
+        ;(io.stdin as PassThrough).end()
+        await done
+      }
+      const plistAt = join(home, 'Library', 'LaunchAgents', 'dev.bag.service.plist')
+      await connected(
+        shimIo(async (file, args) => {
+          execs.push([file, ...args])
+          if (args[0] === 'print') return { status: 0, out: `\tpath = ${plistAt}\n` }
+          void svc.start()
+          return { status: 0, out: '' }
+        }),
+      )
+      expect(execs).toEqual([
+        ['/bin/launchctl', 'print', 'gui/501/dev.bag.service'],
+        ['/bin/launchctl', 'kickstart', 'gui/501/dev.bag.service'],
+      ])
+      expect(spawns).toBe(0)
+      expect(svc.hellos).toHaveLength(1)
+      await svc.crash()
+      // launchd has not loaded the job (print exits 113): the shim starts its own at once, and never kickstarts.
+      execs.length = 0
+      await connected(
+        shimIo(async (file, args) => {
+          execs.push([file, ...args])
+          return { status: 113, out: '' }
+        }),
+      )
+      expect(spawns).toBe(1)
+      expect(execs).toEqual([['/bin/launchctl', 'print', 'gui/501/dev.bag.service']])
+    } finally {
+      await svc.close()
+    }
+  })
+
+  it("passes no supervisor's variable to the service it starts itself", () => {
+    const env = launchEnv({ XPC_SERVICE_NAME: 'dev.bag.service', INVOCATION_ID: 'a1', HOME: '/h' }, '/h/.bag')
+    expect(env).toEqual({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin', AC_HOME: '/h/.bag', HOME: '/h' })
   })
 })

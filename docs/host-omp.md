@@ -4,9 +4,10 @@ omp (oh-my-pi, a coding agent) runs bag like any MCP host, but it has no hook th
 arrives, and no MCP dialogs. From bag 0.4.0, `bag host install omp --user` wires omp once for every folder: the bag
 shim in omp's user-level MCP configuration, which connects each omp session to the bag service
 ([bag-service.md](bag-service.md)), and bag's wake extension, which reads your `use`, opens bag's dialogs and starts a
-turn when a message is delivered. The per-folder form of bag 0.3.0 stays as the way back (section 5). This page is about
-omp 18.17.0; [partner-install.md](partner-install.md) covers identities, relays and pairing, which come first. `c` is
-the function of partner-install.md section 1a.
+turn when a message is delivered. The per-folder form of bag 0.3.0 stays as the way back (section 5). This page was
+written against omp 18.17.0; section 1's paragraph on how the model reaches bag's tools was checked on omp 18.20.0 and
+19.1.0. [partner-install.md](partner-install.md) covers identities, relays and pairing, which come first. `c` is the
+function of partner-install.md section 1a.
 
 ## 1. Install, for every folder
 
@@ -27,6 +28,13 @@ login as the install page's step 6c says.
 omp's user-level files are `<agentDir>/mcp.json` and `<agentDir>/hooks/pre/`, where `<agentDir>` is
 `~/.omp/agent` unless `PI_CODING_AGENT_DIR` names another. A folder's own `.omp/mcp.json` entry named `bag` wins over
 the user's, which is why section 5 moves them.
+
+How the model reaches bag's tools depends on omp's version. Under omp 18 (18.20.0) they are direct functions, and they
+stay when omp starts with `--no-tools`. Under omp 19 (19.1.0) omp hands them to the model as tool commands, run through
+omp's built-in bash tool, for example `mcp__bag_pair_accept -j '{"name":"peer"}'`. So under omp 19 a window started with
+`--no-tools` has none of bag's tools: start a window that uses bag with omp's default tools, or at least its bash tool
+(`--tools=bash`). With the bash tool on, the model can also run shell commands in that window; in runs on omp 19.1.0,
+omp ran a tool command without asking first, and omp's own settings decide what it asks before a shell call.
 
 The extension finds its own session's shim by omp's process id, through `<home>/run/shim/`, a directory the shim
 keeps inside the service's 0700 run directory; your `use` goes to that shim only, with a secret the shim made at its

@@ -32,10 +32,10 @@ below:
 
 ```sh
 cd "$(mktemp -d)"                                     # a fresh folder: the file's path is new to npx's cache
-P="$PWD/$(npm pack @usebag/bag@0.4.4 | tail -n 1)"   # fetches the package as one file, running none of its code
+P="$PWD/$(npm pack @usebag/bag@0.4.5 | tail -n 1)"   # fetches the package as one file, running none of its code
 shasum -a 256 "$P"                                    # must print the sha256 in the release's notes
 c() { npx --yes --package="$P" bag "$@"; }
-c --version                                           # prints: bag 0.4.4 <the commit it was built from>
+c --version                                           # prints: bag 0.4.5 <the commit it was built from>
 c help                                                # prints every command
 ```
 

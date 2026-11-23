@@ -94,6 +94,14 @@ describe('relay turns: at most the limit at a relay at once', () => {
     expect(typeof (await next)).toBe('function')
   })
 
+  it('refuses at once a signal already aborted, with its reason, and never takes a turn for it', async () => {
+    const turns = new RelayTurns(1)
+    const gone = AbortSignal.abort(new Error('stopped'))
+    await expect(turns.wait(A, gone)).rejects.toThrow('stopped')
+    // The line's one turn is still free: no turn was taken for the refused wait.
+    expect(line(turns, A, ['a']).got).toEqual(['a'])
+  })
+
   it('leaves `spare` turns to others, who pass one with no room in the line', async () => {
     const turns = new RelayTurns(3)
     const got: string[] = []

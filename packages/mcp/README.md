@@ -277,9 +277,9 @@ Local mail is the same signed and sealed envelope a wire send builds, handed to 
 the origin `local:` only the service sets; it carries `via: "local"` and `from_own`, makes no outbox entry and calls no
 relay; a read receipt goes back the same way when the reader's setting allows. To a recipient not open yet the sealed
 bytes wait in its `state/<name>/local-spool/`; a refused drain is reported to the sender (`status(id)`). Still
-refused, word on or off: a mix of own and wire recipients, `delegate` or `lookup` of an own identity, and more than 20
-local sends a minute or 200 a day from one sender (to-own-identity with the case in its detail). A local pair joins
-two contexts: mail from one reaches the other as mail it may act on.
+refused, word on or off: a mix of own and wire recipients, and `delegate` or `lookup` of an own identity
+(to-own-identity with the case in its detail); local sends are not rate limited. A local pair joins two contexts: mail
+from one reaches the other as mail it may act on.
 
 **One failure stops no other.** Each identity is `starting`, `running` or `failed`. An identity that fails to open or
 start (a missing key, a refused custody or trust file, a policy that fails, another server holding it: `busy`) is
@@ -962,7 +962,7 @@ identity to trust (`node packages/cli/src/main.ts address <name>`).
 package:
 
 ```sh
-npx --yes --package=@usebag/bag@0.4.4 bag host install claude-code --as alice --relay <relay> --project <dir>
+npx --yes --package=@usebag/bag@0.4.5 bag host install claude-code --as alice --relay <relay> --project <dir>
 ```
 
 It first stages the package once per version in `<home>/package/versions/<version>/` (printing `wrote

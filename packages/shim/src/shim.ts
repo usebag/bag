@@ -1,7 +1,8 @@
 // The shim's core: an MCP proxy between the host (stdio) and the bag service (its socket), contract 1
 // (docs/bag-service.md). MCP messages pass unchanged both ways; the shim adds only what a proxy must:
 // - the hello, sent once the host's initialize gives the client capabilities, then the host's initialize itself;
-// - a service that is not there: one start through the scrubbed launch, then every tool answers one readable error;
+// - a service that is not there: one ask of this home's login agent, or with none one start through the scrubbed
+//   launch, then every tool answers one readable error;
 // - a service that goes away mid-call: each call in flight fails with a readable error and is never sent again (a
 //   send could otherwise go twice); the shim reconnects, says hello again, replays the initialize and tells the host
 //   the tools may have changed; the session starts unbound, as the contract says;
@@ -77,6 +78,15 @@ export interface ShimDeps {
   readonly newToken?: () => string
   /** How long a start is waited for, in milliseconds (5 s by default). */
   readonly startWaitMs?: number
+  /**
+   * Asks this home's login agent to start the service (run.ts askLoginAgent): true when one was asked. Then the shim
+   * starts none of its own while askWaitMs lasts, so the service runs under its supervisor (docs/bag-service.md, 9).
+   */
+  readonly ask?: () => Promise<boolean>
+  /** How long a service the login agent was asked for is waited for before the shim starts its own (ASK_WAIT_MS). */
+  readonly askWaitMs?: number
+  /** The clock the start waits are measured on (Date.now by default; tests run their own with timers to match). */
+  readonly now?: () => number
   /** The wait before reconnect attempt n (0 first), in milliseconds. */
   readonly retryMs?: (attempt: number) => number
   /** Overrides the park time of a host with a tool timeout (tests). */
@@ -95,6 +105,9 @@ export interface ShimDeps {
    */
   readonly windowSeen?: (sessionId: string, subagent: boolean) => void
 }
+
+/** The wait for the login agent's start: launchd's 10 s throttle and the service's start, with margin (the PR body). */
+export const ASK_WAIT_MS = 20_000
 
 /** Backoff: 100 ms, doubling, at most 5 s. */
 export const backoff = (attempt: number): number => Math.min(5000, 100 * 2 ** Math.min(attempt, 6))
@@ -337,25 +350,51 @@ export class Shim {
     void this.#attemptLoop()
   }
 
-  /** Tries to connect; on nothing listening starts the service once and retries for startWaitMs. */
+  /**
+   * Tries to connect; on nothing listening asks the login agent once, or with none starts the service once, and retries
+   * for startWaitMs. An asked login agent is waited for askWaitMs; then the shim starts its own and says so. The host's
+   * initialize is never held past startWaitMs: while the login agent's start is awaited the shim answers it as down
+   * (restarting) and keeps trying, and a later connect tells the host the tools changed.
+   */
   async #attemptLoop(): Promise<void> {
-    const deadline = Date.now() + (this.#d.startWaitMs ?? 5000)
-    let started = false
-    for (;;) {
-      if (this.#isClosed()) return
-      const r = await this.#tryOnce()
-      if (r === 'ok' || this.#isClosed()) return
-      if (r !== 'absent') return
-      if (!started) {
-        started = true
-        const launched = this.#d.start?.() ?? false
-        this.#d.log('service-start', { launched })
-        if (!launched) break
+    const now = this.#d.now ?? Date.now
+    const startWait = this.#d.startWaitMs ?? 5000
+    let deadline = now() + startWait
+    let started: 'no' | 'agent' | 'own' = 'no'
+    const answer = this.#timers.after(startWait, () => {
+      if (started !== 'own' && this.#phase === 'connecting')
+        this.#down('bag: the bag service is restarting; try again shortly.', false)
+    })
+    try {
+      for (;;) {
+        if (this.#isClosed()) return
+        const r = await this.#tryOnce()
+        if (r === 'ok' || this.#isClosed()) return
+        if (r !== 'absent') return
+        if (started === 'no') {
+          started = (await this.#d.ask?.()) === true ? 'agent' : 'own'
+          if (this.#isClosed()) return
+          if (started === 'agent') deadline = now() + (this.#d.askWaitMs ?? ASK_WAIT_MS)
+          else if (!this.#startOwn()) break
+        } else if (started === 'agent' && now() >= deadline) {
+          this.#d.log('login-agent-late', { waited_ms: this.#d.askWaitMs ?? ASK_WAIT_MS })
+          started = 'own'
+          deadline = now() + startWait
+          if (!this.#startOwn()) break
+        }
+        if (now() >= deadline) break
+        await new Promise<void>((resolve) => this.#timers.after(150, resolve))
       }
-      if (Date.now() >= deadline) break
-      await new Promise<void>((resolve) => this.#timers.after(150, resolve))
+    } finally {
+      answer()
     }
     this.#down(absentText(this.#d.home), true)
+  }
+
+  #startOwn(): boolean {
+    const launched = this.#d.start?.() ?? false
+    this.#d.log('service-start', { launched })
+    return launched
   }
 
   /** One connect and hello: 'ok', 'absent' (nothing listening, or no token yet), or 'refused' (down already set). */

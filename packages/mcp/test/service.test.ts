@@ -47,6 +47,7 @@ import {
   scrubbedEnv,
   scrubFailure,
   serveService,
+  supervisorOf,
 } from '../src/service.ts'
 import { DIALOG_META, runPaths, type ServiceConnection } from '../src/socket.ts'
 import { ACT_QUESTIONS, SHORT_NOTE, TOOL_NAMES, type ToolContext } from '../src/tools.ts'
@@ -1019,6 +1020,109 @@ describe('the drain ends the process within a bounded time', () => {
     expect(JSON.parse(readFileSync(runPaths(home).json, 'utf8'))).toMatchObject({ pid: 5151 })
     ;(on2.get('SIGTERM') as () => void)()
     expect(await second).toBe(0)
+  })
+})
+
+describe("the login agent's copy stands by for a held lock", () => {
+  const io = (on: Map<string, () => void>, more: Json = {}) => ({
+    env: {},
+    execArgv: ['--disable-sigusr1'],
+    chdir: () => {},
+    signals: { once: (event: string, listener: () => void) => on.set(event, listener) },
+    exit: () => {},
+    open: () => [],
+    ...more,
+  })
+  const launchd = { platform: 'darwin', env: { XPC_SERVICE_NAME: 'dev.bag.service' }, ppid: 1 }
+
+  it('takes launchd and systemd from the facts each sets, never from one of them alone', () => {
+    const base = io(new Map())
+    expect(supervisorOf({ ...base, ...launchd })).toBe('launchd')
+    expect(supervisorOf({ ...base, ...launchd, ppid: 4242 })).toBeNull()
+    expect(
+      supervisorOf({ ...base, ...launchd, env: { XPC_SERVICE_NAME: 'application.com.apple.Terminal' } }),
+    ).toBeNull()
+    expect(supervisorOf({ ...base, ...launchd, platform: 'linux' })).toBeNull()
+    const unit = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/bag.service\n'
+    const linux = { platform: 'linux', env: { INVOCATION_ID: 'a1' }, cgroup: () => unit }
+    expect(supervisorOf({ ...base, ...linux })).toBe('systemd')
+    expect(supervisorOf({ ...base, ...linux, env: {} })).toBeNull()
+    const terminal =
+      '0::/user.slice/user-1000.slice/user@1000.service/app.slice/gnome-terminal-server.service\n'
+    expect(supervisorOf({ ...base, ...linux, cgroup: () => terminal })).toBeNull()
+    expect(supervisorOf(base)).toBeNull()
+    // A scrubbed launch (a shim's or the CLI's) passes neither variable on.
+    const scrubbed = scrubbedEnv({ XPC_SERVICE_NAME: 'dev.bag.service', INVOCATION_ID: 'a1', HOME: '/h' })
+    expect(supervisorOf({ ...base, ...launchd, env: scrubbed })).toBeNull()
+    expect(supervisorOf({ ...base, ...linux, env: scrubbed })).toBeNull()
+  })
+
+  it('a supervised start waits for the held lock, binds nothing meanwhile, and serves once the holder exits', async () => {
+    const file = fileOf([['personal', P.alice]])
+    const on1 = new Map<string, () => void>()
+    const first = serveService(configOf(file), deps(), io(on1))
+    await until(() => existsSync(runPaths(home).token), 5000)
+    const oldToken = readFileSync(runPaths(home).token, 'utf8')
+    const on2 = new Map<string, () => void>()
+    const second = serveService(configOf(file), deps({ pid: 5151, lockRetryMs: 0 }), io(on2, launchd))
+    await until(() => log.lines.some((x) => x.event === 'service-standby'), 5000)
+    expect(log.lines.find((x) => x.event === 'service-standby')?.fields).toEqual({
+      holder: 'pid 4242',
+      by: 'launchd',
+    })
+    await new Promise((r) => setTimeout(r, 300))
+    expect(readFileSync(runPaths(home).token, 'utf8')).toBe(oldToken)
+    expect(JSON.parse(readFileSync(runPaths(home).json, 'utf8'))).toMatchObject({ pid: 4242 })
+    expect(log.lines.filter((x) => x.event === 'service-standby')).toHaveLength(1)
+    ;(on1.get('SIGTERM') as () => void)()
+    expect(await first).toBe(0)
+    await until(
+      () => existsSync(runPaths(home).token) && readFileSync(runPaths(home).token, 'utf8') !== oldToken,
+      5000,
+    )
+    expect(JSON.parse(readFileSync(runPaths(home).json, 'utf8'))).toMatchObject({ pid: 5151 })
+    expect(log.lines.find((x) => x.event === 'service-takeover')?.fields?.waited_ms).toBeGreaterThan(0)
+    ;(on2.get('SIGTERM') as () => void)()
+    expect(await second).toBe(0)
+  })
+
+  it('an unsupervised start, or one with only the variable, still answers busy and exits 1', async () => {
+    const file = fileOf([['personal', P.alice]])
+    const on1 = new Map<string, () => void>()
+    const first = serveService(configOf(file), deps(), io(on1))
+    await until(() => existsSync(runPaths(home).token), 5000)
+    for (const more of [{}, { ...launchd, ppid: 4242 }]) {
+      const status = await serveService(
+        configOf(file),
+        deps({ pid: 5151, lockRetryMs: 0 }),
+        io(new Map(), more),
+      )
+      expect(status).toBe(1)
+    }
+    const refused = log.lines.filter((x) => x.event === 'start' && x.level === 'error')
+    expect(refused.map((x) => x.fields?.code)).toEqual(['busy', 'busy'])
+    expect(log.lines.some((x) => x.event === 'service-standby')).toBe(false)
+    ;(on1.get('SIGTERM') as () => void)()
+    expect(await first).toBe(0)
+  })
+
+  it('a TERM while it stands by ends it with 0, the holder untouched', async () => {
+    const file = fileOf([['personal', P.alice]])
+    const on1 = new Map<string, () => void>()
+    const first = serveService(configOf(file), deps(), io(on1))
+    await until(() => existsSync(runPaths(home).token), 5000)
+    const token = readFileSync(runPaths(home).token, 'utf8')
+    const on2 = new Map<string, () => void>()
+    const second = serveService(configOf(file), deps({ pid: 5151, lockRetryMs: 0 }), io(on2, launchd))
+    await until(() => log.lines.some((x) => x.event === 'service-standby'), 5000)
+    ;(on2.get('SIGTERM') as () => void)()
+    expect(await second).toBe(0)
+    expect(log.lines.some((x) => x.event === 'service-standby-stopped')).toBe(true)
+    expect(log.lines.some((x) => x.event === 'service-takeover')).toBe(false)
+    expect(readFileSync(runPaths(home).token, 'utf8')).toBe(token)
+    expect(JSON.parse(readFileSync(runPaths(home).json, 'utf8'))).toMatchObject({ pid: 4242 })
+    ;(on1.get('SIGTERM') as () => void)()
+    expect(await first).toBe(0)
   })
 })
 

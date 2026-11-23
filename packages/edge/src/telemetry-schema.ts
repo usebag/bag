@@ -9,9 +9,9 @@
 /**
  * The commit (of this repository up to 0.4.1, of usebag/infra from 0.4.2) whose Worker src/schema.ts, builds.ts and
  * index.ts these values copy (the package versions 0.1.0, 0.1.1, 0.1.2, 0.2.0, 0.2.1, 0.2.2, 0.2.3, 0.3.0, 0.4.0,
- * 0.4.1, 0.4.2, 0.4.3 and 0.4.4 as builds, and `version` as a command).
+ * 0.4.1, 0.4.2, 0.4.3, 0.4.4 and 0.4.5 as builds, and `version` as a command).
  */
-export const TELEMETRY_SCHEMA_COMMIT = '85037b8cf0c13b2b06b72c9b94679e0a21c7eba7'
+export const TELEMETRY_SCHEMA_COMMIT = '6537f84b557d1eff1669d8ef537caa742b3ad058'
 
 /**
  * The builds a report's `build` may name (builds.ts): the published versions of the npm package @usebag/bag, and the
@@ -31,6 +31,7 @@ export const BUILDS: readonly string[] = [
   '0.4.2',
   '0.4.3',
   '0.4.4',
+  '0.4.5',
 ]
 
 /** The largest count a report may carry: 2^19. Every count is 0 or a power of two up to it. */

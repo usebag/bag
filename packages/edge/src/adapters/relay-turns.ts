@@ -68,6 +68,11 @@ export class RelayTurns {
         cancel()
         reject(signal.reason)
       }
+      // An aborted signal never fires its listener: it leaves before it joins the line.
+      if (signal.aborted) {
+        reject(signal.reason)
+        return
+      }
       signal.addEventListener('abort', stop, { once: true })
       const cancel = this.take(url, give)
     })

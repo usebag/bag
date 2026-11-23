@@ -128,6 +128,10 @@ It runs on a terminal only and prints one line, for example `keep-alive omp-3 on
 
 - **No login agent.** The first window that needs bag starts the service. It runs while any window is connected and
   stops a minute after the last one closes. Records then lapse while no window is open, as with bag 0.3.0.
+- **A login agent is loaded, and the service stopped.** A window that needs bag asks the login agent to start it, and
+  does not start its own copy, so the service keeps running under the login agent. Only if the login agent's service
+  is not answering within 20 seconds does the window start one itself. If another copy holds the home when the login
+  agent's starts (one an older window started), the login agent's copy waits for it to stop and then takes over.
 - **It crashed.** The login agent starts it again. Every window loses its identity at that moment: type `use` again.
   Nothing is lost: the mail, the cursor and the records are on disk, and the service picks up where it stopped.
 - **It is restarting for an upgrade.** It first refuses new `use` words and new pairings with `draining`, cancels any
