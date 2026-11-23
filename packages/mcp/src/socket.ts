@@ -94,19 +94,35 @@ export interface ServiceLock {
 }
 
 /**
+ * A supervised start's wait for a held lock (service.ts serveService): told once when the wait begins, with the
+ * holder, and once when the lock is taken; `stopped` ends the wait (a TERM), with an error.
+ */
+export interface LockStandby {
+  readonly waiting: (holder: string) => void
+  readonly took: (waitedMs: number) => void
+  readonly stopped: () => boolean
+}
+
+/** The lock loop's interval: also a standby's, which must try again well before a shim's copy could (the PR body). */
+export const LOCK_POLL_MS = 50
+
+/**
  * Takes the exclusive lock on `path` (node:sqlite's fcntl lock in EXCLUSIVE locking mode, busy_timeout 0), retrying
  * for `retryMs` (a shim's probe may hold it an instant), else busy naming `holder()`. The kernel drops it at exit.
+ * With `standby`, a lock still held after `retryMs` is waited for, every LOCK_POLL_MS, until taken or stopped.
  */
 export async function takeServiceLock(
   path: string,
   holder: () => string = () => 'another process',
   retryMs = LOCK_RETRY_MS,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  standby?: LockStandby,
 ): Promise<ServiceLock> {
   // Made 0600 before the lock, so the database file is never created with the umask's mode.
   closeSync(openSync(path, 'a', 0o600))
   const db = new DatabaseSync(path, { timeout: 0 })
   const deadline = Date.now() + retryMs
+  let waitedFrom = 0
   for (;;) {
     try {
       db.exec('PRAGMA busy_timeout=0; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE')
@@ -115,15 +131,23 @@ export async function takeServiceLock(
       )
       break
     } catch (e) {
-      if (Date.now() >= deadline || !/locked|busy/i.test((e as Error).message)) {
+      const held = /locked|busy/i.test((e as Error).message)
+      if (held && standby !== undefined && Date.now() >= deadline && !standby.stopped()) {
+        if (waitedFrom === 0) {
+          waitedFrom = Date.now()
+          standby.waiting(holder())
+        }
+      } else if (Date.now() >= deadline || !held || standby?.stopped() === true) {
         db.close()
-        if (/locked|busy/i.test((e as Error).message))
-          throw new ConfigError('busy', `the bag service for this home already runs (${holder()})`)
+        if (standby?.stopped() === true)
+          throw Object.assign(new Error('stopped standing by'), { standby: 'stopped' })
+        if (held) throw new ConfigError('busy', `the bag service for this home already runs (${holder()})`)
         throw e
       }
-      await sleep(50)
+      await sleep(LOCK_POLL_MS)
     }
   }
+  if (waitedFrom !== 0) standby?.took(Date.now() - waitedFrom)
   let held = true
   return {
     release() {

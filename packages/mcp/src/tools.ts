@@ -383,8 +383,6 @@ export interface LocalHome {
   answer(from: string, to: string, yes: boolean | null): Promise<void>
   /** Whether `label` is hidden (run/local.json v2): it sees none of the others locally and none reaches it. */
   hidden(label: string): boolean
-  /** Counts one local send from `label` now; the limit it passed ('minute' or 'day'), counting nothing, else null. */
-  admit(label: string): 'minute' | 'day' | null
   /** Hides `label` or shows it again: only after the person's Yes in a dialog of a window bound to it. */
   setHidden(label: string, hidden: boolean): void
   /**
@@ -700,10 +698,6 @@ export const ALLOW_TAIL =
 export const REQUESTED_NOTE = (to: string): string =>
   `pairing requested: ${to}'s window will ask your person to allow it; the message waits until then`
 
-/** A sending identity's local sends, at most (S5): past either, to-own-identity with the detail rate, audited. */
-export const LOCAL_PER_MINUTE = 20
-export const LOCAL_PER_DAY = 200
-
 /** What a local send's answer says. */
 export const LOCAL_NOTE =
   'delivered on this machine to another identity of this home: no relay was used; spooled: true means it is delivered when that identity opens'
@@ -718,20 +712,6 @@ async function sendLocal(
   input: Omit<SendInput, 'to'>,
 ): Promise<Json> {
   const local = c.local as LocalHome
-  const over = local.admit(c.config.label)
-  if (over !== null) {
-    const detail = { relay: LOCAL_RELAY, limit: over }
-    c.opened.edge.audit.record({
-      event: 'rate-limit',
-      decision: 'reject',
-      from: c.opened.identity.address,
-      detail,
-    })
-    refuse(
-      'to-own-identity',
-      `rate: at most ${LOCAL_PER_MINUTE} local sends a minute and ${LOCAL_PER_DAY} a day`,
-    )
-  }
   const sealed = c.opened.edge.seal(
     input,
     labels.map((l) => local.recipient(l)),
@@ -1150,21 +1130,29 @@ async function waitOnce(
   at: Resume,
   resumed: boolean,
   extra: ProgressExtra & { readonly signal: AbortSignal },
+  ended?: AbortSignal,
 ): Promise<Waited> {
   const window = ctx.config.maxToolSeconds
   const remaining = Math.max(0, at.deadline - ctx.clock.now())
   const blocks = Math.min(remaining, window)
   const every = ctx.config.progressSeconds
-  const stop = startProgress({ tool, extra, every, window: blocks, timers: ctx.timers, log: ctx.log })
-  let message: Message | null
+  // `ended` (the mailbox's subscriptions all ended) also ends the wait, yet a message already here is still returned.
+  const live = {
+    ...extra,
+    signal: ended === undefined ? extra.signal : AbortSignal.any([extra.signal, ended]),
+  }
+  const stop = startProgress({ tool, extra: live, every, window: blocks, timers: ctx.timers, log: ctx.log })
+  let message: Message | null = null
   try {
-    message = await ctx.desk.wait(
-      at.thread,
-      blocks * 1000,
-      extra.signal,
-      resumed ? at.cursor : undefined,
-      ctx.connection?.handle,
-    )
+    // A call its host cancelled in the same write takes nothing: its answer is dropped, so the message stays unread.
+    if (!extra.signal.aborted)
+      message = await ctx.desk.wait(
+        at.thread,
+        blocks * 1000,
+        live.signal,
+        resumed ? at.cursor : undefined,
+        ctx.connection?.handle,
+      )
   } finally {
     stop()
   }
@@ -1790,8 +1778,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           at = timeout_s === undefined ? r : { ...r, deadline: now + timeout_s }
         }
         // A mailbox whose every subscription has ended ends the wait at once, and the call says so.
-        const live = { ...extra, signal: AbortSignal.any([extra.signal, c.subscriptions.dead]) }
-        const out = await waitOnce(c, 'wait', at, token !== undefined, live)
+        const out = await waitOnce(c, 'wait', at, token !== undefined, extra, c.subscriptions.dead)
         if ('message' in out)
           return {
             message: { ...book.named(out.message), ...ownOf(c, out.message), ...asOf(c) },

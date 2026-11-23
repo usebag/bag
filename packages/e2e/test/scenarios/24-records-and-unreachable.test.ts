@@ -276,7 +276,9 @@ describe('e2e scenario 24: records kept alive, revocations written, and unreacha
     console.log(
       `MEASURE L1(e): make-org-records.sh wrote rotation_key and ${orgRecord.revoked.length} revoked, the core verified them, keep --once kept them through epoch 1`,
     )
-  })
+    // About 6.4 s alone; 16.7 s in one loaded run and over the 30 s default in another (load average 20 to 45),
+    // so it takes the 90 s of this file's other slow cases.
+  }, 90_000)
 
   it("(24b) once the relay has stopped, a send to a recipient whose record the sender holds is reason=unreachable with its retry scheduled, a 403 before it kept its code, keep --once is unreachable, and the sender's audit line reads unreachable, names the cause and verifies", async () => {
     const w = await world('s24b')

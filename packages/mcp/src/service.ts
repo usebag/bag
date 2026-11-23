@@ -99,6 +99,7 @@ import {
   checkSocketPath,
   connectionTransport,
   ensureRunDir,
+  type LockStandby,
   MAX_CONNECTIONS,
   runPaths,
   type ServiceConnection,
@@ -119,8 +120,6 @@ import {
   LOCAL_DECLINED,
   LOCAL_HELD_MAX,
   LOCAL_PENDING,
-  LOCAL_PER_DAY,
-  LOCAL_PER_MINUTE,
   type LocalHome,
   onlyHere,
   reachOf,
@@ -530,8 +529,6 @@ export class Service implements ServiceHome {
   readonly #asking = new Set<string>()
   /** Each connection's count of #changes its window was shown (the next tool result's notice shows the rest once). */
   readonly #changesSeen = new Map<string, number>()
-  /** Each label's local sends in the last day, by clock second (the rate limit, S5). */
-  readonly #localSent = new Map<string, number[]>()
   /** What every connection's tools reach of the service for the acts on its home (tools.ts ServiceActs). */
   readonly #acts: ServiceActs = this.#actsOf()
 
@@ -845,7 +842,12 @@ export class Service implements ServiceHome {
    * Starts the service of `home`: the socket path guard, the lock (busy when held, after LOCK_RETRY_MS), the run
    * directory, every identity opened, the socket bound, then the token and service.json. A failure undoes what it did.
    */
-  static async start(config: ServerConfig, home: string, deps: ServiceDeps): Promise<Service> {
+  static async start(
+    config: ServerConfig,
+    home: string,
+    deps: ServiceDeps,
+    standby?: LockStandby,
+  ): Promise<Service> {
     const s = new Service(config, home, deps)
     const { paths } = s
     checkSocketPath(paths.sock)
@@ -858,7 +860,7 @@ export class Service implements ServiceHome {
         return 'another process'
       }
     }
-    s.#lock = await takeServiceLock(paths.lock, holder, deps.lockRetryMs)
+    s.#lock = await takeServiceLock(paths.lock, holder, deps.lockRetryMs, undefined, standby)
     // The home's table only once the lock is this service's: a start refused busy leaves the live one's in place.
     serveBindings(s.table, home)
     try {
@@ -1480,18 +1482,6 @@ export class Service implements ServiceHome {
         return x === null ? [] : localPeersOf(this.home, x, this.#pairs())
       },
       hidden: (label) => this.#readWord().hidden.includes(label),
-      admit: (label) => {
-        const now = this.#deps.clock.now()
-        const day = (this.#localSent.get(label) ?? []).filter((t) => t > now - 86_400)
-        const over =
-          day.length >= LOCAL_PER_DAY
-            ? 'day'
-            : day.filter((t) => t > now - 60).length >= LOCAL_PER_MINUTE
-              ? 'minute'
-              : null
-        this.#localSent.set(label, over === null ? [...day, now] : day)
-        return over
-      },
       setHidden: (label, hide) => {
         const w = this.#readWord()
         const rest = w.hidden.filter((h) => h !== label)
@@ -3202,6 +3192,30 @@ export interface ServiceIo {
   readonly exit?: (status: number) => void
   /** What still holds the event loop (process.getActiveResourcesInfo), for the hard exit's line. */
   readonly open?: () => readonly string[]
+  /** The parent's pid, the platform and /proc/self/cgroup's text (Linux): supervisorOf's facts; absent, no supervisor. */
+  readonly ppid?: number
+  readonly platform?: string
+  readonly cgroup?: () => string | null
+}
+
+/** The login agent's launchd label and systemd unit (LOGIN_AGENT_LABEL; packages/home's host-service.ts UNIT). */
+const AGENT_UNIT = 'bag.service'
+
+/**
+ * Which supervisor started this process as the login agent, from what each sets, else null: on macOS launchd sets
+ * XPC_SERVICE_NAME to the job's label and is the parent (pid 1); on Linux systemd sets INVOCATION_ID and puts the
+ * process in its unit's cgroup (INVOCATION_ID alone is inherited by a terminal that runs as a systemd service). A
+ * scrubbed launch (a shim's, the CLI's) passes neither variable on, so its copy is never taken for the supervisor's.
+ */
+export function supervisorOf(io: ServiceIo): 'launchd' | 'systemd' | null {
+  if (io.platform === 'darwin' && io.env.XPC_SERVICE_NAME === LOGIN_AGENT_LABEL && io.ppid === 1)
+    return 'launchd'
+  if (io.platform !== 'linux' || io.env.INVOCATION_ID === undefined) return null
+  let cgroup: string | null = null
+  try {
+    cgroup = (io.cgroup ?? (() => readFileSync('/proc/self/cgroup', 'utf8')))()
+  } catch {}
+  return (cgroup ?? '').split('\n').some((l) => l.endsWith(`/${AGENT_UNIT}`)) ? 'systemd' : null
 }
 
 /**
@@ -3215,13 +3229,31 @@ export async function serveService(config: ServerConfig, deps: ServiceDeps, io: 
     deps.log.log('error', 'start', { code: 'usage', detail: `not a scrubbed launch: ${unscrubbed}` })
     return 2
   }
+  // The login agent's copy that finds the lock held stands by for it, so a copy a shim started never keeps the service
+  // from its supervisor; every other start answers busy as before. A TERM while it stands by ends it with 0.
+  const by = supervisorOf(io)
+  let stopped = false
+  const standby: LockStandby | undefined =
+    by === null
+      ? undefined
+      : {
+          waiting: (holder) => deps.log.log('warn', 'service-standby', { holder, by }),
+          took: (ms) => deps.log.log('info', 'service-takeover', { waited_ms: ms }),
+          stopped: () => stopped,
+        }
+  if (standby !== undefined)
+    for (const s of ['SIGTERM', 'SIGINT'] as const) io.signals.once(s, () => (stopped = true))
   let service: Service
   try {
     const dir = runPaths(home).dir
     ensureRunDir(dir, deps.uid)
     io.chdir(dir)
-    service = await Service.start(config, home, deps)
+    service = await Service.start(config, home, deps, standby)
   } catch (e) {
+    if ((e as { standby?: unknown }).standby === 'stopped') {
+      deps.log.log('info', 'service-standby-stopped', {})
+      return 0
+    }
     const code = (e as { code?: unknown }).code
     deps.log.log('error', 'start', {
       code: typeof code === 'string' ? code : 'internal',
@@ -3233,6 +3265,7 @@ export async function serveService(config: ServerConfig, deps: ServiceDeps, io: 
   io.signals.once('SIGTERM', () => resolve(0))
   io.signals.once('SIGINT', () => resolve(0))
   io.signals.once('SIGUSR2', () => resolve(EXIT_UPGRADE))
+  if (stopped) resolve(0) // a TERM after the takeover, before these listeners
   const status = await promise
   await service.drain(status === EXIT_UPGRADE ? 'upgrade' : 'stop')
   const { exit } = io

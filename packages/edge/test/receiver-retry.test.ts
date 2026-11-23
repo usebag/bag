@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { SqliteStore } from '../src/adapters/sqlite-store.ts'
 import { verifyAuditLog } from '../src/audit.ts'
 import { Edge } from '../src/edge.ts'
+import type { Lookup } from '../src/net.ts'
 import {
   type EdgeStore,
   type Frame,
@@ -66,6 +67,7 @@ function bob(
     audit?: MemoryAuditSink
     onError?: (e: unknown) => void
     accepted?: (row: InboxRow) => void
+    lookup?: Lookup
   } = {},
 ) {
   const audit = o.audit ?? new MemoryAuditSink()
@@ -82,7 +84,7 @@ function bob(
     clock,
     rng: seededRng('bob-retry'),
     audit,
-    lookup: PUBLIC_LOOKUP,
+    lookup: o.lookup ?? PUBLIC_LOOKUP,
     flushEveryMs: o.flushEveryMs ?? 5,
     resubscribeDelayMs: o.resubscribeDelayMs ?? (() => 0),
     ...(o.window === undefined ? {} : { window: o.window }),
@@ -644,6 +646,24 @@ describe('Receiver.run resubscribes', () => {
       message: expect.stringContaining('127.0.0.1 is a loopback address'),
     })
     expect(guarded.cursors).toEqual([])
+  })
+
+  it('a run stopped while the guard looks up its relay ends there and never subscribes', async () => {
+    const relay = new ScriptedSubscriptions()
+    relay.scripts.push({ frames: [], end: 'hang' })
+    const looked = Promise.withResolvers<readonly string[]>()
+    let asked = false
+    const lookup: Lookup = () => {
+      asked = true
+      return looked.promise
+    }
+    const abort = new AbortController()
+    const running = bob({ relay, lookup }).edge.receiver.run('http://other.example', abort.signal)
+    await until(() => asked)
+    abort.abort()
+    looked.resolve(['1.1.1.1'])
+    await running
+    expect(relay.cursors).toEqual([])
   })
 })
 

@@ -691,7 +691,10 @@ export class Pairings {
         this.#ctx.log.log('warn', 'pair-ended', { tool: live.tool, code: codeOf(e) }),
       )
     }
-    extra.signal.addEventListener('abort', gone, { once: true })
+    // A cancel read in the same write as its call aborts the signal before the body runs (the SDK's order), and a
+    // listener added then never fires: end the pairing now, before an invitation opens or a code is shown.
+    if (extra.signal.aborted) gone()
+    else extra.signal.addEventListener('abort', gone, { once: true })
     try {
       return await running
     } finally {
@@ -1490,7 +1493,9 @@ export class Pairings {
     }
     let cancel = timers.after(window * 1000, stop)
     const progress = startProgress({ tool, extra, every: config.progressSeconds, window, timers, log })
-    extra.signal.addEventListener('abort', stop, { once: true })
+    // Cancelled in the same write as its call, the signal is aborted already: a listener added now never fires.
+    if (extra.signal.aborted) stop()
+    else extra.signal.addEventListener('abort', stop, { once: true })
     try {
       for (;;) {
         if (live.end !== null) {

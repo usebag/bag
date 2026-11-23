@@ -56,6 +56,149 @@ export interface ShimIo {
   readonly startOf?: (pid: number) => string | null
   /** Starts the service detached; tests pass their own. */
   readonly startService?: (home: string, env: Env, log: Log) => boolean
+  /** The platform the login agent is looked up for, and how its supervisor is asked (execStatus); tests pass their own. */
+  readonly platform?: string
+  readonly exec?: Exec
+}
+
+/**
+ * Runs a command, no shell: resolves its exit status (null when it outlived EXEC_MS and was killed, -1 when it never
+ * ran) and its stdout's first OUT_MAX characters.
+ */
+export type Exec = (
+  file: string,
+  args: readonly string[],
+  env: Record<string, string>,
+) => Promise<{ readonly status: number | null; readonly out: string }>
+
+/** How long a command to the supervisor may take, and how much of its output is read. */
+export const EXEC_MS = 5000
+const OUT_MAX = 65_536
+
+export const execStatus: Exec = (file, args, env) =>
+  new Promise((resolve) => {
+    let out = ''
+    const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'ignore'], env, timeout: EXEC_MS })
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (d: string) => {
+      if (out.length < OUT_MAX) out += d.slice(0, OUT_MAX - out.length)
+    })
+    child.on('error', () => resolve({ status: -1, out }))
+    child.on('close', (code, signal) => resolve({ status: signal === null ? code : null, out }))
+  })
+
+/** The login agent's names, as packages/home's host-service.ts writes them (the shim imports no workspace package). */
+const AGENT_LABEL = 'dev.bag.service'
+const AGENT_UNIT = 'bag.service'
+
+const unxml = (s: string): string =>
+  s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+/** A unit word unquoted as host-service.ts's unitWord quotes it: backslash escapes, `%%` and `$$`. */
+const unword = (s: string): string => s.replace(/\\(.)|%%|\$\$/g, (m, c?: string) => c ?? (m[0] as string))
+const servesHome = (words: readonly string[], home: string): boolean => {
+  const at = words.indexOf('--dir')
+  return at !== -1 && words[at + 1] === home && words.includes('--service')
+}
+
+const readOrNull = (file: string): string | null => {
+  try {
+    return readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The command that asks this home's login agent to start the service, or null when none is installed for this home:
+ * the file `bag host install service` and the `service` tool write, whose service arguments name exactly this home
+ * after --dir (another home's agent does not count). `check` asks the supervisor which file it loaded that job from,
+ * which must be `file`, the one read here: a scratch HOME's file never reaches the person's live job.
+ */
+interface LoginAgent {
+  readonly file: string
+  readonly check: readonly [string, ...string[]]
+  readonly ask: readonly [string, ...string[]]
+  readonly launchd: boolean
+}
+
+export function loginAgentOf(
+  home: string,
+  env: Env,
+  platform: string,
+  uid: number | undefined,
+  exists: (file: string) => boolean = existsSync,
+): LoginAgent | null {
+  if (env.HOME === undefined) return null
+  if (platform === 'darwin') {
+    const file = join(env.HOME, 'Library', 'LaunchAgents', `${AGENT_LABEL}.plist`)
+    const text = readOrNull(file)
+    if (uid === undefined || text === null) return null
+    if (!text.includes(`<key>Label</key><string>${AGENT_LABEL}</string>`)) return null
+    const array = text.split('<key>ProgramArguments</key>')[1]?.split('</array>')[0] ?? ''
+    const words = [...array.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => unxml(m[1] as string))
+    if (!servesHome(words, home)) return null
+    const job = `gui/${uid}/${AGENT_LABEL}`
+    return {
+      file,
+      check: ['/bin/launchctl', 'print', job],
+      ask: ['/bin/launchctl', 'kickstart', job],
+      launchd: true,
+    }
+  }
+  if (platform !== 'linux') return null
+  const file = join(env.HOME, '.config', 'systemd', 'user', AGENT_UNIT)
+  const text = readOrNull(file)
+  const line = text?.split('\n').find((l) => l.startsWith('ExecStart='))
+  if (line === undefined) return null
+  const words = [...line.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => unword(m[1] as string))
+  const systemctl = ['/usr/bin/systemctl', '/bin/systemctl'].find(exists)
+  if (!servesHome(words, home) || systemctl === undefined) return null
+  return {
+    file,
+    check: [systemctl, '--user', 'show', '-p', 'FragmentPath', AGENT_UNIT],
+    ask: [systemctl, '--user', 'start', AGENT_UNIT],
+    launchd: false,
+  }
+}
+
+/** Asks this home's login agent to start the service: true when one was asked (the shim then waits for it). */
+export async function askLoginAgent(
+  home: string,
+  env: Env,
+  platform: string,
+  uid: number | undefined,
+  exec: Exec,
+  log: Log,
+  exists: (file: string) => boolean = existsSync,
+): Promise<boolean> {
+  const agent = loginAgentOf(home, env, platform, uid, exists)
+  if (agent === null) return false
+  const out: Record<string, string> = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' }
+  for (const k of ['HOME', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']) {
+    const v = env[k]
+    if (v !== undefined) out[k] = v
+  }
+  // The supervisor's own word on where the job came from: launchctl print's first `path = ` line, systemd's
+  // FragmentPath. Not this file, a failed command or an unknown format: no ask, the shim starts its own (fails safe).
+  const [check, ...checkArgs] = agent.check
+  const seen = await exec(check, checkArgs, out)
+  const lines = seen.out.split('\n').map((l) => l.trim())
+  const from = agent.launchd
+    ? lines.find((l) => l.startsWith('path = '))?.slice(7)
+    : lines.find((l) => l.startsWith('FragmentPath='))?.slice(13)
+  if (seen.status !== 0 || from !== agent.file) {
+    log('login-agent-asked', { loaded: false, status: seen.status })
+    return false
+  }
+  const [file, ...args] = agent.ask
+  const { status } = await exec(file, args, out)
+  log('login-agent-asked', { loaded: true, status })
+  // launchd: 113 is a job it has not loaded; systemd's start waits for the job, so only 0 means it runs.
+  return agent.launchd ? status !== -1 && status !== 113 : status === 0
 }
 
 export const USAGE = 'usage: bag-shim [--dir <home>] [--input-hook]\n       bag-shim hook [--dir <home>]'
@@ -227,6 +370,15 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
     socketPath: socketOf(home),
     token: () => readToken(tokenFileOf(home)),
     start: () => (io.startService ?? startService)(home, io.env, log),
+    ask: () =>
+      askLoginAgent(
+        home,
+        io.env,
+        io.platform ?? process.platform,
+        io.uid ?? process.getuid?.(),
+        io.exec ?? execStatus,
+        log,
+      ),
     ring: (r) => {
       // The ring lives in the channel directory: made 0700 or checked here, as for the .bound file.
       if (safeDir(channelDir(home)) !== null)

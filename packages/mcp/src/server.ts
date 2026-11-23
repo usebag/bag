@@ -1140,6 +1140,8 @@ export function processIo(): ProcessIo {
       env: process.env,
       execArgv: process.execArgv,
       chdir: (d) => process.chdir(d),
+      ppid: process.ppid,
+      platform: process.platform,
       signals: process,
       // stderr may be a pipe, written asynchronously on macOS: exit once the hard exit's line is flushed, or after 1 s.
       exit: (status) => {
