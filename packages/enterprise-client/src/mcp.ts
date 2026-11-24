@@ -73,7 +73,7 @@ export const UNBOUND_LISTING: 'count' | 'labels' = 'count'
 export const IDENTITIES_TOOL = {
   name: 'identities',
   description:
-    "Lists the bag identities this machine holds. This window acts as none of them, so it shows how many there are and not their names (unless this build lists names): your person picks one by typing use and its name in a window that runs the bag service. It reads only this machine's identities file: no relay, no network, nothing changed.",
+    "Lists the bag identities this machine holds. This window acts as none of them, so it shows how many there are and not their names (unless this build lists names): your person picks one in a window that runs the bag service, by answering its bind dialog or, where the host passes typed words to bag, by typing use and its name. It reads only this machine's identities file: no relay, no network, nothing changed.",
   inputSchema: { type: 'object' as const, properties: {}, additionalProperties: false },
 }
 
@@ -107,13 +107,13 @@ export function identitiesAnswer(
     return {
       bound: false,
       identities: labels.map((label) => ({ label })),
-      note: 'these are the identities on this machine; your person types use and a name in a window that runs the bag service to act as one. Addresses show once a window is bound.',
+      note: 'these are the identities on this machine; your person binds a window that runs the bag service to one, through its bind dialog or, where the host passes typed words to bag, by typing use and a name. Addresses show once a window is bound.',
     }
   const n = labels.length
   return {
     bound: false,
     identities: n,
-    note: `${n === 1 ? 'one identity is' : `${n} identities are`} on this machine; your person picks one by name when a window that runs the bag service binds it (they type use and its name). The names are not shown here.`,
+    note: `${n === 1 ? 'one identity is' : `${n} identities are`} on this machine; your person picks one by name when a window that runs the bag service binds it (through its bind dialog or, where the host passes typed words to bag, by typing use and its name). The names are not shown here.`,
   }
 }
 

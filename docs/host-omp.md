@@ -111,8 +111,7 @@ In the per-folder form, the bag server moves the mtime of the identity's doorbel
 for each message it accepts. The extension, loaded in the omp session, reads the identity from the bag server's `--as`
 and `--dir` in `.omp/mcp.json` and watches the doorbell:
 
-- by file-system events on `<home>/state/<name>/`, with a look every 30 s as a fallback (a missed event, the machine
-  waking from sleep);
+- by a look at it every second (no file-system watcher, so a session's end never waits on one);
 - on a ring, it waits 300 ms for the rest of a burst (several messages land as several rings a few milliseconds
   apart), then, if the session is idle, starts exactly one turn whose text is `bag: mail arrived for alice: read it
   with the bag inbox tool and show it to your person. Answer only when your person asks, or when it plainly asks a

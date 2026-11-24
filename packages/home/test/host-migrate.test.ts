@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { type Build, type HostProcess, type MigrateInput, migrate, undo } from '../src/index.ts'
+import { type Build, type HostProcess, type MigrateInput, migrate, shq, undo } from '../src/index.ts'
 import { type Answer, fakeIo, folder, homeWith } from './support.ts'
 
 // host migrate and its undo: every per-folder entry of this home moved to the bag service's shim on one yes, each path
@@ -122,6 +122,26 @@ describe('migrate', () => {
       host: 'claude-code',
       from: 'migrate',
     })
+  })
+
+  it("a yes stages the question card's folder that the two settings entries it writes name", async () => {
+    const w = world()
+    const card = join(dirname(w.input.build.cli), 'claude-code')
+    const hooks = {
+      hooks: { Elicitation: [{ hooks: [{ type: 'command', command: '@BAG_CLI@ card-hook' }] }] },
+    }
+    mkdirSync(join(card, 'bag', 'hooks'), { recursive: true })
+    writeFileSync(join(card, 'bag', 'hooks', 'hooks.json'), JSON.stringify(hooks))
+    await w.run()
+    const staged = join(w.home, 'package', 'claude-code')
+    const settings = JSON.parse(readFileSync(join(w.HOME, '.claude', 'settings.json'), 'utf8'))
+    expect(settings.extraKnownMarketplaces.bag.source.path).toBe(staged)
+    expect(settings.enabledPlugins['bag@bag']).toBe(true)
+    const filled = JSON.parse(readFileSync(join(staged, 'bag', 'hooks', 'hooks.json'), 'utf8'))
+    expect(filled.hooks.Elicitation[0].hooks[0].command).toBe(
+      `${shq(join(w.home, 'package', 'bag.js'))} card-hook`,
+    )
+    expect(w.io.said).toContain(`wrote ${staged}: the question card's plugin bag, staged`)
   })
 
   it('finds nothing to migrate in a home no folder names, and asks nothing', async () => {

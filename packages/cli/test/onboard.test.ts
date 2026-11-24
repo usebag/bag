@@ -894,7 +894,9 @@ describe('onboard <name> --domain <host>: the tree to serve, the records, the ch
       const ran = await cli(w.io, 'onboard', ...w.args.map((a) => (a === RELAY ? url : a)))
       expect([url, ran.code, ran.err], url).toEqual([url, 3, kind === null ? [] : [warning(url, kind)]])
     }
-  })
+    // 1.2 to 1.3 s alone at loads 43 to 53, past 5 s in the whole suite at 65: eight onboards, each a new world (keys
+    // made, a store opened and synced).
+  }, 30_000)
 
   it('does not warn with --allow-private-relays or under --check, whatever the relay', async () => {
     const w = await world()

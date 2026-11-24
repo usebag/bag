@@ -142,7 +142,9 @@ export async function inviteOf(p: PairingPorts, rendezvous: string, text: string
     !core.isAddress(r.invitation) ||
     !/^https?:\/\/\S+$/.test(relay)
   ) {
-    throw refusal('invite-expired', `${at} holds no open invitation ${c.nameplate}`)
+    // Never the code or the relay typed with it: a refusal can reach a tool's answer, which goes to the model.
+    const where = c.at === undefined ? at : 'the relay named in the code'
+    throw refusal('invite-expired', `${where} holds no open invitation for that code`)
   }
   return { inviter: r.inviter, i: r.invitation, relay, secret: codeSecret(c, r.invitation) }
 }
@@ -573,7 +575,8 @@ async function accepting(p: PairingPorts, k: EdgeKeys, relay: string, v: Invite,
   const sealing = h.key?.sealing_key ?? core.toHex(k.sealing.publicKey)
   const i = (await newest(p.client, [v.relay], v.i, 'address')) as Address | null
   if (!i?.sealing_key || p.clock.now() > i.iat + i.ttl + core.DEFAULT_SKEW) {
-    throw refusal('invite-expired', `${v.relay} serves no current invitation ${v.i}`)
+    // Never the relay or the invitation parsed from the typed code: a refusal can reach a tool's answer (the model).
+    throw refusal('invite-expired', "the inviter's relay holds no open invitation for that code")
   }
   const exp = i.iat + i.ttl
   await h.ask(pairingCode(v, me, sealing))

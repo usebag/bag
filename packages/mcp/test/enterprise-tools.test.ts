@@ -399,7 +399,7 @@ describe('sign_out through the identity server: a revoke for good, asked first',
   })
 
   it('a No or no answer leaves the session and sends nothing to /agent/sign-out; the Yes revokes; no token in any result', async () => {
-    let reply: ElicitResult = { action: 'accept', content: { confirm: false } }
+    let reply: ElicitResult = { action: 'decline' }
     const w = await setupAsking(() => reply)
     expect(shown(await w.call('connect', { code: w.code })).isError).toBe(false)
     const token = w.fake.row().token

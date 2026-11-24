@@ -23,6 +23,7 @@ import type { RevokeReply } from '@usebag/edge/agent'
 import { recordingRelay } from '@usebag/edge/test-support'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseServerConfig, type ServerConfig } from '../src/config.ts'
+import { AGAIN_DIALOG, AGAIN_TYPED } from '../src/regrant.ts'
 import { rereadOf, Service, type ServiceDeps } from '../src/service.ts'
 import { runPaths, type ServiceConnection } from '../src/socket.ts'
 import { acceptFrom, fakeRecords, MemoryLog, P, RELAY, seededRng, T0 } from './support/fixtures.ts'
@@ -69,6 +70,8 @@ async function start(
     /** The service reads its identities file again (give-backs and hellos), as the real service does. */
     readonly rereads?: boolean
   } = {},
+  /** hook false: a window whose hello declares no input hook (Codex, opencode), bound by its shim's restore. */
+  o: { readonly hook?: boolean } = {},
 ): Promise<{
   s: Service
   send: () => Promise<Json>
@@ -124,12 +127,6 @@ async function start(
       socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: n, method, params })}\n`)
     })
   const token = s.token.toString('hex')
-  await request('service/hello', { contract: 1, token, host: 'omp', cwd: '/w', input_hook: true })
-  await request('service/use', { label: 'jane', via: 'typed' })
-  h.type(answer)
-  h.type(answer)
-  if (answer === 'y')
-    await until('the unit opens', () => s.unit('jane')?.opened != null && s.unit('jane')?.chain != null)
   const call = async (name: string, args: Json): Promise<Json> => {
     const r = (await request('tools/call', { name, arguments: args })) as {
       result: { content: { text: string }[] }
@@ -137,6 +134,29 @@ async function start(
     return JSON.parse(r.result.content[0]?.text ?? '{}') as Json
   }
   const send = (): Promise<Json> => call('send', { to: [P.bob.address], type: 'chat.v1', body: 'hi' })
+  if (o.hook === false) {
+    await request('service/hello', {
+      contract: 1,
+      token,
+      host: 'codex',
+      cwd: '/w',
+      client_capabilities: { elicitation: {} },
+      input_hook: false,
+    })
+    const bound = await request('service/use', { label: 'jane', via: 'restored', address: P.jane.address })
+    if (bound.error !== undefined) throw new Error(`restore refused: ${JSON.stringify(bound.error)}`)
+    h.type(answer)
+    h.type(answer)
+    // A restored window opens its identity and asks its grant at its first act.
+    await send()
+  } else {
+    await request('service/hello', { contract: 1, token, host: 'omp', cwd: '/w', input_hook: true })
+    await request('service/use', { label: 'jane', via: 'typed' })
+    h.type(answer)
+    h.type(answer)
+  }
+  if (answer === 'y')
+    await until('the unit opens', () => s.unit('jane')?.opened != null && s.unit('jane')?.chain != null)
   const use = (): Promise<Json> => request('service/use', { label: 'jane', via: 'typed' })
   return { s, send, call, use, request }
 }
@@ -448,12 +468,40 @@ describe('regrant in place for an agent unit in the service', () => {
     await until('one new request', () => h.codes().length === codes + 1)
   })
 
+  it.each([
+    [true, AGAIN_TYPED],
+    [false, AGAIN_DIALOG],
+  ])(
+    "a window's declined grant (input hook %s) tells the way that binds on that host",
+    async (hook, again) => {
+      const { send } = await start(undefined, 'y', {}, { hook })
+      // A logout ends the window's grant; its next send asks one new grant, which the agent declines.
+      h.relay.failPublish.set(RELAY, new RelayError('revoked', 403, null, 'the session was revoked'))
+      expect(await send()).toMatchObject({ error: 'revoked' })
+      h.relay.failPublish.delete(RELAY)
+      const codes = h.codes().length
+      expect(await send()).toMatchObject({ error: 'grant-pending' })
+      await until('one new request', () => h.codes().length === codes + 1)
+      h.type('n')
+      let refused = await send()
+      for (let i = 0; refused.error !== 'declined' && i < 100; i++) {
+        await new Promise((r) => setTimeout(r, 20))
+        refused = await send()
+      }
+      expect(String(refused.detail)).toBe(`the agent said no to a new grant: ${again} to ask again`)
+      if (!hook)
+        for (const typed of ['type use', 'typing use']) expect(String(refused.detail)).not.toContain(typed)
+    },
+  )
+
   it("the unit's declined first open tells the person to type use, not to restart", async () => {
     const { s } = await start(undefined, 'n')
     await until('the declined open', () =>
       String(s.unit('jane')?.failure ?? '').includes('no y at the agent'),
     )
-    expect(String(s.unit('jane')?.failure)).toContain('type use and the name to ask again')
+    expect(String(s.unit('jane')?.failure)).toContain(
+      'type use and the name in Claude Code or omp, or answer Yes in the bind dialog (the use tool opens it) to ask again',
+    )
   })
 
   it('a drain with a unit request out ends it, and nothing more is asked', async () => {

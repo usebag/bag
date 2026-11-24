@@ -15,7 +15,7 @@ import { createConnection, createServer, type Server, type Socket } from 'node:n
 import { dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
-import { parseEnvelope, serializeRecord, signHop, signRecord, toHex } from '@usebag/core'
+import { parseEnvelope, SUITE, serializeRecord, signHop, signRecord, toHex } from '@usebag/core'
 import {
   type EdgeKeys,
   generateEdgeKeys,
@@ -32,7 +32,14 @@ import {
 import { OFF_USE_FORGET } from '@usebag/home'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { askListeners, askPerson } from '../src/ask.ts'
-import { createdHere, NOT_BOUND, pairingsOfTable, tableFor, UNBOUND_TOOLS } from '../src/binding.ts'
+import {
+  createdHere,
+  NOT_BOUND,
+  NOT_BOUND_DIALOG,
+  pairingsOfTable,
+  tableFor,
+  UNBOUND_TOOLS,
+} from '../src/binding.ts'
 import { parseServerConfig, type ServerConfig } from '../src/config.ts'
 import { Names } from '../src/names.ts'
 import { type PairExtra, type Pairings, shortAddress } from '../src/pairing.ts'
@@ -490,9 +497,21 @@ describe('dialogs', () => {
     expect(req2.id).not.toBe(req.id)
     a.socket.destroy()
     await expect(second).rejects.toThrow('cancelled')
-    await hello(s)
+    const b = await hello(s)
     const timed = lastConn(s).elicit(form, { timeoutMs: 50 })
+    const req3 = await b.next((m) => m.method === 'elicitation/create')
     await expect(timed).rejects.toThrow('cancelled: no answer in time')
+    // An answer after the bound reaches nothing: the dialog is withdrawn, and its late Yes matches no open dialog.
+    expect(await b.next((m) => m.method === 'notifications/cancelled')).toMatchObject({
+      params: { requestId: req3.id },
+    })
+    const handle = ((req3.params as Json)._meta as Json)[DIALOG_META] as string
+    b.send({
+      jsonrpc: '2.0',
+      id: req3.id,
+      result: { action: 'accept', content: { confirm: true }, _meta: { [DIALOG_META]: handle } },
+    })
+    await vi.waitFor(() => expect(log.lines.some((x) => x.event === 'dialog-unknown')).toBe(true))
   })
 })
 
@@ -1349,6 +1368,32 @@ describe('the scrubbed launch', () => {
     expect(proxied).toContain('<key>http_proxy</key><string>http://proxy:8080</string>')
     expect(proxied).toContain('<key>NO_PROXY</key><string>localhost</string>')
   })
+
+  it("is byte for byte the CLI's login-agent fixture, the one home's servicePlist is held to, for the same inputs", () => {
+    // The two printers (this one and packages/home's servicePlist) are pinned to one fixture, so they cannot drift.
+    const fixture = readFileSync(
+      new URL('../../cli/test/fixtures/launch-agent-plist.txt', import.meta.url),
+      'utf8',
+    )
+    const text = launchAgentPlist({
+      label: 'dev.bag.service',
+      node: '/opt/homebrew/bin/node',
+      main: '/Users/x/.bag/package/bag-mcp.js',
+      home: '/Users/x/.bag',
+      identities: '/Users/x/.bag/identities.json',
+      env: {
+        HOME: '/Users/x',
+        USER: 'x',
+        LANG: 'C',
+        AC_HOME: '/Users/x/.bag',
+        NODE_OPTIONS: '--inspect',
+        HTTPS_PROXY: 'http://proxy:8080',
+        http_proxy: 'http://u:p@proxy:8080',
+        NODE_USE_ENV_PROXY: '1',
+      },
+    })
+    expect(text).toBe(fixture)
+  })
 })
 
 describe('bag-mcp --service as a process', () => {
@@ -1683,10 +1728,10 @@ describe('the wiring: the binding table, mail hooks and the identities file in t
       // identity_create and telemetry run unbound: here each refuses its argument (a bad label; no HOME) as usage.
       const want =
         tool === 'status'
-          ? { bound: false, note: NOT_BOUND, as: null }
+          ? { bound: false, note: NOT_BOUND_DIALOG, as: null }
           : ['identity_create', 'telemetry', 'host_wire', 'service'].includes(tool)
             ? { error: 'usage', detail: expect.any(String), as: null }
-            : { error: 'not-bound', detail: NOT_BOUND, as: null }
+            : { error: 'not-bound', detail: NOT_BOUND_DIALOG, as: null }
       expect([tool, v]).toEqual([tool, want])
       expect(JSON.stringify(v)).not.toMatch(/personal|ed25519:/)
     }
@@ -2175,6 +2220,7 @@ describe("service.json's live counts: pairings, lends and asking", () => {
       )(0),
       log: { log: () => {} },
       opened: null,
+      timers: new ManualTimers(),
     } as unknown as ToolContext
     const extra = { signal: new AbortController().signal } as unknown as PairExtra
     const asked = askPerson(
@@ -2684,5 +2730,133 @@ describe('an empty home: the service starts with no identity and serves only the
     await a.closed
     await until(() => s.connections.size === 1)
     expect(createdHere(conn, 'jane', address)).toBe(false)
+  })
+})
+
+describe('a window keeps its identity through a restart (via restored)', () => {
+  /** The address the service told a bound line in its service/bound notice: what a shim keeps in memory. */
+  const addressOf = async (l: Line): Promise<string> =>
+    ((await l.next((m) => m.method === 'service/bound')).params as Json).address as string
+
+  /** Whether a service/unbound came on the line before it closed. */
+  const unboundCame = (l: Line): Promise<boolean> =>
+    Promise.race([l.next((m) => m.method === 'service/unbound').then(() => true), l.closed.then(() => false)])
+
+  for (const reason of ['upgrade', 'stop'] as const)
+    it(`after a drain for ${reason}: no service/unbound, and the next service restores the window, which acts as before`, async () => {
+      const s = await start([['personal', P.alice]])
+      const a = await bound(s)
+      const address = await addressOf(a)
+      await s.drain(reason)
+      live.splice(live.indexOf(s), 1)
+      expect(await unboundCame(a)).toBe(false)
+      const n = await start([['personal', P.alice]], { lockRetryMs: 0 })
+      const b = await hello(n, { input_hook: true })
+      const r = await b.request('service/use', {
+        label: 'personal',
+        via: 'restored',
+        address,
+        subagent: false,
+      })
+      expect(r.result).toMatchObject({ bound: true, as: 'personal', granted: 'restored' })
+      const st = await call(b, 'status')
+      expect(st.as).toBe('personal')
+      expect(st.notice).toEqual(['bag restarted; this window still acts as personal.'])
+      expect(log.lines.filter((x) => x.event === 'bind-restored').map((x) => x.fields.label)).toEqual([
+        'personal',
+      ])
+      expect(readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8')).toContain(
+        "a window's binding of personal restored after a service restart",
+      )
+    })
+
+  it('a window that binds by dialog only (Codex: no input hook) is restored; one that can do neither is refused', async () => {
+    const s = await start([['personal', P.alice]])
+    const address = await addressOf(await bound(s))
+    const codex = await hello(s, { host: 'codex', input_hook: false })
+    expect(
+      (await codex.request('service/use', { label: 'personal', via: 'restored', address })).result,
+    ).toMatchObject({ granted: 'restored' })
+    const neither = await hello(s, { host: 'other', input_hook: false, client_capabilities: {} })
+    expect(
+      codeOf(await neither.request('service/use', { label: 'personal', via: 'restored', address })),
+    ).toBe('usage')
+  })
+
+  it('an identity removed and made again under the label does not come back, and the window is told why', async () => {
+    const s = await start([['personal', P.alice]])
+    const old = await addressOf(await bound(s))
+    await s.drain()
+    live.splice(live.indexOf(s), 1)
+    const n = await start([['personal', P.carol]], { lockRetryMs: 0 })
+    const b = await hello(n, { input_hook: true })
+    expect(codeOf(await b.request('service/use', { label: 'personal', via: 'restored', address: old }))).toBe(
+      'unknown-identity',
+    )
+    const st = await call(b, 'status')
+    expect(st).toMatchObject({ bound: false, as: null })
+    expect(st.note).toBe(
+      `bag restarted and this window could not keep personal: it is no longer on this machine. ${NOT_BOUND}`,
+    )
+  })
+
+  it('a lent identity is refused busy with the words; a second connection claiming a restore binds only itself', async () => {
+    const s = await start([
+      ['personal', P.alice],
+      ['research', P.carol],
+    ])
+    const win = await bound(s, 'research')
+    const research = await addressOf(win)
+    const cli = await hello(s, { host: 'cli' })
+    expect((await cli.request('service/lend', { label: 'personal', verb: 'pair' })).result).toBeDefined()
+    const b = await hello(s, { input_hook: true })
+    const alice = P.alice.keys.signing.address
+    expect(
+      codeOf(await b.request('service/use', { label: 'personal', via: 'restored', address: alice })),
+    ).toBe('busy')
+    expect((await call(b, 'status')).note).toBe(
+      `bag restarted and this window could not keep personal: a bag command is using it; your user types use personal when it is done. ${NOT_BOUND}`,
+    )
+    // A connection that never bound research claims it: it gets its own binding, as the typed word would give it,
+    // and the window that bound research is unchanged.
+    const third = await hello(s, { input_hook: true })
+    expect(
+      (await third.request('service/use', { label: 'research', via: 'restored', address: research })).result,
+    ).toMatchObject({ bound: true, as: 'research' })
+    expect((await call(win, 'status')).as).toBe('research')
+    expect((await call(third, 'status')).as).toBe('research')
+  })
+})
+
+describe('a restored Keychain identity opens at the window first act, never at the restore', () => {
+  it('the restore reads no key; the first tool call opens it (one read) and acts', async () => {
+    mkdirSync(join(home, 'keychain'), { recursive: true, mode: 0o700 })
+    rmSync(join(home, 'keys', `${P.alice.name}.json`), { force: true })
+    writeFileSync(
+      join(home, 'keychain', `${P.alice.name}.json`),
+      // A pointer as the keychain custody writes it (its address read without the item, so without a dialog).
+      JSON.stringify({
+        suite: SUITE,
+        custody: 'keychain',
+        address: P.alice.address,
+        keychain: null,
+        access: 'prompt',
+      }),
+      { mode: 0o600 },
+    )
+    const reads: string[] = []
+    const s = await start([['personal', P.alice]], {
+      openKeys: async (_h, name) => {
+        reads.push(name)
+        return opened(P.alice.keys)
+      },
+    })
+    const b = await hello(s, { input_hook: true })
+    const r = await b.request('service/use', { label: 'personal', via: 'restored', address: P.alice.address })
+    expect(r.result, JSON.stringify(r)).toMatchObject({ bound: true, granted: 'restored' })
+    await new Promise((x) => setTimeout(x, 30))
+    expect(reads).toEqual([])
+    expect((await call(b, 'status')).as).toBe('personal')
+    expect(reads).toEqual(['alice'])
   })
 })

@@ -883,7 +883,7 @@ is decided by the organisation's instance on the server, not by the client. The 
 `sign-in.ts` (sign-in and sign-out), `status.ts` (with no `--as`), `mcp.ts` and `refresher.ts`.
 
 A person gives their agent the prompt the console shows beside a minted connect code. The console fills in the exact
-version it pins (the current cut, `@usebag/bag@0.4.5`), never `@latest`:
+version it pins (the current cut, `@usebag/bag@0.4.6`), never `@latest`:
 
     1. Register once: claude mcp add bag -- npx -y @usebag/bag@<version> mcp (or run directly: BAG_ORG_CODE=<code> npx -y @usebag/bag@<version> connect)
     2. Paste the code into the chat and ask the agent to connect with the bag tool `connect`.
@@ -967,8 +967,9 @@ waiting on a person of the organisation or its signer. An error is one line on s
   bag's version, how many identities the home holds, and how many of the relays they name answer a health probe
   (never the relays' URLs while names are not listed; each answer reused for 60 s), then the enterprise session if
   there is one; no session is not an error. `identities` says how many identities the home
-  holds and leaves their names to the person, who picks one by typing `use` and its name in a window that runs the
-  bag service. Neither changes anything or calls a relay beyond the health probes. Each tool's description is its
+  holds and leaves their names to the person, who binds a window that runs the bag service to one: by typing `use`
+  and its name in Claude Code or omp, elsewhere by asking the agent to use it and saying Yes in the bind dialog.
+  Neither changes anything or calls a relay beyond the health probes. Each tool's description is its
   documentation, written for the agent that reads it. The way to set it up is the install prompt: the person pastes
   "Fetch and follow the instructions to set me up on bag.dev from https://bag.dev/install" into their agent, which
   fetches and checks the package and wires the host itself; the agent then needs no command line. For a machine with

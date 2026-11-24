@@ -5,7 +5,7 @@
 //   launch, then every tool answers one readable error;
 // - a service that goes away mid-call: each call in flight fails with a readable error and is never sent again (a
 //   send could otherwise go twice); the shim reconnects, says hello again, replays the initialize and tells the host
-//   the tools may have changed; the session starts unbound, as the contract says;
+//   the tools may have changed; it asks again for what the window was bound to, from its own memory (restored);
 // - dialogs (elicitation/create) carried to the host under an id of the shim's, the handle kept back from the host and
 //   echoed on the answer, no timeout on either hop; cancellation and progress passed through;
 // - resume tokens for a host whose tool timeout is short (Codex, 60 s): a call still running near it answers with a
@@ -26,10 +26,13 @@ import {
   HELLO,
   type Hello,
   handleOf,
+  RESTORED,
   RING,
   SHIM_VERSION,
   socketPathProblem,
   TYPED,
+  UNBIND,
+  UNBOUND,
   USE,
   withHandle,
   withoutBagMeta,
@@ -125,7 +128,7 @@ export function absentText(home: string): string {
 /** The text a call in flight fails with when the service goes away under it. */
 export const LOST_TEXT =
   'bag: the bag service stopped during this call (a restart or a crash); the call failed and was not sent again. ' +
-  'If it was a send, read the outbox before sending again. This session is now unbound: say "use <name>" to bind it.'
+  'If it was a send, read the outbox before sending again. This window keeps its identity once the service is back.'
 
 /** The shim's own tool for a host with a short tool timeout. */
 export const RESUME_TOOL = {
@@ -197,6 +200,7 @@ export class Shim {
   #cancelRetry: (() => void) | null = null
   #logging = false
   #as: string[] = []
+  #keep = new Map<string, string | null>()
   #servicePid = 0
   #ringSeq = 0
   #inputHook = false
@@ -217,7 +221,6 @@ export class Shim {
   get phase(): Phase {
     return this.#phase
   }
-  /** The identity the service last said this connection is bound to, or null. */
   /** The identities the service said this connection is bound to, in bind order. */
   get bound(): readonly string[] {
     return this.#as
@@ -255,6 +258,12 @@ export class Shim {
       this.#connect()
       return
     }
+    // A request before initialize is answered at once, never queued, so a server/discover probe never waits.
+    if (this.#init === null && isRequest(m)) {
+      const id = m.id as Id
+      this.#d.toHost(m.method === 'ping' ? resultOf(id, {}) : errorOf(id, -32601, 'Method not found'))
+      return
+    }
     if (this.#kind === 'codex' && isRequest(m) && m.method === 'tools/call') {
       const meta = m.params?._meta as { sessionId?: unknown; threadId?: unknown } | undefined
       const id = meta?.sessionId ?? meta?.threadId
@@ -284,10 +293,11 @@ export class Shim {
   }
 
   /**
-   * The person's typed `use <name>`, from the host's input hook over the shim's own channel (channel.ts): a bind by
-   * typed word on this connection. Resolves with what the hook tells the person: bound, or the refusal's code.
+   * The person's typed `use <name>` from the host's input hook (channel.ts): a bind by typed word on this connection;
+   * one typed while no service answers leaves nothing to restore. Resolves what the hook tells: bound, or the code.
    */
   async use(label: string): Promise<{ bound: true; as: string } | { bound: false; code: string }> {
+    if (this.#phase !== 'up') this.#keep = new Map()
     if (this.#phase !== 'up' || this.#conn === null) return { bound: false, code: 'not-connected' }
     this.typed()
     let r: Message
@@ -331,6 +341,7 @@ export class Shim {
    * connection's pairings as at a close, but the host keeps a working server (Codex's SessionEnd, wake-hook --end).
    */
   release(): void {
+    this.#keep = new Map()
     const c = this.#conn
     if (this.#phase !== 'up' || c === null) return
     this.#d.log('release', {})
@@ -490,6 +501,8 @@ export class Shim {
       this.#down(`bag: the bag service refused the session: ${ir.error.message}`, false)
       return 'refused'
     }
+    await this.#restore()
+    if (this.#conn !== conn) return 'refused'
     const caps = (ir.result as { capabilities?: { logging?: unknown } } | undefined)?.capabilities
     this.#logging = caps?.logging !== undefined
     this.#phase = 'up'
@@ -527,6 +540,19 @@ export class Shim {
       caps.experimental = { ...((caps.experimental ?? {}) as Params), [BRIDGE_CAPABILITY]: pid }
     }
     return caps
+  }
+
+  /** #keep, what service/bound said: asked again after a reconnect; a typed use or release while down empties it. */
+  async #restore(): Promise<void> {
+    const keep = this.#keep // none once omp 19's window is gone (no hostPid); a new #keep stops it and unbinds
+    for (const [label, address] of this.#d.hostPid === undefined ? [] : [...keep]) {
+      if (keep !== this.#keep) break
+      const asked = { label, via: RESTORED, address, subagent: this.#subagent }
+      const r = await this.#request(USE, asked).catch(() => null)
+      if (r === null) return
+      if (r.error !== undefined && bagCode(r.error) !== 'draining') keep.delete(label)
+    }
+    if (keep !== this.#keep) await this.#request(UNBIND, {}).catch(() => null)
   }
 
   #drop(conn: Conn): void {
@@ -750,7 +776,14 @@ export class Shim {
       case BOUND:
         if (typeof params.as === 'string' && !this.#as.includes(params.as))
           this.#setBound([...this.#as, params.as])
+        // A restore's own service/bound adds nothing: it may come after a typed use emptied the memory.
+        if (typeof params.as === 'string' && params.granted !== RESTORED)
+          this.#keep.set(params.as, typeof params.address === 'string' ? params.address : null)
         this.#d.log('bound', { granted: params.granted ?? null })
+        return
+      case UNBOUND:
+        this.#keep.delete(params.as as string)
+        this.#setBound(this.#as.filter((l) => l !== params.as))
         return
       case DRAINING:
         this.#draining = true

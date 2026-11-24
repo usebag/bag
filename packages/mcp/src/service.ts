@@ -71,6 +71,8 @@ import type { Logger } from './log.ts'
 import { holderLives, type Opened, readLock } from './open.ts'
 import { proposalsPath, proposalsRefused, readProposals } from './proposals.ts'
 import {
+  AGAIN_ANY,
+  againFor,
   type Granted,
   GrantSlot,
   holdFile,
@@ -117,6 +119,7 @@ import {
   IDENTITIES_NOTE,
   INSTRUCTIONS,
   LOCAL_ASK_DAYS,
+  LOCAL_DECLINE_S,
   LOCAL_DECLINED,
   LOCAL_HELD_MAX,
   LOCAL_PENDING,
@@ -339,6 +342,10 @@ function classOf(home: string, name: string): Custody | null {
 const keysPending = (label: string): ConfigError =>
   new ConfigError('busy', `the identity ${label} is opening: a Keychain dialog may be waiting on this Mac`)
 
+/** What a key-file identity's tools answer while it waits in the start's open queue or opens (its log checked). */
+const stillOpening = (label: string): ConfigError =>
+  new ConfigError('busy', `the identity ${label} is still opening: try again in a few seconds`)
+
 /** What an agent identity not opened yet answers: it opens at its first bind, when its agent asks for a y. */
 const agentAtBind = (label: string): ConfigError =>
   new ConfigError(
@@ -560,10 +567,11 @@ export class Service implements ServiceHome {
       log: deps.log,
       markUsed,
       // A bind is the person's act: the router hears it, and a Keychain identity not open yet opens now (one dialog).
+      // A restore is not: its identity opens at the window's first act (open, below).
       router: {
-        bind: (label, conn) => {
-          router.bind(label, conn)
-          void this.ensureOpen(label)
+        bind: (label, conn, restored) => {
+          router.bind(label, conn, restored)
+          if (restored !== true) void this.ensureOpen(label)
         },
         unbind: (handle, label) => router.unbind(handle, label),
       },
@@ -600,6 +608,7 @@ export class Service implements ServiceHome {
           abort: () => client?.close(),
           audit,
           words: (code) => regrantLine({ label, host: conn.host, connection: conn.handle, code }),
+          again: againFor(conn.capabilities.inputHook),
         })
         // Renewed silently while bound, paused while the identity is lent or held quiet (lent() names both).
         const keeper = new SlotKeeper(slot, {
@@ -621,6 +630,8 @@ export class Service implements ServiceHome {
           .get(label)
           ?.person(channel)
           .catch(() => {}),
+      open: (label) => this.ensureOpen(label),
+      address: (label) => this.#identityAddress(label),
     })
     // service.json carries the live counts, rewritten as a pairing starts or ends and as an ask opens or closes.
     onPairingChange(this.table, () => this.#writeJson())
@@ -628,7 +639,10 @@ export class Service implements ServiceHome {
     for (const [method, handler] of Object.entries(serviceMethods(this.table)))
       this.onServiceRequest(method as `service/${string}`, async (c, p) => {
         if (method !== 'service/unbind') this.#refresh()
+        // A Codex sub-agent's restore carries its shim's mark: it never speaks for the identity, from its first ring.
+        if (p.via === 'restored' && p.subagent === true) (c as Connection).markSubagent()
         const r = (await handler(c, p)) as Record<string, unknown>
+        if (r.granted === 'restored') this.#restoredLine(String(r.as), c as Connection)
         if (method === 'service/unbind') this.#dropGone()
         return r
       })
@@ -1065,11 +1079,18 @@ export class Service implements ServiceHome {
       if (made === 'now') now.push(this.units.get(c.label) as Unit)
       if (made === 'later') later.push(this.units.get(c.label) as Unit)
     }
+    for (const u of now) u.failure = stillOpening(u.config.label)
     for (const u of later) u.failure = keysPending(u.config.label)
+    for (const u of [...now, ...later]) u.opening = true
     return async () => {
       for (const u of [...now, ...later]) {
+        // Two turns of the event loop before each identity, so that greetings, status and the identities already open
+        // are answered between opens (a new connection is accepted in one turn and read in the next); before the
+        // draining check, since a drain can begin during them.
+        for (let i = 0; i < 2; i++) await new Promise<void>((r) => setImmediate(r))
         if (this.#draining) return
-        await this.#openUnit(u)
+        // A window's bind may have opened it already during an earlier turn (ensureOpen): it is not opened twice.
+        if (u.opened === null) await this.#openUnit(u)
       }
     }
   }
@@ -1252,7 +1273,8 @@ export class Service implements ServiceHome {
   #openUnit(u: Unit): Promise<boolean> {
     const running = this.#pendingOpen.get(u)
     if (running !== undefined) return running
-    const p = u.openWith(keysPending(u.config.label)).then((ok) => {
+    const pending = this.#prompts(u) ? keysPending(u.config.label) : stillOpening(u.config.label)
+    const p = u.openWith(pending).then((ok) => {
       this.#pendingOpen.delete(u)
       if (ok) this.#opened(u)
       return ok
@@ -1491,6 +1513,7 @@ export class Service implements ServiceHome {
       notices: (handle, label) => {
         this.#readWord()
         this.#pairs()
+        const restored = this.table.notes(handle)
         const first = !this.#changesSeen.has(handle)
         const seen = this.#changesSeen.get(handle) ?? 0
         this.#changesSeen.set(handle, this.#changes.length)
@@ -1508,7 +1531,7 @@ export class Service implements ServiceHome {
           .slice(seen)
           .filter(({ c, at }) => (c.label === undefined || c.label === label) && !gone(c, at))
           .map(({ c }) => c)
-        return [...listed, ...mine.map((c) => c.what)]
+        return [...restored, ...listed, ...mine.map((c) => c.what)]
       },
       home: (label) => {
         const word = this.#readWord()
@@ -1930,7 +1953,7 @@ export class Service implements ServiceHome {
     const now = this.#deps.clock.now()
     if (!yes) {
       this.#drop(row, 'declined')
-      const until = now + 86_400
+      const until = now + LOCAL_DECLINE_S
       this.#putPairs([
         ...rest,
         { ...row, state: 'declined', at: now, until, held: [], reasks: row.reasks ?? [] },
@@ -2705,7 +2728,7 @@ export class Service implements ServiceHome {
         start = openAgentUnit(
           { ...c, relays: unit.config.relays, rendezvous: unit.config.rendezvous, session: null },
           c.as,
-          { caveats: this.grantCaveats(c.label), declined: 'type use and the name to ask again' },
+          { caveats: this.grantCaveats(c.label), declined: `${AGAIN_ANY} to ask again` },
           { clock: d.clock, rng: d.rng, timers: d.timers, pid: d.pid, alive: d.alive },
         )
       } catch (e) {
@@ -2823,6 +2846,23 @@ export class Service implements ServiceHome {
       this.#log.log('warn', 'audit', { label, act, code: codeOf(e) })
     }
     this.#log.log('info', act, { ...entry.detail, ...at })
+  }
+
+  /** A window's binding restored after a service restart: in the service log, and a policy line in the identity's log. */
+  #restoredLine(label: string, conn: Connection): void {
+    const host = hostKindOf(conn.host)
+    this.#log.log('info', 'bind-restored', { label, host, connection: conn.handle })
+    const local = `a window's binding of ${label} restored after a service restart`
+    try {
+      this.units.get(label)?.opened?.edge.audit.record({
+        event: 'policy',
+        decision: 'route',
+        detail: { local, host },
+        connection: conn.handle,
+      })
+    } catch (e) {
+      this.#log.log('warn', 'audit', { label, act: 'bind-restored', code: codeOf(e) })
+    }
   }
 
   /** One policy line about the revoke intents (#policy), and in the service log when no identity is open to keep it. */
@@ -3064,7 +3104,7 @@ export function launchAgentPlist(o: {
     '  <dict>',
     '    <key>SuccessfulExit</key><false/>',
     '  </dict>',
-    '  <key>ProcessType</key><string>Background</string>',
+    '  <key>ProcessType</key><string>Standard</string>',
     '  <key>Umask</key><integer>63</integer>',
     '  <key>SoftResourceLimits</key>',
     '  <dict>',

@@ -170,7 +170,7 @@ describe('tools/list', () => {
     const { tools } = await alice.client.listTools()
     const text = tools.find((t) => t.name === 'host_wire')?.description
     expect(text).toContain(
-      "every new window opened in that folder then has it preset in its bind dialog. A proposal never binds: a window acts as it only after your user's own Yes in that dialog, or their typed use and the name. Nothing is written into the folder, and the bag service keeps holding the identity.",
+      "every new window opened in that folder then has it preset in its bind dialog. A proposal never binds: a window acts as it only after your user's own Yes in that dialog, or, in Claude Code and omp, their typed use and the name. Nothing is written into the folder, and the bag service keeps holding the identity.",
     )
     expect(text).not.toContain('every agent session')
   })

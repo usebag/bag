@@ -161,7 +161,10 @@ describe('the identities file: reading', () => {
       ],
     ]
     for (const [doc, want] of cases) expect([doc, fault(doc)]).toEqual([doc, want])
-  })
+    // 2.2 to 3.6 s alone at loads 43 to 53, past 5 s in the whole suite at 65: each home is resolved with
+    // realpathSync.native (packages/home/src/identities.ts folder()), and the fixture's homes lie under /home, macOS's
+    // autofs auto_home mount, where one lookup took about 100 ms (a path under /tmp, under 1 ms).
+  }, 30_000)
 
   it('folds the case of homes not made yet on macOS only: elsewhere two such homes that differ by case are two', () => {
     const doc = { version: 1, identities: [LAB, { ...PERSONAL, home: '/home/u/.Bag-Lab' }] }

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { custodyClass } from '@usebag/edge'
-import { removedRefusal, removedRefused } from '@usebag/home'
+import { cardAnswerers, removedRefusal, removedRefused } from '@usebag/home'
 import { flag, parse, str, UsageError } from '../args.ts'
 import { homeDir } from '../home.ts'
 import { type Identities, keyOf, LABEL, readIdentities } from '../identities.ts'
@@ -165,8 +165,10 @@ export async function statusHome(args: readonly string[], io: Io): Promise<numbe
   const refused = removedRefused(home)
   if (refused === null) await consumeUnserved(io, home, (line) => io.err(line))
   const s = await readHome(home)
-  if (flag(p, 'json')) io.out(JSON.stringify(s))
-  else for (const l of homeLines(s)) io.out(l)
+  // What else could answer one of bag's question cards in the person's place (host-user.ts, S1): names, never contents.
+  const others = cardAnswerers(io.env, io.env.PWD)
+  if (flag(p, 'json')) io.out(JSON.stringify({ ...s, card_answerers: others }))
+  else for (const l of [...homeLines(s), ...others.map((o) => `card_answerer ${o}`)]) io.out(l)
   if (refused !== null) {
     const line = `removed_record refused: ${removedRefusal(home, refused)}`
     if (flag(p, 'json')) io.err(line)

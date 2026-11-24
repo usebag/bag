@@ -4,6 +4,103 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.4.6: 2026-11-24
+
+The cut tagged v0.4.6, `@usebag/bag` 0.4.6.
+
+- **`@usebag/bag` 0.4.6**, published from this cut (`npm view @usebag/bag@0.4.6 gitHead` names it).
+
+Changes after v0.4.5.
+
+- **bag's tools appear at once in Codex and opencode.** Hosts that open with the newer handshake, such as Codex and
+  opencode, ask bag a first question before they start the session. bag answered it only once the session had started,
+  so the host waited out its own timeout first: about 10 seconds in Codex and 5 in opencode, during which a message
+  you sent found no bag tools. bag now answers that question at once, and its tools are there from the start.
+
+- **An omp window no longer hangs when its session ends.** On macOS the bag extension watched its files with
+  file-system watchers, and closing them at a session's end (quitting omp, or starting a new session) could freeze the
+  window for several seconds on a busy machine. It now looks at the doorbell and the ring file once a second and opens
+  no watcher, so a session ends at once. A new message starts its turn within about a second, as in Claude Code.
+
+- **A window keeps its identity when the bag service restarts.** After an upgrade, a crash or a restart through the
+  login agent, each open window acts as the identities you gave it before, with no `use` and no dialog; its next answer
+  says once that bag restarted and which identity it still acts as. If an identity was removed (or removed and made
+  again under the same name) or a `bag` command is using it, the window says so and waits for your `use`. A new
+  window still needs your `use` or your Yes, and a window that closes ends its identities, as before. An identity in
+  your Keychain asks for its Keychain access at the window's first act after the restart, not at the restart itself; an
+  identity whose keys an agent holds asks one `y` for the service and one per window, each at that window's first act.
+  This starts with the windows you open after installing this update: windows already open when you install it still
+  run the old code and bind one last time.
+
+- **An omp window no longer loses bag for good when the Mac is slow to answer.** When the system took too long to
+  report on the omp window (as it can on a very busy Mac), bag could take the window for closed: until you restarted
+  omp, `use` answered that the window was gone and no new mail woke it. bag now checks whether the window is still
+  open, and keeps it while it is.
+
+- **A pairing you cancel says it was cancelled.** When a pairing ended while one of its dialogs was open (you ran
+  `pair_cancel`, or the invitation expired) and the host then answered that dialog at once, the call could answer
+  `no-elicitation`, "this host did not show the dialog", and tell the model not to use the pair tools again. It now
+  answers the pairing's own end, `cancelled` or `invite-expired`, and nothing is written.
+
+- **In the VS Code extension and Claude Desktop, a dialog you never saw is no longer read as your No.** These hosts
+  answer every dialog themselves without showing it. On a busy machine that answer could come later than bag's 250 ms
+  check, and bag took it as your No: the identities tool with `full` answered "your user said No: the addresses stay
+  short", a pairing dialog answered `declined`, and an Allow between two of your own identities was refused for 24
+  hours. On these two hosts a decline or a cancel of any of bag's dialogs, the `use` dialog included, is now always
+  `no-elicitation`, in the words that name the host, and nothing is written. A Yes is still a Yes. Every other host
+  keeps the 250 ms check. If you used 0.4.4 or 0.4.5 on these hosts, such a No may have left two things. An Allow
+  between two of your own identities may be refused for 24 hours, and the mail that waited on it was returned to its
+  sender as declined: wait the 24 hours, after which the next message asks again, or ask again from a window that shows
+  bag's questions (from this release, the VS Code extension and Claude Desktop do, in Claude Code's own question card).
+  A pairing may have ended as declined: start it again.
+
+- **In Claude Code's VS Code extension and in Claude Desktop, bag's questions now appear in Claude Code's own question
+  card.** These two show no dialog for any MCP server (Claude Code issues 98256 and 105334), so bag's questions never
+  reached you there. `bag host install claude-code --user` now also installs a small plugin of bag's, named bag, which
+  draws each question ("Act as omp-3 in this window?", each pairing step, each act that changes your home) in that card;
+  reload each window once after installing (a new session, or `/reload-plugins`). Every question starts with `bag: `,
+  and its first choice grants nothing: a Yes-or-No question offers "Not now", then No, then bag's own Yes words; a
+  choice of identity offers "Not now" first; a question where you type offers "Ask me later", then "Cancel". You pair in
+  the window: you type your peer's code into the card, and the check digits into the inviting side's card. Claude Code
+  in a terminal, Codex and opencode draw bag's questions themselves, as before; bag adds nothing there. The plugin's
+  folder runs inside Claude Code at every session start and each bag update replaces it; `bag host install claude-code
+  --user` and `bag status --home` list any other plugin or hook that could answer a question in your place, and `bag
+  host remove claude-code --user` takes the plugin out. A question can be imitated: an imitation grants nothing, since
+  only an answer that reaches bag's own check counts. See
+  [`docs/bag-service.md`](docs/bag-service.md#bags-questions-in-claude-codes-question-card).
+
+- **A question left unanswered closes.** A question left unanswered closes after two minutes (a pairing step, when its
+  invitation ends) and can be asked again; an answer after that does nothing. It counts as unanswered toward the limit
+  on questions (6 in 10 minutes in a window, 12 over all windows of a home), and so does "Act as omp-3 in this
+  window?" left with no answer, the card closed or left two minutes: past the limit the agent cannot raise it again
+  until the 10 minutes pass (in a new window it can), and in Claude Code and omp typing `use omp-3` yourself still
+  binds at once.
+
+- **Closing the check-digits question keeps the pairing waiting.** On the inviting side, the question where you type
+  the six digits your peer reads out no longer ends the pairing when you close it, skip it, pick "Ask me later" or
+  leave it until it closes: your peer's request is kept, and the agent's next call asks again, until the invitation
+  ends. Only "Cancel" (declining the question) ends the pairing. Something that is not six digits, a word or an empty
+  answer, is asked again and costs no try; only six wrong digits count toward the three tries.
+
+- **A form you leave untouched is no longer read as your No.** On every host, a form sent back without its box ticked
+  (an empty Yes) is no answer: nothing is written, granted or refused, and the question can come again. Only a No you
+  give is one: declining the form, or No on the question card. "Not now", "Ask me later" and closing the card are no
+  answer too, and a card that closes faster than a person could read it counts as never shown.
+
+- **A No to "Act as omp-3 in this window?" holds for five minutes.** When you decline the bind dialog after reading
+  it, or pick No on the card, the agent cannot ask for that identity in that window again for five minutes; in Claude
+  Code and omp, typing `use omp-3` yourself still binds at once. A card you closed, "Not now", a form sent back
+  without Yes and a choice of identity you left remember no No; they count only as unanswered.
+
+- **The bag service opens your identities sooner after a restart.** Each identity's audit log was checked line by line
+  at every start, so a start took longer with every day of use (minutes on a Mac with long logs). The service now
+  remembers the part of each log it has checked and, at the next start, only confirms that part is unchanged and checks
+  the lines added since; a log changed, cut short or replaced is still refused as before. The first start after this
+  update checks every log in full one last time. A new install on macOS also runs the service at the normal priority
+  of a program you use instead of the background priority. A Mac where bag is already installed keeps the background
+  priority in this update, so on a busy Mac its first start after updating can take many minutes, once; meanwhile a
+  window whose identity is not open yet is told it is still opening.
+
 ## v0.4.5: 2026-11-23
 
 The cut tagged v0.4.5, `@usebag/bag` 0.4.5.

@@ -54,6 +54,10 @@ export class FakeService {
   helloResult: Record<string, unknown> | null = null
   /** A service/use reply to send as it is (its result or error member), in place of useAnswer. */
   useRaw: Record<string, unknown> | null = null
+  /** While set, every service/use waits for it before it answers (a restore held in flight). */
+  useGate: Promise<void> | null = null
+  /** As the real service: a service/bound notice before each bind's answer (granted the via it came by). */
+  boundOnUse = false
   #waiters: { test: (m: Message, c: FakeConn) => boolean; resolve: (m: Message) => void }[] = []
   #seq = 0
 
@@ -218,6 +222,7 @@ export class FakeService {
       return
     }
     if (m.method === 'service/use') {
+      if (this.useGate !== null) await this.useGate
       if (this.useRaw !== null) {
         c.send({ jsonrpc: '2.0', id, ...this.useRaw } as never)
         return
@@ -229,7 +234,16 @@ export class FakeService {
           id,
           error: { code: -32000, message: `${a.code}: no`, data: { code: a.code } },
         })
-      } else c.send({ jsonrpc: '2.0', id, result: a })
+      } else {
+        const p = m.params ?? {}
+        if (this.boundOnUse)
+          c.send({
+            jsonrpc: '2.0',
+            method: 'service/bound',
+            params: { as: a.as, address: p.address ?? a.address, granted: p.via },
+          })
+        c.send({ jsonrpc: '2.0', id, result: a })
+      }
       return
     }
     if (m.method === 'tools/list') {

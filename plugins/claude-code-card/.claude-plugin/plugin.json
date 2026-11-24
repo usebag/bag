@@ -1,0 +1,9 @@
+{
+  "name": "bag",
+  "version": "0.0.0",
+  "description": "bag's questions in Claude Code's own question card",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "bag"
+  }
+}

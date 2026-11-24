@@ -72,11 +72,14 @@ export class WakeRouter {
     this.#o = options
   }
 
-  /** A connection bound to `label` (service/bound): it speaks for it from now, until the person types elsewhere. */
-  bind(label: string, conn: Ringable): void {
+  /**
+   * A connection bound to `label` (service/bound): it speaks for it from now, until the person types elsewhere. A
+   * restored one (a shim's restore after a restart) ranks below every seat a person typed in or bound: typedAt 0.
+   */
+  bind(label: string, conn: Ringable, restored = false): void {
     const seats = this.#seats.get(label) ?? new Map<string, Seat>()
     this.#seats.set(label, seats)
-    seats.set(conn.handle, { conn, typedAt: this.#o.clock.now(), order: ++this.#order })
+    seats.set(conn.handle, { conn, typedAt: restored ? 0 : this.#o.clock.now(), order: ++this.#order })
   }
 
   /** The person typed in the connection `handle`: it becomes the speaking connection of every identity it is bound to. */

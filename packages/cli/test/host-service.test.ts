@@ -230,6 +230,8 @@ describe('host install claude-code --user writes where Claude Code reads: CLAUDE
     expect(removed.out).toEqual([
       `wrote ${join(dir, '.claude.json')}: mcpServers.bag (the shim) removed`,
       `wrote ${join(dir, 'settings.json')}: bag's service hooks removed`,
+      `kept the deny rules for ${w.home} in ${join(dir, 'settings.json')}: they protect the bag home whether or not bag is wired`,
+      `kept the sandbox settings in ${join(dir, 'settings.json')}: turning them off could weaken a sandbox you rely on`,
     ])
     // The one check line under a config dir, where settings.json's place is Claude Code's layout, not a live check.
     const check = `check once in Claude Code: /permissions should list bag's deny rules for ${join(w.home, 'keys')} and ${join(w.home, 'run')}; if it does not, say so at bag.dev`
@@ -253,13 +255,21 @@ describe('host remove <host> --user: the shim of this home out, every other serv
     writeFileSync(join(w.user, '.claude.json'), JSON.stringify({ mcpServers: { other: { command: 'x' } } }))
     for (const host of ['claude-code', 'codex', 'omp']) expect((await user(w, host)).code).toBe(0)
     const remove = (host: string) => cli(w.io, 'host', 'remove', host, '--user', '--dir', w.home)
+    const settings = join(w.user, '.claude', 'settings.json')
+    // What stays, and why, after every removal of claude-code: the deny rules and the sandbox settings.
+    const kept = [
+      `kept the deny rules for ${w.home} in ${settings}: they protect the bag home whether or not bag is wired`,
+      `kept the sandbox settings in ${settings}: turning them off could weaken a sandbox you rely on`,
+    ]
     expect((await remove('claude-code')).out).toEqual([
       `wrote ${join(w.user, '.claude.json')}: mcpServers.bag (the shim) removed`,
-      `wrote ${join(w.user, '.claude', 'settings.json')}: bag's service hooks removed`,
+      `wrote ${settings}: bag's service hooks removed`,
+      ...kept,
     ])
     expect(json(join(w.user, '.claude.json')).mcpServers).toEqual({ other: { command: 'x' } })
-    const s = json(join(w.user, '.claude', 'settings.json')) as Record<string, Record<string, unknown>>
-    expect(s.hooks).toEqual({})
+    const s = json(settings) as Record<string, Record<string, unknown>>
+    // The hooks object bag's install made and its removal emptied is gone.
+    expect(s.hooks).toBeUndefined()
     expect(s.permissions?.deny).toHaveLength(6)
     expect((await remove('codex')).code).toBe(0)
     expect(readFileSync(join(w.user, '.codex', 'config.toml'), 'utf8')).not.toContain('mcp_servers.bag')
@@ -267,7 +277,7 @@ describe('host remove <host> --user: the shim of this home out, every other serv
     expect((await remove('omp')).code).toBe(0)
     expect(json(join(w.user, '.omp', 'agent', 'mcp.json')).mcpServers).toEqual({})
     expect(existsSync(join(w.user, '.omp', 'agent', 'hooks', 'pre', 'bag-wake.ts'))).toBe(false)
-    expect((await remove('claude-code')).out).toEqual(['nothing to change'])
+    expect((await remove('claude-code')).out).toEqual(['nothing to change', ...kept])
     writeFileSync(
       join(w.user, '.claude.json'),
       JSON.stringify({ mcpServers: { bag: { command: NODE, args: ['x', '--as', 'bob'] } } }),

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync, type SQLOutputValue, type StatementSync } from 'node:sqlite'
 import type {
   AuditAnchor,
+  AuditPrefix,
   CacheKind,
   DueTarget,
   EdgeStore,
@@ -84,6 +85,13 @@ const ADDED_COLUMNS: readonly (readonly [table: string, column: string, definiti
   ['inbox', 'next_at', 'INTEGER'],
   ['threads', 'used_at', 'INTEGER'],
   ['outbox', 'plan', 'TEXT'],
+  // The verified prefix of an audit file (ports.ts AuditPrefix): null on a row from before it, which an open checks in
+  // full once and then fills.
+  ['audit_anchor', 'prefix_bytes', 'INTEGER'],
+  ['audit_anchor', 'prefix_digest', 'TEXT'],
+  ['audit_anchor', 'prefix_seq', 'INTEGER'],
+  ['audit_anchor', 'prefix_hash', 'TEXT'],
+  ['audit_anchor', 'prefix_rules', 'INTEGER'],
 ]
 
 /** The writer lock of a store's directory: `<dir>/audit.lock`. */
@@ -468,6 +476,27 @@ export class SqliteStore implements EdgeStore {
       `INSERT INTO audit_anchor (name, seq, hash, updated_at) VALUES (?, ?, ?, ?)
        ON CONFLICT (name) DO UPDATE SET seq = excluded.seq, hash = excluded.hash, updated_at = excluded.updated_at`,
     ).run(name, anchor.seq, anchor.hash, now)
+  }
+
+  auditPrefixGet(name: string): AuditPrefix | null {
+    const r = this.#q(
+      'SELECT prefix_bytes, prefix_digest, prefix_seq, prefix_hash, prefix_rules FROM audit_anchor WHERE name = ?',
+    ).get(name)
+    if (r === undefined || Object.values(r).some((v) => v === null)) return null
+    return {
+      bytes: r.prefix_bytes as number,
+      digest: r.prefix_digest as string,
+      seq: r.prefix_seq as number,
+      hash: r.prefix_hash as string,
+      rules: r.prefix_rules as number,
+    }
+  }
+
+  auditPrefixPut(name: string, p: AuditPrefix): void {
+    this.#q(
+      `UPDATE audit_anchor SET prefix_bytes = ?, prefix_digest = ?, prefix_seq = ?, prefix_hash = ?, prefix_rules = ?
+       WHERE name = ?`,
+    ).run(p.bytes, p.digest, p.seq, p.hash, p.rules, name)
   }
 
   auditAnchors(): NamedAnchor[] {

@@ -161,3 +161,20 @@ describe('the wake router', () => {
     expect(ok.got).toHaveLength(1)
   })
 })
+
+describe('a restored seat (a restore after a service restart)', () => {
+  it('ranks below every seat a person typed in or bound; among restored ones the last restored speaks', () => {
+    const { r, clock } = router()
+    const [a, b, c] = [conn('c-a'), conn('c-b'), conn('c-c')]
+    r.bind('omp', a, true)
+    r.bind('omp', b, true)
+    expect(r.speaking('omp')).toBe('c-b')
+    clock.t += 1
+    r.bind('omp', c)
+    r.bind('omp', a, true)
+    expect(r.speaking('omp')).toBe('c-c')
+    clock.t += 1
+    r.typed('c-a')
+    expect(r.speaking('omp')).toBe('c-a')
+  })
+})

@@ -17,6 +17,8 @@ export const RING = 'service/ring'
 export const DRAINING = 'service/draining'
 /** Shim to service: the person typed in this window (the service's speaking window; params {}). */
 export const TYPED = 'service/typed'
+/** A bind the shim asks again after a reconnect (service/use's via), the service's drop of one binding, and unbind. */
+export const [RESTORED, UNBOUND, UNBIND] = ['restored', 'service/unbound', 'service/unbind'] as const
 /** Where a dialog carries its per-connection handle, and where the answer echoes it (packages/shim/README.md, "Dialogs"). */
 export const HANDLE_META = 'bag.dev/dialog'
 /**

@@ -161,6 +161,59 @@ describe('the hello and initialize', () => {
   })
 })
 
+describe('before initialize (a host that probes first: Codex, opencode)', () => {
+  const discover = (id: number): Message => ({ jsonrpc: '2.0', id, method: 'server/discover', params: {} })
+
+  it('answers server/discover -32601 at once, never sends it on, and initialize then works as before', async () => {
+    const h = harness(home)
+    const t0 = performance.now()
+    h.shim.fromHost(discover(1))
+    const r = await h.byId(1)
+    expect(performance.now() - t0).toBeLessThan(20)
+    expect(r.error?.code).toBe(-32601)
+    expect(h.shim.phase).toBe('waiting-init')
+    await up(h)
+    h.shim.fromHost(call(2, 'echo', { text: 'hi' }))
+    expect((await h.byId(2)).result).toEqual({ content: [{ type: 'text', text: 'echo hi' }] })
+    expect(svc.conns.flatMap((c) => c.got).some((m) => m.method === 'server/discover')).toBe(false)
+    expect(h.host.filter((m) => m.id === 1)).toHaveLength(1)
+    h.shim.close()
+  })
+
+  it('answers tools/list -32601 and ping {} before initialize, both at once', () => {
+    const h = harness(home)
+    h.shim.fromHost({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
+    h.shim.fromHost({ jsonrpc: '2.0', id: 4, method: 'ping' })
+    expect(h.host).toEqual([
+      { jsonrpc: '2.0', id: 3, error: { code: -32601, message: 'Method not found' } },
+      { jsonrpc: '2.0', id: 4, result: {} },
+    ])
+    h.shim.close()
+  })
+
+  it('holds a notification before initialize as today: no answer, sent on after the initialize', async () => {
+    const h = harness(home)
+    h.shim.fromHost({ jsonrpc: '2.0', method: 'notifications/roots/list_changed' })
+    expect(h.host).toEqual([])
+    await up(h)
+    const c = svc.conns.at(-1)
+    const at = (method: string) => c?.got.findIndex((m) => m.method === method) ?? -1
+    expect(at('initialize')).toBeGreaterThan(-1)
+    expect(at('notifications/roots/list_changed')).toBeGreaterThan(at('initialize'))
+    h.shim.close()
+  })
+
+  it('sends a request the service does not know on after initialize, and relays its answer', async () => {
+    const h = harness(home)
+    await up(h)
+    h.shim.fromHost(discover(5))
+    await svc.next((m) => m.method === 'server/discover')
+    svc.conns.at(-1)?.send({ jsonrpc: '2.0', id: 5, error: { code: -32601, message: 'from the service' } })
+    expect((await h.byId(5)).error?.message).toBe('from the service')
+    h.shim.close()
+  })
+})
+
 describe('a tool call round trip', () => {
   it('forwards a call unchanged and relays the result, progress passed through', async () => {
     const h = harness(home)
@@ -1134,4 +1187,284 @@ describe('the remaining error and edge branches', () => {
     expect(((await h.byId(1)).result as { isError: boolean }).isError).toBe(true)
     h.shim.close()
   })
+})
+
+describe('a window keeps its identity through a restart (restored, from the shim memory only)', () => {
+  const until = async (test: () => boolean, ms = 3000): Promise<void> => {
+    const end = Date.now() + ms
+    while (!test()) {
+      if (Date.now() > end) throw new Error('timed out')
+      await new Promise((r) => setTimeout(r, 5))
+    }
+  }
+  /** The service says this connection is bound (as the real one does after a typed word, a Yes or a restore). */
+  const said = (as: string, granted = 'typed') =>
+    svc.notify('service/bound', { as, address: `ed25519:${as}`, granted })
+  const restores = () =>
+    svc.conns.flatMap((c) => c.got).filter((m) => m.method === 'service/use' && m.params?.via === 'restored')
+  /** A restart, and the shim up again on the new service (the host told the tools changed). */
+  const restarted = async (h: ReturnType<typeof harness>) => {
+    const before = h.host.filter((m) => m.method === 'notifications/tools/list_changed').length
+    await svc.restart()
+    await until(() => h.host.filter((m) => m.method === 'notifications/tools/list_changed').length > before)
+  }
+  const windowOf = (more: Partial<ShimDeps> = {}) => harness(home, { hostPid: 777, ...more })
+
+  beforeEach(() => {
+    svc.boundOnUse = true
+  })
+
+  it('a window bound by the typed word is asked back first, before any queued call, and acts with no new word', async () => {
+    const h = windowOf()
+    await up(h)
+    expect(await h.shim.use('omp')).toEqual({ bound: true, as: 'omp' })
+    expect(h.shim.bound).toEqual(['omp'])
+    svc.notify('service/draining', { retry_after_ms: 50, reason: 'upgrade' })
+    await new Promise((r) => setTimeout(r, 20))
+    h.shim.fromHost(call(21, 'echo', { text: 'after' }))
+    await svc.restart()
+    expect((await h.byId(21)).result).toEqual({ content: [{ type: 'text', text: 'echo after' }] })
+    expect(svc.conn.got.map((m) => m.method)).toEqual([
+      'service/hello',
+      'initialize',
+      'service/use',
+      'notifications/initialized',
+      'tools/call',
+    ])
+    expect(restores().map((m) => m.params)).toEqual([
+      // The address the service's service/bound named for the typed bind (the fake's), never one the shim makes up.
+      { label: 'omp', via: 'restored', address: 'ed25519:00', subagent: false },
+    ])
+    expect(h.shim.bound).toEqual(['omp'])
+    h.shim.close()
+  })
+
+  it('a window bound by the dialog Yes, and one bound to several identities, are asked back in bind order', async () => {
+    const h = windowOf()
+    await up(h)
+    said('work', 'dialog')
+    said('omp', 'dialog')
+    await until(() => h.shim.bound.length === 2)
+    await restarted(h)
+    expect(restores().map((m) => m.params?.label)).toEqual(['work', 'omp'])
+    expect(h.shim.bound).toEqual(['work', 'omp'])
+    h.shim.close()
+  })
+
+  it('a window never bound (a refused typed word, a dialog that did not bind) asks nothing back', async () => {
+    const h = windowOf()
+    await up(h)
+    svc.useAnswer = () => ({ code: 'unknown-identity' })
+    expect(await h.shim.use('nobody')).toEqual({ bound: false, code: 'unknown-identity' })
+    await restarted(h)
+    expect(restores()).toEqual([])
+    h.shim.close()
+  })
+
+  it("the person's word while down wins: a typed use then leaves nothing to restore", async () => {
+    const h = windowOf()
+    await up(h)
+    said('omp')
+    await until(() => h.shim.bound.length === 1)
+    await svc.crash()
+    await until(() => h.shim.phase !== 'up')
+    expect(await h.shim.use('work')).toEqual({ bound: false, code: 'not-connected' })
+    svc.conns = []
+    await svc.start()
+    await until(() => h.shim.phase === 'up')
+    await new Promise((r) => setTimeout(r, 30))
+    expect(restores()).toEqual([])
+    expect(await h.shim.use('work')).toEqual({ bound: true, as: 'work' })
+    expect(h.shim.bound).toEqual(['work'])
+    h.shim.close()
+  })
+
+  it('a typed use racing the restore: the restore stops, what it restored is unbound, nothing more comes back', async () => {
+    const h = windowOf()
+    await up(h)
+    said('omp')
+    said('work')
+    await until(() => h.shim.bound.length === 2)
+    let open = (): void => {}
+    svc.useGate = new Promise<void>((r) => {
+      open = r
+    })
+    await svc.restart()
+    await until(() => restores().length === 1)
+    expect(await h.shim.use('other')).toEqual({ bound: false, code: 'not-connected' })
+    svc.useGate = null
+    open()
+    await until(() => svc.conns.some((c) => c.got.some((m) => m.method === 'service/unbind')))
+    // Only the label in flight was asked; the second never was.
+    expect(restores().map((m) => m.params?.label)).toEqual(['omp'])
+    svc.notify('service/unbound', { as: 'omp' })
+    await until(() => h.shim.bound.length === 0)
+    await restarted(h)
+    expect(restores()).toEqual([])
+    h.shim.close()
+  })
+
+  it("a restore's own service/bound after a typed use adds nothing back, though the connection drops before the unbind", async () => {
+    const h = windowOf()
+    await up(h)
+    said('omp')
+    await until(() => h.shim.bound.length === 1)
+    let open = (): void => {}
+    svc.useGate = new Promise<void>((r) => {
+      open = r
+    })
+    await svc.restart()
+    await until(() => restores().length === 1)
+    expect(await h.shim.use('work')).toEqual({ bound: false, code: 'not-connected' })
+    svc.useGate = null
+    open()
+    // The restore of omp answers bound (its service/bound first), then the shim asks the unbind, which the fake
+    // never answers: the connection drops before it is answered.
+    await until(() => svc.conns.some((c) => c.got.some((m) => m.method === 'service/unbind')))
+    await restarted(h)
+    expect(restores()).toEqual([])
+    h.shim.close()
+  })
+
+  it('a window restored once is restored again after a second restart', async () => {
+    const h = windowOf()
+    await up(h)
+    said('omp')
+    await until(() => h.shim.bound.length === 1)
+    await restarted(h)
+    expect(restores().map((m) => m.params?.label)).toEqual(['omp'])
+    await restarted(h)
+    expect(restores().map((m) => m.params?.label)).toEqual(['omp'])
+    expect(h.shim.bound).toEqual(['omp'])
+    h.shim.close()
+  })
+
+  it('a release (Codex SessionEnd), while down or after the restore, leaves nothing to restore', async () => {
+    const h = windowOf()
+    await up(h)
+    said('omp')
+    await until(() => h.shim.bound.length === 1)
+    await svc.crash()
+    await until(() => h.shim.phase !== 'up')
+    h.shim.release()
+    svc.conns = []
+    await svc.start()
+    await until(() => h.shim.phase === 'up')
+    await new Promise((r) => setTimeout(r, 30))
+    expect(restores()).toEqual([])
+    // A /new whose SessionEnd comes after a restore: the restore happens, then the release ends it for good.
+    said('omp')
+    await until(() => h.shim.bound.length === 1)
+    await restarted(h)
+    expect(restores()).toHaveLength(1)
+    h.shim.release()
+    await until(() => svc.conns.filter((c) => c.hello !== null).length === 2 && h.shim.phase === 'up')
+    await restarted(h)
+    expect(restores()).toEqual([])
+    h.shim.close()
+  })
+
+  it('service/unbound drops one label; a drain keeps the memory, and a refused restore drops its label', async () => {
+    const h = windowOf()
+    await up(h)
+    said('omp')
+    said('work')
+    said('gone')
+    await until(() => h.shim.bound.length === 3)
+    svc.notify('service/unbound', { as: 'work' })
+    await until(() => h.shim.bound.length === 2)
+    expect(h.shim.bound).toEqual(['omp', 'gone'])
+    svc.notify('service/draining', { retry_after_ms: 20, reason: 'stop' })
+    svc.useAnswer = (p) =>
+      p.label === 'gone' ? { code: 'unknown-identity' } : { bound: true, as: p.label, granted: 'restored' }
+    await restarted(h)
+    expect(restores().map((m) => m.params?.label)).toEqual(['omp', 'gone'])
+    expect(h.shim.bound).toEqual(['omp'])
+    await restarted(h)
+    expect(restores().map((m) => m.params?.label)).toEqual(['omp'])
+    h.shim.close()
+  })
+
+  it('an old service that knows no restore refuses it usage: the window is unbound as before, and works', async () => {
+    const h = windowOf()
+    await up(h)
+    said('omp')
+    await until(() => h.shim.bound.length === 1)
+    svc.useAnswer = () => ({ code: 'usage' })
+    await restarted(h)
+    expect(restores()).toHaveLength(1)
+    expect(h.shim.bound).toEqual([])
+    h.shim.fromHost(call(31, 'echo', { text: 'still' }))
+    expect((await h.byId(31)).result).toEqual({ content: [{ type: 'text', text: 'echo still' }] })
+    h.shim.close()
+  })
+
+  it("omp 19's shim whose window is gone (no host pid) asks nothing back", async () => {
+    const h = harness(home)
+    await up(h)
+    said('omp')
+    await until(() => h.shim.bound.length === 1)
+    await restarted(h)
+    expect(restores()).toEqual([])
+    h.shim.close()
+  })
+
+  it("a Codex sub-agent's shim carries its mark in the restore", async () => {
+    const codex = {
+      ...INIT,
+      params: { ...INIT.params, clientInfo: { name: 'codex-mcp-client', version: '0.6' } },
+    }
+    const h = windowOf()
+    await up(h, codex)
+    const meta = {
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      threadId: '22222222-2222-4222-8222-222222222222',
+    }
+    h.shim.fromHost({
+      jsonrpc: '2.0',
+      id: 41,
+      method: 'tools/call',
+      params: { name: 'echo', arguments: {}, _meta: meta },
+    })
+    await h.byId(41)
+    said('omp')
+    await until(() => h.shim.bound.length === 1)
+    await restarted(h)
+    expect(restores().map((m) => m.params?.subagent)).toEqual([true])
+    h.shim.close()
+  })
+
+  // The memory is the shim process's own: a new shim (a new window, or the same window after its shim restarted)
+  // in the same home remembers nothing and asks for nothing. Both shims run in this one test process, so the test
+  // pins it on the new instance (what it sends and what it reports bound) and on the home's files.
+  /** Every name under the home, recursively, sorted. */
+  const files = () => (readdirSync(home, { recursive: true }) as string[]).sort()
+  /** What the fake service itself writes in the home (fake-service.ts start); the shim writes nothing. */
+  const SERVICE_FILES = ['run', 'run/service.json', 'run/service.sock', 'run/service.token']
+  for (const [hostPid, who] of [
+    [777, 'the same window after its shim restarted (the same host pid)'],
+    [778, 'a new window (another host pid)'],
+  ] as const) {
+    it(`a new shim in the same home, ${who}, asks nothing back, is unbound, and the home holds no memory file`, async () => {
+      const a = windowOf()
+      await up(a)
+      expect(files()).toEqual(SERVICE_FILES)
+      expect(await a.shim.use('omp')).toEqual({ bound: true, as: 'omp' })
+      expect(a.shim.bound).toEqual(['omp'])
+      a.shim.close()
+      await svc.restart()
+      const b = windowOf({ hostPid })
+      // up() returns once the service saw notifications/initialized: a restore comes before the initialize result.
+      await up(b)
+      expect(svc.conn.got.map((m) => m.method)).toEqual([
+        'service/hello',
+        'initialize',
+        'notifications/initialized',
+      ])
+      expect(restores()).toEqual([])
+      expect(b.shim.bound).toEqual([])
+      expect(files()).toEqual(SERVICE_FILES)
+      b.shim.close()
+    })
+  }
 })

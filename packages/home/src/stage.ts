@@ -1,17 +1,22 @@
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import type { Mains } from './packaged.ts'
+import { isDeepStrictEqual } from 'node:util'
+import { shq } from './host-common.ts'
+import { type Mains, stableNode } from './packaged.ts'
 import { HomeError } from './ports.ts'
 
 // Versioned package directories. Run from the package,
@@ -33,6 +38,8 @@ export interface Staged extends Mains {
     readonly omp: string
     readonly shim: string
   } | null
+  /** The question card's marketplace, <home>/package/claude-code (stageCard); absent from source or an older build. */
+  readonly card?: string
 }
 
 /** The package to stage: whether it runs from the bundle, its version, and its entries (the shim's from source). */
@@ -83,6 +90,94 @@ function same(a: string, b: string): boolean {
   )
 }
 
+/** The package's folder of the question card's directory marketplace (packages/bag/build.ts makes it in dist/). */
+export const CARD_DIR = 'claude-code'
+
+/** Every file under `dir`, as paths relative to it, sorted. */
+const tree = (dir: string): string[] =>
+  (readdirSync(dir, { recursive: true }) as string[]).filter((f) => statSync(join(dir, f)).isFile()).sort()
+
+/** Moves `dir` aside (renamed, so no reader sees it half gone) and deletes it; nothing when absent. */
+export function dropDir(dir: string, pid: number): void {
+  if (!existsSync(dir)) return
+  const old = join(dirname(dir), `.${basename(dir)}.${pid}.old`)
+  renameSync(dir, old)
+  rmSync(old, { recursive: true, force: true })
+}
+
+/** A hooks.json value with @BAG_NODE@, @BAG_CLI@ and @BAG_HOME@ filled in every `command` string, and only there. */
+function fillCommands(v: unknown, fill: Record<string, string>): unknown {
+  if (Array.isArray(v)) return v.map((x) => fillCommands(x, fill))
+  if (typeof v !== 'object' || v === null) return v
+  const o = v as Record<string, unknown>
+  for (const [k, x] of Object.entries(o)) {
+    o[k] =
+      k === 'command' && typeof x === 'string'
+        ? x.replace(/@BAG_(NODE|CLI|HOME)@/g, (p) => shq(fill[p] as string))
+        : fillCommands(x, fill)
+  }
+  return o
+}
+
+/**
+ * Stages the card's marketplace `src` at <home>/package/claude-code: copied beside, the placeholders filled in the
+ * `command` values of bag/hooks/hooks.json (shell-quoted: the only shell context), a placeholder anywhere else or a
+ * symbolic link anywhere in `src` refused,
+ * then renamed in: a session that starts reads the old folder or the new, never half of one (between the two renames
+ * there is none, and that session loads no card). An equal folder is left untouched. host install stages it first;
+ * stage() restages it only while it is there, so after host remove an update brings nothing back.
+ */
+export function stageCard(src: string, home: string, pid: number): string {
+  const pkg = join(home, 'package')
+  const to = join(pkg, CARD_DIR)
+  const tmp = join(pkg, `.${CARD_DIR}.${pid}.tmp`)
+  rmSync(tmp, { recursive: true, force: true })
+  // A symbolic link in the source is refused: the copy would keep it, and the write below would follow it out of the home.
+  const links = ['', ...(readdirSync(src, { recursive: true }) as string[])].filter((f) =>
+    lstatSync(join(src, f)).isSymbolicLink(),
+  )
+  if (links.length > 0) {
+    throw new HomeError(
+      'host-file-invalid',
+      `${src} holds a symbolic link (${links.map((f) => f || '.').join(', ')}): this build of bag's question card is not staged`,
+    )
+  }
+  try {
+    cpSync(src, tmp, { recursive: true })
+    const fill = {
+      '@BAG_NODE@': stableNode(process.execPath),
+      '@BAG_CLI@': join(pkg, 'bag.js'),
+      '@BAG_HOME@': home,
+    }
+    const hooks = join(tmp, 'bag', 'hooks', 'hooks.json')
+    if (existsSync(hooks)) {
+      const doc = fillCommands(JSON.parse(readFileSync(hooks, 'utf8')), fill)
+      writeFileSync(hooks, `${JSON.stringify(doc, null, 2)}\n`)
+    }
+    const left = tree(tmp).filter((f) => /@BAG_[A-Z]+@/.test(readFileSync(join(tmp, f), 'latin1')))
+    if (left.length > 0) {
+      throw new HomeError(
+        'host-file-invalid',
+        `${src} holds a placeholder outside a hooks.json command (${left.join(', ')}): this build of bag's question card is not staged`,
+      )
+    }
+  } catch (e) {
+    rmSync(tmp, { recursive: true, force: true })
+    throw e
+  }
+  const files = tree(tmp)
+  const equal =
+    existsSync(to) &&
+    isDeepStrictEqual(tree(to), files) &&
+    files.every((f) => readFileSync(join(to, f)).equals(readFileSync(join(tmp, f))))
+  if (equal) rmSync(tmp, { recursive: true, force: true })
+  else {
+    dropDir(to, pid)
+    renameSync(tmp, to)
+  }
+  return to
+}
+
 /** Writes `text` to `file` beside and renamed over (named with `pid`), 0600. */
 function replace(file: string, text: string, pid: number): void {
   const tmp = `${file}.${pid}.tmp`
@@ -103,7 +198,11 @@ export function stagedMains(home: string, b: Build): Staged {
   const at = (d: string) => (f: string) => join(d, basename(f))
   const [v, l] = [at(to), at(pkg)]
   const versioned = { cli: v(cli), mcp: v(mcp), omp: v(omp), shim: v('bag-shim.js') }
+  const card = [dirname(cli), to].some((d) => existsSync(join(d, CARD_DIR)))
+    ? { card: join(pkg, CARD_DIR) }
+    : {}
   return {
+    ...card,
     cli: l(cli),
     mcp: l(mcp),
     omp: l(omp),
@@ -143,6 +242,9 @@ export function stage(home: string, b: Build, pid: number): Staged {
       copyFileSync(join(from, f), join(tmp, f))
       chmodSync(join(tmp, f), statSync(join(from, f)).mode & 0o755)
     }
+    // The card's marketplace as built, its placeholders unfilled, so that a stage run from this version can stage it.
+    if (existsSync(join(from, CARD_DIR)))
+      cpSync(join(from, CARD_DIR), join(tmp, CARD_DIR), { recursive: true })
     renameSync(tmp, to)
     copied = to
   }
@@ -156,6 +258,8 @@ export function stage(home: string, b: Build, pid: number): Staged {
     replace(join(pkg, name), launcherText(name), pid)
     chmodSync(join(pkg, name), 0o755)
   }
+  const src = [from, to].map((d) => join(d, CARD_DIR)).find((d) => existsSync(d))
+  if (src !== undefined && existsSync(join(pkg, CARD_DIR))) stageCard(src, home, pid)
   let notice: string | null = null
   try {
     const s = JSON.parse(readFileSync(join(home, 'run', 'service.json'), 'utf8')) as {

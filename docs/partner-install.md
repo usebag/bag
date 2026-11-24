@@ -32,10 +32,10 @@ below:
 
 ```sh
 cd "$(mktemp -d)"                                     # a fresh folder: the file's path is new to npx's cache
-P="$PWD/$(npm pack @usebag/bag@0.4.5 | tail -n 1)"   # fetches the package as one file, running none of its code
+P="$PWD/$(npm pack @usebag/bag@0.4.6 | tail -n 1)"   # fetches the package as one file, running none of its code
 shasum -a 256 "$P"                                    # must print the sha256 in the release's notes
 c() { npx --yes --package="$P" bag "$@"; }
-c --version                                           # prints: bag 0.4.5 <the commit it was built from>
+c --version                                           # prints: bag 0.4.6 <the commit it was built from>
 c help                                                # prints every command
 ```
 
@@ -356,8 +356,9 @@ request reaches A on the same one, A's side prints `second request <address>: th
 ### With the bag service (bag v0.4.0 and later)
 
 The bag service ([bag-service.md](bag-service.md)) holds every identity of your home; each host session starts the bag
-shim, which talks to it, and you give a window an identity by typing `use` and its name. One command per host wires the
-shim for every folder and registers the identity with the service:
+shim, which talks to it, and you give a window an identity by typing `use` and its name in Claude Code or omp,
+elsewhere by asking the agent to use it and saying Yes in the bind dialog. One command per host wires the shim for every
+folder and registers the identity with the service:
 
 ```sh
 c identity relays me --relay "$R"     # on a terminal, one y: me and its relays in <home>/identities.json

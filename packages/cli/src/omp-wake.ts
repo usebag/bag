@@ -3,29 +3,23 @@
 // serves every project and moves with bag. omp loads it in-process (a Bun runtime) as an extension factory. It imports
 // only Node built-ins: the bundle keeps it one file, with no chunk to resolve through the link.
 //
-// It watches the identity's doorbell (<home>/state/<name>/doorbell, whose mtime the MCP server moves once per accepted
-// message) with fs.watch on the state directory and a poll every POLL_MS as a fallback, and starts one turn per ring
-// that tells the model to read its inbox. A ring while a turn runs is kept as one pending wake and fired when the
+// It reads the identity's doorbell (<home>/state/<name>/doorbell, whose mtime the MCP server moves once per accepted
+// message) with a look every POLL_MS, and starts one turn per ring that tells the model to read its inbox. A ring while a turn runs is kept as one pending wake and fired when the
 // session is idle again, so none is lost and no two wake turns overlap. The handled mtime goes to wake-seen, the file
 // and format wake-hook.ts keeps, so both hosts agree on what was rung.
 
 import { execFileSync } from 'node:child_process'
-import {
-  type FSWatcher,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  watch,
-  writeFileSync,
-} from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createConnection } from 'node:net'
 import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-/** The fallback poll of the doorbell, in milliseconds: fs.watch carries the rings; this covers a lost event or sleep. */
-export const POLL_MS = 30_000
+/**
+ * How often the doorbell is read, in milliseconds, as the Claude Code hook reads it (wake-hook.ts POLL_MS). No fs
+ * watcher: on macOS each is an FSEvents stream whose close blocks omp's one thread until the stream stops, which froze
+ * a window at its session end for up to about 10 s a close on a busy machine.
+ */
+export const POLL_MS = 1000
 
 /** How long a ring waits for the rest of its burst (one ring per accepted message), in milliseconds. */
 export const SETTLE_MS = 300
@@ -420,7 +414,7 @@ export interface ConsentUi {
 /** How long a channel request waits for its shim, in milliseconds: a dead shim never holds the person's prompt. */
 export const CHANNEL_MS = 2000
 
-/** How often the ring file is read besides its fs events, in milliseconds. */
+/** How often the ring file is read, in milliseconds (no fs watcher, as for the doorbell: POLL_MS). */
 export const RING_POLL_MS = 1000
 
 /** The footer key of the quiet notice (a ring for a window that is not speaking). */
@@ -996,12 +990,12 @@ let pendingFor: { close(): void } | null = null
 
 /** The extension factory omp calls once per session it binds. */
 export default function bagWake(pi: Pi): void {
-  let watcher: FSWatcher | null = null
-  let ringWatcher: FSWatcher | null = null
   let link: { close(): void } | null = null
   let facts: (() => void) | null = null
   let loop: WakeLoop | null = null
   let rings: RingLoop | null = null
+  /** Ends the timers of the session that started last (session_start sets it): none of them acts after. */
+  let endSession: () => void = () => {}
   // The person's last input in this session (Unix seconds): what came before it they have seen (loopLines).
   let personAt = 0
   let warned = false
@@ -1052,6 +1046,18 @@ export default function bagWake(pi: Pi): void {
     }
     // The shim's files (channel, .bound, .ring) sit in this home; per folder, the identity's own.
     const home = shimHome ?? (target as Target).home
+    // This session's timers do nothing once it has ended. Ctx.setInterval gives no handle to clear, and if omp keeps a
+    // context's timers past its session (a /new, a restart in one process), a loop of the old session would read the
+    // next session's ring and wake for it too, or remember it so the new one never wakes: one ring acted on twice or
+    // not at all. Every timer below (the polls, the settles) runs only while its own session lives.
+    endSession()
+    let live = true
+    endSession = () => {
+      live = false
+    }
+    const whileLive = (fn: () => void) => () => {
+      if (live) fn()
+    }
     const fireFor = (name: string) => {
       const state = join(home, 'state', name)
       const now = Math.floor(Date.now() / 1000)
@@ -1072,21 +1078,9 @@ export default function bagWake(pi: Pi): void {
       idle: () => ctx.isIdle(),
       fire: fireFor,
       quiet: (r) => ctx.ui?.setStatus(WAKE_STATUS, quietText(r)),
-      later: (fn, ms) => ctx.setTimeout(fn, ms),
+      later: (fn, ms) => ctx.setTimeout(whileLive(fn), ms),
     })
     rings = ringLoop
-    const watchRings = () => {
-      if (ringWatcher !== null) return
-      try {
-        ringWatcher = watch(join(home, 'run', 'shim'), (_kind, file) => {
-          if (file === null || file.startsWith(`${process.pid}.`)) ringLoop.ring()
-        })
-        ringWatcher.on('error', () => undefined)
-      } catch {
-        ringWatcher = null
-      }
-    }
-    watchRings()
     if (target !== null) {
       const state = join(target.home, 'state', target.name)
       facts = () => {
@@ -1110,7 +1104,10 @@ export default function bagWake(pi: Pi): void {
         }
       }
       facts()
-      ctx.setInterval(() => facts?.(), FACTS_MS)
+      ctx.setInterval(
+        whileLive(() => facts?.()),
+        FACTS_MS,
+      )
       const bell = join(state, 'doorbell')
       const seen = join(state, 'wake-seen')
       const wake = new WakeLoop({
@@ -1125,10 +1122,9 @@ export default function bagWake(pi: Pi): void {
             { customType: 'bag-wake', content: awayText(target.name, h), display: true },
             { deliverAs: 'nextTurn' },
           ),
-        later: (fn, ms) => ctx.setTimeout(fn, ms),
+        later: (fn, ms) => ctx.setTimeout(whileLive(fn), ms),
       })
       mkdirSync(state, { recursive: true, mode: 0o700 })
-      watcher?.close()
       loop = wake
       // A session bound through the service takes no first look at the doorbell: it would make the doorbell's mtime
       // wake-seen, or ring for it. The first look waits for a poll with no .bound file.
@@ -1141,20 +1137,12 @@ export default function bagWake(pi: Pi): void {
           wake.start()
         }
       }
-      try {
-        watcher = watch(state, (_kind, file) => {
-          if (file === null || file === 'doorbell') bellRing()
-        })
-        watcher.on('error', () => undefined)
-      } catch {
-        watcher = null
-      }
-      ctx.setInterval(bellRing, POLL_MS)
+      ctx.setInterval(whileLive(bellRing), POLL_MS)
     }
-    ctx.setInterval(() => {
-      watchRings()
-      ringLoop.ring()
-    }, RING_POLL_MS)
+    ctx.setInterval(
+      whileLive(() => ringLoop.ring()),
+      RING_POLL_MS,
+    )
     ringLoop.ring()
     // The consent link: only a session a person sees answers for the identity (hasUI; the guard above already keeps
     // print, rpc, json and subagents out). hasUI is true in rpc and acp even when nothing answers there: tui only (the
@@ -1204,10 +1192,7 @@ export default function bagWake(pi: Pi): void {
   })
   pi.on('session_shutdown', () => {
     facts?.()
-    watcher?.close()
-    watcher = null
-    ringWatcher?.close()
-    ringWatcher = null
+    endSession()
     link?.close()
     link = null
     loop = null

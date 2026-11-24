@@ -1,5 +1,5 @@
-import { lstatSync, readFileSync } from 'node:fs'
-import { basename, extname, isAbsolute, join } from 'node:path'
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
+import { basename, dirname, extname, isAbsolute, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { applyChange, View } from './changes.ts'
 import {
@@ -17,7 +17,7 @@ import {
   WAKE_TIMEOUT,
 } from './host-common.ts'
 import { HomeError } from './ports.ts'
-import type { Staged } from './stage.ts'
+import { CARD_DIR, dropDir, type Staged, stageCard } from './stage.ts'
 
 // host install <host> --user with no --as: the user-scope wiring of the bag service (docs/bag-service.md), one shim
 // entry per host that serves every identity of the home, and its hooks; the per-folder stdio mode (--project) stays as
@@ -112,6 +112,140 @@ function merge(parent: Json, key: string, items: readonly string[]): boolean {
   return more.length > 0
 }
 
+/** The question card's plugin id: the plugin "bag" of the marketplace "bag" (stage.ts's <home>/package/claude-code). */
+export const CARD_ID = 'bag@bag'
+
+/**
+ * The card's two settings entries (extraKnownMarketplaces.bag, a directory marketplace, and enabledPlugins["bag@bag"]),
+ * as `claude plugin marketplace add <dir>` and `claude plugin install bag@bag` write them (2.1.331). Refuses another
+ * plugin named bag enabled (the repository's development plugin is one: two would draw two "bag" plugins) and another
+ * marketplace named bag, before anything is written.
+ */
+function putCard(d: Json, dir: string, file: string): boolean {
+  const on = (d.enabledPlugins ?? {}) as Json
+  const other = Object.keys(on).filter((k) => k.startsWith('bag@') && k !== CARD_ID && on[k] !== false)
+  if (other.length > 0) {
+    throw new HomeError(
+      'exists',
+      `${file} enables ${other.join(', ')}, another plugin named bag: disable it in Claude Code (/plugin) or set it to false there, then run this again`,
+    )
+  }
+  // Switched off by the person (/plugin or the file): their choice; bag leaves it, and installUser says so.
+  if (on[CARD_ID] === false) return false
+  const market: Json = { source: { source: 'directory', path: dir } }
+  const have = (d.extraKnownMarketplaces as Json | undefined)?.bag
+  if (have !== undefined && !isDeepStrictEqual(have, market)) {
+    throw new HomeError(
+      'exists',
+      `${file} has extraKnownMarketplaces.bag, another marketplace named bag: run host remove claude-code --user with its --dir, or remove it, then run this again`,
+    )
+  }
+  if (have !== undefined && on[CARD_ID] === true) return false
+  child(d, 'extraKnownMarketplaces').bag = market
+  child(d, 'enabledPlugins')[CARD_ID] = true
+  return true
+}
+
+/** The card's two entries out of `d` when the marketplace is <home>'s, and any object they leave empty. */
+function dropCard(d: Json, dir: string): boolean {
+  const markets = d.extraKnownMarketplaces as Json | undefined
+  if ((markets?.bag as { source?: { path?: unknown } } | undefined)?.source?.path !== dir) return false
+  for (const [key, id] of [
+    ['extraKnownMarketplaces', 'bag'],
+    ['enabledPlugins', CARD_ID],
+  ] as const) {
+    const o = d[key] as Json | undefined
+    if (o === undefined) continue
+    delete o[id]
+    if (Object.keys(o).length === 0) delete d[key]
+  }
+  return true
+}
+
+/** Whether a hook group's matcher (absent, '', '*' or a pattern) matches `name`, as Claude Code matches tool names. */
+function matches(g: unknown, name: string): boolean {
+  const m = (g as { matcher?: unknown } | null)?.matcher
+  if (m === undefined || m === '' || m === '*') return true
+  try {
+    return typeof m === 'string' && new RegExp(`^(?:${m})$`).test(name)
+  } catch {
+    return true
+  }
+}
+
+/** The hook events of `hooks` (a settings or hooks.json "hooks" object) that can answer a card in the person's place. */
+function answering(hooks: unknown): string[] {
+  const h = (hooks ?? {}) as Json
+  const on = (e: string, name: string) =>
+    Array.isArray(h[e]) && (h[e] as unknown[]).some((g) => matches(g, name))
+  return [
+    ...['PreToolUse', 'PermissionRequest'].filter((e) => on(e, 'AskUserQuestion')),
+    ...(on('Elicitation', 'bag') ? ['Elicitation'] : []),
+  ]
+}
+
+const readJson = (file: string): Json | null => {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as Json
+  } catch {
+    return null
+  }
+}
+
+/** Where Claude Code reads managed settings files on macOS (its docs: managed-settings.json and managed-settings.d/). */
+export const MANAGED_DIR = '/Library/Application Support/ClaudeCode'
+
+/** The managed settings files there: managed-settings.json, then managed-settings.d/*.json, those present. */
+function managedFiles(dir: string): string[] {
+  let drop: string[] = []
+  try {
+    drop = readdirSync(join(dir, 'managed-settings.d'))
+      .filter((f) => f.endsWith('.json'))
+      .sort()
+  } catch {
+    // no drop-in folder
+  }
+  return [join(dir, 'managed-settings.json'), ...drop.map((f) => join(dir, 'managed-settings.d', f))].filter(
+    (f) => existsSync(f),
+  )
+}
+
+/**
+ * S1, read only: what else on this machine could answer one of bag's question cards in the person's place: the
+ * settings hooks on PreToolUse or PermissionRequest (matching AskUserQuestion) and on Elicitation (matching bag), in
+ * the managed settings files (first in the chain; one that cannot be read is named "not readable"), the user's and,
+ * given `cwd`, its project's, and the installed plugins with a hooks module or such hooks. Names and files only, never
+ * a hook's command or any other content. Not read: an MDM profile (com.anthropic.claudecode) and server-managed
+ * settings. Nothing from the user's files when no Claude Code config is found.
+ */
+export function cardAnswerers(env: Env, cwd?: string, managed = MANAGED_DIR): string[] {
+  const hooksIn = (f: string) => answering(readJson(f)?.hooks).map((e) => `a hook on ${e} in ${f}`)
+  const lines = managedFiles(managed).flatMap((f) =>
+    readJson(f) === null ? [`${f}: not readable`] : hooksIn(f),
+  )
+  let user: string
+  try {
+    user = claudeFiles(env).settings
+  } catch {
+    return lines
+  }
+  const project = cwd ? ['settings.json', 'settings.local.json'].map((f) => join(cwd, '.claude', f)) : []
+  lines.push(...[user, ...project].flatMap(hooksIn))
+  const root = env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? join(dirname(user), 'plugins')
+  const installed = (readJson(join(root, 'installed_plugins.json'))?.plugins ?? {}) as Json
+  for (const [id, list] of Object.entries(installed)) {
+    if (id === CARD_ID || !Array.isArray(list)) continue
+    for (const at of list.map((x) => (x as { installPath?: unknown }).installPath)) {
+      const h = typeof at === 'string' ? readJson(join(at, 'hooks', 'hooks.json')) : null
+      if (h === null) continue
+      const kinds = [...(Array.isArray(h.modules) && h.modules.length > 0 ? ['a hooks module'] : [])]
+      kinds.push(...answering(h.hooks).map((e) => `a hook on ${e}`))
+      if (kinds.length > 0) lines.push(`the plugin ${id} (${at}): ${kinds.join(', ')}`)
+    }
+  }
+  return lines
+}
+
 /** The user's HOME, which every user-scope file is under. */
 function userHome(env: Env): string {
   if (!env.HOME) throw new HomeError('usage', 'no HOME: --user writes under $HOME')
@@ -175,7 +309,8 @@ export function userChanges(
       asyncRewake: true,
     })
     const typed: Json = { type: 'command', command: typedHook(node, m, home), timeout: 10 }
-    const note = `${settings}: the shim's SessionStart, Stop and UserPromptSubmit hooks; deny rules for ${run}${sandbox ? '; sandbox.enabled true' : ''}`
+    const card = m.card === undefined ? '' : `; the question card's plugin ${CARD_ID} from ${m.card}`
+    const note = `${settings}: the shim's SessionStart, Stop and UserPromptSubmit hooks; deny rules for ${run}${sandbox ? '; sandbox.enabled true' : ''}${card}`
     view.json(settings, note, (d) => {
       const hooks = putHooks(child(d, 'hooks'), {
         SessionStart: wake(),
@@ -200,7 +335,8 @@ export function userChanges(
       const boxed = [merge(fs, 'denyRead', [run]), merge(fs, 'denyWrite', [run, pkg])].some(Boolean)
       const enabled = sandbox && box.enabled !== true
       if (enabled) box.enabled = true
-      return hooks || denied || boxed || enabled
+      const carded = m.card !== undefined && putCard(d, m.card, settings)
+      return hooks || denied || boxed || enabled || carded
     })
   } else if (host === 'omp') {
     const file = join(ompAgentDir(env), 'mcp.json')
@@ -319,7 +455,23 @@ function codexRoots(env: Env): string[] {
   }
 }
 
-/** host install <host> --user (no --as): the changes written, one line each, and the notes. */
+/** Whether the person switched the card off in Claude Code's user settings (enabledPlugins bag@bag false). */
+const cardOff = (env: Env): boolean =>
+  (readJson(claudeFiles(env).settings)?.enabledPlugins as Json | undefined)?.[CARD_ID] === false
+
+/**
+ * Stages the card's folder before the settings name it (host install and host migrate for claude-code), when the
+ * package has one, the person has not switched it off and it is not there yet; true when it staged. stage() then
+ * refreshes it at each update.
+ */
+export function stageCardFirst(env: Env, m: Staged, home: string, pid: number): boolean {
+  const src = m.versioned === null ? null : join(dirname(m.versioned.cli), CARD_DIR)
+  if (m.card === undefined || src === null || cardOff(env) || existsSync(m.card)) return false
+  stageCard(src, home, pid)
+  return true
+}
+
+/** host install <host> --user (no --as): the changes written, one line each, and the notes; `managed`: S1's managed settings folder. */
 export function installUser(
   env: Env,
   p: HostProcess,
@@ -328,26 +480,47 @@ export function installUser(
   host: Host,
   sandbox: boolean,
   out: string[],
+  managed = MANAGED_DIR,
 ): void {
   const view = new View()
   userChanges(view, env, p.node, m, home, host, sandbox)
+  const off = host === 'claude-code' && cardOff(env)
+  const staging = host === 'claude-code' && stageCardFirst(env, m, home, p.pid)
   const changes = view.changes()
   for (const c of changes) {
     applyChange(c, p.pid)
     out.push(`wrote ${c.note}`)
   }
-  if (changes.length === 0) out.push('nothing to change')
+  if (staging) out.push(`wrote ${m.card}: the question card's plugin bag, staged`)
+  if (changes.length === 0 && !staging) out.push('nothing to change')
   out.push(...userNotes(env, home, host, sandbox))
+  if (host !== 'claude-code') return
+  if (off) {
+    out.push(
+      `bag's question card is switched off in your Claude Code settings (enabledPlugins ${CARD_ID} is false); bag left it off`,
+    )
+  } else if (m.card !== undefined) {
+    out.push(
+      `reload each Claude Code window once (a new session, or /reload-plugins): bag's questions then come in Claude Code's own question card, and each starts with "bag: "`,
+      `bag's staged folder ${m.card} runs inside Claude Code at every session start, and each bag update replaces it; host remove claude-code --user takes it out`,
+    )
+  }
+  const others = cardAnswerers(env, env.PWD, managed)
+  if (others.length > 0) out.push('these could also answer a bag question card in your place:', ...others)
 }
 
 /**
  * host remove <host> --user (no --as): the shim entry of this home and bag's service hooks out of the host's user files;
  * every other server and hook stays, and so do the deny rules for <home>/run (they protect nothing else and cost
- * nothing). A bag entry that is not this home's shim is left, named.
+ * nothing) and the sandbox settings (turning them off could weaken a sandbox the person relies on); the output says
+ * so, and that Claude Code's own plugin records are its own. A hooks object the removal empties goes. A bag entry that
+ * is not this home's shim is left, named.
  */
 export function removeUser(env: Env, pid: number, home: string, host: Host, out: string[]): void {
   const HOME = userHome(env)
   const view = new View()
+  // What the removal leaves and why, said after what it did.
+  const kept: string[] = []
   const ours = (have: unknown) => shimOf(have)?.home === home
   const unhook = (events: Json): boolean => {
     let changed = false
@@ -375,7 +548,38 @@ export function removeUser(env: Env, pid: number, home: string, host: Host, out:
   if (host === 'claude-code') {
     const { file, settings } = claudeFiles(env)
     entry(file)
-    view.json(settings, `${settings}: bag's service hooks removed`, (d) => unhook(child(d, 'hooks')))
+    const card = join(home, 'package', CARD_DIR)
+    const named = (view.text(settings) ?? '').includes(JSON.stringify(card))
+    const note = `${settings}: bag's service hooks removed${named ? `; the question card's plugin ${CARD_ID} removed` : ''}`
+    const run = join(home, 'run')
+    let denies = false
+    let boxed = false
+    view.json(settings, note, (d) => {
+      const had = d.hooks !== undefined
+      const hooks = child(d, 'hooks')
+      const unhooked = unhook(hooks)
+      // A hooks object bag's removal emptied goes; one the person had, even empty, stays as it was.
+      if (!had || (unhooked && Object.keys(hooks).length === 0)) delete d.hooks
+      const deny = (d.permissions as Json | undefined)?.deny
+      denies = Array.isArray(deny) && deny.includes(`Read(/${run}/**)`)
+      const fs = ((d.sandbox as Json | undefined)?.filesystem ?? {}) as Json
+      boxed = [fs.denyRead, fs.denyWrite].some((l) => Array.isArray(l) && l.includes(run))
+      return dropCard(d, card) || unhooked
+    })
+    if (denies)
+      kept.push(
+        `kept the deny rules for ${home} in ${settings}: they protect the bag home whether or not bag is wired`,
+      )
+    if (boxed)
+      kept.push(
+        `kept the sandbox settings in ${settings}: turning them off could weaken a sandbox you rely on`,
+      )
+    if (named || existsSync(card)) {
+      const plugins = env.CLAUDE_CODE_PLUGIN_CACHE_DIR ?? join(dirname(settings), 'plugins')
+      kept.push(
+        `Claude Code keeps its own record of the bag marketplace and the plugin's data in ${plugins}; bag does not write or delete them: remove the marketplace with /plugin in Claude Code`,
+      )
+    }
   } else if (host === 'omp') {
     entry(join(ompAgentDir(env), 'mcp.json'))
     for (const l of userLinks(join(ompAgentDir(env), 'hooks', 'pre')).filter(bagLink)) {
@@ -401,7 +605,12 @@ export function removeUser(env: Env, pid: number, home: string, host: Host, out:
     applyChange(c, pid)
     out.push(`wrote ${c.note}`)
   }
-  if (changes.length === 0) out.push('nothing to change')
+  const card = join(home, 'package', CARD_DIR)
+  if (host === 'claude-code' && existsSync(card)) {
+    dropDir(card, pid)
+    out.push(`removed ${card}, the question card's plugin`)
+  } else if (changes.length === 0) out.push('nothing to change')
+  out.push(...kept)
 }
 
 /** The two wake link names in an omp hooks/pre directory that are there (a file or a link, not followed). */

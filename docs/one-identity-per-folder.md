@@ -8,7 +8,8 @@ per-folder mode, which stays as the way back.
 
 ## The rule
 
-- Any window, in any folder, can use any identity of the home: type `use` and the name (bag-service.md).
+- Any window, in any folder, can use any identity of the home: by typing `use` and its name in Claude Code or omp,
+  elsewhere by asking the agent to use it and saying Yes in the bind dialog (bag-service.md).
 - Two windows can use two identities. Two windows can also use one identity: both read and write through the service,
   which fetches and acknowledges each message once. One of them speaks: mail rings the window you last typed in, and
   the others show a quiet notice and start no turn, so two agents never answer one message.

@@ -1,6 +1,6 @@
 import type { ServiceConnection } from './binding.ts'
-import { askUnseen, type PairExtra, surfaceIn, unseenAnswer } from './pairing.ts'
-import { type ToolContext, ToolError } from './tools.ts'
+import { askUnseen, cardSaid, type PairExtra, surfaceIn, unseenAnswer } from './pairing.ts'
+import { NO_ANSWER_IN_TIME, type ToolContext, ToolError } from './tools.ts'
 
 // askPerson (bag 0.4.2): the one way a tool asks the person
 // a yes or no, or a line of text, in the asking window. On a host with MCP elicitation (Claude Code, Codex) it is one
@@ -47,7 +47,10 @@ export const STARTS_PER_HOME = HOME_TIMES * STARTS_PER_WINDOW
 export const MIN_ASK_MS = 15_000
 /** Every ask ends this long (ms) before its call's own deadline. */
 export const CALL_MARGIN_MS = 5_000
-/** The longest an ask stands (ms), on any host. */
+/**
+ * The longest an ask stands (ms), on any host: the link's question, and an elicitation, whose request is ended at the
+ * bound (none: nothing granted or remembered); an answer after that matches no open dialog and is dropped.
+ */
 export const MAX_ASK_MS = 120_000
 /** An omp link that told no call_ms (a 0.4.1 extension): omp's default call limit, and the ask's cap under it (ms). */
 export const OMP_CALL_MS = 30_000
@@ -202,6 +205,54 @@ function stampHome(m: Map<string, number[]>, key: string, now: number): void {
   m.set(key, [...live(m.get(key), now), now])
 }
 
+/** One limit: its live stamps, its cap, what was done that many times, and where. */
+type Limit = [number[], number, string, string]
+
+/** The two unanswered allowances of `key` (home NUL act) at `now`: this window's, then the home's. */
+function unansweredLimits(window: string, key: string, now: number): [Limit, Limit] {
+  return [
+    [live(UNANSWERED.get(window)?.get(key), now), UNANSWERED_PER_WINDOW, 'left unanswered', 'here'],
+    [live(HOME_UNANSWERED.get(key), now), UNANSWERED_PER_HOME, 'left unanswered', BY_HOME],
+  ]
+}
+
+/** Spends one unanswered ask of `key` in `window` and in its home. */
+function spendUnanswered(window: string, key: string, now: number): void {
+  stamp(UNANSWERED, window, key, now)
+  stampHome(HOME_UNANSWERED, key, now)
+}
+
+/** Throws rate-limited for the first limit at its cap, naming `act` and the wait, then that limit's tail, if any. */
+function refusePast(limits: readonly Limit[], act: string, now: number, tails: readonly string[] = []): void {
+  for (const [i, [times, cap, what, where]] of limits.entries()) {
+    if (times.length < cap) continue
+    throw new ToolError(
+      'rate-limited',
+      `${act} was ${what} ${times.length} times lately ${where}: ask again in ${waitOf(times, now)} s${tails[i] ?? ''}`,
+    )
+  }
+}
+
+/**
+ * The unanswered allowances of `act` for a dialog bag raises outside askPerson (the bind dialog), in the same tables
+ * and caps as an ask's: throws askPerson's rate-limited refusal (`tails`, this window's then the home's, after it) when
+ * this window or the home is past its cap, else returns the spend, which the caller runs when the dialog ends with no answer, as an ask's none does.
+ * Nothing is audited.
+ */
+export function unanswered(
+  home: string,
+  window: string,
+  act: string,
+  clockNow: number,
+  tails: readonly [string, string] = ['', ''],
+): () => void {
+  const key = `${home}\0${act}`
+  const now = nowFor(home, clockNow)
+  sweep(now)
+  refusePast(unansweredLimits(window, key, now), act, now, tails)
+  return () => spendUnanswered(window, key, now)
+}
+
 /**
  * Drops the limits' memory of a closed window, so that the tables do not grow with every connection the service has
  * had. A reconnect gets a new handle, and so fresh window limits, whether or not this ran; the home limits stay.
@@ -354,11 +405,12 @@ export async function askPerson(
   const key = `${ctx.config.home}\0${q.act}`
   const now = nowFor(ctx.config.home, ctx.clock.now())
   sweep(now)
-  const limits: [number[], number, string, string][] = [
+  const [leftHere, leftHome] = unansweredLimits(window, key, now)
+  const limits: Limit[] = [
     [live(ASKED.get(window)?.get(key), now), ASKS_PER_WINDOW, 'answered', 'here'],
-    [live(UNANSWERED.get(window)?.get(key), now), UNANSWERED_PER_WINDOW, 'left unanswered', 'here'],
+    leftHere,
     [live(HOME_ASKED.get(key), now), ASKS_PER_HOME, 'answered', BY_HOME],
-    [live(HOME_UNANSWERED.get(key), now), UNANSWERED_PER_HOME, 'left unanswered', BY_HOME],
+    leftHome,
   ]
   // Only the link leaves an ask unsent; elicitation always shows its dialog.
   if (!elicits)
@@ -368,16 +420,9 @@ export async function askPerson(
       'not sent for too little time left in its call',
       'here',
     ])
-  for (const [times, cap, what, where] of limits) {
-    if (q.limit === false || times.length < cap) continue
-    const wait = waitOf(times, now)
-    throw new ToolError(
-      'rate-limited',
-      `${q.act} was ${what} ${times.length} times lately ${where}: ask again in ${wait} s`,
-    )
-  }
+  if (q.limit !== false) refusePast(limits, q.act, now)
   const host = conn?.host ?? ctx.client?.().kind ?? 'other'
-  let answer: Answer | Unseen | null
+  let answer: Answer | Unseen | Late | null
   // Counted from here until the ask ends, however it ends: service.json shows it, so a restart can tell it would cut it.
   const home = ctx.config.home
   asking(home, 1)
@@ -419,16 +464,25 @@ export async function askPerson(
   } finally {
     asking(home, -1)
   }
+  // Ended by bag's own bound: no answer in time, before the unseen rule. The question was shown and left unanswered, so
+  // it spends the unanswered budget as a `none` does (a model cannot raise one every two minutes for ever); it writes
+  // no policy line and no caller remembers it as a refusal (the service log has the dialog's line).
+  if (answer.said === 'late') {
+    if (q.limit !== false) spendUnanswered(window, key, now)
+    ctx.log.log('info', 'consent-dialog', { act: q.act, code: 'no-answer-in-time', window })
+    throw new ToolError('cancelled', NO_ANSWER_IN_TIME)
+  }
   // Answered faster than a person (pairing.ts unseenAnswer): no person saw the question, so nothing is done, and it
   // spends no budget and writes no policy line; the service log has the dialog's line.
   if (answer.said === 'unseen') {
-    ctx.log.log('info', 'consent-dialog', { act: q.act, code: 'no-elicitation', window })
-    throw new ToolError('no-elicitation', askUnseen(host, surfaceIn(ctx.env, conn)))
+    // The surface on the line, when there is one: the proof that it was read (a late decline is unseen only there).
+    const surface = surfaceIn(ctx.env, conn)
+    const on = surface === null ? {} : { surface }
+    ctx.log.log('info', 'consent-dialog', { act: q.act, code: 'no-elicitation', window, ...on })
+    throw new ToolError('no-elicitation', askUnseen(host, surface))
   }
-  if (q.limit !== false && answer.said === 'none') {
-    stamp(UNANSWERED, window, key, now)
-    stampHome(HOME_UNANSWERED, key, now)
-  } else if (q.limit !== false) {
+  if (q.limit !== false && answer.said === 'none') spendUnanswered(window, key, now)
+  else if (q.limit !== false) {
     stamp(ASKED, window, key, now)
     stampHome(HOME_ASKED, key, now)
   }
@@ -445,6 +499,8 @@ function judged(q: Ask, text: string | null): Answer | null {
 
 /** An answer faster than a person (pairing.ts unseenAnswer): askPerson's no-elicitation, never an Answer. */
 type Unseen = { readonly said: 'unseen' }
+/** A question bag's own bound ended (MAX_ASK_MS): askPerson's NO_ANSWER_IN_TIME, never an Answer. */
+type Late = { readonly said: 'late' }
 
 /**
  * The elicitation path: one form with one boolean or one string field. Any answer faster than a person is unseen; a
@@ -456,7 +512,7 @@ async function viaElicit(
   q: Ask,
   conn: ServiceConnection | undefined,
   mono: () => number,
-): Promise<Answer | Unseen> {
+): Promise<Answer | Unseen | Late> {
   const field =
     q.kind === 'confirm'
       ? { type: 'boolean' as const, title: q.title }
@@ -465,22 +521,36 @@ async function viaElicit(
     message: q.message,
     requestedSchema: { type: 'object' as const, properties: { [q.kind]: field }, required: [q.kind] },
   }
+  const surface = surfaceIn(ctx.env, conn)
   for (let i = 0; i < (q.kind === 'text' ? 2 : 1); i++) {
     const t0 = mono()
+    // Withdrawn at MAX_ASK_MS by bag itself (as a pairing form at its bound): a later answer matches no open dialog.
+    const ends = new AbortController()
+    const stop = ctx.timers.after(MAX_ASK_MS, () => ends.abort())
+    const signal = AbortSignal.any([extra.signal, ends.signal])
     const r = await (conn === undefined
-      ? ctx.elicit(dialog, extra)
-      : conn.elicit(dialog, { signal: extra.signal })
-    ).catch((e: unknown) => {
-      const name = e instanceof Error ? e.name : typeof e
-      ctx.log.log('warn', 'consent-dialog', { act: q.act, name, ms: Math.round(mono() - t0) })
-      return { action: 'cancel' as const, content: undefined }
-    })
-    if (unseenAnswer(mono() - t0, r.action)) return { said: 'unseen' }
+      ? ctx.elicit(dialog, { ...extra, signal })
+      : conn.elicit(dialog, { signal })
+    )
+      .catch((e: unknown) => {
+        const name = e instanceof Error ? e.name : typeof e
+        ctx.log.log('warn', 'consent-dialog', { act: q.act, name, ms: Math.round(mono() - t0) })
+        return { action: 'cancel' as const, content: undefined }
+      })
+      .finally(stop)
+    // bag's own bound, read before the timing and the card: a cancel on a silent surface would read as not shown.
+    if (ends.signal.aborted && !extra.signal.aborted) return { said: 'late' }
+    // A card's answer (pairing.ts cardSaid), read with the timing: its No is the person's, and no answer (a dismissal,
+    // an idle card, stray text) stops a text's second ask.
+    const card = cardSaid(r, q.kind, surface)
+    if (unseenAnswer(mono() - t0, r.action, surface) || card === 'unseen') return { said: 'unseen' }
+    if (card === 'no' || card === 'none') return { said: card }
     if (r.action === 'decline') return { said: 'no' }
     if (r.action !== 'accept') return { said: 'none' }
     const v = r.content?.[q.kind]
-    if (q.kind === 'confirm')
-      return v === true ? { said: 'yes', text: null } : v === false ? { said: 'no' } : { said: 'none' }
+    // A confirm's Yes is its true alone. An accept with false is no answer, never a No: a host may draw the boolean as a
+    // switch that starts off (opencode, 2026-11-24), so an untouched Submit is not the person's No; only a decline is.
+    if (q.kind === 'confirm') return v === true ? { said: 'yes', text: null } : { said: 'none' }
     const a = judged(q, textOf(v, q.max ?? MAX_PASTE, true))
     if (a !== null) return a
   }

@@ -163,6 +163,7 @@ describe('status --home: the whole home, one fact per line, read-only', () => {
         { url: R10, identities: ['bob'] },
         { url: R9, identities: ['alice', 'bob'] },
       ],
+      card_answerers: [],
     })
     expect(svc.calls).toEqual(['service/hello'])
     const text = await cli(io, 'status', '--home', '--dir', dir)
@@ -264,5 +265,34 @@ describe('status --home: the whole home, one fact per line, read-only', () => {
       `relay ${R10} for bob`,
       `relay ${R9} for bob`,
     ])
+  })
+
+  it('lists what else could answer a bag question card (S1): a planted Elicitation hook and a plugin with a hooks module, by name only', async () => {
+    const { dir, io } = await home('on')
+    const config = join(base, `cc${n++}`)
+    const plugin = join(config, 'plugins', 'cache', 'y', 'x', '1')
+    mkdirSync(join(plugin, 'hooks'), { recursive: true })
+    const secret = 'PLANTED-COMMAND-TEXT'
+    writeFileSync(
+      join(config, 'settings.json'),
+      JSON.stringify({ hooks: { Elicitation: [{ hooks: [{ type: 'command', command: secret }] }] } }),
+    )
+    writeFileSync(join(plugin, 'hooks', 'hooks.json'), JSON.stringify({ modules: ['./m.js'] }))
+    writeFileSync(
+      join(config, 'plugins', 'installed_plugins.json'),
+      JSON.stringify({ version: 2, plugins: { 'x@y': [{ scope: 'user', installPath: plugin }] } }),
+    )
+    Object.assign(io, { env: { ...io.env, CLAUDE_CONFIG_DIR: config } })
+    const want = [
+      `a hook on Elicitation in ${join(config, 'settings.json')}`,
+      `the plugin x@y (${plugin}): a hooks module`,
+    ]
+    const ran = await cli(io, 'status', '--home', '--dir', dir)
+    expect(ran.out.filter((l) => l.startsWith('card_answerer '))).toEqual(
+      want.map((w) => `card_answerer ${w}`),
+    )
+    const json = await cli(io, 'status', '--home', '--json', '--dir', dir)
+    expect(JSON.parse(json.out[0] as string).card_answerers).toEqual(want)
+    expect([...ran.out, ...json.out].join('\n')).not.toContain(secret)
   })
 })

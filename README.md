@@ -134,7 +134,9 @@ something to read, test and attack, not to depend on. What changed in each publi
   identities and on one; omp ran the service legs, the accept side among them. On Codex the wake is one per Codex
   process, not per window (a known limit in [`CHANGELOG.md`](CHANGELOG.md)). The opencode entry in
   `packages/mcp/README.md` is not checked. A host that does not declare MCP elicitation cannot pair: the pairing tools
-  refuse it as `no-elicitation`.
+  refuse it as `no-elicitation`. Claude Code's VS Code extension and Claude Desktop draw no MCP dialog themselves; there
+  bag's questions come in Claude Code's own question card, through bag's plugin
+  ([`docs/bag-service.md`](docs/bag-service.md#bags-questions-in-claude-codes-question-card)).
 - **Two gaps in the one-line install.** Step 3's Keychain custody is not proven live on any host, and Codex under its
   default permissions cannot fetch the page (its sandbox has no network, and its web tool refuses the URL), so the
   person allows it first (`/permissions`, "Ask for approval").
@@ -163,8 +165,8 @@ agent asks you to restart your host and to give it the same sentence again. In t
 tools, each asking you first, it makes your identity with you (or, on a machine with bag already, reuses one) and
 publishes its records at the two public relays, and writes the login agent that starts the bag service, which you load
 with the one line it returns. Then, in any folder, you type `use`
-and your identity's name (`use omp-3`), or answer bag's dialog "Act as omp-3 in this window?", which every host offers
-in place of the typed word (on Codex it is the only way). Then you ask it to pair
+and your identity's name (`use omp-3`), or answer bag's dialog "Act as omp-3 in this window?", which your host shows
+(omp asks over its own link) in place of the typed word (on Codex it is the only way). Then you ask it to pair
 with your peer: the pairing dialogs and the six check digits are yours to answer, never the agent's. Once you are
 paired, you ask it to send a hello. The longer prompt the site serves is at [bag.dev/prompt](https://bag.dev/prompt);
 [`docs/bag-service.md`](docs/bag-service.md) says what runs and how to stop it.
@@ -178,12 +180,12 @@ two identities and one sealed message, all on your own machine.
 install script; `npx` runs it without installing anything globally. Name the version and the program every time:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.5 bag "$@"; }
-c --version                       # prints: bag 0.4.5 <the commit it was built from>
+c() { npx --yes --package=@usebag/bag@0.4.6 bag "$@"; }
+c --version                       # prints: bag 0.4.6 <the commit it was built from>
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance. The install guide runs it
-only from a file whose SHA-256 it has checked: `npm pack @usebag/bag@0.4.5` fetches the file, and its sha256 must be the
+only from a file whose SHA-256 it has checked: `npm pack @usebag/bag@0.4.6` fetches the file, and its sha256 must be the
 one in the release's notes. To run from source instead, see [From source](#from-source).
 
 **2. Get a relay.** The relay is Rust and is not in the package: build it from source (`cargo build --release --locked
@@ -306,7 +308,7 @@ shim of the bag service for every folder; `docs/partner-install.md`, section 5c,
 The package's command line is the bin `bag`; the guides wrap it in a shell function, `c`:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.5 bag "$@"; }
+c() { npx --yes --package=@usebag/bag@0.4.6 bag "$@"; }
 c help          # prints every command
 ```
 
@@ -339,7 +341,8 @@ relay.
 
 From an agent, ask it to pair with your peer and say what to call them. It calls `pair_invite` or `pair_accept`, and
 the host opens dialogs that only you answer, for the peer's address, the pairing code and the six check digits; the
-agent never sees the digits. A host that cannot show those dialogs cannot pair (see [Limits](#limits)).
+agent never sees the digits. In Claude Code's VS Code extension and Claude Desktop, those dialogs are Claude Code's own
+question card. A host that cannot show those dialogs cannot pair (see [Limits](#limits)).
 
 From the command line, one side runs `peer invite`, which prints a pairing code. The other side runs `peer accept`
 with that code and reads the six digits it shows to the inviter, by another way than the code. The inviter types them.

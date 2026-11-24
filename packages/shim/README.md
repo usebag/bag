@@ -45,8 +45,11 @@ The home is `--dir`, else `AC_HOME`, else `$HOME/.bag`.
   keeps looking; when the service comes up it says hello and tells the host the tools changed.
 - **A restart mid-call.** Each call in flight fails with a readable error and is never sent again (a `send` must not
   go twice); each open dialog is cancelled at the host. The shim reconnects with backoff, reads the new token, says
-  hello again, replays the host's `initialize` and `notifications/initialized`, and sends `tools/list_changed`. The
-  session starts unbound, as the contract says.
+  hello again, replays the host's `initialize` and `notifications/initialized`, and sends `tools/list_changed`. Before
+  any queued call it asks the service, with `service/use` `via: "restored"`, for each identity a `service/bound` named
+  on its earlier connections (label and address, kept in memory only); a refused one is dropped. A typed `use` while no
+  service answers, a release, or a `service/unbound` empties that memory (or the label); a typed `use` during the
+  restore stops it, and what it restored is unbound. A shim whose omp 19 window is gone restores nothing.
 - **A drain.** On `service/draining` new calls are held (never lost, never sent twice) and go out on the next
   connection, after `retry_after_ms`.
 - **Resume tokens.** For a host with a short tool timeout (Codex, 60 s) a call still running at 50 s is answered
@@ -60,7 +63,8 @@ The home is `--dir`, else `AC_HOME`, else `$HOME/.bag`.
   stdio server does for omp's pty: Ctrl-C or Ctrl-D) the shim closes its connection cleanly (the service then drops the
   binding and cancels the connection's pairings), removes its channel files and exits 0. On SIGUSR2 (Codex's
   SessionEnd hook, `wake-hook --session service --end`, sends it to the shim of the session that ended) it removes its
-  session's files, ends its connection the same way and connects again unbound, and keeps serving the host.
+  session's files, forgets what it would restore, ends its connection the same way and connects again unbound, and
+  keeps serving the host.
 
 ## The typed-word channel (hook to shim)
 
@@ -146,7 +150,8 @@ names its own pid. A reader finds it by its host pid, as a hook finds the index:
 their ancestors, omp's extension uses its own `process.pid`. A reader ignores a file that does not parse, has another
 `v`, or whose `shim` pid is not alive (a shim killed with SIGKILL leaves one behind), and then wakes on nothing. While
 the file exists the waiter wakes from the ring file only (next section), never from a doorbell. The service has no
-unbind notification yet, and the shim sends no `service/unbind`, so a label leaves the file only with the connection.
+unbind notification before 0.4.6; since then `service/unbound` takes a label out of the file and the memory, and the
+shim sends `service/unbind` only to undo a restore the person's typed word overtook.
 
 ## The ring file, for the waiters
 

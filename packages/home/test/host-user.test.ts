@@ -79,9 +79,47 @@ describe('installUser and removeUser: claude-code', () => {
     expect(gone).toEqual([
       `wrote ${file}: mcpServers.bag (the shim) removed`,
       `wrote ${settings}: bag's service hooks removed`,
+      `kept the deny rules for ${w.home} in ${settings}: they protect the bag home whether or not bag is wired`,
+      `kept the sandbox settings in ${settings}: turning them off could weaken a sandbox you rely on`,
     ])
     expect(json(file).mcpServers).toEqual({})
-    expect(json(settings).hooks).toEqual({})
+    // The hooks object bag's removal emptied is gone; the deny rules and the sandbox stay.
+    const left = json(settings)
+    expect(left.hooks).toBeUndefined()
+    expect(left.permissions.deny).toContain(`Read(/${join(w.home, 'run')}/**)`)
+    expect(left.sandbox.enabled).toBe(true)
+    expect(left.sandbox.filesystem.denyRead).toEqual([join(w.home, 'run')])
+  })
+
+  it("keeps a hooks object the person had, even empty, and every other setting of the person's", () => {
+    const mine = { Stop: [{ hooks: [{ type: 'command', command: 'mine' }] }] }
+    // An empty one the removal finds stays empty, though it writes the file (the card's two entries go); one bag's
+    // hooks shared stays with the person's own.
+    for (const [hooks, install] of [
+      [{}, false],
+      [mine, true],
+    ] as const) {
+      const w = world()
+      const settings = join(w.HOME, '.claude', 'settings.json')
+      mkdirSync(join(w.HOME, '.claude'))
+      const card = {
+        extraKnownMarketplaces: {
+          bag: { source: { source: 'directory', path: join(w.home, 'package', 'claude-code') } },
+        },
+        enabledPlugins: { 'bag@bag': true },
+      }
+      writeFileSync(
+        settings,
+        JSON.stringify({ model: 'opus', env: { A: '1' }, hooks, ...(install ? {} : card) }),
+      )
+      if (install) installUser(w.env, p, m, w.home, 'claude-code', false, [])
+      const out: string[] = []
+      removeUser(w.env, 4242, w.home, 'claude-code', out)
+      expect(out[0]).toMatch(/^wrote /)
+      const s = json(settings)
+      expect(s.hooks).toEqual(hooks)
+      expect([s.model, s.env, s.enabledPlugins]).toEqual(['opus', { A: '1' }, undefined])
+    }
   })
 
   it('refuses a per-folder entry (exists) and leaves an entry that is not this home shim on remove', () => {

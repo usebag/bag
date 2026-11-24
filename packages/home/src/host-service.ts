@@ -111,7 +111,7 @@ export function servicePlist(o: {
     '  <dict>',
     '    <key>SuccessfulExit</key><false/>',
     '  </dict>',
-    '  <key>ProcessType</key><string>Background</string>',
+    '  <key>ProcessType</key><string>Standard</string>',
     '  <key>Umask</key><integer>63</integer>',
     '  <key>SoftResourceLimits</key>',
     '  <dict>',

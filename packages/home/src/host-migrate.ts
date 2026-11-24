@@ -11,7 +11,7 @@ import {
   View,
 } from './changes.ts'
 import { bagLink, child, type Host, type HostProcess, type Json, ompLinks, shq } from './host-common.ts'
-import { tableOf, userChanges, userNotes } from './host-user.ts'
+import { stageCardFirst, tableOf, userChanges, userNotes } from './host-user.ts'
 import { addIdentity, type Identities, type Identity, readIdentities } from './identities.ts'
 import { askWithRecheck, HomeError, type HomeIo } from './ports.ts'
 import { proposalRows, proposalsText } from './proposals.ts'
@@ -379,6 +379,9 @@ export async function migrate(io: HomeIo, input: MigrateInput): Promise<void> {
   })
   if (!(await askWithRecheck(io, question, check))) throw new HomeError('declined', 'nothing was changed')
   stage(home, build, proc.pid)
+  // The card's folder before the settings entries that name it, as host install stages it.
+  if (found.some((f) => f.host === 'claude-code') && stageCardFirst(io.env, m, home, proc.pid))
+    io.say(`wrote ${m.card}: the question card's plugin bag, staged`)
   // The journal first, with every backup, then the edits; a run cut short is undone from it.
   const dir = join(hm, 'migrate')
   mkdirSync(dir, { recursive: true, mode: 0o700 })

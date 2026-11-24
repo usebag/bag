@@ -1,0 +1,17 @@
+{
+  "modules": ["./card.ts"],
+  "hooks": {
+    "Elicitation": [
+      {
+        "matcher": "bag",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@BAG_NODE@ @BAG_CLI@ card-hook --dir @BAG_HOME@",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

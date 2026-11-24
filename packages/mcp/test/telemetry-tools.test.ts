@@ -23,7 +23,8 @@ const PENDING: string[] = []
  */
 const EVERY_BRANCH = {
   config: { allowDelegate: true, session: null, auth: null, chainCmd: null },
-  connection: {},
+  // A service connection as a hello leaves it: the use tool's description reads its input hook.
+  connection: { capabilities: { elicitation: false, inputHook: false, raw: {} } },
 } as unknown as ToolContext
 
 describe('telemetry: every tool the MCP server registers is a name of the schema', () => {

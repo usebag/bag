@@ -66,14 +66,18 @@ use omp-3
 
 with the name of one of your identities. On Claude Code and omp, bag's hook reads your typed word before the model sees
 it, so the model cannot type it for you. On Codex, and on any host where the word cannot be read that way, bag shows a
-dialog instead, the same on every host: "Act as omp-3 in this window? Its tools then act as omp-3 until it closes.",
-with one box, "Yes, act as omp-3": only a ticked Yes gives the window the identity. Asked with no name, the dialog is
+dialog instead, the same on every host: "Act as omp-3 in this window? Its tools then act as omp-3 until it closes.
+No: not asked again in this window for 5 minutes; typing use omp-3 binds it at any time.", with one box, "Yes, act as
+omp-3": only a ticked Yes gives the window the identity. Asked with no name, the dialog is
 "Which bag identity should this window act as?", with the identity a folder offers first already chosen. A window that cannot show a
-dialog cannot take an identity.
+dialog cannot take an identity. In Claude Code's VS Code extension and in Claude Desktop, the dialog is Claude Code's own
+question card ([below](#bags-questions-in-claude-codes-question-card)).
 
-The window then speaks as that identity until it closes: every tool answer says which identity it acted as (`as`). To
-switch, type `use` with another name. The identity a window had last time in a folder may be offered first, but it is
-never taken without your word, and nothing in a folder can choose for you: bag keeps no file in your project folders.
+The window then speaks as that identity until it closes, through restarts of the service: every tool answer says which
+identity it acted as (`as`). To switch, bind it to another name: by typing `use` and its name in Claude Code or omp,
+elsewhere by asking the agent to use it and saying Yes in the bind dialog. The identity a window had last time in a
+folder may be offered first, but it is never taken without your word, and nothing in a folder can choose for you: bag
+keeps no file in your project folders.
 
 A message from a peer can never give a window an identity. A model that tries to switch on a message's say-so is
 refused unless you type the word or answer Yes.
@@ -89,6 +93,84 @@ that window only. If the agent's host gives up on the call that starts a pairing
 pairing ends too, and the next call starts afresh. While a pairing runs, a new one in its window is answered `busy` with
 a token to go on with the running one; another window is told only where it runs.
 
+## bag's questions in Claude Code's question card
+
+bag asks you through your host: a form (an MCP elicitation) for "Act as omp-3 in this window?", each pairing step and
+each act that changes your home. Most hosts draw that form themselves. Claude Code's VS Code extension shows no form
+for any MCP server and answers it at once without showing it (Claude Code issue 98256), and the Code tab of Claude
+Desktop shows none either (Claude Code issue 105334). There bag asks in Claude Code's own question card instead,
+through a small plugin of bag's.
+
+| Host | Who draws bag's question |
+|---|---|
+| Claude Code in a terminal | Claude Code itself; bag adds nothing |
+| Claude Code's VS Code extension | Claude Code's own question card, through bag's plugin |
+| Claude Desktop, the Code tab | Claude Code's own question card, through bag's plugin |
+| Codex (the interactive `codex`, 0.113.0 or later) | Codex itself; bag adds nothing |
+| opencode | opencode itself; bag adds nothing |
+| omp | bag's omp extension, over its own link to the bag service |
+
+**Getting the card.** `bag host install claude-code --user` stages bag's plugin, named `bag`, in
+`<home>/package/claude-code/` and turns it on in Claude Code's user settings; `bag host remove claude-code --user` takes
+it out. Reload each Claude Code window once after the install (start a new session, or run `/reload-plugins`). The
+plugin acts only in the VS Code extension and in Claude Desktop, and only on bag's questions; in a terminal it passes
+each question on untouched, and Claude Code shows its own form.
+
+**Reading a card.**
+
+- Every bag question starts with `bag: `.
+- The first choice grants and refuses nothing. A Yes-or-No question offers "Not now", then No, then bag's own Yes
+  words; a choice of identity offers "Not now" first, then the identities; a question that asks you to type offers
+  "Ask me later", then "Cancel". A card answered by habit, or in its first place, grants nothing.
+- **No** (and "Cancel" on a question that asks you to type) is your No, as in any dialog: the act is refused. A No to
+  "Act as omp-3 in this window?" stops the agent asking for omp-3 in that window for five minutes (typing `use omp-3`
+  still binds at once); a No to an Allow between two of your own identities holds for 24 hours, and the mail that
+  waited on it goes back to its sender as declined.
+- **Not now**, "Ask me later" and closing the card are no answer: nothing is written, granted or refused, and the
+  question can come again later. In Claude Desktop, Skip is no answer too. A card that closes faster than a person could
+  read it is taken as never shown. A question left unanswered closes after two minutes (a pairing step, when its
+  invitation ends) and can be asked again; an answer after that does nothing.
+- bag's own Yes words come after the harmless choice and the No, and only they say Yes.
+- A question that asks for text (a pairing code, your peer's address, a name) takes it in the card's row for your own
+  words. Typing one of the card's own choices there ("Cancel", "No", "Not now" and the like, in any case) is no answer.
+- An identity whose name reads like one of the card's choices or like a Skip ("no", "Cancel", "skip", in any case) is
+  not offered on the card: type `use` and its name in the window to act as it.
+
+The same rule holds on every host: a form left untouched is not a No, and only a No you give (the card's No, or
+declining the form) is one.
+
+**What runs.** bag's plugin folder, staged under the bag home at `<home>/package/claude-code/`, runs inside Claude Code
+at every session start, and each bag update replaces it. It reads one setting (which Claude Code surface it runs in),
+draws the card and hands your choice to bag; it writes no file and keeps no log.
+
+**Who else can answer.** Other plugins or hooks installed in Claude Code can answer a question in your place: Claude
+Code passes the card through every installed plugin's hooks and through the hooks in its settings, including a hook an
+agent writes into your settings, which Claude Code asks you about first, and any of them can fill in an answer that bag
+cannot tell from yours. That is true of every Claude Code dialog, the terminal's included.
+`bag host install claude-code --user` and `bag status --home` list the plugins and settings hooks that could (each a
+`card_answerer` line in `status --home`); install only plugins and hooks you trust.
+
+**Imitations.** A question can be imitated: the model can raise a card of its own with bag's words, `bag: ` included. An
+imitation grants nothing: only an answer that reaches bag's own check counts, and the model's card never reaches it.
+What you type into an imitation goes to the model, not to bag, so type a pairing code only into a question you asked
+for, in a pairing you started.
+
+**Where text typed into a card goes.**
+
+In Claude Code, what you type into a card goes to bag through the card's own hook. It is not added to the
+conversation: the model does not receive it, and bag's answer to the model does not repeat it. Claude Code does pass
+it to any plugin or hook that watches its question tool, as it does with every answer you give there, and keeps it in
+its own log on this machine: in VS Code, the Claude Code extension's log (its output channel, a file under VS Code's
+logs folder); in a terminal, Claude Code's debug log when debug logging is on.
+
+In Claude Code, the plugins and hooks above see the question and your answer. On every host, the screen shows the
+text as you type it, and bag never writes it to a log or returns it in a tool's answer.
+
+**The pairing code.** On the accepting side, you type your peer's pairing code into the card. A code expires within ten
+minutes, and the six check digits protect it: the accepting side reads them out by voice, the inviting side types what
+it hears into its own card, and someone who only saw the code cannot finish the pairing without them. Wrong digits
+write nothing.
+
 ## The login agent
 
 The login agent is what keeps the service running while you are logged in. `bag host install service` prints it, for
@@ -96,6 +178,8 @@ the platform it runs on, and you load it yourself (the install page's step 6c, "
 
 - starts the service when you log in, from the copy of bag in `<home>/package/`;
 - restarts it if it stops or crashes;
+- runs it at the normal priority of a program you use, so your windows get their answers quickly (from bag 0.4.6 on
+  macOS; a login agent installed by an earlier bag keeps the lower background priority until it is installed again);
 - gives it a clean start: a fixed working directory, an environment with nothing but the variables bag needs (your
   proxy settings among them), no `NODE_OPTIONS`, no debugger signal and no core dumps. A service started any other way
   checks the same and refuses to run if they do not hold.
@@ -132,12 +216,23 @@ It runs on a terminal only and prints one line, for example `keep-alive omp-3 on
   does not start its own copy, so the service keeps running under the login agent. Only if the login agent's service
   is not answering within 20 seconds does the window start one itself. If another copy holds the home when the login
   agent's starts (one an older window started), the login agent's copy waits for it to stop and then takes over.
-- **It crashed.** The login agent starts it again. Every window loses its identity at that moment: type `use` again.
-  Nothing is lost: the mail, the cursor and the records are on disk, and the service picks up where it stopped.
+- **It crashed.** The login agent starts it again. Each window keeps its identity: when the service is back, the
+  window binds again to the identities you gave it, with no `use`, and its next answer says so once. Nothing is lost:
+  the mail, the cursor and the records are on disk, and the service picks up where it stopped. A window opened before
+  bag 0.4.6 was installed binds one last time.
+- **A window that cannot keep an identity says why.** If the identity was removed (or removed and made again under the
+  same name), or a `bag` command is using it, the window's next answer says so; when you want it again, type `use` and
+  the name in Claude Code or omp, or elsewhere ask the agent to use it and say Yes in the bind dialog. An identity in
+  your Keychain opens at the window's first act after the restart, so its Keychain question comes when you are using
+  the window, never at the restart itself.
+- **It is still opening your identities.** Right after a start the service answers every window at once and opens your
+  identities one after another. A window whose identity is not open yet hears "the identity <name> is still opening:
+  try again in a few seconds" (or, for an identity in your Keychain, that a Keychain dialog may be waiting); a window
+  that kept its identity through the restart simply waits for it to open.
 - **It is restarting for an upgrade.** It first refuses new `use` words and new pairings with `draining`, cancels any
   pairing that is running (its code and check digits are not carried over), lets running tool calls finish for up to
   10 seconds, saves everything and exits; the login agent starts the new version. A window that sees `draining` waits a
-  few seconds and tries again; a send is never sent twice.
+  few seconds and tries again; a send is never sent twice. Each window keeps its identity through it, as after a crash.
 - **The socket path is too long.** A Unix socket path must fit in 104 bytes on macOS and 108 on Linux. With a very long
   `AC_HOME` the service does not start and says so (`unsafe-path`); set a shorter home, or use one identity per folder.
 
@@ -184,28 +279,35 @@ to keep bag from running at all, take the shim out of your hosts as well (the ba
   entry, which confines every command the model's shell runs. Codex and omp have no such rule: there a model's shell
   can read the token and drive the service as any identity of the home, dialogs included.
 - An identity whose keys an agent holds: the first window that uses it meets two `y`'s at the agent, one for the
-  service's open of it and one for the window's own grant; each later window meets one. A window acts with its own
-  grant under the agent's hop, never with the principal's key. The identity is reachable from a `login` until about 24
-  hours after that login began, when its address and key records lapse; the service keeps none of them alive, and
-  running `login` again refreshes them. A send from such a window under an organisation's members record is refused
+  service's open of it and one for the window's own grant; each later window meets one. A window acts with its own grant
+  under the agent's hop, never with the principal's key. The identity is reachable from a `login` until about 24 hours
+  after that login began, when its address and key records lapse; the service keeps none of them alive, and running
+  `login` again refreshes them. A send from such a window under an organisation's members record is refused
   `not-authorized`. The service renews the identity's grant through the agent before it ends, with no `y`; a window's
   own grant renews while the window is bound, idle or not, pauses while the identity is lent or held for an act, and
-  tries once when it comes back. A grant that ends with the agent's login is used to its end with no `y` before it.
-  When a grant is revoked (a logout) or has ended, nothing is asked on a timer: the next send answers `grant-pending`
-  with the agent's request code, one `y` per grant (the identity's, and each window's own) grants a fresh key, and the
-  window carries on with its threads; the grant stays lost until that `y`. The agent's prompt carries a note written by
-  the service: the identity, the kind of window and the reason. A `no` at the agent holds until you type `use` and the
-  name again. After a regrant the old session key is deleted and revoked at the agent, at once or, when the agent could
-  not take it, at the next start or regrant; an older agent, which has no revoke, leaves the old key signing to its
-  grant's end. The grant events are in the identity's audit log, or the service's log while the identity is not open.
-  Limits: a service restart ends the identity's session, so the first bind after it asks again and its threads start
-  afresh; near the agent's window end a send can ask one `y` up to 5 minutes early (a renewal waits for the agent's
-  pace, so the last grant can end up to one pace before the login, never after it); a grant the agent signed for
-  another key at the old key's request, and an old window key, are not revoked and last to their grant's end (at most
-  8 hours).
+  tries once when it comes back. A grant that ends with the agent's login is used to its end with no `y` before it. When
+  a grant is revoked (a logout) or has ended, nothing is asked on a timer: the next send answers `grant-pending` with
+  the agent's request code, one `y` per grant (the identity's, and each window's own) grants a fresh key, and the window
+  carries on with its threads; the grant stays lost until that `y`. The agent's prompt carries a note written by the
+  service: the identity, the kind of window and the reason. A `no` at the agent holds until you type `use` and the name
+  again in Claude Code or omp, or elsewhere say Yes in the bind dialog the agent's `use` opens. After a regrant the old
+  session key is deleted and revoked at the agent, at once or, when the agent could not take it, at the next start or
+  regrant; an older agent, which has no revoke, leaves the old key signing to its grant's end. The grant events are in
+  the identity's audit log, or the service's log while the identity is not open. Limits: a service restart ends the
+  identity's session, so after it the identity asks one `y` again, and each window that keeps
+  it asks its own `y` at its first act; its threads start afresh; near the agent's window end a send can ask one `y` up
+  to 5 minutes early (a renewal waits for the agent's pace, so the last grant can end up to one pace before the login,
+  never after it); a grant the agent signed for another key at the old key's request, and an old window key, are not
+  revoked and last to their grant's end (at most 8 hours).
 - Names ending in `.service`, `.session` or `.signin` are kept for the service's own files; bag refuses them as
   identity names.
 - Where the host's sandbox denies `<home>/run/` to the model, the worst a model can do through bag is ask: giving a
   window an identity and pairing still need your word or your Yes.
 - One owner per mailbox, as before: an identity that a per-folder server or a CLI command holds is not taken by the
   service until they let go.
+
+## Known limits
+
+- After a window's bag process is killed (not closed) and the system gives its process number to another program,
+  `bag status --home` can list that closed window as bound, and that window's wakes can be missed until it binds again.
+- An omp window opened before the Mac's time zone changes stops binding until omp is restarted.
