@@ -68,6 +68,7 @@ export {
   type AnchorStore,
   AUDIT_DECISIONS,
   AUDIT_EVENTS,
+  AUDIT_RULES,
   Audit,
   type AuditDecision,
   type AuditEntry,
@@ -187,6 +188,8 @@ export {
 export { Policy, type PolicyOptions, type TrustedRoot, typeMatches } from './policy.ts'
 export type {
   AuditAnchor,
+  AuditPrefix,
+  AuditScan,
   AuditSink,
   CacheKind,
   Clock,

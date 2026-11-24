@@ -14,7 +14,7 @@ import {
 import { ConfigError } from './config.ts'
 import type { Logger } from './log.ts'
 import { type Surface, surfaceOf } from './pairing.ts'
-import { ToolError } from './tools.ts'
+import { TIMED_OUT, ToolError } from './tools.ts'
 
 // The bag service's socket side (docs/bag-service.md, "What runs"): the run directory, the single-service lock,
 // the socket path guard, the newline-delimited JSON-RPC framing, the hello, and one ServiceConnection per accepted
@@ -203,7 +203,11 @@ export interface Hello {
   readonly cwd: string
   readonly capabilities: Readonly<Record<string, unknown>>
   readonly inputHook: boolean
-  /** The Claude Code surface the shim reported (shim.surface), for wording only; null when none or unknown. */
+  /**
+   * The Claude Code surface the shim reported (shim.surface); null when none or unknown. It sets the words, and on a
+   * surface that answers every dialog itself (claude-vscode, claude-desktop) makes a decline or a cancel unseen
+   * (pairing.ts unseenAnswer): the safe direction, so a false one grants nothing.
+   */
   readonly surface: Surface | null
 }
 
@@ -217,7 +221,11 @@ export interface ServiceConnection {
     readonly inputHook: boolean
     readonly raw: Readonly<Record<string, unknown>>
   }
-  /** The Claude Code surface from the hello (wording only, never a decision); absent or null when none. */
+  /**
+   * The Claude Code surface from the hello; absent or null when none. It sets the words, and on a surface that answers
+   * every dialog itself (claude-vscode, claude-desktop) makes a decline or a cancel unseen (pairing.ts unseenAnswer):
+   * the safe direction, so a false one grants nothing.
+   */
   readonly surface?: string | null
   readonly closed: boolean
   onClose(listener: () => void): () => void
@@ -437,8 +445,7 @@ export class Connection implements ServiceConnection {
       return promise
     }
     options.signal?.addEventListener('abort', onAbort, { once: true })
-    if (options.timeoutMs !== undefined)
-      timer = setTimeout(() => abort('no answer in time'), options.timeoutMs)
+    if (options.timeoutMs !== undefined) timer = setTimeout(() => abort(TIMED_OUT), options.timeoutMs)
     if (this.#dialog === null) go()
     else this.#queue.push(go)
     return promise

@@ -136,7 +136,7 @@ describe('the service tool', () => {
   it('T14: the question says the agent starts bag at every login; a No or no answer writes no file', async () => {
     expect(ACT_QUESTIONS.service.message).toContain('starts the bag service')
     expect(ACT_QUESTIONS.service.message).toContain('at every login')
-    const no = await serverWith(() => ({ action: 'accept', content: { confirm: false } }))
+    const no = await serverWith(() => ({ action: 'decline' }))
     expect(await no.call()).toMatchObject({ error: 'declined' })
     expect(existsSync(no.agentFile)).toBe(false)
     const none = await serverWith(() => ({ action: 'cancel' }))

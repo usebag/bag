@@ -9,7 +9,8 @@ import { peer } from './peer.ts'
 // It runs in the person's terminal, picks the side from its argument (a code or invite string means accept, none means
 // invite), prompts for the peer's petname when --name is left out, prints one line of what will happen, and runs the
 // same ceremony as `peer invite` / `peer accept` (packages/cli/src/commands/peer.ts): no new protocol, no new trust
-// path. The MCP pair tools print the exact `bag pair` line to run when they cannot show a dialog (packages/mcp).
+// path. The MCP pair tools never name it: when they cannot show a dialog they answer no-elicitation with what the host
+// needs, and on the VS Code extension and Claude Desktop where bag's question card shows (packages/mcp, noDialog).
 
 const S = { type: 'string' } as const
 

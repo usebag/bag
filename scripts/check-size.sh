@@ -15,6 +15,8 @@
 #   packages/<p>/src: every *.ts but *.test.ts, *.spec.ts and files under test/, tests/, fixtures/ or __tests__/;
 #   crates/<c>/src:   every *.rs but tests.rs, testkit.rs and files under tests/ (as coverage-floors.toml leaves
 #                     them out of coverage); an inline #[cfg(test)] module with a body is counted as source.
+#   plugins/<p>/hooks: every *.ts but *.test.ts and *.spec.ts (since 2026-11-24, branch rules/card-gate: the question
+#                     card's hooks module, which runs inside Claude Code; its tests live beside hooks/, in tests/).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -58,6 +60,9 @@ sources() {
     crates/*/src)
       find "$1" -type f -name '*.rs' ! -name tests.rs ! -name testkit.rs ! -path '*/tests/*' -print0
       ;;
+    plugins/*/hooks)
+      find "$1" -type f -name '*.ts' ! -name '*.test.ts' ! -name '*.spec.ts' -print0
+      ;;
   esac
 }
 
@@ -90,8 +95,8 @@ while IFS=$'\t' read -r name path ceiling; do
   fi
   seen_names+="$name "
   seen_paths+="$path "
-  if [[ ! "$path" =~ ^(packages|crates)/[A-Za-z0-9._-]+/src$ || "$path" == *..* ]]; then
-    echo "check-size: $ceilings: [$name] path '${path}' is not packages/<name>/src or crates/<name>/src" >&2
+  if [[ ! "$path" =~ ^((packages|crates)/[A-Za-z0-9._-]+/src|plugins/[A-Za-z0-9._-]+/hooks)$ || "$path" == *..* ]]; then
+    echo "check-size: $ceilings: [$name] path '${path}' is not packages/<name>/src, crates/<name>/src or plugins/<name>/hooks" >&2
     status=1
     continue
   fi

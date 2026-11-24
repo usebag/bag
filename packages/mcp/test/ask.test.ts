@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   ASK_EVERY_S,
   ASKS_PER_HOME,
@@ -14,6 +14,7 @@ import {
   type LinkAnswer,
   type LinkAsk,
   linkBudget,
+  MAX_ASK_MS,
   MAX_PASTE,
   NOT_SENT_PER_WINDOW,
   onAsking,
@@ -25,7 +26,8 @@ import {
 } from '../src/ask.ts'
 import type { ServiceConnection } from '../src/binding.ts'
 import type { PairExtra } from '../src/pairing.ts'
-import { type ToolContext, ToolError } from '../src/tools.ts'
+import { NO_ANSWER_IN_TIME, type ToolContext, ToolError } from '../src/tools.ts'
+import { ManualTimers } from './support/ports.ts'
 
 // askPerson: one function, three routes (elicitation, the omp link, none), one text
 // check, a rate limit per window and act, and one policy audit line that never holds the text.
@@ -42,7 +44,7 @@ const personPace = (): (() => number) => pace(1000)
 /** A fake context and window: `elicit` answers the form, `link` answers over the omp link (null: no link). */
 function world(
   o: {
-    elicit?: ((params: { message: string; requestedSchema: unknown }) => unknown) | null
+    elicit?: ((params: { message: string; requestedSchema: unknown }, options?: unknown) => unknown) | null
     link?: ((q: LinkAsk) => LinkAnswer | null) | null
     mono?: () => number
     surface?: string
@@ -52,6 +54,7 @@ function world(
   const logs: unknown[] = []
   const asked: LinkAsk[] = []
   const clock = { t: 1_000_000, now: () => clock.t }
+  const timers = new ManualTimers()
   const conn = {
     handle: `w${homes}`,
     host: o.elicit == null ? 'omp' : 'claude-code',
@@ -60,12 +63,14 @@ function world(
     ...(o.surface === undefined ? {} : { surface: o.surface }),
     closed: false,
     onClose: () => () => {},
-    elicit: async (params: { message: string; requestedSchema: unknown }) => o.elicit?.(params),
+    elicit: async (params: { message: string; requestedSchema: unknown }, options?: unknown) =>
+      o.elicit?.(params, options),
     notify: () => {},
   } as unknown as ServiceConnection
   const ctx = {
     config: { home: `/home/${homes++}` },
     clock,
+    timers,
     // A person's pace by default: each read moves a second, so no dialog reads as answered at once (unseen).
     mono: o.mono ?? personPace(),
     canElicit: () => o.elicit != null,
@@ -83,7 +88,7 @@ function world(
           },
   } as unknown as ToolContext
   const extra = { signal: new AbortController().signal, requestId: 1 } as unknown as PairExtra
-  return { ctx, conn, extra, audit, logs, asked, clock }
+  return { ctx, conn, extra, audit, logs, asked, clock, timers }
 }
 
 const confirm: Ask = { act: 'test-act', kind: 'confirm', title: 'Yes: do it', message: 'Do it?' }
@@ -106,6 +111,56 @@ describe('askPerson: routing', () => {
     const l = world({ link: (q) => (q.kind === 'text' ? null : { accepted: true }) })
     expect(await askPerson(l.ctx, l.extra, text, l.conn)).toBeNull()
     expect(l.asked).toHaveLength(1)
+  })
+})
+
+describe("askPerson: bag's own bound (MAX_ASK_MS) ends a question as no answer in time", () => {
+  /** A window whose dialog stands until bag withdraws it (the signal), as a person who never answers. */
+  const standing = (surface?: string) =>
+    world({
+      elicit: (_p, options) =>
+        new Promise((_ok, fail) =>
+          (options as { signal: AbortSignal }).signal.addEventListener('abort', () =>
+            fail(new ToolError('cancelled', 'the call was cancelled')),
+          ),
+        ),
+      // Each read 10 ms: under the unseen rule this withdrawal would read as answered at once, not shown.
+      mono: pace(10),
+      ...(surface === undefined ? {} : { surface }),
+    })
+  const ended = async (w: ReturnType<typeof standing>): Promise<unknown> => {
+    const asked = askPerson(w.ctx, w.extra, confirm, w.conn).catch((e: unknown) => e)
+    await vi.waitFor(() => expect(w.timers.live()).toContain(MAX_ASK_MS))
+    w.timers.fire((ms) => ms === MAX_ASK_MS)
+    return asked
+  }
+
+  it.each(['claude-vscode', 'claude-desktop', 'cli', undefined])(
+    'on %s: cancelled, no answer in time; never no-elicitation, a No or a Yes, and no policy line',
+    async (surface) => {
+      const w = standing(surface)
+      const e = (await ended(w)) as ToolError
+      expect([e.code, e.message]).toEqual(['cancelled', `cancelled: ${NO_ANSWER_IN_TIME}`])
+      expect(w.audit).toEqual([])
+    },
+  )
+
+  it('spends the unanswered budget as a none does: past UNANSWERED_PER_WINDOW in a row it is rate-limited, left unanswered', async () => {
+    const w = standing('claude-vscode')
+    // More than ASKS_PER_WINDOW: a late question spends no answered ask, only an unanswered one.
+    for (let i = 0; i < UNANSWERED_PER_WINDOW; i++) {
+      const e = (await ended(w)) as ToolError
+      expect([e.code, e.message]).toEqual(['cancelled', `cancelled: ${NO_ANSWER_IN_TIME}`])
+    }
+    const e = (await askPerson(w.ctx, w.extra, confirm, w.conn).catch((x: unknown) => x)) as ToolError
+    expect(e.code).toBe('rate-limited')
+    expect(e.message).toMatch(
+      new RegExp(
+        `^rate-limited: test-act was left unanswered ${UNANSWERED_PER_WINDOW} times lately here: ask again in `,
+      ),
+    )
+    // Never a refusal on the record: no policy line for any of them.
+    expect(w.audit).toEqual([])
   })
 })
 
@@ -161,7 +216,7 @@ describe('askPerson: an answer faster than a person is unseen (0.4.4)', () => {
     }
   })
 
-  it('at 300 ms the same answers are the person: No, none, yes, No', async () => {
+  it('at 300 ms the same answers are the person: No, none, yes, none (an accept with false is no answer)', async () => {
     const said = async (elicit: () => unknown) => {
       const w = world({ elicit, mono: pace(300) })
       return (await askPerson(w.ctx, w.extra, confirm, w.conn))?.said
@@ -169,10 +224,10 @@ describe('askPerson: an answer faster than a person is unseen (0.4.4)', () => {
     expect(await said(() => ({ action: 'decline' }))).toBe('no')
     expect(await said(() => ({ action: 'cancel' }))).toBe('none')
     expect(await said(() => ({ action: 'accept', content: { confirm: true } }))).toBe('yes')
-    expect(await said(() => ({ action: 'accept', content: { confirm: false } }))).toBe('no')
+    expect(await said(() => ({ action: 'accept', content: { confirm: false } }))).toBe('none')
   })
 
-  it('the surface changes the words only: same results on cli, claude-vscode, claude-desktop and none', async () => {
+  it('a fast decline and a slow Yes answer alike on cli, claude-vscode, claude-desktop and none; the surface changes the words', async () => {
     const texts: Record<string, string> = {}
     for (const surface of ['cli', 'claude-vscode', 'claude-desktop', undefined]) {
       const fast = world({
@@ -199,6 +254,87 @@ describe('askPerson: an answer faster than a person is unseen (0.4.4)', () => {
     expect(texts['claude-desktop']).toContain(
       'Claude Desktop does this with every dialog (Claude Code issue 98256)',
     )
+  })
+})
+
+// 2026-11-23, live on 0.4.5: in the VS Code extension, the identities tool's full-address confirm answered "your user
+// said No" three times running, with no dialog shown: on a loaded machine the extension's own decline took longer than
+// FAST_ANSWER_MS. On a surface known to answer every dialog itself, a decline or a cancel is never the person's.
+describe('askPerson: on a surface that answers every dialog itself, a decline or a cancel is never the person', () => {
+  const full: Ask = { act: 'identities-full', kind: 'confirm', title: 'Yes: show them', message: 'Show?' }
+  const unseenOf = (logs: unknown[]): unknown[] =>
+    logs.filter(
+      (l) => (l as unknown[])[1] === 'consent-dialog' && JSON.stringify(l).includes('no-elicitation'),
+    )
+
+  for (const surface of ['claude-vscode', 'claude-desktop']) {
+    for (const ms of [10, 300, 5000]) {
+      it(`${surface}: a decline or a cancel after ${ms} ms is no-elicitation in its words; nothing written, no budget spent`, async () => {
+        for (const action of ['decline', 'cancel']) {
+          const w = world({ elicit: () => ({ action }), mono: pace(ms), surface })
+          for (let i = 0; i <= ASKS_PER_WINDOW; i++) {
+            const e = await askPerson(w.ctx, w.extra, full, w.conn).catch((x: unknown) => x)
+            expect([(e as ToolError).code, action]).toEqual(['no-elicitation', action])
+            expect((e as ToolError).message).toContain(
+              'does this with every dialog (Claude Code issue 98256)',
+            )
+          }
+          // No policy line says no, and the log line says what happened.
+          expect(w.audit).toEqual([])
+          expect(unseenOf(w.logs)).toHaveLength(ASKS_PER_WINDOW + 1)
+        }
+      })
+    }
+
+    it(`${surface}: an accept after 300 ms is still the person's: Yes, and false is no answer`, async () => {
+      const yes = world({
+        elicit: () => ({ action: 'accept', content: { confirm: true } }),
+        mono: pace(300),
+        surface,
+      })
+      expect(await askPerson(yes.ctx, yes.extra, full, yes.conn)).toEqual({ said: 'yes', text: null })
+      const no = world({
+        elicit: () => ({ action: 'accept', content: { confirm: false } }),
+        mono: pace(300),
+        surface,
+      })
+      expect(await askPerson(no.ctx, no.extra, full, no.conn)).toEqual({ said: 'none' })
+      expect([yes.audit.length, no.audit.length]).toEqual([1, 1])
+    })
+
+    it(`${surface}: an accept after 10 ms is still unseen (0.4.4)`, async () => {
+      const w = world({
+        elicit: () => ({ action: 'accept', content: { confirm: true } }),
+        mono: pace(10),
+        surface,
+      })
+      await expect(askPerson(w.ctx, w.extra, full, w.conn)).rejects.toMatchObject({ code: 'no-elicitation' })
+    })
+  }
+
+  it("the terminal (cli) and no surface keep the timing rule: a decline after 300 ms is the person's No, after 10 ms unseen", async () => {
+    for (const surface of ['cli', undefined]) {
+      const slow = world({
+        elicit: () => ({ action: 'decline' }),
+        mono: pace(300),
+        ...(surface ? { surface } : {}),
+      })
+      expect(await askPerson(slow.ctx, slow.extra, full, slow.conn)).toEqual({ said: 'no' })
+      expect(slow.audit).toHaveLength(1)
+      const fast = world({
+        elicit: () => ({ action: 'decline' }),
+        mono: pace(10),
+        ...(surface ? { surface } : {}),
+      })
+      await expect(askPerson(fast.ctx, fast.extra, full, fast.conn)).rejects.toMatchObject({
+        code: 'no-elicitation',
+      })
+    }
+  })
+
+  it("omp's link carries no timing and no surface: its No is the person's (the extension's own OMP_FAST_MS judges it)", async () => {
+    const no = world({ link: () => ({ accepted: false }), surface: 'claude-vscode' })
+    expect(await askPerson(no.ctx, no.extra, full, no.conn)).toEqual({ said: 'no' })
   })
 })
 
@@ -661,5 +797,134 @@ describe('askPerson: the asks waiting on a person (service.json asking)', () => 
     const none = world({ link: () => null })
     expect(await askPerson(none.ctx, none.extra, confirm, none.conn)).toBeNull()
     expect(askingIn(none.ctx.config.home)).toBe(0)
+  })
+})
+
+// The question card (design 2026-11-24, section 7): on a surface that draws no dialog, bag's adapter answers every card
+// with an accept whose content holds bag_card and bag_open_ms. bag alone reads it (pairing.ts cardSaid): the card's No
+// is the person's No, a dismissal, an idle card or stray text is no answer, and a marker on the terminal is refused.
+describe('askPerson: a card answer (cardSaid)', () => {
+  const full: Ask = { act: 'identities-full', kind: 'confirm', title: 'Yes: show them', message: 'Show?' }
+  const card = (content: Record<string, unknown>) => () => ({ action: 'accept', content })
+  const said = async (content: Record<string, unknown>, surface?: string, ms = 1000) => {
+    const w = world({ elicit: card(content), mono: pace(ms), ...(surface ? { surface } : {}) })
+    const a = await askPerson(w.ctx, w.extra, full, w.conn).catch((e: unknown) => (e as ToolError).code)
+    return [typeof a === 'string' ? a : a?.said, w.audit.map((l) => l.decision).join()]
+  }
+
+  for (const surface of ['claude-vscode', 'claude-desktop']) {
+    it(`${surface}: a marked Yes grants; a marked Yes without the field's true grants nothing`, async () => {
+      expect(await said({ confirm: true, bag_card: 'yes', bag_open_ms: 4000 }, surface)).toEqual([
+        'yes',
+        'accept',
+      ])
+      expect(await said({ confirm: false, bag_card: 'yes', bag_open_ms: 4000 }, surface)).toEqual([
+        'none',
+        'queue',
+      ])
+    })
+
+    it(`${surface}: the card's No is the person's No, audited reject, spending the answered budget`, async () => {
+      expect(await said({ confirm: false, bag_card: 'no', bag_open_ms: 4000 }, surface)).toEqual([
+        'no',
+        'reject',
+      ])
+      const w = world({ elicit: card({ bag_card: 'no', bag_open_ms: 4000 }), surface })
+      for (let i = 0; i < ASKS_PER_WINDOW; i++)
+        expect(await askPerson(w.ctx, w.extra, full, w.conn)).toEqual({ said: 'no' })
+      await expect(askPerson(w.ctx, w.extra, full, w.conn)).rejects.toMatchObject({ code: 'rate-limited' })
+    })
+
+    it(`${surface}: dismissed, idle and stray text under Other are no answer: no reject, the next call asks again`, async () => {
+      for (const mark of ['dismissed', 'idle', 'other']) {
+        const asked: unknown[] = []
+        const w = world({
+          elicit: (p) => {
+            asked.push(p)
+            return { action: 'accept', content: { confirm: true, bag_card: mark, bag_open_ms: 4000 } }
+          },
+          surface,
+        })
+        for (let i = 0; i < UNANSWERED_PER_WINDOW; i++)
+          expect(await askPerson(w.ctx, w.extra, full, w.conn), mark).toEqual({ said: 'none' })
+        expect([asked.length, w.audit.filter((l) => l.decision === 'reject').length]).toEqual([
+          UNANSWERED_PER_WINDOW,
+          0,
+        ])
+        // Only the unanswered budget was spent: past it, rate-limited.
+        await expect(askPerson(w.ctx, w.extra, full, w.conn)).rejects.toMatchObject({ code: 'rate-limited' })
+      }
+    })
+
+    it(`${surface}: a dismissal open under 250 ms is no-elicitation; an idle card is not, and a marked accept in 10 ms is`, async () => {
+      expect(await said({ bag_card: 'dismissed', bag_open_ms: 40 }, surface)).toEqual(['no-elicitation', ''])
+      expect(await said({ bag_card: 'dismissed', bag_open_ms: '40' }, surface)).toEqual([
+        'no-elicitation',
+        '',
+      ])
+      expect(await said({ bag_card: 'idle', bag_open_ms: 40 }, surface)).toEqual(['none', 'queue'])
+      expect(await said({ confirm: true, bag_card: 'yes', bag_open_ms: 4000 }, surface, 10)).toEqual([
+        'no-elicitation',
+        '',
+      ])
+    })
+
+    it(`${surface}: an unknown marker value is no answer, never main's reading of the field`, async () => {
+      for (const v of ['maybe', 'YES', 7, null])
+        expect(await said({ confirm: true, bag_card: v, bag_open_ms: 4000 }, surface)).toEqual([
+          'none',
+          'queue',
+        ])
+    })
+
+    it(`${surface}: a typed text passes the text check: over-long is asked once more, then no answer; Other types the value`, async () => {
+      const typed = (v: string, mark = 'yes') => {
+        const asked: unknown[] = []
+        const w = world({
+          elicit: (p) => {
+            asked.push(p)
+            return { action: 'accept', content: { text: v, bag_card: mark, bag_open_ms: 4000 } }
+          },
+          surface,
+        })
+        return askPerson(w.ctx, w.extra, text, w.conn).then((a) => [a, asked.length])
+      }
+      expect(await typed('x'.repeat(33))).toEqual([{ said: 'none' }, 2])
+      expect(await typed('x'.repeat(32))).toEqual([{ said: 'yes', text: 'x'.repeat(32) }, 1])
+      expect(await typed('abc', 'other')).toEqual([{ said: 'yes', text: 'abc' }, 1])
+      // No answer stops the second ask.
+      expect(await typed('abc', 'dismissed')).toEqual([{ said: 'none' }, 1])
+      expect(await typed('abc', 'no')).toEqual([{ said: 'no' }, 1])
+    })
+  }
+
+  it('a dismissal with no bag_open_ms is no answer, never unseen', async () => {
+    for (const surface of ['claude-vscode', 'claude-desktop'])
+      expect(await said({ bag_card: 'dismissed' }, surface)).toEqual(['none', 'queue'])
+  })
+
+  // An unticked switch is not a No (opencode, 2026-11-24): an unmarked accept with false is no answer on every surface;
+  // only a decline is the person's No.
+  it('an unmarked accept with false is no answer on cli, claude-vscode and no surface; a decline at 900 ms on cli is a No', async () => {
+    for (const surface of ['cli', 'claude-vscode', undefined])
+      expect(await said({ confirm: false }, surface, 900)).toEqual(['none', 'queue'])
+    const w = world({ elicit: () => ({ action: 'decline' }), mono: pace(900), surface: 'cli' })
+    expect(await askPerson(w.ctx, w.extra, full, w.conn)).toEqual({ said: 'no' })
+    expect(w.audit.map((l) => l.decision)).toEqual(['reject'])
+  })
+
+  it('the terminal (cli) and no surface refuse a marker as no answer (no adapter runs there); unmarked answers as before', async () => {
+    for (const surface of ['cli', undefined]) {
+      expect(await said({ confirm: true, bag_card: 'yes', bag_open_ms: 4000 }, surface)).toEqual([
+        'none',
+        'queue',
+      ])
+      expect(await said({ confirm: false, bag_card: 'no', bag_open_ms: 4000 }, surface)).toEqual([
+        'none',
+        'queue',
+      ])
+      expect(await said({ confirm: true }, surface)).toEqual(['yes', 'accept'])
+      expect(await said({ confirm: false }, surface)).toEqual(['none', 'queue'])
+    }
   })
 })

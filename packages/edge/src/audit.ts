@@ -15,7 +15,15 @@ import {
   parseJson,
   sha256hex,
 } from '@usebag/core'
-import { type AuditAnchor, type AuditSink, type Clock, EdgeError, type NamedAnchor } from './ports.ts'
+import {
+  type AuditAnchor,
+  type AuditPrefix,
+  type AuditScan,
+  type AuditSink,
+  type Clock,
+  EdgeError,
+  type NamedAnchor,
+} from './ports.ts'
 import { countTelemetry } from './telemetry.ts'
 
 // The hash-chained audit log (spec/SPEC.md §9.8): one JSON line per step, each line's hash over the canonical audit
@@ -162,7 +170,17 @@ export interface AnchorStore {
   put(anchor: AuditAnchor): void
   /** The other files of the set this log belongs to, each with its anchor; checked when the log opens. */
   others?(): readonly NamedAnchor[]
+  /** The verified prefix of the file `name` of the set (this log's name included), or null. */
+  prefix?(name: string): AuditPrefix | null
+  /** Keeps the verified prefix of the file `name`: called at an open only, after that file was checked whole. */
+  setPrefix?(name: string, prefix: AuditPrefix): void
 }
+
+/**
+ * The line rules a verified prefix was checked under: raise it with any change to what parseAuditLine or lineHash
+ * accepts, so that the next open of every log checks it whole again under the new rules.
+ */
+export const AUDIT_RULES = 1
 
 /**
  * Compares a log's lines with its anchor: `truncated` when the log has fewer lines than the anchor's seq, `diverged`
@@ -275,6 +293,12 @@ export class Audit {
     this.#sink = sink
     this.#clock = clock
     this.#anchor = anchor ?? null
+    if (anchor?.prefix !== undefined && anchor.setPrefix !== undefined && sink.scan !== undefined) {
+      const head = this.#open(anchor)
+      this.#seq = head?.seq ?? 0
+      this.#prev = head?.hash ?? AUDIT_GENESIS
+      return
+    }
     const lines = anchor === undefined ? undefined : sink.read?.()
     const last = lines === undefined ? sink.last() : (lines.at(-1) ?? null)
     const line = last === null ? null : parseAuditLine(last)
@@ -312,6 +336,90 @@ export class Audit {
       }
       Audit.#refuse(a.name, checkAuditAnchor(lines, a), lines)
     }
+  }
+
+  /**
+   * The open through verified prefixes, with today's checks and words: every other anchored file first, then this one.
+   * Returns this log's last line. A file whose prefix fits its row and whose first bytes still hash to it has only the
+   * lines after them parsed and chained; any doubt (no prefix, other rules, a prefix past the anchor, another digest,
+   * a file shorter than it) reads the whole file and checks it as before the prefix existed. Each file checked whole
+   * gets a prefix up to its anchored line; a log with no row is adopted unchecked, as before, and gets none.
+   */
+  #open(anchor: AnchorStore): AuditLine | null {
+    const sink = this.#sink as Required<Pick<AuditSink, 'scan'>>
+    const scan = (file: string | null, from: number): AuditScan | null => sink.scan(file, from)
+    const store = anchor as Required<Pick<AnchorStore, 'setPrefix'>>
+    const setPrefix = (name: string, prefix: AuditPrefix): void => store.setPrefix(name, prefix)
+    // One file against its row: the lines after its verified prefix (or all of them), and that prefix.
+    const check = (
+      name: string,
+      file: string | null,
+      kept: AuditAnchor,
+    ): { scanned: AuditScan; base: AuditPrefix | null } | null => {
+      const p = anchor.prefix?.(name) ?? null
+      const fits = p !== null && p.rules === AUDIT_RULES && p.seq <= kept.seq && p.bytes > 0
+      let scanned = scan(file, fits ? p.bytes : 0)
+      if (scanned === null) return null
+      const base: AuditPrefix | null = fits && scanned.head === p.digest ? p : null
+      if (base === null && fits) {
+        // The file read again whole; gone between the two reads, it is refused as a file that is not there.
+        const whole = scan(file, 0)
+        if (whole === null) return null
+        scanned = whole
+      }
+      const lines = scanned.lines
+      Audit.#refuse(name, checkTail(lines, base, kept), undefined)
+      const chain = verifyLines(lines, base?.seq ?? 0, base?.hash ?? AUDIT_GENESIS)
+      if (!chain.ok) {
+        throw new EdgeError(
+          'diverged',
+          `line ${chain.line} of the audit log ${name} breaks its hash chain (${chain.problem}); its anchor is at line ${kept.seq}`,
+        )
+      }
+      return { scanned, base }
+    }
+    // Keeps the prefix that ends at line `upTo` of a file just checked, when it moves.
+    const keep = (name: string, c: { scanned: AuditScan; base: AuditPrefix | null }, upTo: number): void => {
+      const from = c.base?.seq ?? 0
+      // Never past the last complete line: a writer of a sidecar may be inside an append as this open reads.
+      const count = Math.min(upTo - from, c.scanned.complete)
+      if (count <= 0) return
+      const last = parseAuditLine(c.scanned.lines[count - 1] as string)
+      const { bytes, digest } = c.scanned.extend(count)
+      setPrefix(name, { bytes, digest, seq: last.seq, hash: last.hash, rules: AUDIT_RULES })
+    }
+    if (this.#sink.peer !== undefined) {
+      for (const a of anchor.others?.() ?? []) {
+        const c = check(a.name, a.name, a)
+        if (c === null)
+          throw new EdgeError(
+            'truncated',
+            `the audit log ${a.name} is anchored at line ${a.seq} and is not there`,
+          )
+        keep(a.name, c, a.seq)
+      }
+    }
+    const name = this.#sink.name ?? 'audit'
+    const kept = anchor.get()
+    if (kept === null) {
+      // No row: the last line is adopted unchecked, as before the prefix; the next open checks it whole.
+      const lines = scan(null, 0)?.lines ?? []
+      const head = lines.length === 0 ? null : parseAuditLine(lines.at(-1) as string)
+      if (head !== null) anchor.put({ seq: head.seq, hash: head.hash })
+      return head
+    }
+    const c = check(name, null, kept)
+    const lines = c?.scanned.lines ?? []
+    if (c === null) Audit.#refuse(name, checkTail([], null, kept), undefined)
+    const head =
+      lines.length > 0
+        ? parseAuditLine(lines.at(-1) as string)
+        : c?.base !== null && c?.base !== undefined
+          ? ({ seq: c.base.seq, hash: c.base.hash } as AuditLine)
+          : null
+    if (head !== null && head.seq > kept.seq) anchor.put({ seq: head.seq, hash: head.hash })
+    if (c !== null) keep(name, c, Math.max(kept.seq, head?.seq ?? 0))
+    return head
   }
 
   /** Refuses a log cut short of its anchor, or that does not hold it, or whose chain does not recompute. */
@@ -405,10 +513,32 @@ export function verifyAuditLog(lines: readonly string[], anchor?: AuditAnchor | 
   return { ...chain, anchor: check }
 }
 
-function verifyLines(lines: readonly string[]): AuditVerdict {
-  let prev = AUDIT_GENESIS
+/**
+ * checkAuditAnchor for the lines after a verified prefix (`base`, null for none: then exactly checkAuditAnchor): the
+ * file has base.seq lines before them.
+ */
+function checkTail(lines: readonly string[], base: AuditPrefix | null, anchor: AuditAnchor): AnchorCheck {
+  if (base === null) return checkAuditAnchor(lines, anchor)
+  const total = base.seq + lines.length
+  const at = (state: AnchorState): AnchorCheck => ({ state, seq: anchor.seq, lines: total })
+  if (total < anchor.seq) return at('truncated')
+  if (anchor.seq === base.seq)
+    return at(base.hash === anchor.hash ? (total > anchor.seq ? 'ahead' : 'ok') : 'diverged')
+  let line: AuditLine
+  try {
+    line = parseAuditLine(lines[anchor.seq - base.seq - 1] as string)
+  } catch {
+    return at('diverged')
+  }
+  if (line.seq !== anchor.seq || line.hash !== anchor.hash) return at('diverged')
+  return at(total > anchor.seq ? 'ahead' : 'ok')
+}
+
+/** Recomputes the chain of `lines`, the lines after the first `start` of a log, whose last hash is `prev`. */
+function verifyLines(lines: readonly string[], start = 0, from = AUDIT_GENESIS): AuditVerdict {
+  let prev = from
   for (const [i, text] of lines.entries()) {
-    const n = i + 1
+    const n = start + i + 1
     let line: AuditLine
     try {
       line = parseAuditLine(text)
@@ -420,5 +550,5 @@ function verifyLines(lines: readonly string[]): AuditVerdict {
     if (lineHash(line) !== line.hash) return { ok: false, line: n, problem: 'the hash does not recompute' }
     prev = line.hash
   }
-  return { ok: true, lines: lines.length }
+  return { ok: true, lines: start + lines.length }
 }

@@ -271,6 +271,20 @@ export interface NamedAnchor extends AuditAnchor {
 }
 
 /**
+ * The part of an audit file its edge verified in full at an open: its first `bytes` bytes (up to the end of a complete
+ * line), their sha256 `digest`, the `seq` and `hash` of their last line, and the line rules (`rules`) that verified them.
+ * An open hashes those bytes and verifies only the lines after them; kept in the file's anchor row, written by the edge
+ * that holds the store's writer lock, only at an open.
+ */
+export interface AuditPrefix {
+  readonly bytes: number
+  readonly digest: string
+  readonly seq: number
+  readonly hash: string
+  readonly rules: number
+}
+
+/**
  * The edge's durable state (adapter: sqlite-store): outbox, outbox_targets, inbox, seen, threads, pins, fs_known,
  * record_cache and audit_anchor. A frame is identified by its position, (relay, mailbox, cursor), and its envelope id:
  * a redelivered frame finds its row, and a new envelope at a position a restored relay used again gets its own.
@@ -346,6 +360,10 @@ export interface EdgeStore {
   /** The anchor of the audit log `name`, or null when none was kept. */
   auditAnchorGet(name: string): AuditAnchor | null
   auditAnchorPut(name: string, anchor: AuditAnchor, now: number): void
+  /** The verified prefix kept in the anchor row of `name`, or null (no row, or a row without one). */
+  auditPrefixGet(name: string): AuditPrefix | null
+  /** Puts the verified prefix in the existing anchor row of `name`: its prefix columns only, never seq or hash. */
+  auditPrefixPut(name: string, prefix: AuditPrefix): void
   /** Every audit file the store anchors: the authority for which files must exist. */
   auditAnchors(): readonly NamedAnchor[]
   /**
@@ -572,6 +590,23 @@ export interface AuditSink {
   read?(): readonly string[]
   /** The lines of the audit file `name` beside this one, null when it is not there: the set an edge checks at start. */
   peer?(name: string): readonly string[] | null
+  /**
+   * This file (`name` null) or the file `name` beside it, read past its first `from` bytes: their sha256, streamed, and
+   * the lines after them; null when the file is not there. What lets an open skip the part it verified before.
+   */
+  scan?(name: string | null, from: number): AuditScan | null
+}
+
+/** A file read by AuditSink.scan. */
+export interface AuditScan {
+  /** The sha256 hex of the first `from` bytes; null when the file is shorter than that. */
+  readonly head: string | null
+  /** The lines after them, as readAuditLines splits them: a last line without its newline is kept. */
+  readonly lines: readonly string[]
+  /** How many of those lines end with their newline: all of them, or all but a last line still being written. */
+  readonly complete: number
+  /** The prefix that ends after the first `count` of those lines (each ends with its newline): its length and sha256. */
+  extend(count: number): { readonly bytes: number; readonly digest: string }
 }
 
 /** A verified, unsealed message as a session receives it (spec/SPEC.md §9.6). */

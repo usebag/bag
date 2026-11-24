@@ -525,6 +525,7 @@ are on the Release already is not built again, and neither is `SHA256SUMS`.
 | # | Step | Who | Command or check |
 |---|---|---|---|
 | 1 | version, lock line, `## vX.Y.Z: YYYY-MM-DD` section, pinned install lines, telemetry `BUILDS` | maintainer | `node scripts/release-bump.mjs X.Y.Z --infra <dir>` in the source repository, reviewed; the infrastructure repository's pull request merged before the cut |
+| 1a | the question card's plugin, on the commit to be cut | maintainer | `claude plugin validate plugins/claude-code-card` and `claude plugin test plugins/claude-code-card` both clean, with the Claude Code version they ran under (`claude --version`) written in the release's pull request; the gate cannot run them, since they need the Claude Code binary |
 | 2 | the cut, as one pull request, rebase-merged | maintainer merges | the cut's own checks pass; the cut commit is the newest `bag public cut of ` on `main` |
 | 3 | a changed workflow file, as its own pull request | maintainer merges | `gh workflow run` finds the workflow on `main` |
 | 4 | stage on npm | `npm-publish.yml`, on the merge, or started by hand | the run prints `staged @usebag/bag@X.Y.Z from <commit>, ...` and the sha256 |

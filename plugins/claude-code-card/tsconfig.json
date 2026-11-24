@@ -1,0 +1,19 @@
+{
+  // The tsconfig the header of Claude Code's hooks-module types gives (2.1.322), for an editor or `tsc -p` beside the
+  // types the engine lays in .claude-plugin/types.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "types": [],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "jsx": "react",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment"
+  },
+  "include": [".claude-plugin/types", "hooks", "tests"]
+}

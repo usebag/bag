@@ -756,7 +756,7 @@ describe('identity_create through the tool, in a window bound to no identity', (
     w.send({
       jsonrpc: '2.0',
       id: req.id,
-      result: { action: 'accept', content: { confirm: false }, _meta: { [DIALOG_META]: handle } },
+      result: { action: 'decline', _meta: { [DIALOG_META]: handle } },
     })
     expect(await no).toMatchObject({ error: 'declined', as: null })
     // No answer: cancelled, nothing written.
@@ -1069,8 +1069,16 @@ describe("host_wire and unwire: a proposal for the window's own folder, for the 
       title: ACT_QUESTIONS.wireTyped('claude-code', dir).title,
     })
     expect(JSON.stringify(first.params)).not.toContain('personal')
-    first.answer({ text: 'nobody' })
-    expect(await nobody).toMatchObject({ error: 'unknown-identity', as: null })
+    // A typed canary that is no identity: the refusal names the check, never the typed text, in no result and no log.
+    first.answer({ text: 'zq-canary-7341' })
+    const refused = await nobody
+    expect(refused).toMatchObject({ error: 'unknown-identity', as: null })
+    expect(JSON.stringify(refused)).not.toContain('zq-canary-7341')
+    expect(JSON.stringify(log.lines)).not.toContain('zq-canary-7341')
+    for (const l of readdirSync(join(home, 'state'))) {
+      const audit = join(home, 'state', l, 'audit.jsonl')
+      if (existsSync(audit)) expect(readFileSync(audit, 'utf8')).not.toContain('zq-canary-7341')
+    }
     expect(proposals()).toEqual([])
     // The person typing "work": a row of proposals.json, 0600, and the result says its records were not published.
     const typed = call(w, 'host_wire', { host: 'claude-code', action: 'wire' })

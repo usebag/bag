@@ -36,7 +36,7 @@ import {
 import { fetchTripwire, relayTripwire } from '@usebag/edge/test-support'
 import { type HomeIo, keepFirstRecordsLocal, readRemoved, recordRemoved } from '@usebag/home'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { LINK_ASK_MS } from '../src/ask.ts'
+import { LINK_ASK_MS, MAX_ASK_MS } from '../src/ask.ts'
 import { pairingsOfTable, type ServiceConnection } from '../src/binding.ts'
 import { parseConfig, parseServerConfig, type ServerConfig } from '../src/config.ts'
 import { dropLocalPair, localPeersPath, localWordPath, spoolDir } from '../src/local.ts'
@@ -225,7 +225,7 @@ interface Line {
 async function window(
   s: Service,
   label: string,
-  answer: boolean | null | 'never' | 'decline' | 'empty' | 'cancel-late' = true,
+  answer: boolean | null | 'never' | 'decline' | 'decline-late' | 'empty' | 'cancel-late' | Json = true,
   hello: Json = {},
 ): Promise<Line> {
   const line = await connected(s, label, hello)
@@ -241,13 +241,17 @@ async function window(
       const result =
         answer === null || answer === 'cancel-late'
           ? { action: 'cancel' }
-          : answer === 'decline'
+          : answer === 'decline' || answer === 'decline-late'
             ? { action: 'decline' }
             : answer === 'empty'
               ? { action: 'accept', content: {} }
-              : { action: 'accept', content: { confirm: answer } }
+              : typeof answer === 'object'
+                ? { action: 'accept', content: answer }
+                : { action: 'accept', content: { confirm: answer } }
       // 'cancel-late': the person saw the dialog and closed it, at a person's pace.
-      if (result.action === 'accept' || answer === 'cancel-late') pace.skew += 300
+      // 'decline-late': a host's own decline that came after FAST_ANSWER_MS (a loaded machine, 2026-11-23).
+      if (result.action === 'accept' || answer === 'cancel-late' || answer === 'decline-late')
+        pace.skew += 300
       line.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } })
     }
   })().catch(() => {})
@@ -419,7 +423,8 @@ describe('an identity on this machine only (relays []): local mail, and no relay
   const HERE = 'research is on this machine only: give it relays with identity_relays, then send again'
   const ASK =
     'personal on this machine wants to message research. Allow both ways? Their messages stay on this machine, never ' +
-    'go to a relay, and reach each agent as mail from your own identity.'
+    'go to a relay, and reach each agent as mail from your own identity. No refuses it for 24 hours and returns the ' +
+    'waiting mail to its sender as declined; closing this question leaves it waiting.'
 
   it('opens with no subscription and no keeper; a first send asks the Allow once, delivers, no rotate', async () => {
     word(true)
@@ -655,7 +660,8 @@ describe("discovery: status's home (spec/SPEC.md 9.2 item 1)", () => {
 describe("the local pair on first touch: the message waits for the person's Allow (spec/SPEC.md 9.2 item 1)", () => {
   const ASK =
     'personal on this machine wants to message research. Allow both ways? Their messages stay on this machine, never ' +
-    'go to a relay, and reach each agent as mail from your own identity.'
+    'go to a relay, and reach each agent as mail from your own identity. No refuses it for 24 hours and returns the ' +
+    'waiting mail to its sender as declined; closing this question leaves it waiting.'
   const held = (): string[] => {
     const dir = join(spoolDir(home, 'carol'), 'held')
     return existsSync(dir) ? readdirSync(dir).sort() : []
@@ -784,7 +790,7 @@ describe("the local pair on first touch: the message waits for the person's Allo
     const s = await start({ clock })
     const a = await window(s, 'personal')
     const one = await call(a, 'send', chat([P.carol.address]))
-    const b = await window(s, 'research', false)
+    const b = await window(s, 'research', 'decline-late')
     await call(b, 'status')
     expect(held()).toEqual([])
     expect((await call(a, 'status', { id: one.id })).status).toBe('not delivered: your person declined')
@@ -820,7 +826,7 @@ describe("the local pair on first touch: the message waits for the person's Allo
     const s = await start({ clock })
     const a = await window(s, 'personal')
     expect(await call(a, 'pair_invite', { for: P.carol.address })).toMatchObject({ pairing: 'requested' })
-    const no = await window(s, 'research', false)
+    const no = await window(s, 'research', 'decline-late')
     await call(no, 'status')
     // The sender's own dialog first; its Yes puts the request back in research's speaking window.
     expect(await call(a, 'pair_invite', { for: P.carol.address })).toMatchObject({ pairing: 'requested' })
@@ -871,7 +877,7 @@ describe("the local pair on first touch: the message waits for the person's Allo
     const [clock, timers] = [new FakeClock(), new ManualTimers()]
     const s = await start({ clock, timers })
     const a = await window(s, 'personal')
-    const no = await window(s, 'research', false)
+    const no = await window(s, 'research', 'decline-late')
     await call(a, 'pair_invite', { for: P.carol.address })
     timers.fire((ms) => ms === SETTLE_MS)
     await no.next(isRing)
@@ -893,7 +899,7 @@ describe("the local pair on first touch: the message waits for the person's Allo
     const s = await start({ clock })
     const a = await window(s, 'personal')
     expect(await call(a, 'pair_invite', { for: P.carol.address })).toMatchObject({ pairing: 'requested' })
-    const no = await window(s, 'research', false)
+    const no = await window(s, 'research', 'decline-late')
     const declinedAt = new Date(clock.now() * 1000).toISOString().slice(11, 16)
     await call(no, 'status')
     clock.t += 1800
@@ -910,7 +916,7 @@ describe("the local pair on first touch: the message waits for the person's Allo
     const [clock, timers] = [new FakeClock(), new ManualTimers()]
     const s = await start({ clock, timers })
     const a = await window(s, 'personal')
-    const r = await window(s, 'research', false)
+    const r = await window(s, 'research', 'decline-late')
     expect(await call(a, 'pair_invite', { for: P.carol.address })).toMatchObject({ pairing: 'requested' })
     await call(r, 'status')
     expect(pairs()).toMatchObject([{ a: 'personal', b: 'research', state: 'declined' }])
@@ -932,7 +938,7 @@ describe("the local pair on first touch: the message waits for the person's Allo
     const s = await start()
     const a = await window(s, 'personal')
     expect(await call(a, 'pair_invite', { for: P.carol.address })).toMatchObject({ pairing: 'requested' })
-    await call(await window(s, 'research', false), 'status')
+    await call(await window(s, 'research', 'decline-late'), 'status')
     expect(pairs()).toMatchObject([{ state: 'declined', reasks: [] }])
     for (const answer of ['decline', null] as const) {
       const w = await window(s, 'personal', answer)
@@ -968,7 +974,7 @@ describe("the local pair on first touch: the message waits for the person's Allo
     const a = await window(s, 'personal')
     const ask = () => call(a, 'pair_invite', { for: P.carol.address })
     expect(await ask()).toMatchObject({ pairing: 'requested' })
-    const no = await window(s, 'research', false)
+    const no = await window(s, 'research', 'decline-late')
     await call(no, 'status')
     const lines = (name: string) =>
       readFileSync(join(home, 'state', name, 'audit.jsonl'), 'utf8')
@@ -1271,6 +1277,28 @@ describe("the local pair on first touch: the message waits for the person's Allo
     expect(pairs()[0]).toMatchObject({ state: 'allowed' })
   })
 
+  it("the Allow ended by bag's own bound is no answer: still requested, the mail still held, a late Yes does nothing", async () => {
+    word(true)
+    const timers = new ManualTimers()
+    const s = await start({ timers })
+    const a = await window(s, 'personal')
+    await call(a, 'send', chat([P.carol.address]))
+    const b = await window(s, 'research', 'never')
+    b.send({ jsonrpc: '2.0', id: 9002, method: 'tools/call', params: { name: 'status', arguments: {} } })
+    const asked = await b.next((m) => m.method === 'elicitation/create')
+    await vi.waitFor(() => expect(timers.live()).toContain(MAX_ASK_MS))
+    timers.fire((ms) => ms === MAX_ASK_MS)
+    const withdrawn = await b.next((m) => m.method === 'notifications/cancelled')
+    expect(withdrawn.params).toMatchObject({ requestId: asked.id })
+    expect(JSON.stringify(await b.next((m) => m.id === 9002))).not.toContain('no-elicitation')
+    const handle = ((asked.params as Json)._meta as Json)[DIALOG_META]
+    const late = { action: 'accept', content: { confirm: true }, _meta: { [DIALOG_META]: handle } }
+    b.send({ jsonrpc: '2.0', id: asked.id, result: late })
+    await vi.waitFor(() => expect(log.lines.some((x) => x.event === 'dialog-unknown')).toBe(true))
+    expect(pairs()).toMatchObject([{ state: 'requested' }])
+    expect(pairs()[0]?.held).toHaveLength(1)
+  })
+
   it('a host that gives up on the dialog and cancels the call is no answer: still requested (L1)', async () => {
     word(true)
     const s = await start()
@@ -1304,6 +1332,124 @@ describe("the local pair on first touch: the message waits for the person's Allo
     expect(pairs()).toMatchObject([{ state: 'requested' }])
     expect(held()).toHaveLength(1)
     expect(await call(a, 'send', chat([P.carol.address]))).toMatchObject({ pairing: 'requested' })
+  })
+
+  it.each(['claude-vscode', 'claude-desktop'])(
+    "on %s a host's decline after FAST_ANSWER_MS is no answer, never a No: still requested, the mail held",
+    async (surface) => {
+      word(true)
+      const s = await start()
+      const a = await window(s, 'personal')
+      await call(a, 'send', chat([P.carol.address]))
+      const late = await window(s, 'research', 'decline-late', { shim: { surface } })
+      expect(await call(late, 'status')).not.toHaveProperty('error')
+      expect(late.dialogs).toHaveLength(1)
+      expect(pairs()).toMatchObject([{ state: 'requested' }])
+      expect(held()).toHaveLength(1)
+      // The service log's line names the surface it read from the window's hello.
+      const line = log.lines.filter((l) => l.event === 'consent-dialog').at(-1)
+      expect(line?.fields).toMatchObject({ act: 'local-pair', code: 'no-elicitation', surface })
+    },
+  )
+
+  it("on the terminal (cli) a host's decline after FAST_ANSWER_MS is still the person's No: declined", async () => {
+    word(true)
+    const s = await start()
+    const a = await window(s, 'personal')
+    await call(a, 'send', chat([P.carol.address]))
+    const late = await window(s, 'research', 'decline-late', { shim: { surface: 'cli' } })
+    expect(await call(late, 'status')).not.toHaveProperty('error')
+    expect(pairs()).toMatchObject([{ state: 'declined' }])
+  })
+
+  // The question card (design 2026-11-24, section 7): the local Allow answered by a card, read by pairing.ts cardSaid.
+  it.each(['claude-vscode', 'claude-desktop'])(
+    "on %s the card's No declines the pair and returns the held mail as declined; no answer leaves it requested",
+    async (surface) => {
+      word(true)
+      const s = await start()
+      const a = await window(s, 'personal')
+      await call(a, 'send', chat([P.carol.address]))
+      for (const bag_card of ['dismissed', 'idle', 'other', 'maybe']) {
+        const w = await window(
+          s,
+          'research',
+          { confirm: true, bag_card, bag_open_ms: 4000 },
+          { shim: { surface } },
+        )
+        expect(await call(w, 'status')).not.toHaveProperty('error')
+        expect([bag_card, w.dialogs.length, pairs()]).toMatchObject([bag_card, 1, [{ state: 'requested' }]])
+        expect(held()).toHaveLength(1)
+      }
+      const no = await window(
+        s,
+        'research',
+        { confirm: false, bag_card: 'no', bag_open_ms: 4000 },
+        { shim: { surface } },
+      )
+      await call(no, 'status')
+      expect(pairs()).toMatchObject([{ state: 'declined' }])
+      expect(held()).toEqual([])
+    },
+  )
+
+  it("a card's Yes allows the pair; on the terminal (cli) a marker is refused as no answer", async () => {
+    word(true)
+    const s = await start()
+    const a = await window(s, 'personal')
+    await call(a, 'send', chat([P.carol.address]))
+    for (const bag_card of ['no', 'yes']) {
+      const w = await window(
+        s,
+        'research',
+        { confirm: bag_card === 'yes', bag_card, bag_open_ms: 4000 },
+        { shim: { surface: 'cli' } },
+      )
+      await call(w, 'status')
+      expect(pairs()).toMatchObject([{ state: 'requested' }])
+    }
+    const yes = await window(
+      s,
+      'research',
+      { confirm: true, bag_card: 'yes', bag_open_ms: 4000 },
+      { shim: { surface: 'claude-vscode' } },
+    )
+    await call(yes, 'status')
+    expect(pairs()).toMatchObject([{ state: 'allowed' }])
+  })
+
+  it('an accept with false (an untouched switch) is no answer on cli and with no surface: still requested, the mail held', async () => {
+    word(true)
+    const s = await start()
+    const a = await window(s, 'personal')
+    await call(a, 'send', chat([P.carol.address]))
+    for (const hello of [{ shim: { surface: 'cli' } }, {}]) {
+      const w = await window(s, 'research', false, hello)
+      expect(await call(w, 'status')).not.toHaveProperty('error')
+      expect([w.dialogs.length, pairs(), held().length]).toMatchObject([1, [{ state: 'requested' }], 1])
+    }
+  })
+
+  // The pace of a local Allow left unanswered, as it is today (pinned, no new cap): askPending asks once per tool call of
+  // the speaking window, never between calls and never twice in one call; askPerson's local-pair ask is limit false.
+  it('no answer on the local Allow is asked again only at the next tool call, once per call', async () => {
+    word(true)
+    const s = await start()
+    const a = await window(s, 'personal')
+    await call(a, 'send', chat([P.carol.address]))
+    const w = await window(
+      s,
+      'research',
+      { bag_card: 'dismissed', bag_open_ms: 4000 },
+      { shim: { surface: 'claude-vscode' } },
+    )
+    for (let i = 1; i <= 3; i++) {
+      await call(w, 'status')
+      await new Promise((r) => setTimeout(r, 50))
+      expect(w.dialogs).toHaveLength(i)
+    }
+    expect(pairs()).toMatchObject([{ state: 'requested' }])
+    expect(held()).toHaveLength(1)
   })
 
   it('an accept with no boolean in it is no answer, not a No: still requested (r5)', async () => {
@@ -1461,7 +1607,8 @@ const digitsIn = (message: string | undefined): string =>
 describe("omp's Allow over its extension's registered link, never a file (item 7, C2)", () => {
   const WORDS =
     'personal on this machine wants to message research. Allow both ways? Their messages stay on this machine, never ' +
-    'go to a relay, and reach each agent as mail from your own identity.'
+    'go to a relay, and reach each agent as mail from your own identity. No refuses it for 24 hours and returns the ' +
+    'waiting mail to its sender as declined; closing this question leaves it waiting.'
   const PID = 777_001
   /** An omp window of omp process `pid`: no elicitation, the bridge capability naming that pid (the shim's). */
   const omp = (s: Service, label: string, pid = PID) =>
@@ -2598,6 +2745,72 @@ describe("omp's Allow over its extension's registered link, never a file (item 7
     expect(await done).toMatchObject({ paired: true, peer: P.bob.address, name: 'bob' })
   }, 30_000)
 
+  // The pairing's own end withdraws its open link question (the merged signal of pairing.ts #within): a withdraw is no
+  // answer there, never unseen, so each call answers the cancel's own refusal, never no-elicitation.
+  const CANCELLED = {
+    error: 'cancelled',
+    detail: 'your user cancelled this pairing (pair_cancel): nothing was written',
+  }
+  const unseenLines = (): string =>
+    log
+      .text()
+      .split('\n')
+      .filter((x) => x.includes('no-elicitation'))
+      .join('\n')
+
+  it("pair_cancel at once under omp's paste, its check digits and its code's show: each call answers the cancel, never no-elicitation", async () => {
+    const s = await start({ pairPollMs: 2 })
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    // The paste, at the first call.
+    const first = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true, was: 'accept' })
+    expect(await first).toMatchObject(CANCELLED)
+    // The check digits, at the resume after the paste.
+    const bob = await peer(P.bob)
+    const invited = await bob.call('pair_invite', { name: 'alice' })
+    const accepting = call(b, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 2)
+    const code = String(invited.code ?? invited.invite)
+    await l.request('service/consent-answer', { id: l.asks()[1]?.id, accepted: true, text: code })
+    const asked = await accepting
+    const digits = call(b, 'pair_accept', { resume: asked.resume })
+    await until(() => l.asks().length === 3, 10_000)
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true, was: 'accept' })
+    expect(await digits).toMatchObject(CANCELLED)
+    await until(() => l.withdraws().some((w) => w.id === l.asks()[2]?.id))
+    // The code's show, under the inviter's waiting resume.
+    const opened = await call(b, 'pair_invite', { name: 'carol' })
+    const shows = () => l.asks().filter((q) => q.kind === 'show')
+    await until(() => shows().length === 2)
+    const waiting = call(b, 'pair_invite', { resume: opened.resume })
+    expect(await call(b, 'pair_cancel', {})).toMatchObject({ cancelled: true, was: 'invite' })
+    expect(await waiting).toMatchObject(CANCELLED)
+    await until(() => l.withdraws().some((w) => w.id === shows()[1]?.id))
+    expect(unseenLines()).toBe('')
+    for (const f of ['trust.json', 'names.json']) expect(existsSync(join(home, f))).toBe(false)
+    // The window is still bound: a cancel leaves no refusal memory and binds nothing anew.
+    expect(await call(b, 'status', {})).toMatchObject({ as: 'personal' })
+  }, 30_000)
+
+  it("the window's close at once under omp's paste ends the pairing as a close: audited once, nothing written, no no-elicitation", async () => {
+    const s = await start()
+    const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
+    const b = await omp(s, 'personal')
+    const socket = sockets.at(-1) as Socket
+    raw(b, 9201, 'pair_accept', { name: 'bob' })
+    await until(() => l.asks().length === 1)
+    socket.destroy()
+    await until(() => l.withdraws().some((w) => w.id === l.asks()[0]?.id))
+    await until(() => audited('pair').length > 0)
+    expect(audited('pair')).toEqual([
+      { decision: 'reject', step: 'decline', code: 'cancelled', reason: 'close', window: 'omp /w/personal' },
+    ])
+    expect(unseenLines()).toBe('')
+    for (const f of ['trust.json', 'names.json']) expect(existsSync(join(home, f))).toBe(false)
+  })
+
   it('an omp acceptor pastes a code copied from a wrapped widget, with a line break at each wrap: it still pairs', async () => {
     const s = await start({ pairPollMs: 2 })
     const l = await link(s, PID, undefined, { kinds: ['confirm', 'text', 'show'], call_ms: 130_000 })
@@ -2936,7 +3149,7 @@ describe('hidden: an identity kept apart (spec/SPEC.md 9.2 item 1)', () => {
   it('a No changes nothing', async () => {
     word(true)
     const s = await start()
-    const a = await window(s, 'personal', false)
+    const a = await window(s, 'personal', 'decline-late')
     expect(await call(a, 'pair_invite', { for: P.alice.address })).toMatchObject({ error: 'declined' })
     expect(JSON.parse(readFileSync(localWordPath(home), 'utf8'))).toEqual({
       version: 1,

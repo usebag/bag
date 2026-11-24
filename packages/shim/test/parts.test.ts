@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import {
   closeSync,
   existsSync,
@@ -919,6 +920,111 @@ describe('run in process', () => {
       }
     })
   }
+
+  // run.ts's io injects the start time but not kill 0, so the window here is a real child this test starts (an omp row
+  // in the fake ps) and ends by its recorded pid: live, it answers kill 0; killed and reaped, it does not.
+  const ownerWindow = async (startOf: (pid: number) => string | null) => {
+    const child = spawn('/bin/sleep', ['60'], { stdio: 'ignore' })
+    const win = child.pid as number
+    const rows = { ...omp19, [win]: { ppid: 1, comm: 'omp', uid: UID, tty: 'ttys016' } }
+    const env = { HOME: home, OMPCODE: '1', PI_TERMINAL_OWNER_PID: String(win) }
+    const a = ompIo(['--dir', home, '--input-hook'], new Map(), {
+      env,
+      ps: (pid) => rows[pid] ?? null,
+      startOf,
+    })
+    const kill = () => {
+      const gone = new Promise((r) => child.once('exit', r))
+      child.kill('SIGKILL')
+      return gone
+    }
+    return { win, a, kill }
+  }
+  const START = 'Mon Nov 23 00:10:00 2026'
+
+  for (const [why, dies] of [
+    ['answers kill 0, it keeps its window: the wake file is written and the typed use binds', false],
+    ['does not answer kill 0 (gone), it ends the window', true],
+  ] as const) {
+    it(`omp 19: when ps gives no start time and the window ${why}`, async () => {
+      const svc = new FakeService(home)
+      await svc.start()
+      let slow = false
+      const w = await ownerWindow(() => (slow ? null : START))
+      const done = run(w.a.io)
+      try {
+        await new Promise((r) => setTimeout(r, 30))
+        initOmp(w.a)
+        await svc.next((m) => m.method === 'initialize')
+        await waitFor(() => w.a.err().includes('"connected"'))
+        expect(bridgeOf(svc.hellos[0])).toEqual({ pid: w.win })
+        slow = true // every later ps gives no answer (a timeout under load, or nothing to answer for)
+        if (dies) await w.kill()
+        svc.notify('service/ring', { as: 'omp', speaking: true })
+        if (dies) {
+          await waitFor(() => w.a.err().includes('"event":"host-gone"'))
+          expect(w.a.err()).toContain('"event":"host-gone"')
+          expect(existsSync(ringOf(home, w.win))).toBe(false)
+          expect(existsSync(indexOf(home, w.win))).toBe(false)
+        } else {
+          await waitFor(() => existsSync(ringOf(home, w.win)))
+          expect(existsSync(ringOf(home, w.win))).toBe(true)
+          const stdin = new PassThrough()
+          const stdout = new PassThrough()
+          const rows = { ...omp19, [w.win]: { ppid: 1, comm: 'omp', uid: UID, tty: 'ttys016' } }
+          const env = { HOME: home, OMPCODE: '1', PI_TERMINAL_OWNER_PID: String(w.win) }
+          const h = ompIo(['hook', '--dir', home], new Map(), {
+            stdin,
+            stdout,
+            env,
+            ps: (pid) => rows[pid] ?? null,
+          })
+          const p = run(h.io)
+          stdin.end(JSON.stringify({ prompt: 'use omp' }))
+          await p
+          expect(JSON.parse(String(stdout.read() ?? ''))).toEqual({
+            decision: 'block',
+            reason: 'bag: this session now acts as omp.',
+          })
+          expect(w.a.err()).not.toContain('"event":"host-gone"')
+        }
+      } finally {
+        w.a.handlers.get('SIGINT')?.()
+        expect(await done).toBe(0)
+        await svc.close()
+        if (!dies) await w.kill()
+      }
+    })
+  }
+
+  it('omp 19: ten rings with no start time from ps, then the same one, never end a live window', async () => {
+    const svc = new FakeService(home)
+    await svc.start()
+    let calls = 0
+    // The first answer is the shim's own read of the owner at its start; then ten with none, then the same again.
+    const w = await ownerWindow(() => (++calls === 1 || calls > 11 ? START : null))
+    const done = run(w.a.io)
+    try {
+      await new Promise((r) => setTimeout(r, 30))
+      initOmp(w.a)
+      await svc.next((m) => m.method === 'initialize')
+      await waitFor(() => w.a.err().includes('"connected"'))
+      for (let n = 1; calls <= 12 && n <= 40; n++) {
+        svc.notify('service/ring', { as: 'omp', speaking: true })
+        const rung = () =>
+          existsSync(ringOf(home, w.win)) && JSON.parse(readFileSync(ringOf(home, w.win), 'utf8')).n >= n
+        await waitFor(rung)
+      }
+      expect(calls).toBeGreaterThan(11)
+      expect(w.a.err()).not.toContain('"event":"host-gone"')
+      expect(existsSync(indexOf(home, w.win))).toBe(true)
+    } finally {
+      w.a.handlers.get('SIGINT')?.()
+      expect(await done).toBe(0)
+      await svc.close()
+      await w.kill()
+    }
+  })
 
   it('omp 19: a second shim with the same owner keeps the walk while the first is alive, and takes it once it is dead', async () => {
     const svc = new FakeService(home)

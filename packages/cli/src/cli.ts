@@ -13,6 +13,7 @@ import { EnterpriseError } from '@usebag/enterprise-client'
 import { CliError, UsageError } from './args.ts'
 import { address } from './commands/address.ts'
 import { audit } from './commands/audit.ts'
+import { cardHook } from './commands/card-hook.ts'
 import { connect } from './commands/connect.ts'
 import { delegate } from './commands/delegate.ts'
 import { grant } from './commands/grant.ts'
@@ -399,6 +400,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map<string, Command>([
   ['audit', audit],
   ['status', status],
   ['wake-hook', wakeHook],
+  ['card-hook', cardHook],
   ['session-code', sessionCode],
   ['host', hostInstall],
   ['lookup', lookup],

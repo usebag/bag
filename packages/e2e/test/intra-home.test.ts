@@ -195,7 +195,8 @@ describe('e2e intra-home: delivery between identities of one home', () => {
     await b2.call('status')
     expect(b2.dialogs).toEqual([
       'personal on this machine wants to message research. Allow both ways? Their messages stay on this machine, ' +
-        'never go to a relay, and reach each agent as mail from your own identity.',
+        'never go to a relay, and reach each agent as mail from your own identity. No refuses it for 24 hours and ' +
+        'returns the waiting mail to its sender as declined; closing this question leaves it waiting.',
     ])
     expect(a.dialogs).toEqual([])
     expect(existsSync(join(home, 'trust.json'))).toBe(false)
@@ -316,7 +317,8 @@ describe('e2e intra-home: delivery between identities of one home', () => {
     await s.call('status')
     expect(s.dialogs).toEqual([
       'personal on this machine wants to message sam. Allow both ways? Their messages stay on this machine, ' +
-        'never go to a relay, and reach each agent as mail from your own identity.',
+        'never go to a relay, and reach each agent as mail from your own identity. No refuses it for 24 hours and ' +
+        'returns the waiting mail to its sender as declined; closing this question leaves it waiting.',
     ])
     const got = (await s.call('wait', { timeout_s: 5 })).message as Json
     expect(got).toMatchObject({ id: one.id, from: alice.address, via: 'local', body: { text: 'one' } })

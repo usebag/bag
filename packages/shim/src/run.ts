@@ -349,7 +349,8 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
   const hostLive = (): boolean => {
     if (owner === null) return true
     if (ownerGone) return false
-    if (startedOf(owner) === ownerStart) return true
+    const now = startedOf(owner) // null: ps gave no answer (slow, or the owner gone), so kill 0 decides
+    if (now === ownerStart || (now === null && alive(owner))) return true
     ownerGone = true
     endSession(home, key, io.pid) // only files naming this shim
     channel?.close()

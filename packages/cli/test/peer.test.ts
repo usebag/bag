@@ -284,7 +284,7 @@ describe('the word code: a short code when the relay offers pair', () => {
     const code = `472-${WORDS[0]}-${WORDS[1]}-${WORDS[2]}@10.0.0.1`
     expect((await guarded(bob, 'alice', code)).err[0]).toMatch(/^bag: resolve-failed: /)
     expect((await accept(bob, 'alice', code)).err[0]).toMatch(
-      /^bag: invite-expired: https:\/\/10\.0\.0\.1 holds no open invitation 472$/,
+      /^bag: invite-expired: the relay named in the code holds no open invitation for that code$/,
     )
   })
 

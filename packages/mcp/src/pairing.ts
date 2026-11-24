@@ -30,7 +30,15 @@ import {
   RelayGuard,
 } from '@usebag/edge'
 import type { PairingPorts } from '@usebag/enterprise-client'
-import { askPerson, type ConsentPeer, type ConsentWords, countStart, MAX_PASTE, textOf } from './ask.ts'
+import {
+  askPerson,
+  type ConsentPeer,
+  type ConsentWords,
+  countStart,
+  MAX_ASK_MS,
+  MAX_PASTE,
+  textOf,
+} from './ask.ts'
 import type { ServiceConnection } from './binding.ts'
 import { incompleteLine } from './keepalive.ts'
 import { NAME, Names } from './names.ts'
@@ -41,6 +49,7 @@ import {
   LOCAL_DECLINED,
   LOCAL_HIDDEN,
   LOCAL_PENDING,
+  NO_ANSWER_IN_TIME,
   noRelays,
   REQUESTED_NOTE,
   refuseLinks,
@@ -198,6 +207,13 @@ const HIDDEN_NOTE =
 const SHOWN_NOTE =
   "shown: the home's other identities see this identity and may reach it on this machine again"
 
+/**
+ * How long a pairing form stands (ms): the invitation's remaining life (`exp`, Unix seconds; 0 before it is known, then
+ * its full MAX_INVITE_TTL), at least MAX_ASK_MS and at most MAX_INVITE_TTL. An answer after it reaches nothing.
+ */
+export const pairFormMs = (exp: number, now: number): number =>
+  Math.min(MAX_INVITE_TTL * 1000, Math.max(MAX_ASK_MS, (exp > 0 ? exp - now : MAX_INVITE_TTL) * 1000))
+
 /** A local dialog with no answer (a decline faster than a person, a timeout, a cancel): cancelled, never declined. */
 const UNANSWERED = 'the dialog was not answered: nothing was changed'
 
@@ -255,10 +271,46 @@ export const FAST_ANSWER_MS = 250
  * Whether a dialog's answer, `took` ms after the dialog went out, was seen by no person. The one place of the rule for
  * every dialog bag sends (the bind dialog, each pairing form, each ask over elicitation): any answer that fast is
  * unseen, an accept included (0.4.4: no host or hook may grant a bind or a pairing for the person). Taking an
- * instant accept again is the one change `&& action !== 'accept'`.
+ * instant accept again is the one change `&& action !== 'accept'`. On a `surface` known to answer every dialog itself
+ * (silentSurface), a decline or a cancel is unseen however long it took: on a loaded machine the VS Code extension's
+ * own decline took longer than FAST_ANSWER_MS (2026-11-23, three of three) and was taken as the person's No. An accept
+ * there keeps the timing rule: the extension makes none by itself.
  */
-export function unseenAnswer(took: number, _action: string): boolean {
-  return took < FAST_ANSWER_MS
+export function unseenAnswer(took: number, action: string, surface?: string | null): boolean {
+  return took < FAST_ANSWER_MS || (action !== 'accept' && silentSurface(surface) !== null)
+}
+
+/** A host adapter's report of what the person did on its card, as bag reads it on a confirm ('other' aside). */
+const CARD: Readonly<Record<string, 'yes' | 'no' | 'none'>> = {
+  yes: 'yes',
+  no: 'no',
+  dismissed: 'none',
+  idle: 'none',
+  other: 'none',
+}
+
+/**
+ * What the person did on a host adapter's card (an accept whose content holds bag_card and bag_open_ms, which bag's
+ * Claude Code plugin sends), as bag alone reads it: yes, no, none (no answer: nothing remembered, asked again)
+ * or unseen; null for an answer with no marker (main's rules apply). Read after unseenAnswer. A dismissal open under
+ * FAST_ANSWER_MS is unseen; free text under Other is no answer on a confirm, the typed value (checked by the caller) on
+ * a pick or a text; an unknown value is no answer. On a surface that draws its own dialog (the terminal, no surface)
+ * no adapter runs, so a marker there can only be forged: it is refused as no answer, never read as main's answer.
+ */
+export function cardSaid(
+  r: { readonly action: string; readonly content?: Readonly<Record<string, unknown>> | null | undefined },
+  kind: 'confirm' | 'pick' | 'text',
+  surface?: string | null,
+): 'yes' | 'no' | 'none' | 'unseen' | null {
+  const c = r.content
+  if (r.action !== 'accept' || c == null || !Object.hasOwn(c, 'bag_card')) return null
+  if (silentSurface(surface) === null) return 'none'
+  const [said, open] = [c.bag_card, c.bag_open_ms]
+  const ms =
+    typeof open === 'number' ? open : typeof open === 'string' && /^\d{1,9}$/.test(open) ? +open : NaN
+  if (said === 'dismissed' && ms < FAST_ANSWER_MS) return 'unseen'
+  if (said === 'other' && kind !== 'confirm') return 'yes'
+  return typeof said === 'string' && Object.hasOwn(CARD, said) ? (CARD[said] ?? 'none') : 'none'
 }
 
 /** The Claude Code surfaces the shim reports (CLAUDE_CODE_ENTRYPOINT): the terminal, the VS Code extension, Desktop. */
@@ -286,7 +338,7 @@ export function surfaceIn(
  * The name of a Claude Code surface that answers every dialog without showing it (Claude Code issue 98256), or null.
  * Wording only: bag sends its dialogs on every surface, so the day the host shows them, bag works with no release.
  */
-function silentSurface(surface: string | null | undefined): string | null {
+export function silentSurface(surface: string | null | undefined): string | null {
   return surface === 'claude-vscode'
     ? "Claude Code's VS Code extension"
     : surface === 'claude-desktop'
@@ -311,6 +363,13 @@ function silentHead(surface: string | null | undefined, what: string): string | 
  */
 export const UNSEEN_STOP = 'Do not call it again until your user says this host shows its dialogs.'
 
+/**
+ * On a silent surface, after silentHead: where bag's questions show instead (the question card bag's plugin for Claude
+ * Code draws), what still binds, and when to ask again. Never a terminal or a command line as the way out.
+ */
+export const CARD_TAIL =
+  "The question was not shown in this window. bag's questions appear in Claude Code's question card once bag's plugin for Claude Code is installed and this window reloaded once. Typing use and the identity name still binds in this window. Tell your user. Do not call it again until your user says the question card shows."
+
 /** The bind dialog answered at once: today's line, or on a silent surface what the person can do instead. */
 export function bindUnseen(surface?: string | null): string {
   const head = silentHead(surface, 'nothing was bound')
@@ -324,7 +383,7 @@ export function askUnseen(kind: string, surface?: string | null): string {
   const head = silentHead(kind === 'claude-code' ? surface : null, 'nothing was done')
   return head === null
     ? `This host answered the question at once, without showing it to your user, so nothing was done. Tell your user. ${UNSEEN_STOP}`
-    : `${head} Your user answers it from Claude Code in a terminal; typing use and the name still binds in this window. ${UNSEEN_STOP}`
+    : `${head} ${CARD_TAIL}`
 }
 
 /** The first Codex release with the form renderer the pair dialogs need (PR #13621), as major.minor.patch. */
@@ -347,8 +406,7 @@ type NoDialog = 'none' | 'fast' | 'version'
  */
 export function noDialog(kind: string, why: NoDialog, version = '', surface?: string | null): string {
   const silent = kind === 'claude-code' ? silentHead(surface, 'nothing was written') : null
-  if (silent !== null)
-    return `${silent} Your user pairs from Claude Code in a terminal, or with bag pair; typing use and the name still binds in this window. ${UNSEEN_STOP}`
+  if (silent !== null) return `${silent} ${CARD_TAIL}`
   const again =
     ' Tell your user which of these to change. Do not call a pair tool again until they say it is changed.' +
     (why === 'fast' ? ' If a pairing dialog did appear and was closed, call the tool again.' : '')
@@ -388,6 +446,12 @@ type Json = Record<string, unknown>
 type Opt<T> = T | undefined
 
 const iso = (seconds: number): string => new Date(seconds * 1000).toISOString()
+
+/** Typed check digits folded as digitsMatch folds them (spaces and hyphens out): the six digits, else null. */
+const sixDigits = (t: string): string | null => {
+  const d = t.replace(/[\s-]/g, '')
+  return /^\d{6}$/.test(d) ? d : null
+}
 
 type Field =
   | { readonly type: 'string'; readonly title: string }
@@ -432,7 +496,7 @@ class Live {
   only: string | undefined = undefined
   /** omp's acceptor: the check digits held for the next call's Yes/No (one question per call). */
   digits: string | null = null
-  /** omp's inviter: the digits typed wrong so far, across calls (a no answer is not a try). */
+  /** The inviter: the six digits typed wrong so far, across calls (no answer, or not six digits, is not a try). */
   tries = 0
   /** Aborted by pair_cancel, on the person's word: the edge ends the pairing cancelled (edge pairing.ts). */
   readonly stop = new AbortController()
@@ -745,7 +809,7 @@ export class Pairings {
         if (only !== undefined && invite.inviter !== only)
           throw new ToolError(
             'not-for',
-            `that invitation is from ${invite.inviter}, not ${only}: nothing was sent`,
+            `that invitation is from ${invite.inviter}, not the address given: nothing was sent`,
           )
         Names.read(this.#ctx.config.home).check(live.name, invite.inviter)
         return invite
@@ -766,9 +830,9 @@ export class Pairings {
         const message = `${digits}\nSecurity check: read them out, not where the code was sent.\nNot shown again. Confirm to send to ${shortAddress(v.inviter)}.`
         const property = { type: 'boolean', title: 'I read them to my peer' } as const
         const yes = await this.#ask(live, extra, message, 'confirm', property)
-        if (yes !== true) {
-          throw new ToolError('declined', 'the check digits were not confirmed: no request was sent')
-        }
+        // An accept without true (an untouched switch, a marked Yes with false) is no answer; #form threw the No.
+        if (yes !== true)
+          throw new ToolError('cancelled', 'the check digits were not confirmed: no request was sent')
       },
       sent: (exp) => {
         live.exp = exp
@@ -1085,7 +1149,7 @@ export class Pairings {
       if (live.only !== undefined && v.inviter !== live.only)
         throw new ToolError(
           'not-for',
-          `that invitation is from ${v.inviter}, not ${live.only}: nothing was sent`,
+          `that invitation is from ${v.inviter}, not the address given: nothing was sent`,
         )
       Names.read(ctx.config.home).check(live.name, v.inviter)
       live.from = v.inviter
@@ -1214,7 +1278,11 @@ export class Pairings {
     return { invite_open: true, expires_at: iso(exp), resume: live.token, note: BRIDGE_SHOW }
   }
 
-  /** The call's extra with its signal also aborted by the pairing's own end (pair_cancel, a close): asks withdraw. */
+  /**
+   * The call's extra with its signal also aborted by the pairing's own end (pair_cancel, a close, the paste's expiry):
+   * asks withdraw. Only the link's asks take it, where a withdraw is no answer (never unseen), and each caller then
+   * checks the pairing's end, so the end answers its own refusal.
+   */
   #within(live: Live, extra: PairExtra): PairExtra {
     return { ...extra, signal: AbortSignal.any([extra.signal, live.stop.signal]) }
   }
@@ -1541,6 +1609,9 @@ export class Pairings {
    * The inviter's compare dialog: its person types the digits the peer reads out. No dialog here shows them or says
    * what they should be; the tries are this person's own, not the relay's guess bound, and a typed mismatch ends only
    * in digits-mismatch, which the acceptor does not hear (no oracle: it gets no-answer at the invitation's end).
+   * As #linkCompare: a six-digit mismatch counts one of MAX_DIGIT_TRIES across calls; no answer (a close, a skip, the
+   * form's own bound) counts none and holds the request for the next call ('unanswered'); a decline ends it. A value
+   * that is not six digits counts none either: it is asked again once in the call, then held as no answer.
    */
   async #compare(live: Live, q: PeerRequest, extra: PairExtra): Promise<'done' | 'unanswered'> {
     if (live.linked) return this.#linkCompare(live, q, extra)
@@ -1549,20 +1620,39 @@ export class Pairings {
       (l) => `As ${l}: type the six digits.`,
     )
     const peer = `${shortAddress(q.from)} named ${live.name}`
-    let hint = 'Your peer reads them out, not where the code was sent.'
+    const tries = (): string =>
+      `No match. Tries left: ${MAX_DIGIT_TRIES - live.tries}. Ask your peer to repeat them.`
+    let hint = live.tries === 0 ? 'Your peer reads them out, not where the code was sent.' : tries()
+    let odd = false
     try {
-      for (let left = MAX_DIGIT_TRIES - 1; ; left--) {
+      for (;;) {
         const message = `${head}\n${hint}\n${peer}`
         const typed = await this.#dialog(live, extra, message, 'digits', 'The six check digits')
         if (digitsMatch(typed, q.code)) break
         if (live.refusal !== null) return 'done' // The invitation ended under the dialog: its timer has answered no.
-        if (left === 0) {
+        if (sixDigits(typed) === null) {
+          if (odd) {
+            live.ask = q
+            return 'unanswered'
+          }
+          odd = true
+          hint = 'That was not six digits. Type the six your peer reads.'
+          continue
+        }
+        live.tries++
+        if (live.tries >= MAX_DIGIT_TRIES) {
           throw new ToolError('digits-mismatch', 'the typed digits did not match: nothing was written')
         }
-        hint = `No match. Tries left: ${left}. Ask your peer to repeat them.`
+        hint = tries()
       }
     } catch (e) {
-      this.#end(live, q.from, e)
+      // No answer (a close, a skip, the form's own bound) while the pairing goes on: held for the next call.
+      if (e instanceof ToolError && e.code === 'cancelled' && !live.over && live.refusal === null) {
+        live.ask = q
+        return 'unanswered'
+      }
+      // A pairing already ended here (#stop) was audited there: one line per end.
+      if (!live.over) this.#end(live, q.from, e)
       throw e
     }
     live.answer(true)
@@ -1582,10 +1672,6 @@ export class Pairings {
           live.tries === 0
             ? 'Your peer reads them out, not where the code was sent.'
             : `No match. Tries left: ${MAX_DIGIT_TRIES - live.tries}. Ask your peer to repeat them.`
-        const six = (t: string): string | null => {
-          const d = t.replace(/[\s-]/g, '')
-          return /^\d{6}$/.test(d) ? d : null
-        }
         const ask = {
           act: 'pair-digits',
           kind: 'text' as const,
@@ -1596,7 +1682,7 @@ export class Pairings {
           message: `${hint}\n${peer}`,
           placeholder: '123 456',
           max: 16,
-          check: six,
+          check: sixDigits,
         }
         const a = await askPerson(this.#ctx, this.#within(live, extra), ask, live.conn ?? undefined)
         if (a === null) throw new ToolError('no-elicitation', OLD_EXTENSION)
@@ -1675,28 +1761,48 @@ export class Pairings {
     // A service pairing's dialogs go only to the connection that started it, never to another window that uses the
     // identity (docs/bag-service.md, "Pairing in a window").
     const dialog = { message, requestedSchema }
+    // Withdrawn at its bound (pairFormMs): the request is cancelled, and a later answer matches no open dialog.
+    const ends = new AbortController()
+    const stop = this.#ctx.timers.after(pairFormMs(live.exp, this.#ctx.clock.now()), () => ends.abort())
+    const signal = AbortSignal.any([extra.signal, ends.signal])
     const asked =
       live.conn === null
-        ? this.#ctx.elicit(dialog, extra)
-        : live.conn.elicit(dialog, { signal: extra.signal })
+        ? this.#ctx.elicit(dialog, { ...extra, signal })
+        : live.conn.elicit(dialog, { signal })
     const r = await asked.catch((e: unknown) => {
       failed.push(e)
       return { action: 'cancel' as const }
     })
+    stop()
     const took = mono() - t0
     const ms = Math.round(took)
     for (const e of failed) {
       const name = e instanceof Error ? e.name : typeof e
       this.#ctx.log.log('warn', 'pair-dialog', { tool: live.tool, code: codeOf(e), name, ms })
     }
-    if (unseenAnswer(took, r.action)) {
-      this.#ctx.log.log('info', 'pair-dialog', { tool: live.tool, code: 'no-elicitation', ms })
+    // The pairing's own end under the dialog (pair_cancel, a close, an expiry) is its answer, before the timing: an
+    // answer then is no one's to judge, and no-elicitation would tell the model to stop pairing. The host's own cancel
+    // of this call keeps the timing rule, as before.
+    if ((live.over || live.refusal !== null) && !extra.signal.aborted)
+      throw live.refusal ?? new ToolError('cancelled', 'the pairing ended')
+    if (ends.signal.aborted) throw new ToolError('cancelled', NO_ANSWER_IN_TIME)
+    const surface = surfaceIn(this.#ctx.env, live.conn)
+    // A card's answer (cardSaid), read with the timing: its No is the person's, a dismissal or stray text no answer.
+    const asks = Object.values(properties).some((p) => p.type === 'boolean') ? 'confirm' : 'text'
+    const card = cardSaid(r, asks, surface)
+    if (unseenAnswer(took, r.action, surface) || card === 'unseen') {
+      const on = surface === null ? {} : { surface }
+      this.#ctx.log.log('info', 'pair-dialog', { tool: live.tool, code: 'no-elicitation', ms, ...on })
       const kind = live.conn?.host ?? this.#ctx.client?.().kind ?? 'other'
-      const surface = surfaceIn(this.#ctx.env, live.conn)
       throw new ToolError('no-elicitation', noDialog(kind, 'fast', '', surface))
     }
-    if (r.action === 'accept') return r.content ?? {}
-    if (r.action === 'decline') throw new ToolError('declined', 'the person declined: nothing was written')
+    if (r.action === 'accept' && (card === null || card === 'yes')) {
+      // The card's keys never leave this form: the callers read the fields alone.
+      const { bag_card: _c, bag_open_ms: _o, ...fields } = r.content ?? {}
+      return fields
+    }
+    if (r.action === 'decline' || card === 'no')
+      throw new ToolError('declined', 'the person declined: nothing was written')
     throw new ToolError('cancelled', 'the dialog was closed before an answer: nothing was written')
   }
 

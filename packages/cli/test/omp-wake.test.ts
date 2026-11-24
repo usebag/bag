@@ -14,7 +14,7 @@ import { createServer, type Server } from 'node:net'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { SqliteStore } from '@usebag/edge'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import bagWake, {
   type Arrival,
   ASK_WIDGET,
@@ -61,6 +61,14 @@ import { tempDir } from './support/io.ts'
 
 // The omp wake extension (packages/cli/src/omp-wake.ts): its state machine with a fake doorbell and session, and the
 // pieces it reads and writes. Temp directories only.
+
+// Every case's bound, in place of vitest's 5 s. The cases run their timers by hand and wait on real I/O for a few
+// seconds at most: the slowest takes about 4 s by design (two waits of CHANNEL_MS), most well under 1 s. Before the
+// extension stopped watching, session_shutdown's FSWatcher.close (an FSEvents stream on macOS, whose close blocks
+// until the stream stops) took up to about 10 s a call on a loaded machine and cases ran 10 to 68 s; without it the
+// file took 31.7 s in all at a load of 62. 20 s is five times the slowest case; it only ends a case that hangs, and
+// changes no assertion. The two relink cases, whose real timers take 8 s and 16 s by design, carry 60 s.
+vi.setConfig({ testTimeout: 20_000 })
 
 const tmp = tempDir('omp-wake')
 afterAll(() => tmp.cleanup())
@@ -415,14 +423,12 @@ describe('the extension factory', () => {
     o.emit('session_shutdown')
   })
 
-  /** Waits up to 3 s for the file event to schedule the settle; failing that, runs the poll, which rings the same. */
-  async function rung(o: ReturnType<typeof omp>): Promise<void> {
-    for (let i = 0; i < 150 && !o.timers.some((t) => !t.every); i++)
-      await new Promise((r) => setTimeout(r, 20))
-    if (!o.timers.some((t) => !t.every)) for (const t of o.timers.filter((t) => t.ms === POLL_MS)) t.fn()
+  /** Runs the doorbell's poll, the one way a ring is read (no fs watcher: POLL_MS). */
+  function rung(o: ReturnType<typeof omp>): void {
+    for (const t of o.timers.filter((t) => t.ms === POLL_MS)) t.fn()
   }
 
-  it('a file event on the doorbell rings, agent_end writes the facts, and a ring after a pending one is handled once', async () => {
+  it('a ring on the doorbell is read by the poll, agent_end writes the facts, and a ring after a pending one is handled once', () => {
     const home = join(tmp.dir, `h${n++}`)
     const state = join(home, 'state', 'bob')
     mkdirSync(state, { recursive: true })
@@ -432,12 +438,12 @@ describe('the extension factory', () => {
     expect(o.sent.length).toBe(0)
     const bell = join(state, 'doorbell')
     writeFileSync(bell, '')
-    await rung(o)
+    rung(o)
     o.runOnce()
     expect(o.sent.map((s) => s.content)).toEqual([wakeText('bob')])
     o.ctx.idle = false
     utimesSync(bell, new Date(Date.now() + 5000), new Date(Date.now() + 5000))
-    await rung(o)
+    rung(o)
     o.runOnce()
     expect(o.sent.length).toBe(1)
     o.ctx.idle = true
@@ -447,7 +453,7 @@ describe('the extension factory', () => {
     const facts = JSON.parse(readFileSync(join(state, 'host-facts.json'), 'utf8'))
     expect(facts.main_session).toBe(true)
     o.emit('session_shutdown')
-  }, 20_000)
+  })
 
   it('a ring while the server runs in another session is shown as a next-turn message, not a turn', () => {
     const home = join(tmp.dir, `h${n++}`)
@@ -774,7 +780,7 @@ describe('the service: channel, bridge and ring', () => {
     const t = Date.now()
     expect(await d.input('use omp-3')).toBeUndefined()
     expect(Date.now() - t).toBeLessThan(1000)
-  }, 20_000)
+  })
 
   /** A home with this process's .bound (shim alive) and a ring file of the given members. */
   function files(home: string) {
@@ -936,7 +942,7 @@ describe('the service: channel, bridge and ring', () => {
     o.runOnce()
     expect(o.sent).toEqual([])
     o.emit('session_shutdown')
-  }, 20_000)
+  })
 
   it('a session that starts bound takes its first doorbell look only once unbound: old mail does not wake', () => {
     const home = join(tmp.dir, `h${n++}`)
@@ -954,7 +960,7 @@ describe('the service: channel, bridge and ring', () => {
     expect(o.sent).toEqual([])
     expect(seenIn(join(state, 'wake-seen'))).toBe(mtimeOf(join(state, 'doorbell')))
     o.emit('session_shutdown')
-  }, 20_000)
+  })
 
   it('no .bound (or a dead one) means the doorbell as today, and the ring file is not read', () => {
     const home = join(tmp.dir, `h${n++}`)
@@ -1159,7 +1165,7 @@ describe('the consent link to the bag service (item 7, C2)', () => {
     for (const c of conns) c.destroy()
     await new Promise<void>((r) => server.close(() => r()))
     rmSync(home, { recursive: true, force: true })
-  }, 10_000)
+  })
 })
 
 describe('the link in 0.4.2: text, show and call_ms', () => {
@@ -1281,7 +1287,7 @@ describe('the link in 0.4.2: text, show and call_ms', () => {
     expect(svc.answers().map((a) => (a as { id: string }).id)).toEqual(['t1', 't2'])
     l.close()
     await svc.close()
-  }, 10_000)
+  })
 
   it('ompInput: a trimmed answer; empty or too long asked once more, then null; Esc, timeout, withdraw and too fast are null', async () => {
     const seen: unknown[] = []
@@ -1454,7 +1460,7 @@ describe("a session's consent link: the question's words and the pending line", 
     await s.settle('q3', undefined)
     expect([s.words(), s.status()]).toEqual([undefined, undefined])
     await s.close()
-  }, 10_000)
+  })
 
   it("a question still open when its session ends, settling after the next session's question opened, leaves that question's words and pending line", async () => {
     const s = await session()
@@ -1482,7 +1488,7 @@ describe("a session's consent link: the question's words and the pending line", 
     await new Promise((r) => setTimeout(r, 30))
     expect([s.words(), s.status()]).toEqual([undefined, undefined])
     await s.close()
-  }, 10_000)
+  })
 })
 
 describe('the relink after a refused registration', () => {
@@ -1534,7 +1540,8 @@ describe('the relink after a refused registration', () => {
     for (const c of conns) c.destroy()
     await new Promise<void>((r) => server.close(() => r()))
     rmSync(home, { recursive: true, force: true })
-  }, 20_000)
+    // About 8 s unloaded by design: real relinks after 2 s, 4 s and 2 s.
+  }, 60_000)
 
   it('a registration refused busy is opened again after 2 s, whatever came before, and leaves the doubling where it was', async () => {
     const home = join('/tmp', `bwl3-${process.pid}-${n++}`)
@@ -1588,5 +1595,6 @@ describe('the relink after a refused registration', () => {
     for (const c of conns) c.destroy()
     await new Promise<void>((r) => server.close(() => r()))
     rmSync(home, { recursive: true, force: true })
-  }, 30_000)
+    // About 16 s unloaded by design: real relinks after 2 s, 4 s, 2 s and 8 s.
+  }, 60_000)
 })

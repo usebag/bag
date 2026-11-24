@@ -92,6 +92,18 @@ export function regrantNote(o: { readonly label: string; readonly host: HostKind
 /** Who may reset a declined slot: the person, through the hook's typed use or the bind dialog. */
 export type PersonChannel = 'use' | 'dialog'
 
+/**
+ * What the person does to reset a declined grant, as a slot's texts say it: the typed use where the window's host
+ * passes typed words to bag (an input hook), the bind dialog's Yes where it does not (Codex, opencode: the dialog's Yes
+ * on the bound label resets it too, binding.ts #bind), and both, each named with where it works, for a slot no one
+ * window owns (an agent unit's).
+ */
+export const AGAIN_TYPED = 'type use and the name'
+export const AGAIN_DIALOG = 'answer Yes in the bind dialog (the use tool opens it)'
+export const AGAIN_ANY =
+  'type use and the name in Claude Code or omp, or answer Yes in the bind dialog (the use tool opens it)'
+export const againFor = (typed: boolean): string => (typed ? AGAIN_TYPED : AGAIN_DIALOG)
+
 /** One of the four grant lines, naming only what GrantDetail allows (the service writes it by grantAuditEntry). */
 export type Audit = (event: GrantAct, f: GrantDetail) => void
 
@@ -107,6 +119,8 @@ export interface SlotPorts<G extends Granted> {
   /** The declined hold, kept across reconnects and restarts (holdFile); none in a test that does not ask. */
   readonly hold?: { readonly get: () => boolean; readonly set: (on: boolean) => void }
   readonly words: (code: string | null) => string
+  /** What the person does to reset a declined grant (againFor); AGAIN_ANY when none is given. */
+  readonly again?: string
   /** Ends the agent request in flight (closes its client), so a drain leaves no prompt at the agent. */
   readonly abort?: () => void
 }
@@ -171,7 +185,7 @@ export class GrantSlot<G extends Granted> {
     if (channel !== 'use' && channel !== 'dialog')
       throw new ConfigError(
         'not-authorized',
-        'only the person resets a declined grant: type use and the name',
+        `only the person resets a declined grant: ${this.#p.again ?? AGAIN_ANY}`,
       )
     const declined = this.#declined || this.#p.hold?.get() === true
     this.#declined = false
@@ -243,7 +257,10 @@ export class GrantSlot<G extends Granted> {
     // The declined hold stops only the asking; a live grant kept signing above.
     if (!person && (this.#declined || this.#p.hold?.get() === true))
       return Promise.reject(
-        new ConfigError('declined', 'the agent said no to a new grant: type use and the name to ask again'),
+        new ConfigError(
+          'declined',
+          `the agent said no to a new grant: ${this.#p.again ?? AGAIN_ANY} to ask again`,
+        ),
       )
     const asking: { done: Promise<G>; code: string | null } = {
       done: Promise.resolve(this.#grant),

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { serializeRecord } from '@usebag/core'
-import { FsKeyStore, RELAY_TURNS } from '@usebag/edge'
+import { FsKeyStore, keepAcceptCopy, keepAddressCopy, RELAY_TURNS } from '@usebag/edge'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import {
   acceptFrom,
@@ -66,7 +66,15 @@ const ADDRESS_TTL = 30
 /** Arm (d)'s records: long enough that two servers' renewals stay under the relay's per-address publishes in a window. */
 const OFFICE_TTL = 120
 const CLIENT_IP = '203.0.113.9'
-const DEADLINE_MS = 75_000
+/**
+ * How long an arm waits for its subscriptions and renewals. It stays clear of one keep-alive retry: a first cycle that
+ * re-signs nothing (a read with no answer under load, say) tries again after KEEP_ALIVE_RETRY_S, 60 s
+ * (packages/mcp/src/keepalive.ts), and the 64 took 25 to 37 s to subscribe in 0.4.5's gate (all_after_ms), so 75 s
+ * left a retried identity outside the wait. 120 s is that retry, about 30 s to subscribe, and 30 s more.
+ */
+const DEADLINE_MS = 120_000
+/** Each arm's vitest bound: its setup (64 keygens and 128 publishes), DEADLINE_MS, the send and arrival after it. */
+const CASE_MS = 240_000
 /** Arm (c)'s CLI lanes, each a process after a process; AC_S54_CLI sets them, to find where the places run out. */
 const CLI_LANES = Number(process.env.AC_S54_CLI ?? 1)
 /** The pause between one CLI lane's processes; AC_S54_CLI_GAP_MS sets it. */
@@ -141,12 +149,22 @@ async function homes(w: World, names: readonly string[]): Promise<{ home: string
   return made
 }
 
-/** `labels` made by keygen with their records at `url`; each says if its records went in. */
+/**
+ * `labels` made by keygen with their records at `url`; each says if its records went in. The home keeps a copy of
+ * each, as an identity's first records leave one (packages/home/src/first-records.ts): the relay sweeps a 30 s record
+ * at its first sweep past iat + 30 (every 60 s), and an identity whose network start (spread over 20 s) and first
+ * keep-alive cycle come after that sweep finds none at the relay. With the copy it heals and re-signs, as a person's
+ * identity does; without one it reads no-record at every cycle (0.4.5's gate: 63 re-signed and 1 no-record).
+ */
 async function identitiesAt(w: World, url: string, labels: readonly string[], ttl: number) {
   const made: { home: string; who: Party; published: boolean }[] = []
   const statuses: number[] = []
   for (const { home, who } of await homes(w, labels)) {
-    const records = [addressRecord(who, { relays: [url], ttl }), acceptFrom(who, ['*'])]
+    const address = addressRecord(who, { relays: [url], ttl })
+    const accept = acceptFrom(who, ['*'])
+    keepAddressCopy(home, who.name, address)
+    keepAcceptCopy(home, who.name, accept)
+    const records = [address, accept]
     const answers = []
     for (const r of records) answers.push((await rawPublish(url, serializeRecord(r))).status)
     statuses.push(...answers)
@@ -716,7 +734,7 @@ describe('e2e scenario 54: 64 identities on one relay, from one address', () => 
     async () => {
       await measure('direct')
     },
-    150_000,
+    CASE_MS,
   )
 
   it.runIf(runs('proxied'))(
@@ -724,7 +742,7 @@ describe('e2e scenario 54: 64 identities on one relay, from one address', () => 
     async () => {
       await measure('proxied')
     },
-    150_000,
+    CASE_MS,
   )
 
   it.runIf(runs('second'))(
@@ -732,7 +750,7 @@ describe('e2e scenario 54: 64 identities on one relay, from one address', () => 
     async () => {
       await secondProcess('direct')
     },
-    150_000,
+    CASE_MS,
   )
 
   it.runIf(runs('second-proxied'))(
@@ -740,7 +758,7 @@ describe('e2e scenario 54: 64 identities on one relay, from one address', () => 
     async () => {
       await secondProcess('proxied')
     },
-    150_000,
+    CASE_MS,
   )
 
   it.runIf(runs('reserve'))(
@@ -748,7 +766,7 @@ describe('e2e scenario 54: 64 identities on one relay, from one address', () => 
     async () => {
       await reserveMet('direct')
     },
-    150_000,
+    CASE_MS,
   )
 
   it.runIf(runs('reserve-proxied'))(
@@ -756,7 +774,7 @@ describe('e2e scenario 54: 64 identities on one relay, from one address', () => 
     async () => {
       await reserveMet('proxied')
     },
-    150_000,
+    CASE_MS,
   )
 
   if (only === 'office-direct' || only === 'office-proxied') {

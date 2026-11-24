@@ -161,6 +161,18 @@ describe('bag-shim between a host and the service', () => {
     expect(existsSync(ringFile)).toBe(false)
   })
 
+  it('answers a server/discover sent before initialize within 250 ms, then initializes (Codex, opencode)', async () => {
+    host = new FakeHost(home, { CLAUDECODE: '1' })
+    host.send({ jsonrpc: '2.0', id: 'warm', method: 'ping' })
+    await host.byId('warm')
+    const t0 = performance.now()
+    host.send({ jsonrpc: '2.0', id: 'd', method: 'server/discover', params: {} })
+    expect((await host.byId('d')).error?.code).toBe(-32601)
+    expect(performance.now() - t0).toBeLessThan(250)
+    expect((await host.initialize()).result).toMatchObject({ serverInfo: { name: 'bag' } })
+    expect(svc.conns.flatMap((c) => c.got).some((m) => m.method === 'server/discover')).toBe(false)
+  })
+
   it('fails a call in flight when the service restarts, and reconnects with the new token', async () => {
     host = new FakeHost(home, { CLAUDECODE: '1' })
     await host.initialize()
@@ -236,6 +248,43 @@ describe('bag-shim between a host and the service', () => {
     expect(await host.exited).toBe(0)
     expect(readdirSync(join(home, 'run', 'shim'))).toEqual([])
     expect(await runHook(home, JSON.stringify({ prompt: 'use omp' }))).toEqual({ code: 0, out: '' })
+  })
+
+  it("a killed shim's leftover .bound file is never a reason to restore: a new shim of the same host pid asks nothing back", async () => {
+    svc.boundOnUse = true // as the real service: a service/bound before the answer, so the killed shim's memory held omp
+    host = new FakeHost(home, { CLAUDECODE: '1' }, ['--input-hook'])
+    await host.initialize()
+    const killed = host.child.pid
+    expect(
+      JSON.parse((await runHook(home, JSON.stringify({ prompt: 'use omp', session_id: 's' }))).out),
+    ).toEqual({
+      decision: 'block',
+      reason: 'bag: this session now acts as omp.',
+    })
+    // The host pid is this test process (the shim's parent); run.ts's boundChanged writes the file by channel.ts.
+    const boundFile = join(home, 'run', 'shim', `${process.pid}.bound`)
+    for (let i = 0; i < 50 && !existsSync(boundFile); i++) await new Promise((r) => setTimeout(r, 20))
+    expect(JSON.parse(readFileSync(boundFile, 'utf8'))).toMatchObject({ v: 1, as: ['omp'], shim: killed })
+    // Killed: no clean-up runs, so the file is left behind.
+    host.child.kill('SIGKILL')
+    expect(await host.exited).toBe(null)
+    expect(JSON.parse(readFileSync(boundFile, 'utf8'))).toMatchObject({ v: 1, as: ['omp'], shim: killed })
+    await svc.restart()
+    host = new FakeHost(home, { CLAUDECODE: '1' }, ['--input-hook'])
+    await host.initialize() // a restore is asked before the initialize result, so this bounds the wait
+    await svc.next((m) => m.method === 'notifications/initialized')
+    expect(svc.conn.got.map((m) => m.method)).toEqual([
+      'service/hello',
+      'initialize',
+      'notifications/initialized',
+    ])
+    expect(svc.conns.flatMap((c) => c.got).filter((m) => m.method === 'service/use')).toEqual([])
+    // The new shim, bound to nothing, writes no .bound of its own: the file is left as the killed shim wrote it, and
+    // its clean exit leaves it too (endSession removes only a file that names its own pid).
+    expect(JSON.parse(readFileSync(boundFile, 'utf8'))).toMatchObject({ v: 1, as: ['omp'], shim: killed })
+    host.child.stdin.end()
+    expect(await host.exited).toBe(0)
+    expect(JSON.parse(readFileSync(boundFile, 'utf8'))).toMatchObject({ v: 1, as: ['omp'], shim: killed })
   })
 
   it('an omp hello carries the omp pid capability, and no bridge folder is made (0.4.2)', async () => {

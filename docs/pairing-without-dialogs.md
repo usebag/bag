@@ -1,9 +1,10 @@
 # Pairing without dialogs, with `pair`
 
 Pairing is a person's act. Inside an MCP host, the two approvals are form dialogs (elicitation) the model never sees and
-your host shows you. Some hosts cannot show them: a client with no elicitation support (omp is one) refuses
-`no-elicitation`, and at least one editor extension answers every dialog as "declined". There are two paths for those
-hosts. If the host runs a bag extension with its own link to the bag service (omp, section 5), you pair in the session,
+your host shows you. Claude Code's VS Code extension and Claude Desktop show no dialog for any MCP server; there bag's
+plugin asks you in Claude Code's own question card instead, and you pair in the window as in a terminal
+([bag-service.md](bag-service.md#bags-questions-in-claude-codes-question-card)). Other hosts cannot show them: a client
+with no elicitation support (omp is one) refuses `no-elicitation`. There are two paths for those hosts. If the host runs a bag extension with its own link to the bag service (omp, section 5), you pair in the session,
 the extension asking you to paste the code, read the digits and press Yes, with no terminal. Otherwise the model cannot
 pair, and it tells you what to change in your host so that it can (section 3); or you run this guide's `pair`, one
 guided step once per peer, in your own terminal.
@@ -79,8 +80,11 @@ When your host cannot show the pairing dialog, the `pair_invite` and `pair_accep
 return `no-elicitation` with what to change in your host, never a terminal command (since 2026-11-12; before, they named
 a `pair` line). The same answer comes when the host answers any of its dialogs in under 250 ms, sooner than a person can
 (`codex exec` declines every dialog at once, and so does Claude Code's VS Code extension, without showing it: Claude Code
-issue 98256), and from a Codex older than 0.113.0. In the VS Code extension or Claude Desktop the answer says so, and
-names Claude Code in a terminal, or `bag pair`, as the way to pair; typing use and the name still binds there. For Codex it names the interactive
+issue 98256), and from a Codex older than 0.113.0. In the VS Code extension and Claude Desktop, bag's plugin draws each
+pairing question in Claude Code's own question card, so the pair tools work there: you type your peer's code into the
+card, and the six check digits into the inviting side's card. A window there without the plugin (bag's Claude Code
+install not run, the plugin switched off in `/plugin`, or the window not yet reloaded once after the install) still
+answers `no-elicitation`, and the answer says so; typing use and the name still binds there. For Codex it names the interactive
 `codex` TUI rather than `codex exec`, Codex 0.113.0 or later, and an approval policy that lets MCP servers ask
 (`on-request`, the default, is enough); for omp, an interactive session that uses the bag service through bag's
 extension (a per-folder bag server cannot pair); for another host, its interactive form and the setting that lets MCP

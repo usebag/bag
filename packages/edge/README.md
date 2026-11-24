@@ -126,6 +126,13 @@ name)` reads it from a read-only connection, without the lock; `checkAuditAnchor
 again after an investigation, keep the evidence, then remove the row
 (`sqlite3 <dir>/edge.sqlite "DELETE FROM audit_anchor"`) or start a new state directory.
 
+**The verified prefix** (from 0.4.6): the same row also keeps the part of each anchored file the edge checked whole at
+an open (`prefix_bytes`, the end of its last complete line; `prefix_digest`, the sha256 of those bytes; `prefix_seq`
+and `prefix_hash`, its last line; `prefix_rules`, `AUDIT_RULES`). An open hashes those bytes in one pass and parses
+only the lines after them; any doubt (no prefix, other rules, another digest, a shorter file) checks the file whole as
+before, with the same refusals. Only the edge holding the writer lock writes it, at an open. To make every file checked
+whole at the next open while keeping the rows: `sqlite3 <dir>/edge.sqlite "UPDATE audit_anchor SET prefix_bytes = NULL"`.
+
 **The private-address guard** (`net.ts`): a relay URL whose host is a loopback, link-local, RFC 1918, unique-local,
 multicast or unspecified address (IPv4 and IPv6, an IPv4-mapped or IPv4-compatible address read as its IPv4,
 `0.0.0.0/8` unspecified), `localhost` or a `.localhost` name, or a name whose every address is one of those, is
@@ -440,7 +447,7 @@ telemetry.bag.dev; `telemetry-send.ts` is the only file with network code.
   sessions, `other` on a tie or with none. `telemetryReport(env, day)` is the
   preview: the machine's spool for the day under its id, or `PREVIEW_ID` (32 zeros) before `on`.
 - **The schema's copy**: `src/telemetry-schema.ts` copies the Worker's `src/schema.ts` and `builds.ts`, and
-  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (6537f84b). The Worker lives in usebag/infra at
+  `MAX_BYTES` of its `index.ts`, at `TELEMETRY_SCHEMA_COMMIT` (826c7d84). The Worker lives in usebag/infra at
   `workers/telemetry/` since 0.4.2 (here, `deploy/telemetry/`, before), and from 0.4.2 the constant names a usebag/infra
   commit, so the edge cannot import the Worker's file. `test/telemetry-report.test.ts` imports the Worker's files where
   `TELEMETRY_WORKER_SRC` names them, fails on any difference, and runs the Worker's `checkReport` on the reports it

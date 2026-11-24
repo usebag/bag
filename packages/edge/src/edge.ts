@@ -201,6 +201,8 @@ export class Edge {
       get: () => store.auditAnchorGet(log),
       put: (anchor) => store.auditAnchorPut(log, anchor, clock.now()),
       others: () => store.auditAnchors().filter((a) => a.name !== log),
+      prefix: (name) => store.auditPrefixGet(name),
+      setPrefix: (name, prefix) => store.auditPrefixPut(name, prefix),
     })
     this.guard = new RelayGuard({
       own: options.relays.urls,

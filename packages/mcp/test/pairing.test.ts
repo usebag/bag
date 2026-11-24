@@ -32,22 +32,27 @@ import {
   readInvite,
 } from '@usebag/edge'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MAX_ASK_MS, MAX_PASTE } from '../src/ask.ts'
 import { parseConfig } from '../src/config.ts'
 import { incompleteLine } from '../src/keepalive.ts'
 import {
   askUnseen,
   BUSY_HERE,
   bindUnseen,
+  CANCEL_WAIT_S,
+  CARD_TAIL,
   CODEX_FLOOR,
   FAST_ANSWER_MS,
   fitName,
   INCOMPLETE,
   inviteLines,
   LAGGING,
+  LINK_AGAIN,
   makingLine,
   NOT_PAIRED,
   noDialog,
   PAIRING_CODES,
+  pairFormMs,
   peerLines,
   SHOW_CODE,
   STILL_WAITING,
@@ -173,6 +178,8 @@ async function side(
     readonly client?: { name: string; version: string }
     /** pair_invite's address question answered so, in place of an empty accept. */
     readonly question?: () => Answer
+    /** The server's environment (CLAUDE_CODE_ENTRYPOINT names the Claude Code surface). */
+    readonly env?: Record<string, string>
   } = {},
 ): Promise<Side> {
   const home = join(tmp.dir, party.name)
@@ -193,6 +200,7 @@ async function side(
     pairPollMs: 2,
     // The scripted person answers in a moment; by default every dialog reads as a second, a person's pace.
     mono: o.mono ?? stepping(1000),
+    ...(o.env === undefined ? {} : { env: o.env }),
   })
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
   await running.mcp.connect(serverSide)
@@ -500,8 +508,9 @@ const whileWaiting: [string, (r: Requested) => Promise<void>][] = [
 describe('typed digits', () => {
   it('three wrong tries refuse digits-mismatch: nothing written, nothing revealed, the acceptor hears only no-answer', async () => {
     const { alice, bob, invite, code, asked, resume } = await requested()
-    // A seeded wrong digit, a wrong length and nothing at all: each one a try, none a closed dialog.
-    for (const digits of [wrong(code), code.slice(0, 5), '']) alice.person.push(() => accept({ digits }))
+    // Three wrong six-digit values, each one a try.
+    for (const digits of [wrong(code), wrong(wrong(code)), wrong(wrong(wrong(code)))])
+      alice.person.push(() => accept({ digits }))
     const out = await alice.call('pair_invite', { resume })
     expect(out).toEqual({
       isError: true,
@@ -590,6 +599,130 @@ describe('typed digits', () => {
       bob.call('pair_accept', { resume: asked.value.resume }),
     ])
     expect([a.value.paired, b.value.paired]).toEqual([true, true])
+    await clean(invite, code)
+  })
+
+  it("a pairing form stands the invitation's remaining life, from MAX_ASK_MS to MAX_INVITE_TTL", () => {
+    expect(pairFormMs(T0 + 600, T0)).toBe(600_000)
+    expect(pairFormMs(T0 + 600, T0 + 100)).toBe(500_000)
+    expect(pairFormMs(T0 + 600, T0 + 550)).toBe(MAX_ASK_MS)
+    expect(pairFormMs(T0 + 900, T0)).toBe(600_000)
+    expect(pairFormMs(0, T0)).toBe(600_000)
+  })
+
+  it('a compare answered past MAX_ASK_MS, inside the invitation, still compares and pairs', async () => {
+    const { alice, bob, invite, code, asked, resume, invited } = await requested()
+    const exp = Date.parse(invited.value.expires_at as string) / 1000
+    clock.t = exp - 500
+    alice.person.push(() => {
+      expect(timers.live()).toContain(500_000)
+      clock.t = exp - 100
+      timers.fire((ms) => ms === MAX_ASK_MS)
+      return accept({ digits: code })
+    })
+    const [a, b] = await Promise.all([
+      alice.call('pair_invite', { resume }),
+      bob.call('pair_accept', { resume: asked.value.resume }),
+    ])
+    expect([a.value.paired, b.value.paired]).toEqual([true, true])
+    await clean(invite, code)
+  })
+
+  it("a compare at the invitation's end, its own bound too: invite-expired, and the digits typed then write nothing", async () => {
+    const { alice, bob, invited, code, resume } = await requested()
+    const exp = Date.parse(invited.value.expires_at as string) / 1000
+    clock.t = exp - 450
+    alice.person.push(() => {
+      // The held request's timer and the form's bound both end with the invitation.
+      expect(timers.live().filter((ms) => ms === 450_000)).toHaveLength(2)
+      timers.fire((ms) => ms === 450_000)
+      return accept({ digits: code })
+    })
+    const a = await alice.call('pair_invite', { resume })
+    expect(a.value).toEqual({
+      error: 'invite-expired',
+      detail: 'no one answered the request before the invitation ended',
+    })
+    expect([files(alice), files(bob)]).toEqual([
+      [null, null],
+      [null, null],
+    ])
+  })
+
+  it('a compare past its own bound is withdrawn: no answer, the request kept, and the next call compares and pairs', async () => {
+    const { alice, bob, invited, invite, code, asked, resume } = await requested()
+    const exp = Date.parse(invited.value.expires_at as string) / 1000
+    // 50 s of the invitation left: the form still stands MAX_ASK_MS, and its bound, fired alone, withdraws it.
+    clock.t = exp - 50
+    alice.person.push(() => {
+      timers.fire((ms) => ms === MAX_ASK_MS)
+      return accept({ digits: code })
+    })
+    const a = await alice.call('pair_invite', { resume })
+    expect(a.value).toMatchObject({ pending: true, note: LINK_AGAIN })
+    expect([files(alice), files(bob)]).toEqual([
+      [null, null],
+      [null, null],
+    ])
+    expect(steps(alice)).toEqual(['invite-open queue -', 'request queue bob'])
+    alice.person.push(() => accept({ digits: code }))
+    const [again, b] = await Promise.all([
+      alice.call('pair_invite', { resume: a.value.resume as string }),
+      bob.call('pair_accept', { resume: asked.value.resume }),
+    ])
+    expect([again.value.paired, b.value.paired]).toEqual([true, true])
+    expect(alice.dialogs).toHaveLength(2)
+    await clean(invite, code)
+  })
+
+  it('a value that is not six digits spends no try: "abc" is asked again, and three wrong six digits still end it', async () => {
+    const { alice, invite, code, resume } = await requested()
+    // "abc", then two wrong six-digit values; the fourth dialog gets no answer (the scripted close).
+    alice.person.push(
+      () => accept({ digits: 'abc' }),
+      () => accept({ digits: wrong(code) }),
+      () => accept({ digits: wrong(code) }),
+    )
+    const first = await alice.call('pair_invite', { resume })
+    expect(first.value).toMatchObject({ pending: true, note: LINK_AGAIN })
+    alice.person.push(() => accept({ digits: wrong(code) }))
+    const out = await alice.call('pair_invite', { resume: first.value.resume as string })
+    expect(out.value.error).toBe('digits-mismatch')
+    expect(alice.dialogs.map((d) => d.split('\n')[1])).toEqual([
+      'Your peer reads them out, not where the code was sent.',
+      'That was not six digits. Type the six your peer reads.',
+      'No match. Tries left: 2. Ask your peer to repeat them.',
+      'No match. Tries left: 1. Ask your peer to repeat them.',
+      'No match. Tries left: 1. Ask your peer to repeat them.',
+    ])
+    expect(steps(alice)).toEqual([
+      'invite-open queue -',
+      'request queue bob',
+      'refuse reject bob digits-mismatch',
+    ])
+    await clean(invite, code)
+  })
+
+  it('"[No preference]" typed as the digits spends no try: asked again once, then held, and the next call pairs', async () => {
+    const { alice, bob, invite, code, asked, resume } = await requested()
+    alice.person.push(
+      () => accept({ digits: '[No preference]' }),
+      () => accept({ digits: '[No preference]' }),
+    )
+    const first = await alice.call('pair_invite', { resume })
+    expect(first.value).toMatchObject({ pending: true, note: LINK_AGAIN })
+    expect(steps(alice)).toEqual(['invite-open queue -', 'request queue bob'])
+    alice.person.push(() => accept({ digits: code }))
+    const [a, b] = await Promise.all([
+      alice.call('pair_invite', { resume: first.value.resume as string }),
+      bob.call('pair_accept', { resume: asked.value.resume }),
+    ])
+    expect([a.value.paired, b.value.paired]).toEqual([true, true])
+    expect(alice.dialogs.map((d) => d.split('\n')[1])).toEqual([
+      'Your peer reads them out, not where the code was sent.',
+      'That was not six digits. Type the six your peer reads.',
+      'Your peer reads them out, not where the code was sent.',
+    ])
     await clean(invite, code)
   })
 
@@ -773,36 +906,35 @@ describe('pair_invite and pair_accept', () => {
   })
 
   // The SDK validates a client's answer against the dialog's schema (a required string), so a boolean or a missing
-  // field fails the dialog itself: cancelled, not a try. Typed text of any shape is a try (the next describe).
+  // field fails the dialog itself: no answer, not a try; the request is kept for the next call.
   it.each([
-    [
-      'a boolean',
-      { digits: true },
-      'cancelled',
-      'the dialog was closed before an answer: nothing was written',
-    ],
-    ['no field', {}, 'cancelled', 'the dialog was closed before an answer: nothing was written'],
+    ['a boolean', { digits: true }],
+    ['no field', {}],
   ])(
-    'the inviter answering with %s is %s: nothing written, the acceptor not admitted',
-    async (_, content, error, detail) => {
+    'the inviter answering with %s is no answer: nothing written, the request kept, and the next call pairs',
+    async (_, content) => {
       const { alice, bob, invite, code, asked, resume } = await requested()
       alice.person.push(() => accept(content))
       const out = await alice.call('pair_invite', { resume })
-      expect(out.value).toEqual({ error, detail })
-      expect(steps(alice)).toEqual(['invite-open queue -', 'request queue bob', `refuse reject bob ${error}`])
-      clock.t = T0 + 601
-      expect((await bob.call('pair_accept', { resume: asked.value.resume })).value.error).toBe('no-answer')
+      expect(out.value).toMatchObject({ pending: true, note: LINK_AGAIN })
+      expect(steps(alice)).toEqual(['invite-open queue -', 'request queue bob'])
       expect([files(alice), files(bob)]).toEqual([
         [null, null],
         [null, null],
       ])
       expect(relay.records.get(`${RELAY} ${P.alice.address} accept-from`)).toBeUndefined()
+      alice.person.push(() => accept({ digits: code }))
+      const [a, b] = await Promise.all([
+        alice.call('pair_invite', { resume: out.value.resume as string }),
+        bob.call('pair_accept', { resume: asked.value.resume }),
+      ])
+      expect([a.value.paired, b.value.paired]).toEqual([true, true])
       await clean(invite, code)
     },
   )
 
   it.each([
-    ['false', { confirm: false }, 'declined', 'the check digits were not confirmed: no request was sent'],
+    ['false', { confirm: false }, 'cancelled', 'the check digits were not confirmed: no request was sent'],
     [
       'a string',
       { confirm: 'true' },
@@ -830,16 +962,15 @@ describe('pair_invite and pair_accept', () => {
     },
   )
 
-  it.each([
-    ['decline', 'declined', (): Answer => ({ action: 'decline' })],
-    ['cancel', 'cancelled', (): Answer => ({ action: 'cancel' })],
-    ['an error', 'cancelled', (): Answer => new Error('the host closed it')],
-  ])('the inviter: %s on the compare dialog is %s, and nothing is written', async (_, code, answer) => {
+  it('the inviter: decline (Cancel) on the compare dialog is declined and ends the pairing; nothing is written', async () => {
     const alice = await side(P.alice)
-    const { bob, invite, asked, resume } = await requestedFor(alice, answer)
+    const { bob, invite, asked, resume } = await requestedFor(alice, () => ({ action: 'decline' }))
     const out = await alice.call('pair_invite', { resume })
-    expect([out.isError, out.value.error]).toEqual([true, code])
-    expect(steps(alice).at(-1)).toBe(`refuse reject bob ${code}`)
+    expect([out.isError, out.value.error]).toEqual([true, 'declined'])
+    expect(steps(alice).at(-1)).toBe('refuse reject bob declined')
+    // Ended: the token is dead, and no other dialog opens.
+    expect((await alice.call('pair_invite', { resume })).value.error).not.toBe(undefined)
+    expect(alice.dialogs).toHaveLength(1)
     clock.t = T0 + 601
     expect((await bob.call('pair_accept', { resume: asked })).value.error).toBe('no-answer')
     expect([files(alice), files(bob)]).toEqual([
@@ -848,6 +979,28 @@ describe('pair_invite and pair_accept', () => {
     ])
     await clean(invite, codeIn(bob.dialogs[1]))
   })
+
+  it.each([
+    ['a close (cancel)', (): Answer => ({ action: 'cancel' })],
+    ['an error', (): Answer => new Error('the host closed it')],
+  ])(
+    'the inviter: %s on the compare dialog is no answer: the request kept, and the next call compares and pairs',
+    async (_, answer) => {
+      const alice = await side(P.alice)
+      const { bob, invite, asked, resume } = await requestedFor(alice, answer)
+      const out = await alice.call('pair_invite', { resume })
+      expect(out.value).toMatchObject({ pending: true, note: LINK_AGAIN })
+      expect(steps(alice)).toEqual(['invite-open queue -', 'request queue bob'])
+      const code = codeIn(bob.dialogs[1])
+      alice.person.push(() => accept({ digits: code }))
+      const [a, b] = await Promise.all([
+        alice.call('pair_invite', { resume: out.value.resume as string }),
+        bob.call('pair_accept', { resume: asked }),
+      ])
+      expect([a.value.paired, b.value.paired]).toEqual([true, true])
+      await clean(invite, code)
+    },
+  )
 
   it.each([
     ['decline', 'declined', (): Answer => ({ action: 'decline' })],
@@ -1006,7 +1159,7 @@ describe('pair_invite and pair_accept', () => {
     const out = await bob.call('pair_accept', { name: 'alice', for: P.carol.address })
     expect(out.value).toEqual({
       error: 'not-for',
-      detail: `that invitation is from ${P.alice.address}, not ${P.carol.address}: nothing was sent`,
+      detail: `that invitation is from ${P.alice.address}, not the address given: nothing was sent`,
     })
     expect([bob.dialogs.length, steps(bob)]).toEqual([1, ['decline reject - not-for']])
     expect(relay.box(RELAY, readInvite(invite).i)).toEqual([])
@@ -1053,8 +1206,14 @@ describe('pair_invite and pair_accept', () => {
     const out = await bob.call('pair_accept', { name: 'alice' })
     expect(out.value).toEqual({
       error: 'not-for',
-      detail: `that invitation is from ${P.alice.address}, not ${P.carol.address}: nothing was sent`,
+      detail: `that invitation is from ${P.alice.address}, not the address given: nothing was sent`,
     })
+    // The typed address comes back in no tool result, log line or audit line.
+    const audit = join(bob.home, 'state', bob.party.name, 'audit.jsonl')
+    const said = [...bob.seen, bob.log.text(), existsSync(audit) ? readFileSync(audit, 'utf8') : ''].join(
+      '\n',
+    )
+    expect(said).not.toContain(P.carol.address)
     expect([bob.dialogs.length, steps(bob)]).toEqual([1, ['decline reject - not-for']])
     expect(relay.box(RELAY, readInvite(invite).i)).toEqual([])
     bob.person.push(
@@ -1121,6 +1280,26 @@ describe('pair_invite and pair_accept', () => {
     // The inviter's write is the edge's last step: its peer has already written and admitted it.
     expect(b.value).toEqual({ paired: true, peer: P.alice.address, name: 'alice' })
     await clean(invite, code)
+  })
+
+  it("an invitation past its life: invite-expired, naming neither the inviter's relay nor the invitation typed", async () => {
+    const alice = await side(P.alice)
+    const bob = await side(P.bob)
+    await alice.call('pair_invite', { name: 'bob' })
+    const invite = inviteOf(alice)
+    const { i } = readInvite(invite)
+    clock.t = T0 + 901
+    bob.person.push(() => accept({ invite }))
+    const out = await bob.call('pair_accept', { name: 'alice' })
+    expect(out.value).toEqual({
+      error: 'invite-expired',
+      detail: "the inviter's relay holds no open invitation for that code",
+    })
+    const audit = join(bob.home, 'state', bob.party.name, 'audit.jsonl')
+    const said = [...bob.seen, bob.log.text(), existsSync(audit) ? readFileSync(audit, 'utf8') : ''].join(
+      '\n',
+    )
+    expect(said).not.toContain(i)
   })
 
   it('invite-expired when no one answers the request before the invitation ends; the acceptor gets no-answer', async () => {
@@ -1227,6 +1406,28 @@ describe('pair_invite and pair_accept', () => {
       'pair_accept',
     ])
     await clean(invite, codeIn(bob.dialogs[1]))
+  })
+
+  it("the host ending the inviter's call during the six digits is no answer: the request kept, busy carries a resume, and it pairs", async () => {
+    const alice = await side(P.alice)
+    const ended = new AbortController()
+    const { bob, invite, asked, resume } = await requestedFor(alice, () => {
+      ended.abort()
+      return new Promise<Answer>(() => {})
+    })
+    await expect(alice.call('pair_invite', { resume }, ended.signal)).rejects.toThrow()
+    await until(() => alice.log.lines.some((l) => l.event === 'pair-dialog'))
+    expect(steps(alice)).toEqual(['invite-open queue -', 'request queue bob'])
+    const busy = await alice.call('pair_invite', { name: 'bob' })
+    expect(busy.value.error).toBe('busy')
+    const code = codeIn(bob.dialogs[1])
+    alice.person.push(() => accept({ digits: code }))
+    const [a, b] = await Promise.all([
+      alice.call('pair_invite', { resume: busy.value.resume as string }),
+      bob.call('pair_accept', { resume: asked }),
+    ])
+    expect([a.value.paired, b.value.paired]).toEqual([true, true])
+    await clean(invite, code)
   })
 
   it('a first pair_invite cancelled by the client after its invitation went out ends the pairing: withdrawn, nothing written, it starts again', async () => {
@@ -1468,12 +1669,28 @@ describe('no-elicitation for a host that showed no dialog', () => {
     expect(vscode).toContain(
       "Claude Code's VS Code extension does this with every dialog (Claude Code issue 98256).",
     )
-    expect(vscode).toContain(
-      'Your user pairs from Claude Code in a terminal, or with bag pair; typing use and the name still binds in this window.',
-    )
+    expect(vscode).toContain(CARD_TAIL)
     expect(noDialog('claude-code', 'fast', '', 'claude-desktop')).toContain(
       'Claude Desktop does this with every dialog',
     )
+  })
+
+  it('on claude-vscode and claude-desktop the unseen texts name the question card, never a terminal, bag pair or a command line', () => {
+    for (const surface of ['claude-vscode', 'claude-desktop'])
+      for (const text of [askUnseen('claude-code', surface), noDialog('claude-code', 'fast', '', surface)]) {
+        expect(text, surface).toContain("bag's questions appear in Claude Code's question card")
+        expect(text, surface).toContain(
+          "once bag's plugin for Claude Code is installed and this window reloaded once.",
+        )
+        expect(text, surface).toContain('Typing use and the identity name still binds in this window.')
+        expect(text, surface).toContain('Do not call it again until your user says the question card shows.')
+        expect(text.toLowerCase(), surface).not.toContain('terminal')
+        expect(text, surface).not.toContain('bag pair')
+        expect(text, surface).not.toMatch(/\bbag [a-z]|host install|--user/)
+      }
+    // Other surfaces keep today's words.
+    expect(askUnseen('claude-code', 'cli')).toBe(askUnseen('claude-code'))
+    expect(askUnseen('claude-code', 'cli')).not.toContain('question card')
   })
 
   // P4: the numeric core against 0.113.0, any prerelease tag ignored; a compatibility gate, never a trust boundary.
@@ -1581,6 +1798,302 @@ describe('no-elicitation for a host that showed no dialog', () => {
   })
 })
 
+// The pairing's own end while one of its dialogs stands (pair_cancel, the invitation's expiry) is what the call answers,
+// even when the host then answers that dialog sooner than a person could: no-elicitation there would tell the model to
+// stop using the pair tools for a pairing its own person ended. The host's own instant answer with no end stays
+// no-elicitation (0.4.4), and the host's cancel of the call answers as before.
+describe('a pairing ended under its open dialog answers its end, never no-elicitation', () => {
+  const CANCELLED = 'your user cancelled this pairing (pair_cancel): nothing was written'
+  /** pair_cancel from `s` while its dialog stands, waited on (real time) until the end is under way. */
+  async function cancelUnder(s: Side): Promise<{ cancelled: Promise<Record<string, unknown>> }> {
+    let done = false
+    const cancelled = s.call('pair_cancel', {}).then((r) => {
+      done = true
+      return r.value
+    })
+    await until(() => done || timers.live().includes(CANCEL_WAIT_S * 1000))
+    return { cancelled }
+  }
+  const declined = (): Answer => ({ action: 'decline' })
+  const noElicitation = (s: Side): unknown[] =>
+    s.log.lines.filter((l) => l.event === 'pair-dialog' && l.fields.code === 'no-elicitation')
+
+  it("pair_cancel under the inviter's address question, then a decline in 10 ms: the cancel's refusal", async () => {
+    const c = perDialog()
+    const ended: Promise<Record<string, unknown>>[] = []
+    const question = async (): Promise<Answer> => {
+      ended.push((await cancelUnder(alice)).cancelled)
+      c.step = 10
+      return declined()
+    }
+    const alice = await side(P.alice, true, [], {
+      mono: c.mono,
+      question: question as unknown as () => Answer,
+    })
+    const out = await alice.call('pair_invite', { name: 'bob' })
+    expect([out.value.error, out.value.detail]).toEqual(['cancelled', CANCELLED])
+    expect(await ended[0]).toEqual({ cancelled: true, was: 'invite' })
+    expect([steps(alice), noElicitation(alice), files(alice)]).toEqual([
+      ['refuse reject - cancelled'],
+      [],
+      [null, null],
+    ])
+    expect(relay.published).toEqual([])
+    await clean(null, null)
+  })
+
+  it("pair_cancel under the paste, then a decline in 10 ms: the cancel's refusal, nothing claimed or written", async () => {
+    const alice = await side(P.alice)
+    const c = perDialog()
+    const bob = await side(P.bob, true, [], { mono: c.mono })
+    await alice.call('pair_invite', { name: 'bob' })
+    const invite = inviteOf(alice)
+    const ended: Promise<Record<string, unknown>>[] = []
+    bob.person.push(async () => {
+      ended.push((await cancelUnder(bob)).cancelled)
+      c.step = 10
+      return declined()
+    })
+    const out = await bob.call('pair_accept', { name: 'alice' })
+    expect([out.value.error, out.value.detail]).toEqual(['cancelled', CANCELLED])
+    expect(await ended[0]).toEqual({ cancelled: true, was: 'accept' })
+    expect([steps(bob), noElicitation(bob), files(bob)]).toEqual([
+      ['decline reject - cancelled'],
+      [],
+      [null, null],
+    ])
+    expect(relay.records.get(`${RELAY} ${P.bob.address} accept-from`)).toBeUndefined()
+    await clean(invite, null)
+  })
+
+  it.each([
+    ['declined', declined],
+    ['accepted with Yes', () => accept({ confirm: true })],
+  ] as [string, () => Answer][])(
+    "pair_cancel under the check digits, then %s in 10 ms: the cancel's refusal, no request sent",
+    async (_, answer) => {
+      const alice = await side(P.alice)
+      const c = perDialog()
+      const bob = await side(P.bob, true, [], { mono: c.mono })
+      await alice.call('pair_invite', { name: 'bob' })
+      const invite = inviteOf(alice)
+      const ended: Promise<Record<string, unknown>>[] = []
+      bob.person.push(
+        () => accept({ invite }),
+        async () => {
+          ended.push((await cancelUnder(bob)).cancelled)
+          c.step = 10
+          return answer()
+        },
+      )
+      const out = await bob.call('pair_accept', { name: 'alice' })
+      expect([out.value.error, out.value.detail]).toEqual(['cancelled', CANCELLED])
+      expect(await ended[0]).toEqual({ cancelled: true, was: 'accept' })
+      expect([steps(bob), noElicitation(bob), files(bob)]).toEqual([
+        ['decline reject alice cancelled'],
+        [],
+        [null, null],
+      ])
+      expect(relay.records.get(`${RELAY} ${P.bob.address} accept-from`)).toBeUndefined()
+      await clean(invite, codeIn(bob.dialogs[1]))
+    },
+  )
+
+  it("pair_cancel under the inviter's six digits, then a decline in 10 ms: the cancel's refusal, audited once", async () => {
+    const c = perDialog()
+    const { alice, bob, invite, code, resume } = await requested(c.mono)
+    const ended: Promise<Record<string, unknown>>[] = []
+    alice.person.push(async () => {
+      ended.push((await cancelUnder(alice)).cancelled)
+      c.step = 10
+      return declined()
+    })
+    const out = await alice.call('pair_invite', { resume })
+    expect([out.value.error, out.value.detail]).toEqual(['cancelled', CANCELLED])
+    expect(await ended[0]).toEqual({ cancelled: true, was: 'invite' })
+    expect([noElicitation(alice), files(alice), files(bob)]).toEqual([[], [null, null], [null, null]])
+    expect(steps(alice).filter((l) => l.startsWith('refuse'))).toEqual(['refuse reject bob cancelled'])
+    await clean(invite, code)
+  })
+
+  it("the invitation's end under the inviter's six digits, then a decline in 10 ms: invite-expired", async () => {
+    const c = perDialog()
+    const { alice, bob, invite, code, resume } = await requested(c.mono)
+    alice.person.push(() => {
+      // The held request's timer, to the invitation's end (#held): it fires under the open dialog.
+      // The form's own bound (pairFormMs) ends with the invitation too: the same delay, fired together.
+      const left = [...new Set(timers.live().filter((ms) => ms > CANCEL_WAIT_S * 1000))]
+      expect(left).toHaveLength(1)
+      timers.fire((ms) => ms === left[0])
+      c.step = 10
+      return declined()
+    })
+    const out = await alice.call('pair_invite', { resume })
+    expect([out.value.error, out.value.detail]).toEqual([
+      'invite-expired',
+      'no one answered the request before the invitation ended',
+    ])
+    expect([noElicitation(alice), files(alice), files(bob)]).toEqual([[], [null, null], [null, null]])
+    await clean(invite, code)
+  })
+
+  it("the host's own decline in 10 ms with no end of ours stays no-elicitation: nothing written (0.4.4)", async () => {
+    const alice = await side(P.alice)
+    const c = perDialog()
+    const bob = await side(P.bob, true, [], { mono: c.mono })
+    await alice.call('pair_invite', { name: 'bob' })
+    const invite = inviteOf(alice)
+    bob.person.push(() => {
+      c.step = 10
+      return declined()
+    })
+    const out = await bob.call('pair_accept', { name: 'alice' })
+    expect([out.value.error, out.value.detail]).toEqual(['no-elicitation', noDialog('other', 'fast')])
+    expect([noElicitation(bob).length, files(bob)]).toEqual([1, [null, null]])
+    expect(relay.records.get(`${RELAY} ${P.bob.address} accept-from`)).toBeUndefined()
+    await clean(invite, null)
+  })
+
+  it("the host's cancel of the call 10 ms after the paste opens answers as before: no result, the dialog's no-elicitation line, client-abort", async () => {
+    const alice = await side(P.alice)
+    const c = perDialog()
+    const bob = await side(P.bob, true, [], { mono: c.mono })
+    await alice.call('pair_invite', { name: 'bob' })
+    const invite = inviteOf(alice)
+    const ctl = new AbortController()
+    bob.person.push(async () => {
+      c.step = 10
+      ctl.abort()
+      await until(() => noElicitation(bob).length > 0)
+      return declined()
+    })
+    await expect(bob.call('pair_accept', { name: 'alice' }, ctl.signal)).rejects.toThrow()
+    await until(() => steps(bob).length > 0)
+    // Today's answer, pinned: the dialog is judged unseen (its log line), the call's result is dropped by the SDK, and
+    // the pairing ends as the host's cancel of its first call (client-abort): audited once, nothing written.
+    expect(noElicitation(bob).map((l) => (l as { fields: unknown }).fields)).toEqual([
+      { tool: 'pair_accept', code: 'no-elicitation', ms: 10 },
+    ])
+    expect([steps(bob), files(bob)]).toEqual([['decline reject - cancelled'], [null, null]])
+    expect(bob.seen.filter((x) => x.includes('no-elicitation'))).toEqual([])
+    expect(relay.records.get(`${RELAY} ${P.bob.address} accept-from`)).toBeUndefined()
+    await clean(invite, null)
+  })
+})
+
+// 2026-11-23, live on 0.4.5: on a loaded machine the VS Code extension's own decline of a dialog it never showed took
+// longer than FAST_ANSWER_MS, and was taken as the person's No. On a surface known to answer every dialog itself
+// (claude-vscode, claude-desktop), a decline or a cancel of any pairing dialog is unseen however long it took; an accept
+// stays an accept; every other surface keeps the timing rule.
+describe('a surface that answers every dialog itself: no decline is the person, whatever it took', () => {
+  const CC = { name: 'claude-code', version: '2.1.0' }
+  const on = (surface: string, ms: number) => ({
+    mono: stepping(ms),
+    client: CC,
+    env: { CLAUDE_CODE_ENTRYPOINT: surface },
+  })
+  const declined = (): Answer => ({ action: 'decline' })
+  /** Each pairing dialog declined on `surface` after `ms`: what its call answered, and what was written. */
+  async function each(surface: string, ms: number): Promise<[string, unknown, unknown][]> {
+    const out: [string, unknown, unknown][] = []
+    // The inviter's address question.
+    const a1 = await side(P.alice, true, [], { ...on(surface, ms), question: declined })
+    const r1 = await a1.call('pair_invite', { name: 'bob' })
+    out.push(['address', r1.value.error, files(a1)])
+    // The acceptor's paste, then its check digits (the paste accepted: an accept is still the person's).
+    const inviter = await side(P.carol)
+    await inviter.call('pair_invite', { name: 'bob' })
+    const invite = inviteOf(inviter)
+    const b1 = await side(P.bob, true, [], on(surface, ms))
+    b1.person.push(declined)
+    out.push(['paste', (await b1.call('pair_accept', { name: 'carol' })).value.error, files(b1)])
+    const b2 = await side(P.jane, true, [], on(surface, ms))
+    b2.person.push(() => accept({ invite }), declined)
+    out.push(['check digits', (await b2.call('pair_accept', { name: 'carol' })).value.error, files(b2)])
+    expect(relay.records.get(`${RELAY} ${P.jane.address} accept-from`)).toBeUndefined()
+    return out
+  }
+
+  for (const surface of ['claude-vscode', 'claude-desktop']) {
+    for (const ms of [300, 5000]) {
+      it(`${surface}: the address, the paste and the check digits declined after ${ms} ms are no-elicitation, nothing written`, async () => {
+        expect(await each(surface, ms)).toEqual(
+          ['address', 'paste', 'check digits'].map((d) => [d, 'no-elicitation', [null, null]]),
+        )
+        for (const s of sides) {
+          // Its own words, and an audit line that says what happened: never a person's decline.
+          for (const v of s.seen.map((x) => JSON.parse(x) as { structuredContent?: { detail?: string } }))
+            if (v.structuredContent?.detail?.includes('at once'))
+              expect(v.structuredContent.detail).toBe(noDialog('claude-code', 'fast', '', surface))
+          expect(steps(s).filter((l) => l.includes('declined'))).toEqual([])
+        }
+      })
+    }
+
+    it(`${surface}: the inviter's six digits declined after 5 s is no-elicitation; accepts after 300 ms pair`, async () => {
+      const c = perDialog()
+      c.step = 300
+      const alice = await side(P.alice, true, [], { ...on(surface, 300), mono: c.mono })
+      const bob = await side(P.bob, true, [], on(surface, 300))
+      const invited = await alice.call('pair_invite', { name: 'bob' })
+      const invite = inviteOf(alice)
+      bob.person.push(
+        () => accept({ invite }),
+        () => accept({ confirm: true }),
+      )
+      await bob.call('pair_accept', { name: 'alice' })
+      alice.person.push(() => {
+        c.step = 5000
+        return declined()
+      })
+      const out = await alice.call('pair_invite', { resume: invited.value.resume as string })
+      expect([out.value.error, out.value.detail]).toEqual([
+        'no-elicitation',
+        noDialog('claude-code', 'fast', '', surface),
+      ])
+      expect(steps(alice).filter((l) => l.includes('declined'))).toEqual([])
+      // The service log names the surface it read: the proof that the surface decided it.
+      expect(alice.log.lines.filter((l) => l.event === 'pair-dialog').at(-1)?.fields).toEqual({
+        tool: 'pair_invite',
+        code: 'no-elicitation',
+        ms: 5000,
+        surface,
+      })
+      expect([files(alice), files(bob)]).toEqual([
+        [null, null],
+        [null, null],
+      ])
+      // A second invitation, every dialog accepted at 300 ms on this surface: paired.
+      c.step = 300
+      const again = await alice.call('pair_invite', { name: 'bob2' })
+      const invite2 = inviteOf(alice)
+      const jane = await side(P.jane, true, [], on(surface, 300))
+      jane.person.push(
+        () => accept({ invite: invite2 }),
+        () => accept({ confirm: true }),
+      )
+      await jane.call('pair_accept', { name: 'alice' })
+      alice.person.push(() => accept({ digits: codeIn(jane.dialogs[1]) }))
+      expect((await alice.call('pair_invite', { resume: again.value.resume as string })).value).toMatchObject(
+        {
+          paired: true,
+        },
+      )
+    })
+  }
+
+  it("the terminal (cli) keeps the timing rule: a decline after 300 ms is the person's, after 10 ms unseen", async () => {
+    const alice = await side(P.alice)
+    await alice.call('pair_invite', { name: 'bob' })
+    const bob = await side(P.bob, true, [], on('cli', 300))
+    bob.person.push(declined)
+    expect((await bob.call('pair_accept', { name: 'alice' })).value.error).toBe('declined')
+    const jane = await side(P.jane, true, [], on('cli', 10))
+    jane.person.push(declined)
+    expect((await jane.call('pair_accept', { name: 'alice' })).value.error).toBe('no-elicitation')
+  })
+})
+
 // A 403 root-not-accepted (2026-10-30) read as a failed pairing, while the inviter's person was asked for the digits.
 // The relay refuses an envelope root-not-accepted only by the recipient's accept-from (step 7), so these run with the
 // memory relay's roots check on. One case is a send in the gap between requested and the admit; the other is the same
@@ -1632,9 +2145,9 @@ describe('a 403 root-not-accepted during pairing (reproductions)', () => {
 
   it('F3: the same invite accepted again after the inviter ended it goes unconsumed to no-answer; closed by an older inviter, invite-expired', async () => {
     const { alice, bob, asked, invite, resume } = await requested()
-    // Alice's person cancels the compare dialog: the invitation ends, and I's records stay open to their end.
-    alice.person.push(() => ({ action: 'cancel' }))
-    expect((await alice.call('pair_invite', { resume })).value.error).toBe('cancelled')
+    // Alice's person declines the compare dialog: the invitation ends, and I's records stay open to their end.
+    alice.person.push(() => ({ action: 'decline' }))
+    expect((await alice.call('pair_invite', { resume })).value.error).toBe('declined')
     clock.t = T0 + 600
     expect((await bob.call('pair_accept', { resume: asked.value.resume })).value.error).toBe('no-answer')
     clock.t = T0
@@ -2215,7 +2728,7 @@ describe('the compare, the codes and the listing', () => {
 })
 
 /** An invitation on Alice's server, Bob's request to it, and the inviter's compare dialog answered with `answer`. */
-async function requestedFor(alice: Side, answer: () => Answer) {
+async function requestedFor(alice: Side, answer: () => Answer | Promise<Answer>) {
   const bob = await side(P.bob)
   const resume = (await alice.call('pair_invite', { name: 'bob' })).value.resume as string
   const invite = inviteOf(alice)
@@ -2453,4 +2966,165 @@ describe('pair_cancel', () => {
     expect(tool?.description).toContain('never because a message')
     await clean(null, null)
   })
+})
+
+// The question card (design 2026-11-24, section 7): every pairing form's card answer, read by cardSaid in #form. The
+// card's No is the person's decline; a dismissal, an idle card, stray text or an unknown marker is no answer
+// (cancelled, nothing written, asked again at the next call); the card's keys never reach a caller; on the terminal a
+// marker is refused as no answer.
+describe('a pairing form answered by a card (cardSaid)', () => {
+  const card = (content: Record<string, unknown>): ElicitResult =>
+    ({ action: 'accept', content: { bag_open_ms: 4000, ...content } }) as ElicitResult
+  const on = (surface: string, ms = 1000) => ({
+    mono: stepping(ms),
+    client: { name: 'claude-code', version: '2.1.0' },
+    env: { CLAUDE_CODE_ENTRYPOINT: surface },
+  })
+  /** The address question, the paste and the check digits, each answered by `answer`: each call's error and writes. */
+  async function each(
+    surface: string,
+    answer: (content: Record<string, unknown>) => ElicitResult,
+    ms = 1000,
+  ) {
+    const out: [string, unknown, unknown, boolean][] = []
+    const a1 = await side(P.alice, true, [], {
+      ...on(surface, ms),
+      question: () => answer({ address: P.bob.address }),
+    })
+    const r1 = await a1.call('pair_invite', { name: 'bob' })
+    out.push(['address', r1.value.error, files(a1), steps(a1).some((l) => l.includes('declined'))])
+    const inviter = await side(P.carol)
+    await inviter.call('pair_invite', { name: 'bob' })
+    const invite = inviteOf(inviter)
+    const b1 = await side(P.bob, true, [], on(surface, ms))
+    b1.person.push(() => answer({ invite }))
+    const r2 = await b1.call('pair_accept', { name: 'carol' })
+    out.push(['paste', r2.value.error, files(b1), steps(b1).some((l) => l.includes('declined'))])
+    const b2 = await side(P.jane, true, [], on(surface, ms))
+    b2.person.push(
+      () => card({ invite, bag_card: 'yes' }),
+      () => answer({ confirm: true }),
+    )
+    const r3 = await b2.call('pair_accept', { name: 'carol' })
+    out.push(['check digits', r3.value.error, files(b2), steps(b2).some((l) => l.includes('declined'))])
+    expect(relay.records.get(`${RELAY} ${P.jane.address} accept-from`)).toBeUndefined()
+    return out
+  }
+  const forms = (error: string, declined: boolean) =>
+    ['address', 'paste', 'check digits'].map((d) => [d, error, [null, null], declined])
+
+  for (const surface of ['claude-vscode', 'claude-desktop']) {
+    it(`${surface}: marked Yes on every form pairs; the compare reads the typed digits without the card's keys`, async () => {
+      const alice = await side(P.alice, true, [], {
+        ...on(surface),
+        question: () => card({ bag_card: 'yes' }),
+      })
+      const bob = await side(P.bob, true, [], on(surface))
+      const invited = await alice.call('pair_invite', { name: 'bob' })
+      const invite = inviteOf(alice)
+      bob.person.push(
+        () => card({ invite, bag_card: 'yes' }),
+        () => card({ confirm: true, bag_card: 'yes' }),
+      )
+      expect((await bob.call('pair_accept', { name: 'alice' })).value).toMatchObject({ requested: true })
+      alice.person.push(() => card({ digits: codeIn(bob.dialogs[1]), bag_card: 'yes' }))
+      const done = await alice.call('pair_invite', { resume: invited.value.resume as string })
+      expect(done.value).toMatchObject({ paired: true })
+      await clean(invite, codeIn(bob.dialogs[1]))
+    })
+
+    it(`${surface}: Ask me later (dismissed) on the six digits keeps the request: the next call compares and pairs`, async () => {
+      const alice = await side(P.alice, true, [], {
+        ...on(surface),
+        question: () => card({ bag_card: 'yes' }),
+      })
+      const bob = await side(P.bob, true, [], on(surface))
+      const invited = await alice.call('pair_invite', { name: 'bob' })
+      const invite = inviteOf(alice)
+      bob.person.push(
+        () => card({ invite, bag_card: 'yes' }),
+        () => card({ confirm: true, bag_card: 'yes' }),
+      )
+      const asked = await bob.call('pair_accept', { name: 'alice' })
+      const code = codeIn(bob.dialogs[1])
+      // The field is there for the test client's schema check; a dismissal's mark is read before any field.
+      alice.person.push(() => card({ digits: '', bag_card: 'dismissed' }))
+      const later = await alice.call('pair_invite', { resume: invited.value.resume as string })
+      expect(later.value).toMatchObject({ pending: true, note: LINK_AGAIN })
+      expect(steps(alice)).toEqual(['invite-open queue -', 'request queue bob'])
+      alice.person.push(() => card({ digits: code, bag_card: 'yes' }))
+      const [a, b] = await Promise.all([
+        alice.call('pair_invite', { resume: later.value.resume as string }),
+        bob.call('pair_accept', { resume: asked.value.resume as string }),
+      ])
+      expect([a.value.paired, b.value.paired]).toEqual([true, true])
+      await clean(invite, code)
+    })
+
+    it(`${surface}: the card's No on the address, the paste and the check digits is declined, audited so; nothing written`, async () => {
+      expect(await each(surface, (c) => card({ ...c, bag_card: 'no' }))).toEqual(forms('declined', true))
+    })
+
+    it(`${surface}: Other on a text form is the typed value, checked as typed; on the check digits it is no answer`, async () => {
+      const out = await each(surface, (c) => card({ ...c, bag_card: 'other' }))
+      // The address opens the invitation bound to it; the paste goes on to the check digits (whose default answer, a
+      // bare cancel, is unseen here); the check digits' stray text sends nothing.
+      expect(out).toEqual([
+        ['address', undefined, [null, null], false],
+        ['paste', 'no-elicitation', [null, null], false],
+        ['check digits', 'cancelled', [null, null], false],
+      ])
+    })
+
+    for (const mark of ['dismissed', 'idle', 'maybe'])
+      it(`${surface}: ${mark} on every form is no answer: cancelled, never declined, nothing written, asked again`, async () => {
+        expect(await each(surface, (c) => card({ ...c, bag_card: mark }))).toEqual(forms('cancelled', false))
+        const again = await side(P.org, true, [], {
+          ...on(surface),
+          question: () => card({ bag_card: mark }),
+        })
+        await again.call('pair_invite', { name: 'bob' })
+        await again.call('pair_invite', { name: 'bob' })
+        expect(again.questions).toHaveLength(2)
+      })
+
+    it(`${surface}: a dismissal open under 250 ms, and a marked Yes in 10 ms, are no-elicitation`, async () => {
+      expect(await each(surface, (c) => card({ ...c, bag_card: 'dismissed', bag_open_ms: 40 }))).toEqual(
+        forms('no-elicitation', false),
+      )
+      const fast = await side(P.org, true, [], {
+        ...on(surface, 10),
+        question: () => card({ bag_card: 'yes' }),
+      })
+      expect((await fast.call('pair_invite', { name: 'bob' })).value.error).toBe('no-elicitation')
+    })
+
+    it(`${surface}: a marked Yes with confirm false on the check digits is no answer: cancelled, no request`, async () => {
+      expect(
+        await each(surface, (c) =>
+          card({ ...c, ...('confirm' in c ? { confirm: false } : {}), bag_card: 'yes' }),
+        ),
+      ).toEqual([
+        ['address', undefined, [null, null], false],
+        ['paste', 'no-elicitation', [null, null], false],
+        ['check digits', 'cancelled', [null, null], false],
+      ])
+    })
+
+    it(`${surface}: an over-long paste or address under a marked Yes is refused as today, nothing sent`, async () => {
+      const b = await side(P.bob, true, [], on(surface))
+      b.person.push(() => card({ invite: 'x'.repeat(MAX_PASTE + 1), bag_card: 'yes' }))
+      expect((await b.call('pair_accept', { name: 'carol' })).value.error).toBe('bad-code')
+      const a = await side(P.alice, true, [], {
+        ...on(surface),
+        question: () => card({ address: 'x'.repeat(600), bag_card: 'yes' }),
+      })
+      expect((await a.call('pair_invite', { name: 'bob' })).value.error).toBe('usage')
+    })
+  }
+
+  for (const mark of ['yes', 'no'])
+    it(`the terminal (cli) refuses a marker as no answer: a marked ${mark} is cancelled, never declined, nothing written`, async () => {
+      expect(await each('cli', (c) => card({ ...c, bag_card: mark }))).toEqual(forms('cancelled', false))
+    })
 })

@@ -5,7 +5,10 @@ import { GRANT_ACTS, grantAuditEntry, NOTE_MAX, type RevokeReply } from '@usebag
 import { afterEach, describe, expect, it } from 'vitest'
 import { ConfigError } from '../src/config.ts'
 import {
+  AGAIN_DIALOG,
+  AGAIN_TYPED,
   type Audit,
+  againFor,
   GrantSlot,
   holdFile,
   hostKindOf,
@@ -730,5 +733,48 @@ describe('the revoke intents', () => {
     ])
     expect(statSync(intentsPath(t.dir)).mode & 0o777).toBe(0o600)
     expect(JSON.parse(readFileSync(intentsPath(t.dir), 'utf8')).v).toBe(1)
+  })
+})
+
+describe('what a declined grant tells the person to do, by the window it serves', () => {
+  /** A slot whose grant was declined, with `again` as the service gives it for a window of that host. */
+  const declined = async (typed: boolean): Promise<string[]> => {
+    const r = new Rig()
+    r.grantAnswer = async () => {
+      throw new ConfigError('declined', 'n')
+    }
+    const s = new GrantSlot<G>(grant(r.fresh(), START + 10), { ...r.ports(), again: againFor(typed) })
+    r.now = START + 20
+    await codeOf(s.forAct())
+    await settle()
+    const said = await s.forAct().then(
+      () => 'ok',
+      (e: unknown) => String((e as Error).message),
+    )
+    let guard = ''
+    try {
+      s.person('tool' as 'use')
+    } catch (e) {
+      guard = String((e as Error).message)
+    }
+    return [said, guard]
+  }
+
+  it('with an input hook (Claude Code, omp): type use and the name', async () => {
+    expect(await declined(true)).toEqual([
+      `declined: the agent said no to a new grant: ${AGAIN_TYPED} to ask again`,
+      `not-authorized: only the person resets a declined grant: ${AGAIN_TYPED}`,
+    ])
+    expect(AGAIN_TYPED).toBe('type use and the name')
+  })
+
+  it('with none (Codex, opencode): the bind dialog, and never the typed use', async () => {
+    const said = await declined(false)
+    expect(said).toEqual([
+      `declined: the agent said no to a new grant: ${AGAIN_DIALOG} to ask again`,
+      `not-authorized: only the person resets a declined grant: ${AGAIN_DIALOG}`,
+    ])
+    expect(AGAIN_DIALOG).toBe('answer Yes in the bind dialog (the use tool opens it)')
+    for (const line of said) for (const typed of ['type use', 'typing use']) expect(line).not.toContain(typed)
   })
 })

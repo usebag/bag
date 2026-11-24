@@ -665,7 +665,9 @@ describe('L1 (CLI half): `audit verify` on a tampered 20-line log', () => {
     writeFileSync(bad, `${tampered.join('\n')}\n`)
     const r = await cli(join(dir, 'home'), ['audit', 'verify', bad])
     expect([r.code, r.out]).toEqual([1, ['bad line 10: not an audit line']])
-  })
+    // 1.0 to 1.2 s alone at loads 43 to 53, past 5 s in the whole suite at 65: two CLI child processes, each a node
+    // start of the command line; the log itself is 20 lines.
+  }, 30_000)
 
   it('(d) the last three lines removed: measured', async () => {
     const dir = scratch('audit-d')

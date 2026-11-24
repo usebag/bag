@@ -11,7 +11,11 @@ use ac_relay::Config;
 use common::{NOW, Server, addr, bytes, envelope, key, subscribe, ws_env, ws_send};
 use futures_util::StreamExt as _;
 use socket::Raw;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 async fn hosted() -> Server {
     let s = Server::start(Config::default()).await;
@@ -144,4 +148,140 @@ async fn a_flood_of_pings_does_not_hold_off_the_auth_deadline() {
     let (close, took) = *tries.last().unwrap();
     assert_eq!(close, Some(4003), "no auth: closed for silence although it pinged; every try: {tries:?}");
     assert!(took < Duration::from_secs(1), "every try: {tries:?}");
+}
+
+/// How the flood of `a_flood_that_always_has_a_frame_waiting_is_ended_at_the_auth_deadline` ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Flood {
+    /// The relay ended the connection while the pings still went out: a write failed, or the reader saw the end.
+    Ended,
+    /// Every ping went out for the whole flood and the relay never ended the connection.
+    Spent,
+}
+
+/// What the reader saw: the close code if a close frame came, and whether the connection ended at all.
+#[derive(Debug, Default)]
+struct Seen {
+    close: Option<u16>,
+    ended: bool,
+}
+
+/// A subscribe connection with send and receive buffers of 1 MiB, upgraded: its halves and the bytes read past the
+/// upgrade's answer.
+async fn upgraded(addr: std::net::SocketAddr) -> (OwnedReadHalf, OwnedWriteHalf, Vec<u8>) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_send_buffer_size(1 << 20).unwrap();
+    socket.set_recv_buffer_size(1 << 20).unwrap();
+    let mut stream = socket.connect(addr).await.unwrap();
+    let request = format!(
+        "GET /v0/subscribe HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 16_384];
+    let head = loop {
+        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break end + 4;
+        }
+        let n = stream.read(&mut chunk).await.unwrap();
+        assert!(n > 0, "no upgrade answer");
+        buf.extend_from_slice(&chunk[..n]);
+    };
+    assert!(buf.starts_with(b"HTTP/1.1 101"), "{}", String::from_utf8_lossy(&buf));
+    buf.drain(..head);
+    let (read, write) = stream.into_split();
+    (read, write, buf)
+}
+
+/// Reads the relay's frames (unmasked, unfragmented: the challenge, then pongs) until a close frame, EOF or an error,
+/// and says so in `ended` for the flood.
+async fn read_until_end(mut read: OwnedReadHalf, mut buf: Vec<u8>, ended: Arc<AtomicBool>) -> Seen {
+    let mut seen = Seen::default();
+    let mut chunk = vec![0u8; 65_536];
+    let mut challenged = false;
+    while seen.close.is_none() {
+        while buf.len() >= 2 {
+            let (len, header) = match buf[1] & 0x7f {
+                126 if buf.len() >= 4 => (usize::from(u16::from_be_bytes([buf[2], buf[3]])), 4),
+                126 | 127 => break,
+                n => (usize::from(n), 2),
+            };
+            if buf.len() < header + len {
+                break;
+            }
+            let opcode = buf[0] & 0x0f;
+            if opcode == 0x1 {
+                let text: serde_json::Value = serde_json::from_slice(&buf[header..header + len]).unwrap();
+                assert_eq!((challenged, &text["t"]), (false, &"challenge".into()), "{text}");
+                challenged = true;
+            }
+            if opcode == 0x8 && len >= 2 {
+                seen.close = Some(u16::from_be_bytes([buf[header], buf[header + 1]]));
+            }
+            buf.drain(..header + len);
+        }
+        if seen.close.is_some() {
+            break;
+        }
+        match read.read(&mut chunk).await {
+            Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
+            _ => break,
+        }
+    }
+    seen.ended = true;
+    ended.store(true, Ordering::SeqCst);
+    seen
+}
+
+#[tokio::test]
+async fn a_flood_that_always_has_a_frame_waiting_is_ended_at_the_auth_deadline() {
+    // The fault of ee0baa28, reproduced as its log entry names it: the wait for the auth frame is a `biased;` select
+    // that polls the socket before the deadline, "so a client sending pings without pause would never let the
+    // deadline's arm run". The test above paces its pings 2 ms apart, so the relay's read goes pending between them
+    // and the deadline's arm runs anyway: it passes with the in-loop check removed. Here a client writes pings with no
+    // pause into a send buffer of 1 MiB, far more than the relay reads in one turn, and on this test's one thread it
+    // writes again whenever the relay yields, so a frame is always waiting and the select's read is ready every time
+    // it is polled. Only the deadline checked at each turn of the loop ends the session then. The proof is an order,
+    // not a time: the relay must end the connection while the flood still runs (FLOOD is 50 times the deadline);
+    // without the check it ends it only after the flood stops. The close frame itself may not be read: the relay
+    // drops the socket with this client's pings unread, and the TCP reset that follows can discard it (see the test
+    // above), so a close that is read must be 4003, and an end without one counts as the end.
+    const FLOOD: Duration = Duration::from_secs(10);
+    let config = Config {
+        ping_interval: Duration::from_millis(100),
+        idle_timeout: Duration::from_millis(200),
+        ..Config::default()
+    };
+    let s = Server::start(config).await;
+    let (read, mut write, buf) = upgraded(s.addr).await;
+    let ended = Arc::new(AtomicBool::new(false));
+    let reader = tokio::spawn(read_until_end(read, buf, Arc::clone(&ended)));
+    // Empty masked pings, six bytes each, 11,000 to a write.
+    let ping = [0x89_u8, 0x80, 0x37, 0xfa, 0x21, 0x3d];
+    let pings: Vec<u8> = ping.iter().copied().cycle().take(ping.len() * 11_000).collect();
+    let started = tokio::time::Instant::now();
+    let flood = loop {
+        if ended.load(Ordering::SeqCst) {
+            break Flood::Ended;
+        }
+        if started.elapsed() >= FLOOD {
+            break Flood::Spent;
+        }
+        if write.write_all(&pings).await.is_err() {
+            break Flood::Ended;
+        }
+    };
+    let flooded = started.elapsed();
+    let seen = tokio::time::timeout(Duration::from_mins(1), reader).await.expect("the reader ended").unwrap();
+    assert_eq!(
+        flood,
+        Flood::Ended,
+        "the relay ended it only after {flooded:?} of pings ({seen:?}): the pings held off the deadline"
+    );
+    assert!(seen.ended, "{seen:?}");
+    assert!(seen.close.is_none_or(|c| c == 4003), "a close read is the auth deadline's: {seen:?}");
+    drop(write);
+    assert_eq!(s.get("/v0/health", &[]).await.status, 200);
+    s.stop().await;
 }

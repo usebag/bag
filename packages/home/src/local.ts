@@ -358,6 +358,8 @@ export function failHeldToSender(home: string, m: HeldMail, reason: string, now:
       get: () => store.auditAnchorGet(log),
       put: (anchor) => store.auditAnchorPut(log, anchor, now()),
       others: () => store.auditAnchors().filter((a) => a.name !== log),
+      prefix: (name) => store.auditPrefixGet(name),
+      setPrefix: (name, prefix) => store.auditPrefixPut(name, prefix),
     })
     const detail = { relay: LOCAL_RELAY, delivery: 'failed-local', reason, to: m.to }
     audit.record({ event: 'publish', decision: 'reject', id: m.id, from: m.from, detail })

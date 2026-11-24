@@ -210,6 +210,8 @@ export class Unit {
     return this.#failure instanceof HeldError ? this.#heldSince : null
   }
   state: 'starting' | 'running' | 'failed' = 'starting'
+  /** It waits in the service's start queue or is opening now: status names it `opening` until it is open. */
+  opening = false
   /** Its address, read from its key even when it fails to open: what the guards compare with. */
   address: string | null = null
   #deps: ServerDeps
@@ -433,6 +435,15 @@ export class Unit {
     if (read === null) return this.tryOpen()
     this.#failure = pending
     this.state = 'failed'
+    this.opening = true
+    try {
+      return await this.#openWith(read)
+    } finally {
+      this.opening = false
+    }
+  }
+
+  async #openWith(read: () => Promise<EdgeKeys | AgentOpening>): Promise<boolean> {
     let keys: EdgeKeys | AgentOpening
     try {
       keys = await read()
@@ -578,7 +589,7 @@ export class Unit {
     return {
       label: this.config.label,
       address: this.address,
-      state: this.state,
+      state: this.opening && this.opened === null ? 'opening' : this.state,
       code: this.state === 'failed' ? codeOf(this.failure) : null,
       relays: this.config.relays,
       ...reachOf(this.config.relays),
