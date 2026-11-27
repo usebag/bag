@@ -26,6 +26,7 @@ import { START_SPREAD_S, startIdentities } from '../src/server.ts'
 import {
   ACT_QUESTIONS,
   FULL_NOTE,
+  OTHERS_NOTE,
   RELAY_NOT_PLAIN,
   registerTools,
   SHORT_NOTE,
@@ -138,7 +139,17 @@ afterEach(async () => {
 
 /** A service connection with its own MCP server and client; its person answers its dialogs (the address question empty). */
 async function window(
-  o: { host?: string; cwd?: string; elicit?: boolean; hook?: boolean; bridge?: boolean } = {},
+  o: {
+    host?: string
+    cwd?: string
+    elicit?: boolean
+    hook?: boolean
+    bridge?: boolean
+    /** The labels the person keeps apart (run/local.json's hidden), read by the window's local home. */
+    hidden?: ReadonlySet<string>
+    /** run/local.json there but refused: the person's line (local.ts wordRefusal). */
+    refused?: string
+  } = {},
 ): Promise<Window> {
   const closers = new Set<() => void>()
   const w = {
@@ -171,7 +182,20 @@ async function window(
     },
   } as unknown as Window
   const server = new McpServer({ name: 'svc', version: '0.0.0' })
-  registerTools(server, { ...root, connection: w } as ToolContext)
+  // The service's local home (service.ts #localHome) as far as identities reads it: whether a label is hidden.
+  const kept = o.hidden
+  const refused = o.refused ?? null
+  const local =
+    kept === undefined && refused === null
+      ? {}
+      : {
+          local: {
+            hidden: (l: string) => kept?.has(l) === true,
+            refused: () => refused,
+            notices: () => [],
+          },
+        }
+  registerTools(server, { ...root, ...local, connection: w } as ToolContext)
   const [a, b] = InMemoryTransport.createLinkedPair()
   await server.connect(b)
   const client = new Client({ name: 'shim', version: '0.0.0' })
@@ -445,14 +469,65 @@ describe('every tool on a service connection goes through the binding (H1)', () 
       custody.personal = c
       const w = await boundTo('personal')
       for (const [tool, args] of CALLS) {
+        const asked = w.dialogs.length
         const r = await w.call(tool, args)
         expect([tool, r.value.as]).toEqual([tool, 'personal'])
+        // identity_create and host_wire run here for home-key and keychain: each refuses its arguments before any question.
+        if (['identity_create', 'host_wire'].includes(tool))
+          expect([tool, w.dialogs.length, r.value.error]).toEqual([
+            tool,
+            asked,
+            c === 'home-key' || c === 'keychain' ? 'usage' : 'not-authorized',
+          ])
         if (TOOLS_BY_CUSTODY[c].includes(tool))
           expect([tool, r.value.error]).not.toEqual([tool, 'not-authorized'])
         else expect([tool, r.value.error]).toEqual([tool, 'not-authorized'])
       }
       if (TOOLS_BY_CUSTODY[c].includes('pair_cancel')) await w.call('pair_cancel')
     })
+})
+
+describe("a tool unbind's note: once, in the window's next answer (design 2026-11-26, section 4.2)", () => {
+  const line = /^personal unbound by an unbind call at \d\d:\d\d UTC: this window acts as no identity now$/
+  /** A window bound to personal, then unbound by the agent's tool (lane 2 calls the table so). */
+  const unboundByTool = async (): Promise<Window> => {
+    const w = await boundTo('personal')
+    expect(table.unbind(w, undefined, 'tool')).toEqual(['personal'])
+    return w
+  }
+
+  it('after a tool unbind the next answer carries the notice once: on identities and status of an unbound window', async () => {
+    const a = await unboundByTool()
+    const first = await a.call('identities')
+    expect(first.value).toMatchObject({ full: false, note: SHORT_NOTE, as: null })
+    expect(first.value.notice).toEqual([expect.stringMatching(line)])
+    expect(first.value.notice_line).toEqual((first.value.notice as string[])[0])
+    const again = await a.call('identities')
+    expect([again.value.notice, again.value.notice_line]).toEqual([undefined, undefined])
+    const b = await unboundByTool()
+    const st = (await b.call('status')).value
+    expect(st).toMatchObject({ bound: false, as: null })
+    expect(String(st.note)).toMatch(
+      /^personal unbound by an unbind call at \d\d:\d\d UTC: this window acts as no identity now /,
+    )
+    expect(String(st.note).endsWith(NOT_BOUND)).toBe(true)
+    expect((await b.call('status')).value).toEqual({ bound: false, note: NOT_BOUND, as: null })
+  })
+
+  it('every unbound tool and an identity tool carry it, an error result too; a window unbind leaves none', async () => {
+    for (const [tool, args] of CALLS.filter(([t]) =>
+      ['identity_create', 'telemetry', 'host_wire', 'service', 'send'].includes(t),
+    )) {
+      const w = await unboundByTool()
+      const r = await w.call(tool, args)
+      const said = tool === 'send' ? [String(r.value.detail).replace(` ${NOT_BOUND}`, '')] : r.value.notice
+      expect([tool, said]).toEqual([tool, [expect.stringMatching(line)]])
+      expect([tool, (await w.call(tool, args)).value.notice]).toEqual([tool, undefined])
+    }
+    const v = await boundTo('personal')
+    table.unbind(v, undefined, 'window')
+    expect((await v.call('identities')).value.notice).toBeUndefined()
+  })
 })
 
 describe('a window bound to no identity sees short addresses, unless its person said Yes in it', () => {
@@ -575,14 +650,15 @@ describe('a window bound to no identity sees short addresses, unless its person 
     expect(relay.published).toEqual([])
   })
 
-  it('(5) a bound window and a server of its own see the full addresses, with no question', async () => {
+  it('(5) a bound window sees its own identity in full and another short, with no question', async () => {
     const w = await boundTo('personal')
     const r = await w.call('identities')
     expect(listed(r.value)).toEqual([
       ['personal', P.alice.address],
-      ['research', P.carol.address],
+      ['research', shortAddress(P.carol.address)],
     ])
-    expect(r.value).toMatchObject({ full: true, as: 'personal' })
+    expect(r.value).toMatchObject({ full: false, note: OTHERS_NOTE, as: 'personal' })
+    expect(JSON.stringify(r.value)).not.toContain(P.carol.address)
     expect(w.dialogs).toEqual([])
     // unboundAddress outside a window (no connection): the short form, never the full one by default.
     expect(unboundAddress({ address: P.alice.address }, undefined)).toBe(shortAddress(P.alice.address))
@@ -594,6 +670,207 @@ describe('a window bound to no identity sees short addresses, unless its person 
     const r = await w.call('identities', { full: true })
     expect(r.value.note).toBe(FULL_NOTE)
     expect(FULL_NOTE).toContain("never put one identity's address in a message sent as another")
+  })
+})
+
+describe('a window bound to an identity: its own in full, the others short, a hidden other never', () => {
+  const yes: Answer = { action: 'accept', content: { confirm: true } }
+  const no: Answer = { action: 'decline' }
+  const listed = (v: Json): [unknown, unknown][] =>
+    (v.identities as Json[]).map((i) => [i.label, i.address] as [unknown, unknown])
+  /** No form of research in a result: its label, its address, its short form, or its key's hex. */
+  const noResearch = (v: Json): void => {
+    const text = JSON.stringify(v)
+    for (const s of ['research', P.carol.address.slice('ed25519:'.length, 16), shortAddress(P.carol.address)])
+      expect(text).not.toContain(s)
+  }
+  const kept = new Set(['research'])
+
+  for (const c of ['home-key', 'keychain', 'agent', 'grant'] as Custody[])
+    for (const how of ['typed', 'dialog'] as const)
+      it(`a ${c} window bound by the ${how === 'typed' ? 'typed word' : "dialog's Yes"} is never shown a hidden identity, Yes to full or not`, async () => {
+        custody.personal = c
+        const w = await window({ hidden: kept, hook: how === 'typed' })
+        if (how === 'typed') table.bindByWord(w, 'personal')
+        else {
+          w.person.push({ action: 'accept', content: { bind: true } })
+          expect((await w.call('use', { name: 'personal' })).value).toMatchObject({ bound: true })
+        }
+        const r = await w.call('identities')
+        expect(r.value).toEqual({
+          identities: [{ label: 'personal', address: P.alice.address }],
+          full: false,
+          note: OTHERS_NOTE,
+          as: 'personal',
+        })
+        noResearch(r.value)
+        // The person's Yes to the full addresses in that window shows no hidden identity either.
+        w.person.push(yes)
+        const full = await w.call('identities', { full: true })
+        expect(full.value).toEqual({
+          identities: [{ label: 'personal', address: P.alice.address }],
+          full: true,
+          note: FULL_NOTE,
+          as: 'personal',
+        })
+        noResearch(full.value)
+      })
+
+  it('a window bound to the hidden identity sees itself in full and none of the others, Yes to full or not', async () => {
+    const w = await boundTo('research', { hidden: kept })
+    const r = await w.call('identities')
+    expect(listed(r.value)).toEqual([['research', P.carol.address]])
+    expect(r.value).toMatchObject({ full: false, note: OTHERS_NOTE, as: 'research' })
+    for (const s of ['personal', shortAddress(P.alice.address), P.alice.address])
+      expect(JSON.stringify(r.value)).not.toContain(s)
+    w.person.push(yes)
+    const full = await w.call('identities', { full: true })
+    expect(listed(full.value)).toEqual([['research', P.carol.address]])
+  })
+
+  it('a window bound to two identities sees both in full, one of them hidden; with no as it is refused', async () => {
+    const w = await window({ hidden: kept })
+    // A bind replaces (USE_REPLACES): two come only from a restore of a 0.4.6 window that held both.
+    table.bindByRestore(w, 'personal', null)
+    table.bindByRestore(w, 'research', null)
+    const r = await w.call('identities', { as: 'personal' })
+    expect(listed(r.value)).toEqual([
+      ['personal', P.alice.address],
+      ['research', P.carol.address],
+    ])
+    expect((await w.call('identities')).value).toMatchObject({ error: 'usage', as: null })
+  })
+
+  it("after the person's Yes the others are full in that window only; a No, no answer or no dialog keeps them short", async () => {
+    const a = await boundTo('personal')
+    const b = await boundTo('personal')
+    const loose = await window()
+    a.person.push(yes)
+    const shown = await a.call('identities', { full: true })
+    expect(listed(shown.value)).toEqual([
+      ['personal', P.alice.address],
+      ['research', P.carol.address],
+    ])
+    expect(shown.value).toMatchObject({ full: true, note: FULL_NOTE, as: 'personal' })
+    // The same question as an unbound window's, asked once and held for that window.
+    expect(a.dialogs).toEqual([FULL_QUESTION])
+    expect((await a.call('identities')).value).toMatchObject({ full: true })
+    expect(a.dialogs).toHaveLength(1)
+    // Another window of the same identity, and an unbound one, stay short.
+    const other = await b.call('identities')
+    expect(other.value).toMatchObject({ full: false, note: OTHERS_NOTE })
+    expect(listed(other.value)[1]).toEqual(['research', shortAddress(P.carol.address)])
+    expect(listed((await loose.call('identities')).value)[1]).toEqual([
+      'research',
+      shortAddress(P.carol.address),
+    ])
+    for (const [answer, why] of [
+      [no, 'your user said No: the addresses stay short'],
+      [{ action: 'cancel' }, 'the dialog was not answered: the addresses stay short'],
+    ] as const) {
+      const c = await boundTo('personal')
+      c.person.push(answer)
+      const r = await c.call('identities', { full: true })
+      expect([r.value.full, r.value.note, listed(r.value)]).toEqual([
+        false,
+        why,
+        [
+          ['personal', P.alice.address],
+          ['research', shortAddress(P.carol.address)],
+        ],
+      ])
+    }
+    const blind = await boundTo('personal', { elicit: false })
+    const r = await blind.call('identities', { full: true })
+    expect([r.value.full, String(r.value.note)]).toEqual([false, expect.stringContaining('stay short')])
+    expect(blind.dialogs).toEqual([])
+  })
+
+  it("its asks are limited per window as an unbound window's are; a refused ask shows nothing more", async () => {
+    const w = await boundTo('personal')
+    for (let i = 0; i < 3; i++) {
+      w.person.push(no)
+      expect((await w.call('identities', { full: true })).value).toMatchObject({ full: false })
+    }
+    const refused = await w.call('identities', { full: true })
+    expect(refused.value).toMatchObject({ error: 'rate-limited', as: 'personal' })
+    expect(refused.value.identities).toBeUndefined()
+    expect(JSON.stringify(refused.value)).not.toContain(P.carol.address)
+    expect(w.dialogs).toHaveLength(3)
+  })
+
+  it('an unbound window that was used as sam lists no hidden identity it was not used as; one never bound lists them all; use of a hidden one still binds', async () => {
+    const w = await boundTo('personal', { hidden: kept })
+    expect((await w.call('unbind')).value).toEqual({ unbound: ['personal'], as: null })
+    const after = await w.call('identities')
+    expect(listed(after.value).map(([l]) => l)).toEqual(['personal'])
+    noResearch(after.value)
+    // Used as the hidden one: it sees that one again, and the visible ones.
+    const h = await boundTo('research', { hidden: kept })
+    await h.call('unbind')
+    expect(listed((await h.call('identities')).value).map(([l]) => l)).toEqual(['personal', 'research'])
+    // Never bound: every identity, the hidden one too, as before.
+    const fresh = await window({ hidden: kept })
+    expect(listed((await fresh.call('identities')).value).map(([l]) => l)).toEqual(['personal', 'research'])
+    // Binding the hidden one by its name stays possible: the dialog's Yes, or the typed word.
+    w.person.push({ action: 'accept', content: { bind: true } })
+    expect((await w.call('use', { name: 'research' })).value).toMatchObject({ bound: true, as: 'research' })
+    // While run/local.json is refused, an unbound window with a history sees only what it was used as.
+    const r = await boundTo('personal', { refused: 'run/local.json is not private to you' })
+    await r.call('unbind')
+    expect(listed((await r.call('identities')).value).map(([l]) => l)).toEqual(['personal'])
+  })
+
+  it('while run/local.json is refused, a bound window of each class lists only its own; an unbound one is unchanged', async () => {
+    const refused = 'run/local.json is not private to you (mode 0644): fixed by chmod 600'
+    for (const c of ['home-key', 'keychain', 'agent', 'grant'] as Custody[]) {
+      custody.personal = c
+      const w = await boundTo('personal', { refused })
+      expect(listed((await w.call('identities')).value)).toEqual([['personal', P.alice.address]])
+      w.person.push(yes)
+      const full = await w.call('identities', { full: true })
+      expect(listed(full.value)).toEqual([['personal', P.alice.address]])
+      noResearch(full.value)
+    }
+    const loose = await window({ refused })
+    expect(listed((await loose.call('identities')).value)).toEqual([
+      ['personal', shortAddress(P.alice.address)],
+      ['research', shortAddress(P.carol.address)],
+    ])
+  })
+
+  it('a window bound to no identity is unchanged: every identity short, a hidden one too', async () => {
+    const w = await window({ hidden: kept })
+    const r = await w.call('identities')
+    expect(r.value).toEqual({
+      identities: [
+        { label: 'personal', address: shortAddress(P.alice.address) },
+        { label: 'research', address: shortAddress(P.carol.address) },
+      ],
+      full: false,
+      note: SHORT_NOTE,
+      as: null,
+    })
+  })
+
+  it('a server of its own identities (no window) shows every one in full', async () => {
+    const server = new McpServer({ name: 'own', version: '0.0.0' })
+    registerTools(server, root)
+    const [ca, cb] = InMemoryTransport.createLinkedPair()
+    await server.connect(cb)
+    const client = new Client({ name: 'own', version: '0.0.0' })
+    await client.connect(ca)
+    stops.push(async () => {
+      await client.close()
+      await server.close()
+    })
+    const r = await client.callTool({ name: 'identities', arguments: {} })
+    const v = JSON.parse((r.content as { text: string }[])[0]?.text ?? '{}') as Json
+    expect(listed(v)).toEqual([
+      ['personal', P.alice.address],
+      ['research', P.carol.address],
+    ])
+    expect(v.full).toBe(true)
   })
 })
 

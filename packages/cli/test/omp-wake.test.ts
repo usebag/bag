@@ -52,6 +52,7 @@ import bagWake, {
   shimHomeOf,
   targetOf,
   typedName,
+  unbindWord,
   WAKE_STATUS,
   WakeLoop,
   wakeText,
@@ -636,6 +637,7 @@ describe('the service: channel, bridge and ring', () => {
     const timers: { fn: () => void; ms: number; every: boolean }[] = []
     const status: (string | undefined)[] = []
     const notes: string[] = []
+    const levels: (string | undefined)[] = []
     const ctx = {
       cwd,
       mode: 'tui',
@@ -648,7 +650,10 @@ describe('the service: channel, bridge and ring', () => {
           if (key === WAKE_STATUS) status.push(text)
         },
         setWidget: () => undefined,
-        notify: (m: string) => notes.push(m),
+        notify: (m: string, level?: string) => {
+          notes.push(m)
+          levels.push(level)
+        },
       },
       idle: true,
       isIdle() {
@@ -665,8 +670,11 @@ describe('the service: channel, bridge and ring', () => {
     const emit = (e: string) => {
       for (const h of handlers.get(e) ?? []) h({}, ctx)
     }
-    const input = (text: string, source = 'interactive') =>
-      (handlers.get('input') ?? []).map((h) => h({ type: 'input', text, images: [], source }, ctx))[0]
+    // `source` null: an input event without one.
+    const input = (text: string, source: string | null = 'interactive') =>
+      (handlers.get('input') ?? []).map((h) =>
+        h({ type: 'input', text, images: [], ...(source === null ? {} : { source }) }, ctx),
+      )[0]
     const runOnce = () => {
       const due = timers.filter((t) => !t.every)
       timers.splice(0, timers.length, ...timers.filter((t) => t.every))
@@ -676,7 +684,7 @@ describe('the service: channel, bridge and ring', () => {
       for (const t of timers.filter((t) => t.ms === RING_POLL_MS)) t.fn()
       runOnce()
     }
-    return { ctx, sent, status, notes, emit, input, runOnce, poll, timers }
+    return { ctx, sent, status, notes, levels, emit, input, runOnce, poll, timers }
   }
 
   const until = async (ok: () => boolean) => {
@@ -704,7 +712,9 @@ describe('the service: channel, bridge and ring', () => {
       typedName('  USE omp.x_1  '),
       typedName('use Omp'),
       typedName('use omp now'),
-    ]).toEqual(['omp-3', 'omp.x_1', null, null])
+      typedName('unbind sam'),
+      typedName('unbind'),
+    ]).toEqual(['omp-3', 'omp.x_1', null, null, null, null])
     const cwd = project('/h/.bag')
     // a project entry counts only when its --dir is the default home
     expect(shimHomeOf(cwd, {})).toBeNull()
@@ -732,7 +742,7 @@ describe('the service: channel, bridge and ring', () => {
     const o = session(project(s.home))
     expect(await o.input('use omp-3')).toEqual({ handled: true })
     expect(s.got).toEqual([{ v: 1, kind: 'use', name: 'omp-3', secret: s.secret }])
-    expect(o.notes).toEqual(['bag: this session now acts as omp-3'])
+    expect(o.notes).toEqual(['bag: this session now acts as omp-3.'])
   })
 
   it('use of an unknown identity goes on to the model; another refusal is still handled', async () => {
@@ -759,6 +769,154 @@ describe('the service: channel, bridge and ring', () => {
     expect(o.input('use omp-3', 'rpc')).toBeUndefined()
     await new Promise((r) => setTimeout(r, 100))
     expect(s.got).toEqual([])
+  })
+
+  it('the extension takes unbind as the shim does and notifies the line', async () => {
+    expect(['unbind', '  UNBIND  ', 'unbind sam', 'Unbind omp.x_1'].map(unbindWord)).toEqual([
+      {},
+      {},
+      { name: 'sam' },
+      { name: 'omp.x_1' },
+    ])
+    for (const p of ['unbind sam now', 'please unbind', 'unbind -x', 'unbind Sam', 'unbindsam', 'hi\nunbind'])
+      expect(unbindWord(p)).toBeNull()
+    const s = await shim((r) =>
+      r.name === 'sam'
+        ? { unbound: ['sam'], as: ['work'] }
+        : r.name === 'work'
+          ? { unbound: ['work'], as: [] }
+          : { unbound: ['sam', 'work'], as: [] },
+    )
+    const o = session(project(s.home))
+    expect(await o.input('unbind sam')).toEqual({ handled: true })
+    expect(await o.input('unbind work')).toEqual({ handled: true })
+    expect(await o.input(' Unbind ')).toEqual({ handled: true })
+    expect(s.got).toEqual([
+      { v: 1, kind: 'unbind', name: 'sam', secret: s.secret },
+      { v: 1, kind: 'unbind', name: 'work', secret: s.secret },
+      { v: 1, kind: 'unbind', secret: s.secret },
+    ])
+    expect(o.notes).toEqual([
+      'bag: this session no longer acts as sam; it still acts as work.',
+      'bag: this session now acts as no identity (it acted as work).',
+      'bag: this session now acts as no identity (it acted as sam, work).',
+    ])
+    expect(o.levels).toEqual(['info', 'info', 'info'])
+    // a longer prompt holding the word is no unbind: sent as typed, and the model gets it
+    expect(o.input('unbind sam please')).toBeUndefined()
+    await until(() => s.got.length > 3)
+    expect(s.got[3]).toEqual({ v: 1, kind: 'typed', secret: s.secret })
+  })
+
+  it('an unbind with nothing to take, a name not bound, a service away and a refusal: warning lines', async () => {
+    const s = await shim((r) =>
+      r.name === undefined
+        ? { unbound: [], as: [] }
+        : r.name === 'pandas'
+          ? { unbound: [], as: ['sam'] }
+          : r.name === 'gone'
+            ? { code: 'not-bound' }
+            : { code: r.name === 'down' ? 'not-connected' : r.name === 'cut' ? 'lost' : 'draining' },
+    )
+    const o = session(project(s.home))
+    for (const p of ['unbind', 'unbind pandas', 'unbind gone', 'unbind down', 'unbind cut', 'unbind sam'])
+      expect(await o.input(p)).toEqual({ handled: true })
+    expect(o.notes).toEqual([
+      'bag: this session acts as no identity: nothing to unbind.',
+      'bag: this session does not act as pandas: nothing was unbound.',
+      'bag: this session does not act as gone: nothing was unbound.',
+      'bag: the bag service is not reachable (not-connected); this session no longer acts as down once it is back.',
+      'bag: the bag service is not reachable (lost); this session no longer acts as cut once it is back.',
+      'bag: unbind was refused (draining); nothing was unbound.',
+    ])
+    expect(o.levels).toEqual(Array(6).fill('warning'))
+  })
+
+  it('a service away: a named unbind says that name goes once it is back, the bare word every identity', async () => {
+    let code = 'not-connected'
+    const s = await shim(() => ({ code }))
+    const o = session(project(s.home))
+    expect(await o.input('unbind sam')).toEqual({ handled: true })
+    expect(await o.input('unbind')).toEqual({ handled: true })
+    code = 'lost'
+    expect(await o.input('unbind sam')).toEqual({ handled: true })
+    expect(await o.input('unbind')).toEqual({ handled: true })
+    expect(o.notes).toEqual([
+      'bag: the bag service is not reachable (not-connected); this session no longer acts as sam once it is back.',
+      'bag: the bag service is not reachable (not-connected); this session acts as no identity once it is back.',
+      'bag: the bag service is not reachable (lost); this session no longer acts as sam once it is back.',
+      'bag: the bag service is not reachable (lost); this session acts as no identity once it is back.',
+    ])
+  })
+
+  it('an unbind from any other source (rpc, extension, none) is not sent and reaches the model', async () => {
+    const s = await shim(() => ({ unbound: ['sam'], as: [] }))
+    const o = session(project(s.home))
+    for (const source of ['rpc', 'extension', null]) {
+      expect(o.input('unbind', source)).toBeUndefined()
+      expect(o.input('unbind sam', source)).toBeUndefined()
+    }
+    await new Promise((r) => setTimeout(r, 100))
+    expect(s.got).toEqual([])
+    expect(o.notes).toEqual([])
+  })
+
+  it('a shim of 0.4.6 answers unbind usage: the line says to restart omp and that nothing was unbound', async () => {
+    // As packages/shim/src/channel.ts answers on 0.4.6: typed, then use with a name, any other request usage.
+    const s = await shim((r) =>
+      r.kind === 'typed'
+        ? { typed: true }
+        : r.kind !== 'use' || typeof r.name !== 'string'
+          ? { bound: false, code: 'usage' }
+          : { bound: true, as: r.name },
+    )
+    const o = session(project(s.home))
+    expect(await o.input('unbind')).toEqual({ handled: true })
+    expect(await o.input('unbind sam')).toEqual({ handled: true })
+    expect(o.notes).toEqual([
+      "bag: this window's bag helper is older than bag's omp extension: restart omp; nothing was unbound.",
+      "bag: this window's bag helper is older than bag's omp extension: restart omp; nothing was unbound.",
+    ])
+    expect(o.levels).toEqual(['warning', 'warning'])
+  })
+
+  it('a typed use on a bound omp window notifies now acts as work, in place of sam', async () => {
+    let x: ReturnType<typeof files> | undefined
+    // What the service leaves bound after the bind: it replaces (0.4.7), adds (0.4.6), or keeps some (mixed).
+    let leaves = (_was: string[], name: string): string[] => [name]
+    // The shim rewrites .bound (service/unbound for each label that went) before it answers.
+    const s = await shim((r) => {
+      const name = r.name as string
+      x?.bound({ v: 1, as: leaves(boundIn(s.home) ?? [], name), shim: process.pid })
+      return { bound: true, as: name }
+    })
+    x = files(s.home)
+    const o = session(project(s.home))
+    x.bound({ v: 1, as: ['sam'], shim: process.pid })
+    expect(await o.input('use work')).toEqual({ handled: true })
+    x.bound({ v: 1, as: ['sam', 'ops'], shim: process.pid })
+    expect(await o.input('use work')).toEqual({ handled: true })
+    // nothing replaced: already work, and a window with no .bound
+    expect(await o.input('use work')).toEqual({ handled: true })
+    rmSync(x.f('bound'))
+    expect(await o.input('use sam')).toEqual({ handled: true })
+    // a service that still adds: sam stays, and the line says so
+    leaves = (was, name) => [...was.filter((l) => l !== name), name]
+    x.bound({ v: 1, as: ['sam'], shim: process.pid })
+    expect(await o.input('use work')).toEqual({ handled: true })
+    // two before, one gone and one kept
+    leaves = (was, name) => [...was.filter((l) => l === 'ops'), name]
+    x.bound({ v: 1, as: ['sam', 'ops'], shim: process.pid })
+    expect(await o.input('use work')).toEqual({ handled: true })
+    expect(o.notes).toEqual([
+      'bag: this session now acts as work, in place of sam.',
+      'bag: this session now acts as work, in place of sam, ops.',
+      'bag: this session now acts as work.',
+      'bag: this session now acts as sam.',
+      'bag: this session now acts as work; it still acts as sam.',
+      'bag: this session now acts as work, in place of sam; it still acts as ops.',
+    ])
+    expect(o.levels).toEqual(Array(6).fill('info'))
   })
 
   it('a dead or a slow shim does not hold the prompt past CHANNEL_MS and does not handle it; logged once', async () => {

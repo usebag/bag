@@ -1,17 +1,13 @@
 // The typed-word channel: how a host's input hook hands the person's own `use <name>` to ITS shim, never to the service
-// (service/use via "typed"; docs/bag-service.md, "How a window gets its identity"). The shim makes a per-launch secret
-// at its start (32 random bytes, never sent to the service) and listens on a unix socket whose name it draws at random,
-// in <home>/run/shim/ (0700, the user's, not a link), under the service's own <home>/run/ so that one sandbox deny
-// entry for <home>/run/ covers the token, the service socket and this channel, for read and write (the session's model
-// must not be able to write to it). It writes one index file per host process, <home>/run/shim/<host pid>.json (0600):
-// {v: 1, sock, secret, shim}. A hook finds its shim by walking its own ancestors (the host process is an ancestor of
-// both: Claude Code runs the hook through a shell and the shim directly or through a launcher; omp's extension runs in
-// the host process itself), reads the index, connects and sends one line: {v: 1, kind: "use", name, secret} for a
-// prompt that is exactly `use <name>`, else {v: 1, kind: "typed", secret} (every interactive prompt, so the service
-// knows the speaking window: service/typed). The shim compares the secret (timingSafeEqual); for "use" it
-// sends service/typed and then service/use via "typed" on its own connection and answers {bound: true, as} or {bound:
-// false, code}; for "typed" it sends service/typed and answers {typed: true|false}. The index and the socket go when
-// the shim closes.
+// (service/use via "typed"; docs/bag-service.md, "How a window gets its identity"). At its start the shim makes a
+// secret (32 random bytes, never sent to the service) and listens on a unix socket of a random name in <home>/run/shim/
+// (0700, the user's, not a link), under <home>/run/ so that one sandbox deny entry covers the token, the service socket
+// and this channel, for read and write. Its index is <home>/run/shim/<host pid>.json (0600): {v: 1, sock, secret,
+// shim}. A hook finds it by walking its own ancestors to the host (Claude Code starts hook and shim through a shell or
+// a launcher; omp's extension runs in the host) and sends {v: 1, kind: "use", name, secret} for exactly `use <name>`
+// where the host proves the person typed it (personTyped; omp: source "interactive"), else {v: 1, kind: "typed",
+// secret} (service/typed: the speaking window). The shim checks the secret (timingSafeEqual), sends service/typed,
+// then for "use" service/use via "typed", and answers {bound: true, as}, {bound: false, code} or {typed: true|false}.
 //
 // Its honest limit, the same as the launch token's (docs/bag-service.md, "What it protects, and what it does not"):
 // same-user is not a security boundary. Any process of the user that can read <home>/run/shim/ can read an index and
@@ -24,7 +20,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createConnection, createServer, type Server } from 'node:net'
 import { join } from 'node:path'
-import { heldByOther, LABEL, removeRing, ringOf } from './ring.ts'
+import { heldByOther, LABEL, removeOwn, removeRing, ringOf } from './ring.ts'
 
 /** The pattern a hook matches the whole prompt against: "use" in any case, the name as typed. */
 export const USE_WORD = /^\s*use\s+([a-z0-9][a-z0-9._-]{0,63})\s*$/i
@@ -34,6 +30,28 @@ export function typedName(prompt: string): string | null {
   const m = USE_WORD.exec(prompt)
   const name = m?.[1]
   return name !== undefined && /^[a-z0-9]/.test(name) && LABEL.test(name) ? name : null
+}
+
+/** A UserPromptSubmit hook input; bag_typed and bag_not_typed are bag's plugin's (plugins/claude-code-card typed.ts). */
+export type HookInput = Readonly<Record<string, unknown>>
+/** Whether `m` is exactly bag's plugin's mark {v: 1, prompt_id} for this very prompt, never one from another. */
+const marks = (m: unknown, id: unknown): boolean =>
+  typeof id === 'string' && id !== '' && JSON.stringify(m) === JSON.stringify({ v: 1, prompt_id: id })
+/** Whether the input proves the person typed it: bag's plugin's mark, or `source: "user"` (2.1.331 sends none). */
+export const personTyped = (input: HookInput): boolean =>
+  !notTyped(input) && (input.source === 'user' || marks(input.bag_typed, input.prompt_id))
+/** Whether bag's plugin knows the prompt came from elsewhere than the composer (a schedule, a script, a session). */
+export const notTyped = (input: HookInput): boolean => marks(input.bag_not_typed, input.prompt_id)
+
+/** The unbind word, the whole prompt: `unbind` (every identity of the window) or `unbind <name>`, in any case. */
+export const UNBIND_WORD = /^\s*unbind(?:\s+([a-z0-9][a-z0-9._-]{0,63}))?\s*$/i
+
+/** What a prompt unbinds: {} for every identity, {name} for one, or null for a prompt that is not the word. */
+export function unbindWord(prompt: string): { name?: string } | null {
+  const m = UNBIND_WORD.exec(prompt)
+  const name = m?.[1]
+  if (m === null) return null
+  return name === undefined ? {} : typedName(`use ${name}`) === name ? { name } : null
 }
 
 export const channelDir = (home: string): string => join(home, 'run', 'shim')
@@ -121,22 +139,18 @@ export function moveSession(
   if (labels.length > 0) writeBound(home, to, shimPid, labels, started)
 }
 
-/** Removes a JSON file of the channel directory only while it still names this shim (a newer shim may own it). */
-function removeOwn(file: string, shimPid: number): void {
-  try {
-    const doc = JSON.parse(readFileSync(file, 'utf8')) as { shim?: unknown }
-    if (doc.shim === shimPid) rmSync(file, { force: true })
-  } catch {}
-}
-
 /** What a typed word comes back as. */
 export type UseAnswer =
   | { readonly bound: true; readonly as: string }
   | { readonly bound: false; readonly code: string }
 
-/** What the shim does with a channel request: a bind by typed word, or a plain "the person typed here". */
+/** What a typed unbind comes back as: what went and what the window still acts as, or the code. */
+export type UnbindAnswer = { readonly unbound: string[]; readonly as: string[] } | { readonly code: string }
+
+/** What the shim does with a channel request: a bind or an unbind by typed word, or a plain "the person typed here". */
 export interface ChannelHandlers {
   use(name: string): Promise<UseAnswer>
+  unbind(name?: string): Promise<UnbindAnswer>
   typed(): boolean
 }
 
@@ -327,7 +341,7 @@ export async function openChannel(
       void answer(line).then((a) => c.end(`${JSON.stringify(a)}\n`))
     })
   })
-  const answer = async (line: string): Promise<UseAnswer | { typed: boolean }> => {
+  const answer = async (line: string): Promise<UseAnswer | UnbindAnswer | { typed: boolean }> => {
     let r: { v?: unknown; kind?: unknown; name?: unknown; secret?: unknown }
     try {
       r = JSON.parse(line) as typeof r
@@ -341,15 +355,11 @@ export async function openChannel(
       return { bound: false, code: 'bad-auth' }
     }
     if (r.v === 1 && r.kind === 'typed') return { typed: on.typed() }
-    if (
-      r.v !== 1 ||
-      r.kind !== 'use' ||
-      typeof r.name !== 'string' ||
-      typedName(`use ${r.name}`) !== r.name
-    ) {
-      return { bound: false, code: 'usage' }
-    }
-    return on.use(r.name)
+    const named = typeof r.name === 'string' && typedName(`use ${r.name}`) === r.name
+    if (r.v === 1 && r.kind === 'unbind' && (r.name === undefined || named))
+      return on.unbind(r.name as string | undefined)
+    if (r.v !== 1 || r.kind !== 'use' || !named) return { bound: false, code: 'usage' }
+    return on.use(r.name as string)
   }
   const old = process.umask(0o077)
   try {
@@ -407,6 +417,10 @@ export async function postUse(
   if (a?.bound === false && typeof a.code === 'string') return { bound: false, code: a.code }
   return null
 }
+
+/** The hook's side of a typed unbind: the shim's answer, or null when no shim answers within timeoutMs. */
+export const postUnbind = (home: string, pids: readonly number[], name?: string, timeoutMs = 5000) =>
+  post(home, pids, name === undefined ? { kind: 'unbind' } : { kind: 'unbind', name }, timeoutMs)
 
 /** The hook's side for any other prompt: tells its shim the person typed. True when a shim took it. */
 export async function postTyped(home: string, pids: readonly number[], timeoutMs = 1000): Promise<boolean> {

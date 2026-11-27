@@ -158,7 +158,7 @@ code (packages/home), so that an agent never needs a terminal for them:
 
 | tool | input | does |
 |---|---|---|
-| `identities` | `full?: true` | each identity of the server by label with its address. In a bag service window bound to no identity each address is short (`ed25519:` and its first 8 and last 4 hex), which is no address; `full: true` asks the person once whether to show the full addresses in that window, held for that window's life only, never on disk |
+| `identities` | `full?: true` | each identity of the server by label with its address. In a bag service window each address is short (`ed25519:` and its first 8 and last 4 hex), which is no address, but those of the identities the window is bound to, which are full; a window bound to an identity is never shown a hidden one (kept apart) it is not bound to, and a window bound to a hidden one is shown only the identities it is bound to; `full: true` asks the person once whether to show the full addresses in that window, held for that window's life only, never on disk |
 | `identity_remove` | `name` (another identity's label) | removes another identity of the home, as `bag identity remove` does: never the one the window acts as, and only while no window is bound to it |
 | `identity_relays` | `relays` (the whole list) | sets the identity's relays in the service's identities file |
 | `keep_alive` | `word: on, off or default` | the person's keep-alive word for the identity |
@@ -179,9 +179,12 @@ what the act said in order; a refusal carries the lines done before it. In the b
 Yes until the act has written, then give it back as the command line's return does, also when the act fails.
 `identity_remove` holds the identity it removes quiet the same way, alone (busy while a window is bound to it), and is
 refused `held` before its question while another window uses it; at the give-back the service fails that identity's
-held local mail to its senders. A window bound to no identity runs `status`, `use`, `identities`, `identity_create`,
-`telemetry`, `host_wire` and `service` only; a bound window of any custody runs `telemetry` too (the machine's setting), never `identity_create`. The bag service starts on a home with no identity (no
-`identities.json` yet, or one that lists none) with no unit: a window there reaches only those seven, every other tool answering `not-bound`,
+held local mail to its senders. A window bound to no identity runs `status`, `use`, `unbind`, `identities`,
+`identity_create`, `telemetry`, `host_wire` and `service` only; a bound window of any custody runs `use`, `unbind` and
+`telemetry` too (the machine's setting), and one bound to a home-key or Keychain identity also `identity_create` and
+`host_wire`, whose question then ends `Asked from a window used as` and the identities the window acts as or acted as
+since it opened; never one bound to an agent or an organisation's grant, and `service` only unbound. The bag service starts on a home with no identity (no
+`identities.json` yet, or one that lists none) with no unit: a window there reaches only those eight, every other tool answering `not-bound`,
 until `identity_create` adds one, which the service reads at once and `use` then binds. Each window keeps, in memory and
 for its life only, the label and address of each identity it made; no tool's answer shows that record, and `host_wire`
 reads it, checking at its question that the address is still that label's in the home. The service reads the home's
@@ -942,9 +945,10 @@ against, is [docs/bag-service.md](../../docs/bag-service.md). In short:
   agent's text comes from `bag-mcp --print-login-agent --dir <home> [--platform darwin|linux]`: on stdout, the plist
   (`dev.bag.service`) or a systemd user unit (`~/.config/systemd/user/bag.service`), naming the launcher
   `<home>/package/bag-mcp.js`; nothing is written or loaded, and the person-run install step prints it.
-- Each window is bound to one identity (the typed `use NAME`, or a Yes in the bind dialog); unbound, `status` says how
-  to bind, `identities` lists the identities with short addresses, `identity_create` and `telemetry` ask first, and
-  every other tool answers `not-bound`; a home with no identity yet starts the service all the same. `<home>/identities.json` and `names.json` are read again on use:
+- Each window is bound to one identity (the typed `use NAME`, or a Yes in the bind dialog); a second bind replaces the
+  first, and the typed `unbind` (Claude Code, omp) or the agent's `unbind` tool ends it with no question; unbound,
+  `status` says how to bind, `identities` lists the identities with short addresses, `identity_create` and `telemetry`
+  ask first, and every other tool answers `not-bound`; a home with no identity yet starts the service all the same. `<home>/identities.json` and `names.json` are read again on use:
   an identity added by the CLI is bindable without a restart, and one removed is refused to new windows while a window
   still bound to it keeps it until it closes. A Keychain identity opens at start only when you said keep-alive on.
 - Same-user is not a security boundary: any process of the same user that can read `<home>/run/` can act as a window
@@ -963,7 +967,7 @@ identity to trust (`node packages/cli/src/main.ts address <name>`).
 package:
 
 ```sh
-npx --yes --package=@usebag/bag@0.4.6 bag host install claude-code --as alice --relay <relay> --project <dir>
+npx --yes --package=@usebag/bag@0.4.7 bag host install claude-code --as alice --relay <relay> --project <dir>
 ```
 
 It first stages the package once per version in `<home>/package/versions/<version>/` (printing `wrote

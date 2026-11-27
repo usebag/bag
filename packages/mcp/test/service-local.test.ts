@@ -39,12 +39,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LINK_ASK_MS, MAX_ASK_MS } from '../src/ask.ts'
 import { pairingsOfTable, type ServiceConnection } from '../src/binding.ts'
 import { parseConfig, parseServerConfig, type ServerConfig } from '../src/config.ts'
-import { dropLocalPair, localPeersPath, localWordPath, spoolDir } from '../src/local.ts'
+import { dropLocalPair, localPeersPath, localWordPath, spoolDir, wordRefusal } from '../src/local.ts'
 import {
   BRIDGE_SHOW,
   BUSY,
   BUSY_HERE,
   CLOSING,
+  FAST_ANSWER_MS,
   HIDE_WORDS,
   LINK_AGAIN,
   LINK_DIGITS,
@@ -57,7 +58,7 @@ import { type Running, startServer } from '../src/server.ts'
 import { CONSENT_BRIDGE, Service, type ServiceDeps } from '../src/service.ts'
 import { DIALOG_META, SUBAGENT_META } from '../src/socket.ts'
 import type { Peer } from '../src/socket-owner.ts'
-import { HOME_NOTE, HOME_OFF, LOCAL_ASK_DAYS, LOCAL_HELD_MAX } from '../src/tools.ts'
+import { HOME_NOTE, HOME_OFF, LOCAL_ASK_DAYS, LOCAL_HELD_MAX, OTHERS_NOTE, SHORT_NOTE } from '../src/tools.ts'
 import { SETTLE_MS } from '../src/wake-router.ts'
 import {
   addressRecord,
@@ -3072,7 +3073,172 @@ describe('the peer check on a consent registration: only omp itself registers fo
   })
 })
 
+describe('a refused run/local.json fails closed: delivery off, each bound window only its own', () => {
+  const short = (a: string): string => `${a.slice(0, 16)}\u2026${a.slice(-4)}`
+  const labels = (v: Json): unknown[] => (v.identities as Json[]).map((i) => [i.label, i.address])
+  /** research hidden, local delivery on, 0600; personal and lab allowed both ways. */
+  async function three(): Promise<{ s: Service; a: Line; l: Line }> {
+    word(true)
+    hide('research')
+    const s = await start({}, {}, [], [], [['lab', P.jane]])
+    const a = await window(s, 'personal')
+    const l = await window(s, 'lab')
+    await call(a, 'send', chat([P.jane.address]))
+    await call(l, 'status')
+    const table = JSON.parse(readFileSync(localPeersPath(home), 'utf8')) as { pairs: Json[] }
+    expect(table.pairs).toMatchObject([{ b: 'lab', state: 'allowed' }])
+    return { s, a, l }
+  }
+
+  for (const how of ['0644', 'a symlink', 'a file that does not read'] as const)
+    it(`refused as ${how}: identities lists only its own, home none with the fix, nothing delivered; fixed, all as before`, async () => {
+      const { s, a, l } = await three()
+      const file = localWordPath(home)
+      const body = readFileSync(file)
+      if (how === '0644') chmodSync(file, 0o644)
+      else if (how === 'a symlink') {
+        renameSync(file, join(home, 'run', 'elsewhere.json'))
+        symlinkSync(join(home, 'run', 'elsewhere.json'), file)
+      } else writeFileSync(file, '{not json', { mode: 0o600 })
+      const line = wordRefusal(home) as string
+      expect(line).toContain(file)
+      if (how === '0644')
+        expect(line).toBe(
+          `run/local.json is not private to you (mode 0644): bag keeps local delivery off, and a window acting as an identity sees none of the others, until it is 0600: chmod 600 ${file}, then read \`bag status --home\` (hidden and local pairs) before you rely on it`,
+        )
+      const ids = await call(a, 'identities')
+      expect(labels(ids)).toEqual([['personal', P.alice.address]])
+      for (const x of ['research', '"lab"', short(P.carol.address), short(P.jane.address)])
+        expect(JSON.stringify(ids)).not.toContain(x)
+      const st = await call(a, 'status')
+      expect(st.home).toMatchObject({ local_delivery: 'off', local: 'off', identities: [], note: line })
+      expect(st.notice).toContain(`local delivery on this machine refused: ${line}`)
+      expect(JSON.stringify(st.notice)).not.toMatch(/shown research|word off/)
+      expect((await call(a, 'status')).notice).toBeUndefined()
+      // Nothing goes locally, to the hidden one or between the two that were allowed; nothing reaches a relay.
+      for (const to of [P.carol.address, P.jane.address])
+        expect(await call(a, 'send', chat([to]))).toMatchObject({ error: 'to-own-identity' })
+      expect(onRelay()).toEqual([])
+      // An unbound window is unchanged: every identity, short.
+      expect(labels(await call(await connected(s, 'loose'), 'identities'))).toEqual([
+        ['personal', short(P.alice.address)],
+        ['research', short(P.carol.address)],
+        ['lab', short(P.jane.address)],
+      ])
+      // Fixed: the word reads again; research is hidden, lab is listed short and reached locally.
+      if (how === 'a symlink') rmSync(file)
+      writeFileSync(file, body, { mode: 0o600 })
+      chmodSync(file, 0o600)
+      expect(wordRefusal(home)).toBeNull()
+      expect(labels(await call(a, 'identities'))).toEqual([
+        ['personal', P.alice.address],
+        ['lab', short(P.jane.address)],
+      ])
+      expect(((await call(a, 'status')).home as Json).identities).toMatchObject([{ label: 'lab' }])
+      expect(await call(a, 'send', chat([P.jane.address]))).toMatchObject({ delivery: 'local' })
+      expect(await call(l, 'inbox')).toBeDefined()
+      expect(log.lines.filter((x) => x.event === 'local-word')).toHaveLength(1)
+    })
+
+  it('every writer refuses while it is refused, before any question: the bytes and the mode unchanged', async () => {
+    word(true)
+    hide('research')
+    const s = await start()
+    const a = await window(s, 'personal')
+    const r = await window(s, 'research')
+    const file = localWordPath(home)
+    chmodSync(file, 0o644)
+    const bytes = readFileSync(file)
+    const line = wordRefusal(home) as string
+    const calls: [Line, string, Json][] = [
+      [a, 'pair_invite', { for: P.alice.address }], // the hide dialog
+      [r, 'pair_invite', { for: P.carol.address }], // the show dialog
+      ...(['on', 'off'] as const).map((w): [Line, string, Json] => [a, 'local_delivery', { word: w }]),
+      [a, 'local_delivery', { word: 'hide', name: 'personal' }],
+      [a, 'local_delivery', { word: 'show', name: 'research' }],
+    ]
+    for (const [w, tool, args] of calls) {
+      const v = await call(w, tool, args)
+      expect([tool, args, v.error, v.detail]).toEqual([
+        tool,
+        args,
+        'unsafe-path',
+        `${line}; nothing was changed`,
+      ])
+      expect(readFileSync(file).equals(bytes)).toBe(true)
+      expect(statSync(file).mode & 0o777).toBe(0o644)
+    }
+    expect([a.dialogs, r.dialogs]).toEqual([[], []])
+    expect(() => s.local.setHidden('personal', true)).toThrow(`unsafe-path: ${line}; nothing was changed`)
+    expect(readFileSync(file).equals(bytes)).toBe(true)
+  })
+
+  it('a missing file is not refused: the default holds, nothing hidden', async () => {
+    const s = await start({}, {}, [], [], [['lab', P.jane]])
+    const a = await window(s, 'personal')
+    expect(wordRefusal(home)).toBeNull()
+    expect(labels(await call(a, 'identities'))).toEqual([
+      ['personal', P.alice.address],
+      ['research', short(P.carol.address)],
+      ['lab', short(P.jane.address)],
+    ])
+    expect((await call(a, 'status')).home).toMatchObject({ local_delivery: 'on (default)', note: HOME_NOTE })
+  })
+})
+
 describe('hidden: an identity kept apart (spec/SPEC.md 9.2 item 1)', () => {
+  it('identities: a window bound to another identity is never shown a hidden one, by the typed word or the dialog', async () => {
+    word(true)
+    hide('personal')
+    const s = await start()
+    const short = (a: string): string => `${a.slice(0, 16)}\u2026${a.slice(-4)}`
+    const typed = await window(s, 'research')
+    // A window bound by the dialog's Yes: the use tool's dialog answered in the window.
+    const asked = await connected(s, 'research')
+    const using = call(asked, 'use', { name: 'research' })
+    const req = await asked.next((m) => m.method === 'elicitation/create')
+    // The binding table reads the real clock (performance.now): the person answers at a person's pace.
+    await new Promise((r) => setTimeout(r, FAST_ANSWER_MS + 50))
+    const handle = ((req.params as Json)._meta as Json)[DIALOG_META]
+    const content = { bind: true }
+    asked.send({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: { action: 'accept', content, _meta: { [DIALOG_META]: handle } },
+    })
+    expect(await using).toMatchObject({ bound: true, as: 'research', granted: 'dialog' })
+    for (const w of [typed, asked]) {
+      const r = await call(w, 'identities')
+      expect(r).toEqual({
+        identities: [{ label: 'research', address: P.carol.address }],
+        full: false,
+        note: OTHERS_NOTE,
+        as: 'research',
+      })
+      for (const x of ['personal', P.alice.address, short(P.alice.address)])
+        expect(JSON.stringify(r)).not.toContain(x)
+    }
+    // The hidden identity's own window sees itself in full and none of the others.
+    const own = await window(s, 'personal')
+    expect(await call(own, 'identities')).toEqual({
+      identities: [{ label: 'personal', address: P.alice.address }],
+      full: false,
+      note: OTHERS_NOTE,
+      as: 'personal',
+    })
+    // A window bound to no identity is as before: both, short.
+    const loose = await connected(s, 'loose')
+    expect(await call(loose, 'identities')).toEqual({
+      identities: [
+        { label: 'personal', address: short(P.alice.address) },
+        { label: 'research', address: short(P.carol.address) },
+      ],
+      full: false,
+      note: SHORT_NOTE,
+      as: null,
+    })
+  })
+
   it("hides by its window's dialog, then refuses both ways and lists it to none; shows by a Yes", async () => {
     word(true)
     const clock = new FakeClock()

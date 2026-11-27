@@ -158,7 +158,11 @@ path = 'packages/shim/src'
 # Raised 2026-11-24 from 2427 to 2433 by a decision entry, the smallest ceiling that passes, not the rule's figure: the
 # handshake fix (branch fix/shim-pre-initialize at 16f60709) measured packages/shim/src at 2433 with this file's
 # command; the rule of the latest raises gives 2677 (2433 times 1.1 is 2676.3, rounded up).
-ceiling = 2433 # raised 2026-11-24 from 2427 for the handshake fix, measured 2433; earlier 2427, raised 2026-11-23 from 2111 for omp 19 and the dialog guard, 0.4.4: measured on main ac064894 2079, with lane A 4331ffa7 2183, with lane B 573bafc4 2102, with both 2206; 2206 times 1.1 is 2426.6, rounded up
+# Raised 2026-11-26 from 2433 to 2775 by a decision entry, by the rule of the latest raises: bag 0.4.7's helper (the
+# typed word's proof from bag's plugin, the typed unbind with its three review fixes, the older-helper line) measured
+# packages/shim/src at 2522 with this file's command on assemble/0-4-7 at 2c836bc2; 2522 times 1.1 is 2774.2, rounded
+# up.
+ceiling = 2775 # raised 2026-11-26 from 2433 for 0.4.7's typed word and unbind, measured 2522; earlier 2433, raised 2026-11-24 from 2427 for the handshake fix, measured 2433; earlier 2427, raised 2026-11-23 from 2111 for omp 19 and the dialog guard, 0.4.4: measured on main ac064894 2079, with lane A 4331ffa7 2183, with lane B 573bafc4 2102, with both 2206; 2206 times 1.1 is 2426.6, rounded up
 
 [card]
 path = 'plugins/claude-code-card/hooks'
@@ -166,4 +170,7 @@ path = 'plugins/claude-code-card/hooks'
 # question card's hooks module (card.ts and card-logic.ts, which run inside Claude Code at every session start) measured
 # plugins/claude-code-card/hooks at 283 with scripts/check-size.sh's counting rule on branch feat/card-adapter at
 # f864c9a9, and 283 times 1.1 is 311.3, rounded up. It stands on the maintainer's decision entry.
-ceiling = 312
+# Raised 2026-11-26 from 312 to 385 by a decision entry, by the rule of the latest raises: the hooks module with
+# typed.ts, which marks a prompt the person typed, measured plugins/claude-code-card/hooks at 350 with
+# scripts/check-size.sh's counting rule on assemble/0-4-7 at 2c836bc2; 350 times 1.1 is 385.
+ceiling = 385 # raised 2026-11-26 from 312 for the typed-prompt mark, measured 350

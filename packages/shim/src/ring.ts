@@ -57,11 +57,15 @@ export function writeRing(home: string, key: number | string, shimPid: number, r
   renameSync(tmp, file)
 }
 
-/** Removes the ring file only while it still names this shim (a newer shim of the same host may own it). */
-export function removeRing(home: string, key: number | string, shimPid: number): void {
-  const file = ringOf(home, key)
+/** Removes a JSON file of the channel directory only while it still names this shim (a newer shim may own it). */
+export function removeOwn(file: string, shimPid: number): void {
   try {
     const doc = JSON.parse(readFileSync(file, 'utf8')) as { shim?: unknown }
     if (doc.shim === shimPid) rmSync(file, { force: true })
   } catch {}
+}
+
+/** Removes the ring file only while it still names this shim (a newer shim of the same host may own it). */
+export function removeRing(home: string, key: number | string, shimPid: number): void {
+  removeOwn(ringOf(home, key), shimPid)
 }

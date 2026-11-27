@@ -9,9 +9,9 @@
 /**
  * The commit (of this repository up to 0.4.1, of usebag/infra from 0.4.2) whose Worker src/schema.ts, builds.ts and
  * index.ts these values copy (the package versions 0.1.0, 0.1.1, 0.1.2, 0.2.0, 0.2.1, 0.2.2, 0.2.3, 0.3.0, 0.4.0,
- * 0.4.1, 0.4.2, 0.4.3, 0.4.4, 0.4.5 and 0.4.6 as builds, and `version` as a command).
+ * 0.4.1, 0.4.2, 0.4.3, 0.4.4, 0.4.5, 0.4.6 and 0.4.7 as builds, and `version` as a command).
  */
-export const TELEMETRY_SCHEMA_COMMIT = '826c7d84abe7d1c1458122c679603d191cdc92dd'
+export const TELEMETRY_SCHEMA_COMMIT = '52bc70e9b8d6ad589c9e128582f970faa021340c'
 
 /**
  * The builds a report's `build` may name (builds.ts): the published versions of the npm package @usebag/bag, and the
@@ -33,6 +33,7 @@ export const BUILDS: readonly string[] = [
   '0.4.4',
   '0.4.5',
   '0.4.6',
+  '0.4.7',
 ]
 
 /** The largest count a report may carry: 2^19. Every count is 0 or a power of two up to it. */
@@ -65,13 +66,13 @@ export const SETS = {
   `),
   exit: words('0 1 2 3 other'),
   // Every tool the MCP server registers: packages/mcp/src/tools.ts's TOOL_NAMES in its order, then
-  // packages/mcp/src/enterprise.ts's ENTERPRISE_TOOLS, then use (registered on its own); `other` takes the cells a
-  // family's cap merges (MAX_CELLS). A name may come before its tool is registered: the client's drift test lists it
-  // as pending until it is.
+  // packages/mcp/src/enterprise.ts's ENTERPRISE_TOOLS, then use and unbind (registered on their own, unbind beside
+  // use); `other` takes the cells a family's cap merges (MAX_CELLS). A name may come before its tool is registered:
+  // the client's drift test lists it as pending until it is.
   tool: words(`
     send inbox wait delegate ask handoff status facts lookup receipts pair_invite pair_accept pair_cancel identities
     identity_remove identity_relays keep_alive local_delivery unpair names identity_create telemetry host_wire service
-    sign_out connect sign_in enterprise_status use other
+    sign_out connect sign_in enterprise_status use unbind other
   `),
   // packages/a2a/src/protocol.ts: METHODS' names, and `ok` or ERRORS' names as a request's outcome.
   method: words(`

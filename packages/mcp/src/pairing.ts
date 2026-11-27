@@ -364,18 +364,21 @@ function silentHead(surface: string | null | undefined, what: string): string | 
 export const UNSEEN_STOP = 'Do not call it again until your user says this host shows its dialogs.'
 
 /**
- * On a silent surface, after silentHead: where bag's questions show instead (the question card bag's plugin for Claude
- * Code draws), what still binds, and when to ask again. Never a terminal or a command line as the way out.
+ * On a silent surface: how bag's questions come to show there (the question card bag's plugin for Claude Code draws),
+ * or a terminal window, where Claude Code shows them itself. No command line is given as the way out.
  */
-export const CARD_TAIL =
-  "The question was not shown in this window. bag's questions appear in Claude Code's question card once bag's plugin for Claude Code is installed and this window reloaded once. Typing use and the identity name still binds in this window. Tell your user. Do not call it again until your user says the question card shows."
+export const CARD_ON =
+  "To be asked here, your user installs bag's question card (bag's install for Claude Code, or the update page; a card switched off in /plugin is switched on there) and reloads this window once (a new session, or /reload-plugins), or uses Claude Code in a terminal window, which shows bag's questions itself."
+
+/** After silentHead: where bag's questions show instead, and when to ask again. */
+export const CARD_TAIL = `The question was not shown in this window. ${CARD_ON} Tell your user. Do not call it again until your user says the question card shows.`
 
 /** The bind dialog answered at once: today's line, or on a silent surface what the person can do instead. */
 export function bindUnseen(surface?: string | null): string {
   const head = silentHead(surface, 'nothing was bound')
   return head === null
     ? `this host answered the bind dialog at once, without showing it. ${UNSEEN_STOP}`
-    : `${head} Your user binds this window by typing use and the identity name in it. ${UNSEEN_STOP}`
+    : `${head} Nothing binds in this window until bag's question card shows here. ${CARD_ON} ${UNSEEN_STOP}`
 }
 
 /** A question over elicitation (askPerson) answered at once: nothing was done, and what the person can do instead. */
@@ -684,6 +687,9 @@ export class Pairings {
     const ctx = this.#ctx
     const self = ctx.config.label
     const local = ctx.local as NonNullable<ToolContext['local']>
+    // A refused word file cannot be written: refused before the person is asked a Yes that could not be carried out.
+    const refused = local.refused()
+    if (refused !== null) throw new ToolError('unsafe-path', `${refused}; nothing was changed`)
     const hidden = local.hidden(self)
     const key = `${ctx.config.home} ${self}`
     const wait = (SHOW_ASKED.get(key) ?? -SHOW_EVERY_S) + SHOW_EVERY_S - ctx.clock.now()

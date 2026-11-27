@@ -1,9 +1,18 @@
 import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { buildEnvelope, newThread } from '@usebag/core'
 import { acquireLock, type EdgeKeys, storeLockPath } from '@usebag/edge'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   dropLocalPairs,
   failHeldToSender,
@@ -25,6 +34,7 @@ import {
   spooledCount,
   visibleLine,
   wordPath,
+  wordRefusal,
   writeWhole,
 } from '../src/index.ts'
 import { fakeIo, folder, homeWith } from './support.ts'
@@ -311,11 +321,82 @@ describe('local-delivery, the act', () => {
     await expect(setLocalDelivery(io, folder(), 'show', 'amy')).rejects.toThrow(
       'none, this home has no identity',
     )
-    chmodSync(wordPath(home), 0o644)
-    const warned = fakeIo()
-    await setLocalDelivery(warned, home, 'off')
-    expect(warned.warned).toEqual([
-      'local-delivery: run/local.json is not a 0600 regular file of this user, so it reads as off; this writes it whole',
+  })
+
+  it('refuses every word while the word file is refused, asking and writing nothing; a missing file works as before', async () => {
+    const { home } = homeWith('jane', 'kim')
+    const file = wordPath(home)
+    mkdirSync(join(home, 'run'), { recursive: true })
+    writeFileSync(file, '{"version":2,"local_delivery":"on","hidden":["kim"]}', { mode: 0o600 })
+    chmodSync(file, 0o644)
+    const bytes = readFileSync(file)
+    const line = wordRefusal(home) as string
+    expect(line).toMatch(/^run\/local.json is not private to you \(mode 0644\)/)
+    for (const [word, name] of [['on'], ['off'], ['hide', 'jane'], ['show', 'kim']] as const)
+      for (const askEvery of [false, true]) {
+        const io = fakeIo()
+        await expect(setLocalDelivery(io, home, word, name, { askEvery })).rejects.toThrow(
+          `unsafe-path: ${line}; nothing was changed`,
+        )
+        expect([io.asked, io.said]).toEqual([[], []])
+        expect(readFileSync(file).equals(bytes)).toBe(true)
+        expect(statSync(file).mode & 0o777).toBe(0o644)
+      }
+    // 0600 again: the same words write, the hidden list kept.
+    chmodSync(file, 0o600)
+    await setLocalDelivery(fakeIo(), home, 'off')
+    expect(readWord(home)).toEqual({ on: false, hidden: ['kim'], why: null })
+    // A missing file is not refused: the default, and a write makes the file.
+    rmSync(file)
+    expect(wordRefusal(home)).toBeNull()
+    // The removal cases' safe order: off on a missing file writes a fresh 0600 file, nothing reachable; then hide, on.
+    await setLocalDelivery(fakeIo(), home, 'off')
+    expect([readWord(home), statSync(file).mode & 0o777]).toEqual([
+      { on: false, hidden: [], why: null },
+      0o600,
     ])
+    await setLocalDelivery(fakeIo(), home, 'hide', 'jane')
+    expect(readWord(home)).toEqual({ on: false, hidden: ['jane'], why: null })
+  })
+
+  it('names each refused case with its own remedy, and none for a file that reads or none', () => {
+    const { home } = homeWith('jane')
+    const file = wordPath(home)
+    mkdirSync(join(home, 'run'), { recursive: true })
+    const keep =
+      'bag keeps local delivery off, and a window acting as an identity sees none of the others, until'
+    const again = 'then turn local delivery off, hide the identities you keep apart again, and turn it on'
+    expect(wordRefusal(home)).toBeNull()
+    writeFileSync(file, '{"version":2,"local_delivery":"on","hidden":["jane"]}', { mode: 0o600 })
+    expect(wordRefusal(home)).toBeNull()
+    chmodSync(file, 0o640)
+    expect(wordRefusal(home)).toBe(
+      `run/local.json is not private to you (mode 0640): ${keep} it is 0600: chmod 600 ${file}, then read \`bag status --home\` (hidden and local pairs) before you rely on it`,
+    )
+    writeFileSync(file, '{not json', { mode: 0o600 })
+    chmodSync(file, 0o600)
+    expect(wordRefusal(home)).toBe(
+      `run/local.json does not read as bag's file: ${keep} it is bag's file again: move ${file} to the Trash, ${again}`,
+    )
+    const uid = statSync(file).uid
+    const spy = vi.spyOn(process, 'getuid').mockReturnValue(uid + 1)
+    try {
+      expect(wordRefusal(home)).toBe(
+        `run/local.json is owned by another user (uid ${uid}): ${keep} it is bag's file again: move ${file} to the Trash, ${again}`,
+      )
+    } finally {
+      spy.mockRestore()
+    }
+    rmSync(file)
+    writeFileSync(join(home, 'elsewhere.json'), '{"version":1,"local_delivery":"on"}', { mode: 0o600 })
+    symlinkSync(join(home, 'elsewhere.json'), file)
+    expect(wordRefusal(home)).toBe(
+      `run/local.json is a link, not bag's file: ${keep} it is bag's file again: remove the link ${file}, ${again}`,
+    )
+    rmSync(file)
+    mkdirSync(file)
+    expect(wordRefusal(home)).toBe(
+      `run/local.json is not a file (a folder or another kind), not bag's file: ${keep} it is bag's file again: move ${file} to the Trash, ${again}`,
+    )
   })
 })

@@ -61,6 +61,9 @@ export function localWord(home: string): LocalWord {
   }
 }
 
+/** What a refused word file means for the person, with its case's remedy: packages/home's, the one copy. */
+export { wordRefusal } from '@usebag/home'
+
 /** Whether the home word is on (localWord). */
 export function localDelivery(home: string): boolean {
   return localWord(home).on

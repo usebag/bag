@@ -25,6 +25,9 @@ import { NO_ANSWER_IN_TIME, type ToolContext, ToolError, timedOut } from './tool
 // No in the dialog is declined. Every call re-checks the binding's custody class from the service's in-memory record
 // (keys are read at open, never per call) against the tool set per class (TOOLS_BY_CUSTODY, toolAllowed); a principal
 // of an enterprise grant is never bindable (unknown-identity).
+// A bind on a bound window replaces (USE_REPLACES): the new identity binds, then the others end as an unbind the window
+// asked (via window). The ways out are the close and unbind: the window's (service/unbind, the person's typed word) or
+// the agent's tool (via tool, which leaves the window one note). The row keeps every label it was used as (usedAs).
 // The stdio server (no connection) is unchanged: nothing here runs for it.
 
 // The seam with the service: ServiceConnection and ServiceHome are kept in step with the service's own definitions in
@@ -123,6 +126,12 @@ export const BIND_TIMEOUT_MS = 120_000
 export const NOT_REACHED =
   'the bind dialog did not reach your user (the host declined or closed it, or two minutes passed): this is not their No, and nothing was bound'
 
+/**
+ * The bind question's last line on any host but omp, by the hello's host (Claude Code cannot prove a person typed where
+ * the plugin is off, and the hello does not say whether it is on): a scheduled prompt or another session's message can lead the model to open the dialog.
+ */
+export const ASKED_ONLY = 'Say Yes only if you asked for this.'
+
 /** What a refused bind dialog says when the person saw the question card and closed it (the card's dismissal mark). */
 export const BIND_CLOSED = 'your user closed the bind question without an answer: nothing was bound'
 
@@ -169,25 +178,30 @@ const KEYED = [
 ]
 // The machine's own setting, no identity's: every window runs it, bound or not (on still asks its person first).
 const MACHINE = ['telemetry']
+// Acts of no identity that make or wire one, each after the person's Yes (their question names the window's
+// identities, usedAs): a window bound to an identity whose key is the person's, or to none. They take no as (bound()).
+export const MAKERS: readonly string[] = ['identity_create', 'host_wire']
 export const TOOLS_BY_CUSTODY: Readonly<Record<Custody, readonly string[]>> = {
-  'home-key': [...READS, ...ACTS, ...KEYED, ...HOME_ACTS, ...MACHINE],
-  keychain: [...READS, ...ACTS, ...KEYED, ...HOME_ACTS, ...MACHINE],
+  'home-key': [...READS, ...ACTS, ...KEYED, ...HOME_ACTS, ...MACHINE, ...MAKERS],
+  keychain: [...READS, ...ACTS, ...KEYED, ...HOME_ACTS, ...MACHINE, ...MAKERS],
   agent: [...READS, ...ACTS, ...MACHINE],
   grant: [...READS, ...ACTS, 'enterprise_status', ...MACHINE],
 }
 
 /**
  * The tools a window bound to no identity runs (the onboarding set; bound() checks it): status says how to bind, use
- * opens the bind dialog, identities lists the home's identities with short addresses (unboundAddress), identity_create
+ * opens the bind dialog, unbind ends nothing there (it and use are registered outside bound(), for every window), identities lists the home's identities with short addresses (unboundAddress), identity_create
  * makes one after the person's Yes (neither bound nor wired by it), and telemetry is the machine's switch (on asked
  * first; a bound window of any class runs it too, TOOLS_BY_CUSTODY). Every other tool answers not-bound there: an unbound window can be any folder, and raises no other act's
  * dialog. host_wire wires a host in the window's own folder for the identity the person types (or one this window made),
- * and with action unwire takes bag's wiring out of it again; service writes the bag service's login agent after a Yes. On a home with no identity these are the only tools that answer
- * anything but not-bound.
+ * and with action unwire takes bag's wiring out of it again; service writes the bag service's login agent after a Yes,
+ * only here. identity_create and host_wire also run bound to a home-key or Keychain identity (MAKERS). On a home with no
+ * identity these are the only tools that answer anything but not-bound.
  */
 export const UNBOUND_TOOLS: readonly string[] = [
   'status',
   'use',
+  'unbind',
   'identities',
   'identity_create',
   'telemetry',
@@ -224,7 +238,10 @@ export const createdIn = (window: ServiceConnection): [string, string][] =>
 export const createdHere = (window: ServiceConnection, label: string, address: string): boolean =>
   CREATED.get(window)?.has(`${label}\0${address}`) ?? false
 
-/** The question of the one-time Yes, in a window bound to no identity, to the full addresses (its own act): 2 lines. */
+/**
+ * The question of the one-time Yes in a window to the full addresses (its own act, bound to an identity or not): 2
+ * lines. Bound, it is asked of the addresses of the identities the window does not act as.
+ */
 export const FULL_ACT = 'identities-full'
 export const FULL_TITLE = 'Yes: show the full addresses here'
 export const FULL_QUESTION = "Show the full addresses of this machine's\nidentities to this window?"
@@ -243,8 +260,9 @@ export function showFull(window: ServiceConnection): void {
 export const fullShown = (window: ServiceConnection): boolean => FULL.has(window)
 
 /**
- * An identity's address as a window bound to no identity is shown it: the short form (shortAddress: ed25519:, its
- * first 8 and last 4 hex), which is no address, unless that window holds the person's Yes to FULL_QUESTION.
+ * An identity's address as a window that does not act as it is shown it (bound to no identity, or to another one): the
+ * short form (shortAddress: ed25519:, its first 8 and last 4 hex), which is no address, unless that window holds the
+ * person's Yes to FULL_QUESTION.
  */
 export function unboundAddress(
   identity: { readonly address: string | null },
@@ -274,6 +292,43 @@ interface Row {
   readonly refused: Map<string, number>
   /** The restored labels whose identity opens at this window's first act, never at the restore. */
   readonly toOpen: Set<string>
+  /** Every label this connection was bound to, in bind order: never emptied while it lives (usedAs). */
+  readonly used: Set<string>
+  /** The mono times of the unbinds this window asked (via set, a switch's excluded), for UNBINDS_SEEN. */
+  readonly unbinds: number[]
+}
+
+/** How an unbind was asked: by the window (service/unbind: the typed word, a restore's rollback, a switch) or a tool. */
+export type UnbindVia = 'window' | 'tool'
+
+/**
+ * D2 (design 2026-11-26, section 8), built as recommended: a bind (typed or dialog) on a bound window replaces its other
+ * identities, and the bind dialog says in place of which. false keeps adding, as 0.4.6 did.
+ */
+export const USE_REPLACES = true
+
+/** This many unbinds of one window within UNBINDS_WINDOW_MS put the line unbindsLine in its notes. Never a limit. */
+export const UNBINDS_SEEN = 3
+export const UNBINDS_WINDOW_MS = 600_000
+
+/** What a window is told once after the agent's unbind tool ended `labels` at `at` (unix s, the service clock). */
+export const unboundLine = (labels: readonly string[], at: number, left: readonly string[]): string =>
+  `${labels.join(', ')} unbound by an unbind call at ${new Date(at * 1000).toISOString().slice(11, 16)} UTC: ${
+    left.length === 0 ? 'this window acts as no identity now' : `this window still acts as ${left.join(', ')}`
+  }`
+
+/** unbindsLine: a window unbound `n` times within ten minutes, by the typed word or the tool. */
+export const unbindsLine = (labels: readonly string[], n: number): string =>
+  `${labels.join(', ')} unbound ${n} times in ${UNBINDS_WINDOW_MS / 60_000} minutes: a scheduled prompt or a message may be doing it; your user can list this session's scheduled tasks`
+
+/** The way forward a refused maker or service names (design 2026-11-26, section 5.1), after require's not-authorized. */
+const MAKER_TAIL =
+  ': it runs in a window that acts as a home-key or Keychain identity, or as none (your user unbinds this window, or opens a new one)'
+const NOT_AMONG_TAIL: Readonly<Record<string, string>> = {
+  identity_create: MAKER_TAIL,
+  host_wire: MAKER_TAIL,
+  service:
+    ': it runs only in a window that acts as no identity (your user unbinds this window, or opens a new one)',
 }
 
 /** What a window is told once after a restore: the identity it kept, or why it could not keep one. */
@@ -305,7 +360,7 @@ export class Bindings {
   /** Proposals the service holds: a folder marker by cwd, and the last-used label by host kind and cwd. */
   readonly #markers = new Map<string, string>()
   readonly #last = new Map<string, string>()
-  readonly #ends: ((label: string, conn: ServiceConnection) => void)[] = []
+  readonly #ends: ((label: string, conn: ServiceConnection, via?: UnbindVia, by?: string) => void)[] = []
   /** Identities lent (service/lend, or held quiet for a window's act), by label: the verb, and to whom. */
   readonly #lent = new Map<string, { readonly verb: string; readonly by: string }>()
   readonly #router: BindRouter | null
@@ -396,8 +451,12 @@ export class Bindings {
     return row === undefined ? 'unbound' : row.asking ? 'asking' : row.bound.size > 0 ? 'bound' : 'unbound'
   }
 
-  /** Runs `fn` when a connection's binding of an identity ends (unbind, close): the pair tools end its pairings. */
-  onEnd(fn: (label: string, conn: ServiceConnection) => void): void {
+  /**
+   * Runs `fn` when a connection's binding of an identity ends (unbind, close): the pair tools end its pairings, and the
+   * service writes the unbind's audit lines when `via` is set (an unbind asked; a close or a gone identity has none);
+   * `by` is the label a switch bound in its place.
+   */
+  onEnd(fn: (label: string, conn: ServiceConnection, via?: UnbindVia, by?: string) => void): void {
     this.#ends.push(fn)
   }
 
@@ -505,7 +564,9 @@ export class Bindings {
       if (conn.capabilities.inputHook)
         throw new ToolError(
           'no-elicitation',
-          'this host shows no bind dialog: your user types use and the name',
+          conn.host === 'omp'
+            ? 'this host shows no bind dialog: your user types use and the name'
+            : 'this window shows no bind dialog, so nothing was bound: your user opens a new interactive session of this host, where bag can ask',
         )
       throw new ToolError('no-elicitation', CANNOT_BIND)
     }
@@ -520,9 +581,10 @@ export class Bindings {
         `your user said No to ${label} in this window: do not ask again unless they say so`,
       )
     // A dialog left with no answer (a dismissal, bag's own bound) spends the act bind's unanswered allowances,
-    // as an ask's none does; past them no dialog is raised. The typed use is never paced, so where the host passes it
-    // the refusal names it; elsewhere a new window has its own allowance (the home's cap is the same in every window).
-    const typed = conn.capabilities.inputHook
+    // as an ask's none does; past them no dialog is raised. omp's typed use binds with no dialog and is never paced, so
+    // there the refusal names it; elsewhere (Claude Code's typed use leads to this dialog where the plugin is off) a new window has its own
+    // allowance (the home's cap is the same in every window).
+    const typed = conn.capabilities.inputHook && conn.host === 'omp'
     const spend = unanswered(
       this.#home.home,
       conn.handle,
@@ -536,10 +598,16 @@ export class Bindings {
         : [', or in a new window', ''],
     )
     const proposed = this.propose(conn)
+    // A Yes replaces what the window acts as (USE_REPLACES), so the question names it (design 2026-11-26, section 4.6).
+    const was = (USE_REPLACES ? this.boundTo(conn) : []).filter((l) => l !== label).join(', ')
+    const asked = conn.host === 'omp' ? '' : `\n${ASKED_ONLY}`
     const params: ElicitRequestFormParams =
       label === undefined
         ? {
-            message: 'Which bag identity should this window act as?\nIt acts as it until the window closes.',
+            message:
+              was === ''
+                ? `Which bag identity should this window act as?\nIt acts as it until the window closes.${asked}`
+                : `Which bag identity should this window act as,\nin place of ${was}?\nIt acts as it until the window closes.${asked}`,
             requestedSchema: {
               type: 'object',
               properties: {
@@ -554,7 +622,7 @@ export class Bindings {
             },
           }
         : {
-            message: `Act as ${label} in this window?\nIts tools then act as ${label} until it closes.\nNo: not asked again in this window for ${NO_AGAIN_MS / 60_000} minutes${typed ? `; typing use ${label} binds it at any time` : ''}.`,
+            message: `Act as ${label} in this window${was === '' ? '' : `, in place of ${was}`}?\nIts tools then act as ${label} until it closes.\nNo: not asked again in this window for ${NO_AGAIN_MS / 60_000} minutes${typed ? `; typing use ${label} binds it at any time` : ''}.${asked}`,
             requestedSchema: {
               type: 'object',
               properties: { bind: { type: 'boolean', title: `Yes, act as ${label}`, default: false } },
@@ -621,27 +689,36 @@ export class Bindings {
   require(conn: ServiceConnection, tool: string, as?: string): Binding {
     this.#acted.add(conn)
     const bound = this.#rows.get(conn)?.bound ?? new Map<string, Binding>()
-    if (as === undefined && bound.size > 1)
+    // A maker takes no as: with several bindings every one's class must allow it (design 2026-11-26, section 5.6).
+    const each = MAKERS.includes(tool) && as === undefined
+    if (as === undefined && bound.size > 1 && !each)
       throw new ToolError('usage', `this window acts as ${[...bound.keys()].join(', ')}: pass as`)
-    const b = as === undefined ? [...bound.values()][0] : bound.get(as)
-    if (b === undefined)
+    const picked = as === undefined ? [...bound.values()] : [bound.get(as)].filter((b) => b !== undefined)
+    if (picked.length === 0) {
+      // The notes ride the refusal: its detail, and its more for an unbound tool's result (bound()).
+      const notes = bound.size === 0 ? this.notes(conn.handle) : []
       throw new ToolError(
         'not-bound',
-        bound.size === 0
-          ? [...this.notes(conn.handle), notBound(conn)].join(' ')
-          : 'this window is not bound to that identity',
+        bound.size === 0 ? [...notes, notBound(conn)].join(' ') : 'this window is not bound to that identity',
+        notes.length === 0 ? {} : { notice: notes },
       )
-    const custody = this.#custody(b.label)
-    if (custody === null) {
-      this.unbind(conn, b.label)
-      throw new ToolError('not-bound', notBound(conn))
     }
-    if (!toolAllowed(custody, tool))
-      throw new ToolError(
-        'not-authorized',
-        `${b.label} is a ${custody} identity: ${tool} is not among its tools`,
-      )
-    return { ...b, custody }
+    let first: Binding | undefined
+    for (const b of picked) {
+      const custody = this.#custody(b.label)
+      if (custody === null) {
+        this.unbind(conn, b.label)
+        continue
+      }
+      if (!toolAllowed(custody, tool))
+        throw new ToolError(
+          'not-authorized',
+          `${b.label} is a ${custody} identity: ${tool} is not among its tools${NOT_AMONG_TAIL[tool] ?? ''}`,
+        )
+      first ??= { ...b, custody }
+    }
+    if (first === undefined) throw new ToolError('not-bound', notBound(conn))
+    return first
   }
 
   /** The grant this connection's agent-class binding of `label` was given (rejects with the agent's refusal). */
@@ -662,22 +739,59 @@ export class Bindings {
     return this.#rows.get(conn)?.slots.get(label)
   }
 
+  /** Every label a connection is bound to (none when unbound): the identities that window acts as. */
+  boundTo(conn: ServiceConnection): string[] {
+    return [...(this.#rows.get(conn)?.bound.keys() ?? [])]
+  }
+
   /** The one label a connection is bound to, or null (unbound, asking only, or several): a refusal's `as`. */
   as(conn: ServiceConnection): string | null {
     const bound = this.#rows.get(conn)?.bound
     return bound?.size === 1 ? ([...bound.keys()][0] as string) : null
   }
 
-  /** Ends this connection's binding of `label`, or every one: service/unbind. Their pairings end with them. */
-  unbind(conn: ServiceConnection, label?: string): string[] {
-    const bound = this.#rows.get(conn)?.bound
+  /** Whether `conn` acts as `label` now: a home act's check after its Yes, so an unbind meanwhile changes nothing. */
+  holds(conn: ServiceConnection, label: string): boolean {
+    return this.#rows.get(conn)?.bound.has(label) ?? false
+  }
+
+  /**
+   * Every identity `conn` acts as now (bind order), then every one it acted as earlier since it opened: the asker line
+   * of a maker's question and the hidden listing. D4 (design 2026-11-26, section 8), built as recommended: the earlier
+   * ones too; boundTo alone is the alternative, here only.
+   */
+  usedAs(conn: ServiceConnection): string[] {
+    const now = this.boundTo(conn)
+    return [...now, ...[...(this.#rows.get(conn)?.used ?? [])].filter((l) => !now.includes(l))]
+  }
+
+  /**
+   * Ends this connection's binding of `label`, or every one (D1, design 2026-11-26, section 8: a bare unbind ends them
+   * all). Their pairings end with them. `via` is an unbind asked: by the window (service/unbind) or the agent's tool,
+   * which leaves the window unboundLine once; without it (a close, a gone identity) nothing is audited.
+   */
+  unbind(conn: ServiceConnection, label?: string, via?: UnbindVia): string[] {
+    return this.#end(conn, label, via, true)
+  }
+
+  #end(
+    conn: ServiceConnection,
+    label: string | undefined,
+    via: UnbindVia | undefined,
+    counted: boolean,
+    by?: string,
+  ): string[] {
+    const row = this.#rows.get(conn)
+    const bound = row?.bound
     const gone = [...(bound?.keys() ?? [])].filter((l) => label === undefined || l === label)
     for (const l of gone) {
       bound?.delete(l)
       this.#rows.get(conn)?.toOpen.delete(l)
-      // service/unbound is sent only when the table drops a binding WITHOUT the connection closing, and NEVER on a
-      // drain or a close: then the shim keeps what it remembers and asks for it again at its reconnect.
-      if (!conn.closed && !this.#home.draining) conn.notify('service/unbound', { as: l })
+      // service/unbound is sent when the table drops a binding WITHOUT the connection closing, NEVER at a close, and on a
+      // drain only for an unbind asked (via): then the shim keeps what it remembers and asks for it again at its reconnect,
+      // and a restart never binds back what was unbound.
+      if (!conn.closed && (via !== undefined || !this.#home.draining))
+        conn.notify('service/unbound', { as: l })
       this.#rows.get(conn)?.grants.delete(l)
       // The window's slot ends with its binding: an ask in flight is closed at the agent, so no prompt outlives it.
       this.#rows
@@ -695,8 +809,17 @@ export class Bindings {
       void Promise.resolve()
         .then(() => this.#markUsed(this.#home.home, l, now))
         .catch((e: unknown) => this.#log?.log('warn', 'keep-alive', { outcome: 'busy', detail: String(e) }))
-      for (const fn of this.#ends) fn(l, conn)
+      for (const fn of this.#ends) fn(l, conn, via, by)
     }
+    if (row === undefined || gone.length === 0 || via === undefined || !counted || conn.closed) return gone
+    const left = this.boundTo(conn)
+    if (via === 'tool') this.#note(conn, unboundLine(gone, this.#now(), left))
+    // Visibility only: nothing is refused or slowed.
+    const mono = this.#mono()
+    row.unbinds.push(mono)
+    const recent = row.unbinds.filter((t) => mono - t < UNBINDS_WINDOW_MS)
+    row.unbinds.splice(0, row.unbinds.length, ...recent)
+    if (recent.length >= UNBINDS_SEEN) this.#note(conn, unbindsLine(gone, recent.length))
     return gone
   }
 
@@ -711,6 +834,8 @@ export class Bindings {
         bound: new Map(),
         refused: new Map(),
         toOpen: new Set(),
+        used: new Set(),
+        unbinds: [],
       }
       row = made
       this.#rows.set(conn, made)
@@ -770,7 +895,10 @@ export class Bindings {
     const custody = this.#custody(label) as Custody
     const b: Binding = { label, address: this.#addressOf(label), custody, granted }
     const row = this.#row(conn)
+    // A typed word or a dialog's Yes on a bound window replaces (USE_REPLACES); a restore never does.
+    const old = USE_REPLACES && granted !== 'restored' ? this.boundTo(conn).filter((l) => l !== label) : []
     row.bound.set(label, b)
+    row.used.add(label)
     // ServiceHome.identities() never holds a principal (service.test.ts checks it), so an agent class here is a
     // window's identity that signs through the agent: it gets its own grant, asked now, for this connection alone.
     if (custody === 'agent' && this.#grant !== null && granted !== 'restored') {
@@ -798,6 +926,8 @@ export class Bindings {
     this.#router?.bind(label, conn, granted === 'restored')
     const at = new Date(this.#now() * 1000).toISOString()
     conn.notify('service/bound', { as: label, address: b.address, custody, granted, at })
+    // The new identity holds before the old ones go, so the window is never unbound between (design 2026-11-26, 4.6).
+    for (const l of old) this.#end(conn, l, 'window', false, label)
     return b
   }
 }
@@ -834,7 +964,7 @@ export function serviceMethods(
       only(params, ['label'])
       if (params.label !== undefined && typeof params.label !== 'string')
         throw new ToolError('usage', 'service/unbind takes label or nothing')
-      return { unbound: table.unbind(conn, params.label as string | undefined) }
+      return { unbound: table.unbind(conn, params.label as string | undefined, 'window') }
     },
   }
 }
@@ -978,20 +1108,31 @@ export async function bound(
   if (conn === undefined) return run(asked, undefined)
   const table = tableFor(ctx.config.home)
   let b: Binding
+  let as: string | null | undefined
   try {
     if (table === null) throw new ToolError('not-bound', notBound(conn))
     b = table.require(conn, tool, asked)
-    await table.opened(conn, b.label)
+    // A maker is no identity's act: it opens no restored identity, and its as is the one label or null with several.
+    if (!MAKERS.includes(tool)) await table.opened(conn, b.label)
+    else as = table.as(conn)
   } catch (e) {
     // The unbound tools answer unbound (contract): status bound false and how to bind, no label, no address;
-    // identities its short list. Each acts as no identity, so its result carries as null.
+    // identities its short list. Each acts as no identity, so its result carries as null, and the window's notes
+    // (require took them) as notice: status has them in its note.
     const unbound = table === null || table.state(conn) !== 'bound'
     if (UNBOUND_TOOLS.includes(tool) && unbound && e instanceof ToolError && e.code === 'not-bound') {
-      if (tool !== 'status') return withAs(await run(undefined, conn), null)
+      if (tool !== 'status') return withNotice(withAs(await run(undefined, conn), null), e.more.notice)
       const value = { bound: false, note: e.message.slice('not-bound: '.length), as: null }
       return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
     }
     return refusalResult(e, table?.as(conn) ?? null)
   }
-  return withAs(await run(b.label, conn), b.label)
+  return withAs(await run(b.label, conn), as === undefined ? b.label : as)
+}
+
+/** A result with the window's one-time notes as notice and notice_line, as an identity tool's (tools.ts noticed). */
+function withNotice(result: CallToolResult, notes: unknown): CallToolResult {
+  if (!Array.isArray(notes) || notes.length === 0) return result
+  const value = { ...(result.structuredContent ?? {}), notice: notes, notice_line: notes.join('; ') }
+  return { ...result, content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value }
 }

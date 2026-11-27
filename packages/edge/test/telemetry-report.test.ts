@@ -422,6 +422,7 @@ describe('the facts: the package version or the checkout commit, a build only by
       '0.4.4',
       '0.4.5',
       '0.4.6',
+      '0.4.7',
     ])
     const built = (version: string) => machineFacts(ID, { version, commit: 'c'.repeat(40) })
     for (const version of BUILDS) {
@@ -430,7 +431,7 @@ describe('the facts: the package version or the checkout commit, a build only by
       expect(report.build).toBe(version)
       await sendable(report)
     }
-    for (const version of ['0.4.7', '0.0.0', '0.1.1-dirty', 'c'.repeat(40)]) {
+    for (const version of ['0.4.8', '0.0.0', '0.1.1-dirty', 'c'.repeat(40)]) {
       expect(buildTelemetryReport(DAY, new Map(), built(version)).build, version).toBe('other')
     }
     expect(machineFacts(ID, null).build).toBe(checkoutCommit())

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ElicitRequestFormParams, ElicitResult } from '@modelcontextprotocol/sdk/types.js'
 import { describe, expect, it } from 'vitest'
-import { ASK_EVERY_S, UNANSWERED_PER_WINDOW } from '../src/ask.ts'
+import { ASK_EVERY_S, askPerson, UNANSWERED_PER_WINDOW } from '../src/ask.ts'
 import {
   BIND_CLOSED,
   Bindings,
@@ -25,9 +25,11 @@ import {
   toolAllowed,
   withAs,
 } from '../src/binding.ts'
+import type { PairExtra } from '../src/pairing.ts'
 import { connectionGrant } from '../src/session.ts'
 import { NO_ANSWER_IN_TIME, TIMED_OUT, type ToolContext, ToolError } from '../src/tools.ts'
 import { FakeClock, seededRng } from './support/fixtures.ts'
+import { ManualTimers } from './support/ports.ts'
 
 // The binding table (binding.ts) over fake connections and a fake service home: the ways into bound (typed word,
 // dialog Yes), never silent, proposals that only preset, no re-attach, custody per call, the close, the lend.
@@ -203,7 +205,7 @@ describe('the ways into bound', () => {
     expect(texts.cli).toContain('this host answered the bind dialog at once, without showing it')
     expect(texts['claude-vscode']).toContain("Claude Code's VS Code extension does this with every dialog")
     expect(texts['claude-vscode']).toContain(
-      'Your user binds this window by typing use and the identity name in it.',
+      "Nothing binds in this window until bag's question card shows here. To be asked here, your user installs bag's question card (bag's install for Claude Code, or the update page; a card switched off in /plugin is switched on there) and reloads this window once (a new session, or /reload-plugins), or uses Claude Code in a terminal window, which shows bag's questions itself.",
     )
     expect(texts['claude-desktop']).toContain('Claude Desktop does this with every dialog')
   })
@@ -212,7 +214,7 @@ describe('the ways into bound', () => {
   // on a loaded machine. On a surface that answers every dialog itself, a decline or a cancel of the bind dialog is
   // unseen however long it took; an accept still binds; every other surface keeps the timing rule.
   for (const surface of ['claude-vscode', 'claude-desktop']) {
-    it(`${surface}: a decline, a cancel or a failure after 300 ms or 5 s is no-elicitation, telling the person to type use; nothing bound or refused`, async () => {
+    it(`${surface}: a decline, a cancel or a failure after 300 ms or 5 s is no-elicitation, naming the question card; nothing bound or refused`, async () => {
       const name = surface === 'claude-vscode' ? "Claude Code's VS Code extension" : 'Claude Desktop'
       for (const step of [300, 5000]) {
         for (const a of [{ action: 'decline' }, { action: 'cancel' }, new Error('gone')] as Answer[]) {
@@ -225,7 +227,7 @@ describe('the ways into bound', () => {
           expect([(e as ToolError).code, step]).toEqual(['no-elicitation', step])
           expect((e as ToolError).message).toContain(`${name} does this with every dialog`)
           expect((e as ToolError).message).toContain(
-            'Your user binds this window by typing use and the identity name in it.',
+            "Nothing binds in this window until bag's question card shows here. To be asked here, your user installs bag's question card (bag's install for Claude Code, or the update page; a card switched off in /plugin is switched on there) and reloads this window once (a new session, or /reload-plugins), or uses Claude Code in a terminal window, which shows bag's questions itself.",
           )
           expect(b.state(c)).toBe('unbound')
           expect((await b.bindByDialog(c, 'omp')).granted).toBe('dialog')
@@ -323,8 +325,11 @@ describe('custody per call', () => {
     for (const c of ['home-key', 'keychain', 'agent', 'grant'] as Custody[]) {
       expect(toolAllowed(c, 'a_tool_added_later')).toBe(false)
       expect(toolAllowed(c, 'lookup')).toBe(true)
-      // telemetry is the machine's setting: every class runs it; identity_create only a window bound to none.
-      expect([c, toolAllowed(c, 'telemetry'), toolAllowed(c, 'identity_create')]).toEqual([c, true, false])
+      // telemetry is the machine's setting: every class runs it; identity_create and host_wire a window whose identity's
+      // key is the person's (home-key, keychain) or a window bound to none; service only a window bound to none.
+      const mine = c === 'home-key' || c === 'keychain'
+      expect([c, toolAllowed(c, 'telemetry'), toolAllowed(c, 'identity_create')]).toEqual([c, true, mine])
+      expect([c, toolAllowed(c, 'host_wire'), toolAllowed(c, 'service')]).toEqual([c, mine, false])
       expect(TOOLS_BY_CUSTODY[c].every((t) => toolAllowed(c, t))).toBe(true)
     }
     const t = table(ids(['g', 'agent']))
@@ -394,8 +399,9 @@ describe('custody per call', () => {
   it('several bindings and no as is usage; as picks one; an unbound as is not-bound', () => {
     const t = table(ids(['a', 'home-key'], ['b', 'home-key']))
     const c = conn({ hook: true })
+    // A bind replaces (USE_REPLACES): several come only from a restore of a 0.4.6 window that held them.
     t.bindByWord(c, 'a')
-    t.bindByWord(c, 'b')
+    t.bindByRestore(c, 'b', 'ed25519:b')
     expect(() => t.require(c, 'send')).toThrow(/usage/)
     expect(t.require(c, 'send', 'b').label).toBe('b')
     expect(t.as(c)).toBeNull()
@@ -471,17 +477,18 @@ describe('the wake router and markUsed', () => {
 
   it('a bind, typed or by dialog, calls router.bind once and markUsed not at all', async () => {
     const { t, calls } = routed()
-    const c = conn({ hook: true, person: [yes] })
+    const c = conn({ hook: true })
+    const d = conn({ person: [yes] })
     t.bindByWord(c, 'a')
-    await t.bindByDialog(c, 'b')
-    expect(calls).toEqual([`bind a ${c.handle}`, `bind b ${c.handle}`])
+    await t.bindByDialog(d, 'b')
+    expect(calls).toEqual([`bind a ${c.handle}`, `bind b ${d.handle}`])
   })
 
   it('unbind and close call router.unbind and markUsed once for each label they end', async () => {
     const { t, calls } = routed()
     const c = conn({ hook: true })
     t.bindByWord(c, 'a')
-    t.bindByWord(c, 'b')
+    t.bindByRestore(c, 'b', 'ed25519:b')
     calls.length = 0
     t.unbind(c, 'a')
     c.close()
@@ -502,7 +509,7 @@ describe('the wake router and markUsed', () => {
     t.onEnd((l) => ended.push(l))
     const c = conn({ hook: true })
     t.bindByWord(c, 'a')
-    t.bindByWord(c, 'b')
+    t.bindByRestore(c, 'b', 'ed25519:b')
     expect(t.unbind(c, 'a')).toEqual(['a'])
     c.close()
     expect([t.state(c), ended]).toEqual(['unbound', ['a', 'b']])
@@ -550,7 +557,7 @@ describe('after an explicit No, and a pairing with no table', () => {
     let now = 0
     const home = { home: `/h${homes++}`, identities: () => ids(['omp', 'home-key']), draining: false }
     const t = new Bindings(home, { mono: () => (now += 1000), custody: () => 'home-key' })
-    const c = conn({ hook: true, person: [{ action: 'decline' }, yes] })
+    const c = conn({ hook: true, host: 'omp', person: [{ action: 'decline' }, yes] })
     expect(await code(t.bindByDialog(c, 'omp'))).toBe('declined')
     const again = await t.bindByDialog(c, 'omp').catch((e: unknown) => e as ToolError)
     expect((again as ToolError).message).toContain('your user said No to omp in this window')
@@ -816,7 +823,7 @@ describe('a restore after a service restart (via restored)', () => {
     const { t, home } = restoring(identities)
     const c = conn({ hook: true })
     t.bindByWord(c, 'omp')
-    t.bindByWord(c, 'work')
+    t.bindByRestore(c, 'work', 'ed25519:work')
     t.unbind(c, 'omp')
     expect(c.notices.filter(([m]) => m === 'service/unbound')).toEqual([['service/unbound', { as: 'omp' }]])
     c.close()
@@ -1174,35 +1181,53 @@ describe("the bind's texts name the typed use only where the host passes it to b
       (e: unknown) => (e as Error).message,
     )
 
-  it("the named bind dialog's message: the typed use with an input hook, the five minutes alone without", async () => {
-    const hooked = conn({ hook: true })
+  it("the named bind dialog's message: the typed use on omp's input hook, the five minutes alone elsewhere", async () => {
+    const hooked = conn({ hook: true, host: 'omp' })
     await at()
       .bindByDialog(hooked, 'omp')
       .catch(() => {})
     expect(hooked.dialogs[0]?.message).toBe(`${head}; typing use omp binds it at any time.`)
-    const plain = conn()
-    await at()
-      .bindByDialog(plain, 'omp')
-      .catch(() => {})
-    expect(plain.dialogs[0]?.message).toBe(`${head}.`)
-    none(String(plain.dialogs[0]?.message))
+    // Claude Code's typed use leads to this very dialog, so the dialog never offers it; nor without a hook.
+    for (const plain of [conn({ hook: true, host: 'claude-code' }), conn()]) {
+      await at()
+        .bindByDialog(plain, 'omp')
+        .catch(() => {})
+      expect(plain.dialogs[0]?.message).toBe(`${head}.\nSay Yes only if you asked for this.`)
+      none(String(plain.dialogs[0]?.message))
+    }
+  })
+
+  it('no dialog with an input hook: omp names the typed use; Claude Code names a new interactive session', async () => {
+    const omp = await message(at().bindByDialog(conn({ elicit: false, hook: true, host: 'omp' }), 'omp'))
+    expect(omp).toBe('no-elicitation: this host shows no bind dialog: your user types use and the name')
+    const cc = await message(
+      at().bindByDialog(conn({ elicit: false, hook: true, host: 'claude-code' }), 'omp'),
+    )
+    expect(cc).toBe(
+      'no-elicitation: this window shows no bind dialog, so nothing was bound: your user opens a new interactive session of this host, where bag can ask',
+    )
+    none(cc)
   })
 
   it("the rate-limited refusal, this window's row and the home's: the typed use with a hook; a new window without, on the window's row only", async () => {
     const wait = `ask again in ${ASK_EVERY_S} s`
     const here = `rate-limited: bind was left unanswered ${UNANSWERED_PER_WINDOW} times lately here: ${wait}`
     const home = `rate-limited: bind was left unanswered ${2 * UNANSWERED_PER_WINDOW} times lately by all windows of this bag home together, past the cap for all of them: ${wait}`
-    for (const hook of [true, false]) {
+    for (const [hook, host] of [
+      [true, 'omp'],
+      [true, 'claude-code'],
+      [false, 'omp'],
+    ] as const) {
       const t = at()
-      const [a, b] = [conn({ hook }), conn({ hook })]
+      const [a, b] = [conn({ hook, host }), conn({ hook, host })]
       for (const c of [a, b])
         for (const _ of Array.from({ length: UNANSWERED_PER_WINDOW }))
           await t.bindByDialog(c, 'omp').catch(() => {})
       const [w, h] = [
         await message(t.bindByDialog(a, 'omp')),
-        await message(t.bindByDialog(conn({ hook }), 'omp')),
+        await message(t.bindByDialog(conn({ hook, host }), 'omp')),
       ]
-      if (hook) {
+      if (hook && host === 'omp') {
         expect(w).toBe(`${here}; your user can type use omp at any time`)
         expect(h).toBe(`${home}; your user can type use omp at any time`)
       } else {
@@ -1227,5 +1252,282 @@ describe("the bind's texts name the typed use only where the host passes it to b
     const ctx = { config: { home: '/h', label: 'a' } } as unknown as ToolContext
     expect(() => servicePairings(ctx, null, () => ({}) as never)).toThrow(`not-bound: ${NOT_BOUND_ANY}`)
     expect(NOT_BOUND_ANY).toContain('where the host passes typed words to bag (Claude Code, omp)')
+  })
+})
+
+// Unbind, the switch and the makers (design 2026-11-26, sections 4 and 5): an unbind the
+// window or the agent's tool asked, a bind that replaces, the row's history, and identity_create and host_wire in a
+// window bound to an identity whose key is the person's.
+describe('unbind, the switch and the makers', () => {
+  /** A table whose mono clock moves a second a read and as the test moves it (ms); the service clock at 08:00 UTC. */
+  const clocked = (identities: HomeIdentity[], more: { draining?: boolean } = {}) => {
+    const at = { mono: 0 }
+    const home = { home: `/h${homes++}`, identities: () => identities, draining: more.draining ?? false }
+    const t = new Bindings(home, {
+      mono: () => (at.mono += 1000),
+      now: () => 1_800_000_000,
+      custody: (l) => identities.find((i) => i.label === l)?.custody ?? null,
+    })
+    const ended: string[] = []
+    t.onEnd((l, _c, via) => ended.push(`${l} ${via ?? 'close'}`))
+    return { t, at, home, ended }
+  }
+  const unbound = (c: Fake): unknown[] =>
+    c.notices.filter(([m]) => m === 'service/unbound').map(([, p]) => p.as)
+
+  it('unbind with a label ends that one and notifies service/unbound; without one, every binding', () => {
+    const { t } = clocked(ids(['a', 'home-key'], ['b', 'home-key'], ['c', 'home-key']))
+    const w = conn({ hook: true })
+    t.bindByRestore(w, 'a', 'ed25519:a')
+    t.bindByRestore(w, 'b', 'ed25519:b')
+    t.bindByRestore(w, 'c', 'ed25519:c')
+    expect(t.unbind(w, 'b', 'window')).toEqual(['b'])
+    expect([t.boundTo(w), unbound(w)]).toEqual([['a', 'c'], ['b']])
+    expect(t.unbind(w, 'b', 'window')).toEqual([])
+    expect(t.unbind(w, undefined, 'window')).toEqual(['a', 'c'])
+    expect([t.state(w), unbound(w)]).toEqual(['unbound', ['b', 'a', 'c']])
+  })
+
+  it('an unbind the window asked notifies service/unbound during a drain; a close during a drain does not', () => {
+    const { t, home, ended } = clocked(ids(['a', 'home-key'], ['b', 'home-key']))
+    const w = conn({ hook: true })
+    t.bindByWord(w, 'a')
+    const v = conn({ hook: true })
+    t.bindByWord(v, 'b')
+    const x = conn({ hook: true })
+    t.bindByWord(x, 'a')
+    ;(home as { draining: boolean }).draining = true
+    expect(t.unbind(w, 'a', 'window')).toEqual(['a'])
+    expect(t.unbind(v, undefined, 'tool')).toEqual(['b'])
+    expect([unbound(w), unbound(v)]).toEqual([['a'], ['b']])
+    // A close in a drain, and the table's own drop with no via: the shim keeps its memory for the restore.
+    x.close()
+    expect(unbound(x)).toEqual([])
+    expect(ended).toEqual(['a window', 'b tool', 'a close'])
+  })
+
+  it('a bind on a bound window replaces: the old label is unbound with via window after the new one is bound', async () => {
+    const { t, ended } = clocked(ids(['sam', 'home-key'], ['work', 'home-key'], ['x', 'home-key']))
+    const w = conn({ hook: true, person: [yes] })
+    t.bindByWord(w, 'sam')
+    t.bindByWord(w, 'work')
+    expect(w.notices.map(([m, p]) => `${m} ${String(p.as)}`)).toEqual([
+      'service/bound sam',
+      'service/bound work',
+      'service/unbound sam',
+    ])
+    expect([t.boundTo(w), ended]).toEqual([['work'], ['sam window']])
+    // The dialog's Yes replaces too; binding the same label again ends nothing.
+    await t.bindByDialog(w, 'x')
+    t.bindByWord(w, 'x')
+    expect([t.boundTo(w), ended]).toEqual([['x'], ['sam window', 'work window']])
+    // A restore never replaces: a 0.4.6 window that held several keeps them.
+    const r = conn({ hook: true })
+    t.bindByRestore(r, 'sam', 'ed25519:sam')
+    t.bindByRestore(r, 'work', 'ed25519:work')
+    expect(t.boundTo(r)).toEqual(['sam', 'work'])
+    // A switch leaves no note and is no unbind of the window's own asking.
+    expect(t.notes(w.handle)).toEqual([])
+  })
+
+  it("the bind dialog on a bound window says in place of which; on an unbound one today's words", async () => {
+    const { t } = clocked(ids(['sam', 'home-key'], ['work', 'home-key']))
+    const w = conn({ hook: true, person: [yes, { action: 'accept', content: { identity: 'sam' } }] })
+    t.bindByWord(w, 'sam')
+    await t.bindByDialog(w, 'work')
+    await t.bindByDialog(w)
+    expect(w.dialogs.map((d) => d.message)).toEqual([
+      'Act as work in this window, in place of sam?\nIts tools then act as work until it closes.\nNo: not asked again in this window for 5 minutes.\nSay Yes only if you asked for this.',
+      'Which bag identity should this window act as,\nin place of work?\nIt acts as it until the window closes.\nSay Yes only if you asked for this.',
+    ])
+    expect(w.dialogs[0]?.requestedSchema.properties.bind).toMatchObject({ title: 'Yes, act as work' })
+    const fresh = conn({ person: [yes] })
+    await t.bindByDialog(fresh, 'work')
+    expect(fresh.dialogs[0]?.message).toBe(
+      'Act as work in this window?\nIts tools then act as work until it closes.\nNo: not asked again in this window for 5 minutes.\nSay Yes only if you asked for this.',
+    )
+  })
+
+  it('usedAs names the bound labels, then every label this connection acted as before, also after an unbind', () => {
+    const { t } = clocked(ids(['sam', 'home-key'], ['work', 'home-key'], ['x', 'home-key']))
+    const w = conn({ hook: true })
+    expect(t.usedAs(w)).toEqual([])
+    t.bindByWord(w, 'sam')
+    t.bindByWord(w, 'work')
+    expect([t.usedAs(w), t.holds(w, 'work'), t.holds(w, 'sam')]).toEqual([['work', 'sam'], true, false])
+    t.unbind(w, undefined, 'tool')
+    // The earlier ones in the order they were first bound.
+    expect([t.usedAs(w), t.holds(w, 'work')]).toEqual([['sam', 'work'], false])
+    t.bindByWord(w, 'x')
+    expect(t.usedAs(w)).toEqual(['x', 'sam', 'work'])
+    // Another window has its own history; a close ends this one with the row.
+    expect(t.usedAs(conn({ hook: true }))).toEqual([])
+    w.close()
+    expect(t.usedAs(w)).toEqual([])
+  })
+
+  it('home-key and keychain run identity_create and host_wire; agent and grant answer not-authorized naming the way; service is refused for every class', () => {
+    const { t } = clocked(ids(['h', 'home-key'], ['k', 'keychain'], ['g', 'agent'], ['e', 'grant']))
+    const at = (label: string): Fake => {
+      const w = conn({ hook: true })
+      t.bindByWord(w, label)
+      return w
+    }
+    const refusal = (f: () => unknown): string => {
+      try {
+        f()
+      } catch (e) {
+        return (e as ToolError).message
+      }
+      return 'ok'
+    }
+    for (const label of ['h', 'k']) {
+      const w = at(label)
+      for (const tool of ['identity_create', 'host_wire']) expect(t.require(w, tool).label).toBe(label)
+    }
+    for (const [label, custody] of [
+      ['g', 'agent'],
+      ['e', 'grant'],
+    ]) {
+      const w = at(label as string)
+      for (const tool of ['identity_create', 'host_wire'])
+        expect(refusal(() => t.require(w, tool))).toBe(
+          `not-authorized: ${label} is a ${custody} identity: ${tool} is not among its tools: it runs in a window that acts as a home-key or Keychain identity, or as none (your user unbinds this window, or opens a new one)`,
+        )
+    }
+    for (const [label, custody] of [
+      ['h', 'home-key'],
+      ['k', 'keychain'],
+      ['g', 'agent'],
+      ['e', 'grant'],
+    ])
+      expect(refusal(() => t.require(at(label as string), 'service'))).toBe(
+        `not-authorized: ${label} is a ${custody} identity: service is not among its tools: it runs only in a window that acts as no identity (your user unbinds this window, or opens a new one)`,
+      )
+    // Every other refusal keeps its words.
+    expect(refusal(() => t.require(at('g'), 'pair_invite'))).toBe(
+      'not-authorized: g is a agent identity: pair_invite is not among its tools',
+    )
+  })
+
+  it('several bindings and a maker: no as; every bound class must allow it, and one that does not is named', () => {
+    const { t } = clocked(ids(['h', 'home-key'], ['k', 'keychain'], ['g', 'agent']))
+    const w = conn({ hook: true })
+    t.bindByRestore(w, 'h', 'ed25519:h')
+    t.bindByRestore(w, 'k', 'ed25519:k')
+    expect(t.require(w, 'identity_create').label).toBe('h')
+    expect(t.require(w, 'host_wire').label).toBe('h')
+    expect(() => t.require(w, 'send')).toThrow('usage: this window acts as h, k: pass as')
+    const v = conn({ hook: true })
+    t.bindByRestore(v, 'h', 'ed25519:h')
+    t.bindByRestore(v, 'g', 'ed25519:g')
+    expect(() => t.require(v, 'identity_create')).toThrow(
+      /^not-authorized: g is a agent identity: identity_create/,
+    )
+  })
+
+  it('a tool unbind leaves one note naming the label and the time; a window unbind leaves none', () => {
+    const { t } = clocked(ids(['sam', 'home-key'], ['work', 'home-key']))
+    const w = conn({ hook: true })
+    t.bindByWord(w, 'sam')
+    t.unbind(w, 'sam', 'tool')
+    expect(t.notes(w.handle)).toEqual([
+      'sam unbound by an unbind call at 08:00 UTC: this window acts as no identity now',
+    ])
+    expect(t.notes(w.handle)).toEqual([])
+    const r = conn({ hook: true })
+    t.bindByRestore(r, 'sam', 'ed25519:sam')
+    t.bindByRestore(r, 'work', 'ed25519:work')
+    expect(t.notes(r.handle)).toHaveLength(2)
+    t.unbind(r, 'sam', 'tool')
+    expect(t.notes(r.handle)).toEqual([
+      'sam unbound by an unbind call at 08:00 UTC: this window still acts as work',
+    ])
+    const v = conn({ hook: true })
+    t.bindByWord(v, 'sam')
+    t.unbind(v, undefined, 'window')
+    t.unbind(v)
+    expect(t.notes(v.handle)).toEqual([])
+    // An unbind that ends nothing says nothing.
+    t.unbind(v, 'sam', 'tool')
+    expect(t.notes(v.handle)).toEqual([])
+  })
+
+  it('the third unbind of one window in ten minutes carries the line naming the likely cause; the second does not; a third after eleven minutes does not', () => {
+    const { t, at } = clocked(ids(['sam', 'home-key']))
+    const line =
+      "sam unbound 3 times in 10 minutes: a scheduled prompt or a message may be doing it; your user can list this session's scheduled tasks"
+    const w = conn({ hook: true })
+    const round = (via: 'window' | 'tool'): string[] => {
+      t.bindByWord(w, 'sam')
+      t.unbind(w, undefined, via)
+      return t.notes(w.handle).filter((l) => l.includes('times in'))
+    }
+    expect(round('window')).toEqual([])
+    at.mono += 240_000
+    expect(round('tool')).toEqual([])
+    at.mono += 240_000
+    expect(round('window')).toEqual([line])
+    // A switch is no unbind the window asked: it counts nothing.
+    const s = conn({ hook: true })
+    const { t: u, at: clock } = clocked(ids(['sam', 'home-key'], ['work', 'home-key']))
+    for (const l of ['sam', 'work', 'sam', 'work']) u.bindByWord(s, l)
+    expect(u.notes(s.handle)).toEqual([])
+    // Spread over eleven minutes: never three within ten.
+    const v = conn({ hook: true })
+    for (const step of [0, 330_000, 330_000]) {
+      clock.mono += step
+      u.bindByWord(v, 'sam')
+      u.unbind(v, undefined, 'window')
+    }
+    expect(u.notes(v.handle)).toEqual([])
+    // Nothing is refused or slowed: the next bind and unbind act as ever.
+    expect(u.bindByWord(v, 'sam').label).toBe('sam')
+  })
+  it("the consent-ask line of an act of no identity names from, the window's usedAs; with none it has no from", async () => {
+    const { t } = clocked(ids(['sam', 'home-key']))
+    const w = conn({
+      hook: true,
+      person: [{ action: 'accept', content: { confirm: true } }, { action: 'decline' }],
+    })
+    t.bindByWord(w, 'sam')
+    t.unbind(w, undefined, 'window')
+    const lines: [string, Record<string, unknown>][] = []
+    let mono = 0
+    const ctx = {
+      config: { home: `/h${homes++}` },
+      clock: { now: () => 1_800_000_000 },
+      timers: new ManualTimers(),
+      mono: () => (mono += 1000),
+      canElicit: () => true,
+      log: { log: (_l: string, event: string, f: Record<string, unknown>) => lines.push([event, f]) },
+      opened: null,
+    } as unknown as ToolContext
+    const extra = { signal: new AbortController().signal, requestId: 1 } as unknown as PairExtra
+    const q = { act: 'identity-create', kind: 'confirm', title: 'Yes: make it', message: 'Make it?' } as const
+    expect(await askPerson(ctx, extra, { ...q, from: t.usedAs(w) }, w)).toEqual({ said: 'yes', text: null })
+    expect(await askPerson(ctx, extra, q, w)).toEqual({ said: 'no' })
+    expect(lines.filter(([e]) => e === 'consent-ask').map(([, f]) => f.from)).toEqual([['sam'], undefined])
+  })
+  it('where the host cannot prove typing (Claude Code) both bind questions end Say Yes only if you asked for this; omp has none', async () => {
+    const { t } = clocked(ids(['sam', 'home-key'], ['work', 'home-key']))
+    const pick = { action: 'accept', content: { identity: 'work' } } as const
+    const last = (c: Fake): string[] => c.dialogs.map((d) => d.message.split('\n').at(-1) ?? '')
+    for (const host of ['claude-code', 'omp']) {
+      const fresh = conn({ hook: true, host, person: [yes, pick] })
+      await t.bindByDialog(fresh, 'sam')
+      await t.bindByDialog(fresh)
+      const placed = conn({ hook: true, host, person: [yes, pick] })
+      t.bindByWord(placed, 'sam')
+      await t.bindByDialog(placed, 'work')
+      t.bindByWord(placed, 'sam')
+      await t.bindByDialog(placed)
+      const said = [...last(fresh), ...last(placed)].map((l) => l === 'Say Yes only if you asked for this.')
+      expect([host, said]).toEqual([
+        host,
+        host === 'omp' ? [false, false, false, false] : [true, true, true, true],
+      ])
+      expect([host, placed.dialogs.every((d) => d.message.includes('in place of sam'))]).toEqual([host, true])
+    }
   })
 })

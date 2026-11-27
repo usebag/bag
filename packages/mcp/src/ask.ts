@@ -98,6 +98,16 @@ export interface Ask {
    * of askPending (L1). Every other act takes the rate limit.
    */
   readonly limit?: boolean
+  /**
+   * The identities the asking window is or was used as (binding.ts usedAs), for an act of no identity asked from a
+   * window that was bound: the consent-ask line names them. Absent from a window never bound.
+   */
+  readonly from?: readonly string[]
+  /**
+   * The audit logs of the identities the asking window acts as now (an act of no identity from a bound window): each
+   * gets one policy line of the ask, with the window (design 2026-11-26, section 5.4). A log that throws is skipped.
+   */
+  readonly logs?: readonly { record(entry: Record<string, unknown>): unknown }[]
 }
 
 export type Answer =
@@ -573,6 +583,18 @@ function audit(ctx: ToolContext, q: Ask, host: string, said: Answer['said'], win
   } catch {
     opened = undefined
   }
-  if (opened == null) ctx.log.log('info', 'consent-ask', { ...detail, window })
+  if (opened == null)
+    ctx.log.log('info', 'consent-ask', {
+      ...detail,
+      window,
+      ...(q.from === undefined ? {} : { from: q.from }),
+    })
   else opened.edge.audit.record({ event: 'policy', decision, reason: 'ok', from: null, detail })
+  for (const log of q.logs ?? []) {
+    try {
+      log.record({ event: 'policy', decision, reason: 'ok', from: null, detail, connection: window })
+    } catch {
+      // A unit closed meanwhile keeps no line; the service log's line above stands.
+    }
+  }
 }

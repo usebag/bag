@@ -4,6 +4,60 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.4.7: 2026-11-26
+
+The cut tagged v0.4.7, `@usebag/bag` 0.4.7.
+
+- **`@usebag/bag` 0.4.7**, published from this cut (`npm view @usebag/bag@0.4.7 gitHead` names it).
+
+Changes after v0.4.6.
+
+- **Updating brings bag's question card to Claude Code.** The update page now turns on bag's question card in Claude
+  Code wherever bag is wired for every Claude Code session, and leaves a per-folder setup, and a card you switched off,
+  as they are; before, only an install for Claude Code (`bag host install claude-code --user`) did. If you updated to
+  0.4.6 by the update page before this, follow the update page again: it finds the install at 0.4.6 and brings the
+  card alone. Running `bag host install claude-code --user` again brings it too. Then reload each Claude Code window
+  once.
+- **A window acting as one identity sees less of your others.** In a window that acts as one of your identities,
+  `identities` now shows your other identities with a short address (`ed25519:` and its first 8 and last 4 hex
+  digits), as a window that acts as no identity sees them, and only its own in full; the others' full addresses come
+  only after your Yes to the question in that window, until it closes. Before, such a window was shown every
+  identity's full address with no question. An identity you keep apart (hidden) is no longer shown at all to a window
+  that acts as another identity; before, it was listed there with its full address.
+- **An unsafe local-delivery file keeps your identities apart.** When your home's `run/local.json` (local delivery on
+  or off, and the identities you keep apart) is not private to you, is a link or does not read, bag already turned
+  local delivery off; now a window acting as an identity is also shown none of your others until it is fixed, so an
+  identity you kept apart stays hidden, and nothing writes the file (`bag local-delivery`, a window's hide or show)
+  until it is fixed, since a write would drop that list. `status` in a window and `bag status --home` say why and the
+  fix for its case: `chmod 600` for a wrong mode, then a look at `bag status --home` before you rely on it; for a link,
+  a file of another user or one that does not read, removing it, then turning local delivery off, hiding the
+  identities you keep apart again and turning it on (a removed file means local delivery on with nothing hidden).
+  `bag status --home` shows each identity's hidden as unknown meanwhile. With no such
+  file, nothing changes.
+- **In Claude Code, only the `use` you type binds at once.** A message that a schedule, a script or another session
+  submits to a window looked to bag like one you typed, so it could bind the window. Now, where bag's plugin for Claude
+  Code is on (bag's question card), the plugin tells bag which messages you typed: your `use` binds at once, and one
+  submitted any other way never binds by itself. Without the plugin bag cannot tell, so a `use` asks you once ("Act as
+  NAME in this window?") and only your Yes binds; in Claude Code's VS Code extension and in Claude Desktop that question
+  needs the plugin (bag's install for Claude Code, or the update page), so without it use Claude Code in a terminal
+  window. In omp, typing `use` binds at once, as before.
+- **Unbind a window.** Type `unbind` as the whole message in Claude Code or omp and the window acts as no identity;
+  `unbind` and a name ends that one only. On Codex and other hosts, ask the agent to unbind: it has an unbind tool, and
+  the window's next answer then says once that it was unbound. It asks nothing, since it only takes away, and a restart
+  of the bag service does not bring the identity back. The service log records it, and so does the identity's own audit
+  log once it has acted in that window. A window unbound three times in ten minutes says so, and that a scheduled prompt
+  or a message may be doing it.
+- **`use` switches.** In a window that already acts as an identity, binding another replaces it: the bind question
+  now says "in place of sam", and in omp, or in Claude Code with bag's plugin on, typing `use work` replaces at once.
+  Before, the window acted as both and every call needed `as`. The bind question ends "Say Yes only if you asked for
+  this.", except in omp.
+- **Make an identity from a bound window.** A window that acts as an identity whose key is in your home or your Keychain
+  can now make a new identity (`identity_create`) and propose one for its folder (`host_wire`). You are still asked,
+  and the question names the window, "Asked from a window used as sam", so you can tell when the request came from a
+  window that reads mail; it also names an identity the window was unbound from, until a restart of the bag service.
+  Windows of an agent or an organisation's grant still cannot, and the login agent (`service`) is still written only
+  from a window that acts as no identity.
+
 ## v0.4.6: 2026-11-24
 
 The cut tagged v0.4.6, `@usebag/bag` 0.4.6.

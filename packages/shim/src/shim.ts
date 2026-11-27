@@ -317,6 +317,28 @@ export class Shim {
     return typeof as === 'string' ? { bound: true, as } : { bound: false, code: 'bad-answer' }
   }
 
+  /**
+   * The person's typed `unbind` or `unbind <name>` (channel.ts): forgets first (that label alone, or the whole memory),
+   * so no restore brings it back, then asks the service. A label the memory held counts as unbound even when the
+   * service has not bound it back yet (a restore still on its way to it).
+   */
+  async unbind(label?: string): Promise<{ unbound: string[]; as: string[] } | { code: string }> {
+    const had = label !== undefined && this.#keep.delete(label)
+    if (label === undefined) this.#keep = new Map()
+    if (this.#phase !== 'up' || this.#conn === null) return { code: 'not-connected' }
+    this.typed()
+    const r = await this.#request(UNBIND, label === undefined ? {} : { label }).catch(() => null)
+    if (r === null || r.error !== undefined)
+      return { code: r === null ? 'lost' : (bagCode(r.error) ?? 'refused') }
+    const raw = (r.result as { unbound?: unknown } | undefined)?.unbound
+    const gone = Array.isArray(raw) ? raw.filter((l): l is string => typeof l === 'string') : []
+    if (had && label !== undefined && !gone.includes(label)) gone.push(label)
+    // Set from the answer too: a service that sends no service/unbound while it drains still unbinds.
+    this.#setBound(this.#as.filter((l) => !gone.includes(l)))
+    this.#d.log('unbind', { n: gone.length })
+    return Array.isArray(raw) ? { unbound: gone, as: [...this.#as] } : { code: 'bad-answer' }
+  }
+
   /** The person typed in this window (any interactive prompt): the service makes it the speaking window. */
   typed(): boolean {
     if (this.#phase !== 'up' || this.#conn === null) return false
@@ -545,14 +567,21 @@ export class Shim {
   /** #keep, what service/bound said: asked again after a reconnect; a typed use or release while down empties it. */
   async #restore(): Promise<void> {
     const keep = this.#keep // none once omp 19's window is gone (no hostPid); a new #keep stops it and unbinds
+    const restored: string[] = []
     for (const [label, address] of this.#d.hostPid === undefined ? [] : [...keep]) {
       if (keep !== this.#keep) break
+      if (!keep.has(label)) continue // a typed unbind of that label while the restore ran
       const asked = { label, via: RESTORED, address, subagent: this.#subagent }
       const r = await this.#request(USE, asked).catch(() => null)
       if (r === null) return
-      if (r.error !== undefined && bagCode(r.error) !== 'draining') keep.delete(label)
+      if (r.error === undefined) restored.push(label)
+      else if (bagCode(r.error) !== 'draining') keep.delete(label)
     }
     if (keep !== this.#keep) await this.#request(UNBIND, {}).catch(() => null)
+    // A typed unbind of a label this restore had already bound back: the service unbinds it before the window is up.
+    else
+      for (const label of restored.filter((l) => !keep.has(l)))
+        await this.#request(UNBIND, { label }).catch(() => null)
   }
 
   #drop(conn: Conn): void {

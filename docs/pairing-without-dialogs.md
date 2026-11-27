@@ -84,7 +84,7 @@ issue 98256), and from a Codex older than 0.113.0. In the VS Code extension and 
 pairing question in Claude Code's own question card, so the pair tools work there: you type your peer's code into the
 card, and the six check digits into the inviting side's card. A window there without the plugin (bag's Claude Code
 install not run, the plugin switched off in `/plugin`, or the window not yet reloaded once after the install) still
-answers `no-elicitation`, and the answer says so; typing use and the name still binds there. For Codex it names the interactive
+answers `no-elicitation`, and the answer says so. For Codex it names the interactive
 `codex` TUI rather than `codex exec`, Codex 0.113.0 or later, and an approval policy that lets MCP servers ask
 (`on-request`, the default, is enough); for omp, an interactive session that uses the bag service through bag's
 extension (a per-folder bag server cannot pair); for another host, its interactive form and the setting that lets MCP

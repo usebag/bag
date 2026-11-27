@@ -71,8 +71,10 @@ The home is `--dir`, else `AC_HOME`, else `$HOME/.bag`.
 The person binds a session by typing `use <name>`. The host's input hook catches the whole prompt (pattern
 `^\s*use\s+([a-z0-9][a-z0-9._-]{0,63})\s*$`, "use" in any case) and posts it to its own shim, never to the service.
 The shim sends `service/use` with `via: "typed"` on its connection; the service honours it only after a hello that
-said `input_hook: true`. Every other interactive prompt is posted as `typed`, and the shim sends `service/typed`
-(params `{}`), so the service knows the speaking window.
+said `input_hook: true`; on Claude Code only where the hook input proves the person typed it (below). In a session
+already bound, the bind replaces what it acted as (the service ends the others and sends `service/unbound` for each).
+The whole prompt `unbind` or `unbind <name>` is posted as `unbind` (below). Every other prompt is posted as `typed`,
+and the shim sends `service/typed` (params `{}`), so the service knows the speaking window.
 
 Paths and modes (the CLI's `host install` writes the matching sandbox entry; one entry for `<home>/run/` covers them):
 
@@ -106,13 +108,31 @@ in its place.
 
 Requests, one line each: `{"v":1,"kind":"use","name":"omp-3","secret":"<64 hex>"}`, answered
 `{"bound":true,"as":"omp-3"}` or `{"bound":false,"code":"<bag code>"}`; `{"v":1,"kind":"typed","secret":"<64 hex>"}`,
-answered `{"typed":true|false}`. Any other kind (0.4.1's `bridge` included) is `{"bound":false,"code":"usage"}`.
+answered `{"typed":true|false}`; `{"v":1,"kind":"unbind","name":"sam","secret":"<64 hex>"}` (`name` absent for every
+identity of the window), answered `{"unbound":["sam"],"as":["work"]}` or `{"code":"<bag code>"}`, a name that is not a
+label `{"bound":false,"code":"usage"}`. Any other kind (0.4.1's `bridge` included) is `{"bound":false,"code":"usage"}`.
 The secret is compared with `timingSafeEqual`; a wrong one is `bad-auth`.
 
-`bag-shim hook` (Claude Code's UserPromptSubmit) reads the hook's JSON on stdin. For `use <name>` it posts the word
-and prints `{"decision":"block","reason":"bag: this session now acts as <name>."}` (or why not), so the model never
-acts on it. It prints nothing, and the prompt goes on to the model, for any other prompt, when no shim of this window
-answers, and for `unknown-identity` (so "use pandas" still reaches the model).
+`bag-shim hook` (Claude Code's UserPromptSubmit) reads the hook's JSON on stdin. A `use <name>` binds at once only
+where the input proves the person typed it (`personTyped` in `src/channel.ts`: bag's plugin's `bag_typed` mark,
+`{"v":1,"prompt_id":...}` equal to the input's `prompt_id`, which plugins/claude-code-card/hooks/typed.ts adds for a
+prompt whose prompt.submit origin is `composer`; or `source` `"user"`, which Claude Code 2.1.331 never sends). Known
+not typed (`bag_not_typed`, any other origin): no shim hears it, nothing is blocked, and the model's context says it
+did not come from the person's typing. Unproven (no mark), it reaches no shim and is not blocked: the hook prints
+`systemMessage` "bag: answer bag's question to act as <name>" for the person and
+`hookSpecificOutput.additionalContext` asking the model to call bag's `use` tool once with that name, whose dialog
+binds only on the person's Yes. Proven, it posts the word and prints
+`{"decision":"block","reason":"bag: this session now acts as <name>."}` (or why not), so the model never acts on it.
+It prints nothing, and the prompt goes on to the model, for any other prompt, when no shim of this window answers, and
+for `unknown-identity` (so "use pandas" still reaches the model).
+
+A whole prompt `unbind` or `unbind <name>` (`UNBIND_WORD`) is read before any proof of typing: it only takes authority
+away, so it acts with no dialog however the prompt came. The hook posts it to its own shim and blocks the prompt with
+what happened (`bag: this session now acts as no identity (it acted as sam).`, or why not; omp's extension shows the
+same lines, from `unbindSaid` in packages/cli/src/omp-wake.ts). The shim forgets first (`Shim.unbind`: that label, or
+every one for a bare `unbind`), so no restore after a restart brings it back, then sends `service/unbind`. With the
+service not up, or the request lost, the forgetting is all it does, and the line says so: the session acts as no
+identity, or no longer as that name, once the service is back.
 
 **The honest limit.** Same-user is not a security boundary (`docs/bag-service.md`, "What it protects, and what it does
 not"). Any process of the user that can read `<home>/run/shim/` can read an index and post a typed word for that window,
@@ -145,13 +165,15 @@ which only the shim and the service know. The shim writes `<home>/run/shim/<host
 
 `as` is the connection's bound labels in bind order (from `service/bound` and each typed bind's answer), `shim` the
 shim's pid. It is 0600, written beside and renamed over on every change, and removed when the list becomes empty (the
-connection was lost: the service drops its bindings) and when the shim exits. The shim removes it only while it still
-names its own pid. A reader finds it by its host pid, as a hook finds the index: Claude Code's and Codex's hooks walk
+connection was lost: the service drops its bindings; or an unbind took the last label) and when the shim exits. The
+shim removes it only while it still names its own pid. A reader finds it by its host pid, as a hook finds the index:
+Claude Code's and Codex's hooks walk
 their ancestors, omp's extension uses its own `process.pid`. A reader ignores a file that does not parse, has another
 `v`, or whose `shim` pid is not alive (a shim killed with SIGKILL leaves one behind), and then wakes on nothing. While
 the file exists the waiter wakes from the ring file only (next section), never from a doorbell. The service has no
-unbind notification before 0.4.6; since then `service/unbound` takes a label out of the file and the memory, and the
-shim sends `service/unbind` only to undo a restore the person's typed word overtook.
+unbind notification before 0.4.6; since then `service/unbound` takes a label out of the file and the memory. The shim
+sends `service/unbind` for the person's typed `unbind` (whose answer also takes the labels out of the file, for a
+service that sends no notice while it drains) and to undo a restore the person's typed word overtook.
 
 ## The ring file, for the waiters
 

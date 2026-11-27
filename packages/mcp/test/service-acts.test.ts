@@ -41,12 +41,16 @@ import { rereadOf, Service, type ServiceDeps } from '../src/service.ts'
 import { DIALOG_META } from '../src/socket.ts'
 import {
   ACT_QUESTIONS,
+  ASKER_TOO_MANY,
   CREATE_TOO_LONG,
   FOLDER_NOT_SHOWN,
+  notBoundHere,
   OTHER_FOLDER,
+  proposalBindsNone,
   RECORDS_KEPT,
   RECORDS_NONE,
   RELAY_NOT_PLAIN,
+  stoppedActing,
   WIRE_PLACEHOLDER,
   WIRE_TAKES_NO_LABEL,
 } from '../src/tools.ts'
@@ -995,10 +999,254 @@ describe("telemetry in a bound window: the machine's setting, in every window", 
     const lines = (await on).lines as string[]
     expect(lines[0]).toMatch(/^telemetry on reason=file choice=on id=set spool=/)
     expect(JSON.stringify(lines)).not.toMatch(/[0-9a-f]{32}/)
-    expect(await call(w, 'identity_create', { label: 'jane', relays: [RELAY] })).toMatchObject({
-      error: 'not-authorized',
-      as: 'personal',
+    // identity_create runs in this home-key window too: it asks the person, its question names the window, and a No
+    // makes nothing (the Yes is the next describe's).
+    const made = call(w, 'identity_create', { label: 'jane', relays: [RELAY] })
+    const asked = await answered(w, 'decline')
+    expect(asked.split('\n').at(-1)).toBe('Asked from a window used as personal')
+    expect(await made).toMatchObject({ error: 'declined', as: 'personal' })
+    expect(existsSync(join(home, 'keys', 'jane.json'))).toBe(false)
+  })
+})
+
+/** Answers the next dialog of `l` at a person's pace (a confirm's Yes, a typed text, a No, or none), and gives its message. */
+async function answered(l: Line, said: 'yes' | 'decline' | 'none' | { text: string }): Promise<string> {
+  const req = await l.next((m) => m.method === 'elicitation/create')
+  const params = req.params as Json
+  const handle = (params._meta as Json)[DIALOG_META]
+  const result =
+    said === 'yes'
+      ? { action: 'accept', content: { confirm: true } }
+      : said === 'decline'
+        ? { action: 'decline' }
+        : said === 'none'
+          ? { action: 'cancel' }
+          : { action: 'accept', content: said }
+  void atPersonPace().then(() =>
+    l.send({ jsonrpc: '2.0', id: req.id, result: { ...result, _meta: { [DIALOG_META]: handle } } }),
+  )
+  return String(params.message)
+}
+
+// identity_create and host_wire from a window bound to a home-key or Keychain identity, and the unbind tool (design
+// 2026-11-26, sections 4.2 and 5).
+describe('the makers from a bound window, and the unbind tool', () => {
+  const restored = async (s: Service, ...labels: [string, Party][]): Promise<Line> => {
+    // In a folder that exists, so host_wire's own checks pass and the asker's is the one that answers.
+    const w = await connect(s, { cwd: root })
+    for (const [label, p] of labels) {
+      const r = await w.request('service/use', { label, via: 'restored', address: p.keys.signing.address })
+      expect(r.result, JSON.stringify(r)).toMatchObject({ granted: 'restored' })
+    }
+    return w
+  }
+
+  it("identity_create from a bound window: the question's third line is Asked from a window used as sam, every line within 60, the relays on one line", async () => {
+    const s = await start([['personal', P.alice]])
+    const w = await bound(s, 'personal')
+    const here = call(w, 'identity_create', { label: 'jane', relays: [] })
+    const a = await answered(w, 'yes')
+    expect(a).toBe(
+      [
+        'Make jane on this machine only?',
+        'Nothing is published; you can give it relays later.',
+        'Asked from a window used as personal',
+      ].join('\n'),
+    )
+    expect(a.split('\n').every((l) => l.length <= 60)).toBe(true)
+    const done = await here
+    expect(done.as).toBe('personal')
+    // the result of identity_create from a bound window says the new identity is not bound here
+    expect((done.lines as string[]).at(-1)).toBe(
+      "jane is not bound here: this window still acts as personal. Your user binds a window to jane by Yes in the bind dialog (use), or in omp and in Claude Code with bag's plugin on by typing use jane; in this window that replaces personal.",
+    )
+    expect(notBoundHere('jane', ['personal'])).toBe((done.lines as string[]).at(-1))
+    expect(existsSync(join(home, 'keys', 'jane.json'))).toBe(true)
+    // Published: the relays on one line; two that fit one line unbound but not here are refused before any question.
+    const pub = call(w, 'identity_create', { label: 'kim', relays: ['https://relay-one.example.com/'] })
+    expect(await answered(w, 'none')).toBe(
+      ['Make kim and publish it at:', 'relay-one.example.com', 'Asked from a window used as personal'].join(
+        '\n',
+      ),
+    )
+    expect(await pub).toMatchObject({ error: 'cancelled' })
+    const long = ['https://relay-number-one.example.com/', 'https://relay-number-two.example.com/a']
+    expect(await call(w, 'identity_create', { label: 'kim', relays: long })).toMatchObject({
+      error: 'usage',
+      detail: CREATE_TOO_LONG,
     })
+    // A window never bound asks today's question, byte for byte.
+    const fresh = await connect(s, {})
+    const today = call(fresh, 'identity_create', { label: 'kim', relays: [] })
+    expect(await answered(fresh, 'none')).toBe(ACT_QUESTIONS.create('kim', [])?.message)
+    await today
+  })
+
+  it('identity_create after an unbind still names the identity the window was used as', async () => {
+    const s = await start([['personal', P.alice]])
+    const w = await bound(s, 'personal')
+    expect(await call(w, 'unbind')).toEqual({ unbound: ['personal'], as: null })
+    const made = call(w, 'identity_create', { label: 'jane', relays: [] })
+    expect((await answered(w, 'none')).split('\n').at(-1)).toBe('Asked from a window used as personal')
+    const r = await made
+    expect(r).toMatchObject({ error: 'cancelled', as: null })
+  })
+
+  it('host_wire, wire, typed and unwire, from a bound window: the three-line forms with the asker line', async () => {
+    const s = await start([
+      ['personal', P.alice],
+      ['work', P.carol],
+    ])
+    const dir = join(root, 'proj')
+    mkdirSync(dir, { recursive: true })
+    const w = await connect(s, { cwd: dir })
+    expect((await w.request('service/use', { label: 'personal', via: 'typed' })).result).toMatchObject({
+      bound: true,
+    })
+    const typed = call(w, 'host_wire', { host: 'claude-code' })
+    expect(await answered(w, { text: 'work' })).toBe(
+      [dir, 'New windows there propose the label you type.', 'Asked from a window used as personal'].join(
+        '\n',
+      ),
+    )
+    const wired = await typed
+    expect(wired.as).toBe('personal')
+    expect((wired.lines as string[]).at(-1)).toBe(proposalBindsNone(['personal']))
+    expect(proposalBindsNone(['personal'])).toBe(
+      'a proposal binds no window, this one included: it still acts as personal.',
+    )
+    const un = call(w, 'host_wire', { host: 'claude-code', action: 'unwire' })
+    expect(await answered(w, 'none')).toBe(
+      [dir, 'Windows there stop using work.', 'Asked from a window used as personal'].join('\n'),
+    )
+    await un
+    // The confirm form, for an identity this window made.
+    const made = call(w, 'identity_create', { label: 'jane', relays: [] })
+    await answered(w, 'yes')
+    await made
+    await until(() => s.unit('jane') !== null)
+    const mine = call(w, 'host_wire', { host: 'claude-code' })
+    expect(await answered(w, 'none')).toBe(
+      [dir, 'New windows there propose jane.', 'Asked from a window used as personal'].join('\n'),
+    )
+    await mine
+    expect(ACT_QUESTIONS.wire('claude-code', dir, 'jane', 'x').message.split('\n')).toHaveLength(3)
+  })
+
+  it('an asker list over 60 characters refuses usage before any question', async () => {
+    const s = await start([
+      ['personal-long-label-one', P.alice],
+      ['research-long-label-two', P.carol],
+    ])
+    const w = await restored(s, ['personal-long-label-one', P.alice], ['research-long-label-two', P.carol])
+    for (const [tool, args] of [
+      ['identity_create', { label: 'jane', relays: [] }],
+      ['host_wire', { host: 'claude-code' }],
+    ] as const)
+      expect([tool, await call(w, tool, args)]).toEqual([
+        tool,
+        { error: 'usage', detail: ASKER_TOO_MANY, as: null },
+      ])
+    expect(ASKER_TOO_MANY).toBe(
+      'this window has acted as too many identities to name them in the question: ask in a new window, or in the bag command line',
+    )
+  })
+
+  it('two bindings (restored) and identity_create without as: it runs, the question names both', async () => {
+    const s = await start([
+      ['personal', P.alice],
+      ['work', P.carol],
+    ])
+    const w = await restored(s, ['personal', P.alice], ['work', P.carol])
+    const made = call(w, 'identity_create', { label: 'jane', relays: [] })
+    expect((await answered(w, 'none')).split('\n').at(-1)).toBe('Asked from a window used as personal, work')
+    expect(await made).toMatchObject({ error: 'cancelled', as: null })
+  })
+
+  it("the consent-ask line carries from; each bound identity's log gets one policy line; a history-only identity none", async () => {
+    const s = await start([
+      ['personal', P.alice],
+      ['work', P.carol],
+    ])
+    const w = await bound(s, 'personal')
+    // work's unit open (its first act), then the window replaces personal with work.
+    expect((await w.request('service/use', { label: 'work', via: 'typed' })).result).toMatchObject({
+      as: 'work',
+    })
+    expect((await call(w, 'status')).as).toBe('work')
+    const made = call(w, 'identity_create', { label: 'jane', relays: [] })
+    expect((await answered(w, 'decline')).split('\n').at(-1)).toBe(
+      'Asked from a window used as work, personal',
+    )
+    await made
+    const asks = log.lines.filter((x) => x.event === 'consent-ask').map((x) => x.fields as Json)
+    expect(asks.map((f) => [f.act, f.said, f.from])).toEqual([
+      ['identity-create', 'no', ['work', 'personal']],
+    ])
+    const lines = (key: string): Json[] =>
+      readFileSync(join(home, 'state', key, 'audit.jsonl'), 'utf8')
+        .split('\n')
+        .filter((l) => l.includes('consent'))
+        .map((l) => JSON.parse(l) as Json)
+    const work = lines('carol')
+    expect(work).toHaveLength(1)
+    expect(work[0]).toMatchObject({ event: 'policy', decision: 'reject' })
+    expect(JSON.stringify(work[0])).toContain('identity-create')
+    expect(existsSync(join(home, 'state', 'alice', 'audit.jsonl')) ? lines('alice') : []).toEqual([])
+  })
+
+  it("an unbind while identity_relays' question is open: the Yes changes nothing and answers not-bound", async () => {
+    const s = await start([['personal', P.alice]])
+    const w = await bound(s, 'personal')
+    const before = readFileSync(join(home, 'identities.json'), 'utf8')
+    const set = call(w, 'identity_relays', { relays: ['https://relay-one.example.com/'] })
+    const req = await w.next((m) => m.method === 'elicitation/create')
+    expect(await call(w, 'unbind', { name: 'personal' })).toEqual({ unbound: ['personal'], as: null })
+    const handle = ((req.params as Json)._meta as Json)[DIALOG_META]
+    await atPersonPace()
+    w.send({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: { action: 'accept', content: { confirm: true }, _meta: { [DIALOG_META]: handle } },
+    })
+    expect(await set).toMatchObject({ error: 'not-bound', detail: stoppedActing('personal') })
+    expect(stoppedActing('personal')).toBe(
+      'this window stopped acting as personal while your user was asked: nothing was changed',
+    )
+    expect(readFileSync(join(home, 'identities.json'), 'utf8')).toBe(before)
+  })
+
+  it('the unbind tool: bare and named, not-bound for a label not bound here, usage for a bad name, {unbound: []} unbound', async () => {
+    const s = await start([
+      ['personal', P.alice],
+      ['work', P.carol],
+    ])
+    const w = await restored(s, ['personal', P.alice], ['work', P.carol])
+    expect(await call(w, 'unbind', { name: 'Not A Name' })).toEqual({
+      error: 'usage',
+      detail: '"Not A Name" is not an identity name: nothing was unbound',
+      as: null,
+    })
+    expect(await call(w, 'unbind', { name: 'nobody' })).toEqual({
+      error: 'not-bound',
+      detail: 'this window does not act as nobody: nothing was unbound',
+      as: null,
+    })
+    expect(await call(w, 'unbind', { name: 'work' })).toEqual({ unbound: ['work'], as: 'personal' })
+    // Its own result takes no note; the next answer carries it once.
+    const st = await call(w, 'status')
+    expect((st.notice as string[]).filter((l) => l.includes('unbound by'))).toEqual([
+      expect.stringMatching(
+        /^work unbound by an unbind call at \d\d:\d\d UTC: this window still acts as personal$/,
+      ),
+    ])
+    expect(await call(w, 'unbind')).toEqual({ unbound: ['personal'], as: null })
+    expect(await call(w, 'unbind')).toEqual({ unbound: [], as: null })
+    expect(await call(w, 'unbind', { name: 'personal' })).toMatchObject({ error: 'not-bound', as: null })
+    // No dialog was raised by any of it; another window keeps its binding.
+    const other = await bound(s, 'personal')
+    await call(w, 'unbind')
+    expect((await call(other, 'status')).as).toBe('personal')
   })
 })
 
