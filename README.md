@@ -180,12 +180,12 @@ two identities and one sealed message, all on your own machine.
 install script; `npx` runs it without installing anything globally. Name the version and the program every time:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.6 bag "$@"; }
-c --version                       # prints: bag 0.4.6 <the commit it was built from>
+c() { npx --yes --package=@usebag/bag@0.4.7 bag "$@"; }
+c --version                       # prints: bag 0.4.7 <the commit it was built from>
 ```
 
 The package is published from a commit of this repository by a workflow with npm provenance. The install guide runs it
-only from a file whose SHA-256 it has checked: `npm pack @usebag/bag@0.4.6` fetches the file, and its sha256 must be the
+only from a file whose SHA-256 it has checked: `npm pack @usebag/bag@0.4.7` fetches the file, and its sha256 must be the
 one in the release's notes. To run from source instead, see [From source](#from-source).
 
 **2. Get a relay.** The relay is Rust and is not in the package: build it from source (`cargo build --release --locked
@@ -308,7 +308,7 @@ shim of the bag service for every folder; `docs/partner-install.md`, section 5c,
 The package's command line is the bin `bag`; the guides wrap it in a shell function, `c`:
 
 ```sh
-c() { npx --yes --package=@usebag/bag@0.4.6 bag "$@"; }
+c() { npx --yes --package=@usebag/bag@0.4.7 bag "$@"; }
 c help          # prints every command
 ```
 

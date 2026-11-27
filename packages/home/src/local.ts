@@ -220,6 +220,39 @@ export function readWord(home: string): { on: boolean; hidden: string[]; why: st
   }
 }
 
+/**
+ * What a refused word file (it exists, but readWord reads it as off, with why) means for the person, in one line with
+ * the remedy true for its case; null when the file reads or is absent. While it is refused, local delivery is off, a
+ * window acting as an identity sees none of the others (packages/mcp tools.ts identitiesAnswer), and every writer of
+ * the word refuses (setLocalDelivery here, the service's setHidden), so no write drops the hidden list. The bag
+ * service reads this one (packages/mcp/src/local.ts re-exports it).
+ */
+export function wordRefusal(home: string): string | null {
+  const file = wordPath(home)
+  let st: ReturnType<typeof lstatSync>
+  try {
+    st = lstatSync(file)
+  } catch {
+    return null
+  }
+  const keep =
+    'bag keeps local delivery off, and a window acting as an identity sees none of the others, until'
+  // A removed file reads as the default (on, nothing hidden): off first, on a missing file, writes a fresh 0600 file with
+  // nothing reachable, so the identities kept apart are hidden again before delivery is on.
+  const again = 'then turn local delivery off, hide the identities you keep apart again, and turn it on'
+  const mode = (st.mode & 0o777).toString(8).padStart(4, '0')
+  if (st.isSymbolicLink())
+    return `run/local.json is a link, not bag's file: ${keep} it is bag's file again: remove the link ${file}, ${again}`
+  if (!st.isFile())
+    return `run/local.json is not a file (a folder or another kind), not bag's file: ${keep} it is bag's file again: move ${file} to the Trash, ${again}`
+  if (st.uid !== (process.getuid?.() ?? st.uid))
+    return `run/local.json is owned by another user (uid ${st.uid}): ${keep} it is bag's file again: move ${file} to the Trash, ${again}`
+  if (mode !== '0600')
+    return `run/local.json is not private to you (mode ${mode}): ${keep} it is 0600: chmod 600 ${file}, then read \`bag status --home\` (hidden and local pairs) before you rely on it`
+  if (readWord(home).why === null) return null
+  return `run/local.json does not read as bag's file: ${keep} it is bag's file again: move ${file} to the Trash, ${again}`
+}
+
 /** The line keygen prints with the word on. */
 export const visibleLine = (name: string): string =>
   `${name} is visible to your other identities on this machine; to keep it apart: bag local-delivery hide ${name}`
@@ -388,8 +421,8 @@ export function localOnQuestion(home: string, hidden: readonly string[]): string
  * reach: no question. on and show add reach: one yes. hide and show name an identity of the home, by its label or key
  * name, and write its label: any other name is ENOENT before anything is written, so no hidden row is ever written for
  * a non-identity, nor a key name the service would not read as its label. The one exception: show of a name already
- * hidden takes it out (after the same yes), as it adds no reach, so an old stray row can still be cleaned. Warns when
- * the word file read as off; says `hidden <label>: <file>`, `shown <label>: <file>` or `local_delivery <word>: <file>`.
+ * hidden takes it out (after the same yes), as it adds no reach, so an old stray row can still be cleaned. Refuses,
+ * asking and writing nothing, while the word file is refused (wordRefusal); says `hidden <label>: <file>`, `shown <label>: <file>` or `local_delivery <word>: <file>`.
  * With `askEvery` (a window, where no terminal shows that a person typed it) off and hide ask too.
  */
 export async function setLocalDelivery(
@@ -401,6 +434,9 @@ export async function setLocalDelivery(
 ): Promise<void> {
   const named = word === 'hide' || word === 'show'
   const file = wordPath(home)
+  // A refused word file is never written over: a write from its off read would drop the hidden list.
+  const refused = wordRefusal(home)
+  if (refused !== null) throw new HomeError('unsafe-path', `${refused}; nothing was changed`)
   const w = readWord(home)
   const by = labelsByName(home)
   const label = name === undefined ? undefined : (by.get(name) ?? name)
@@ -412,7 +448,6 @@ export async function setLocalDelivery(
         (labels.length === 0 ? 'none, this home has no identity' : labels.join(', ')),
     )
   }
-  if (w.why !== null) io.warn(`local-delivery: ${w.why}, so it reads as off; this writes it whole`)
   const question =
     word === 'on'
       ? localOnQuestion(home, w.hidden)

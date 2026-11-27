@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, wri
 import { join } from 'node:path'
 import { buildEnvelope, newThread } from '@usebag/core'
 import { KeyEpochStore, keepAddressCopy } from '@usebag/edge'
+import { wordRefusal as homeWordRefusal } from '@usebag/home'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { relayUrl } from '../src/config.ts'
 import {
@@ -23,6 +24,7 @@ import {
   spooled,
   stateOf,
   unspool,
+  wordRefusal,
   writeLocalWord,
   writePairs,
 } from '../src/local.ts'
@@ -77,6 +79,14 @@ describe('the home word', () => {
 })
 
 describe('the word file (C1) and hidden (spec/SPEC.md 9.2 item 1)', () => {
+  it("wordRefusal is packages/home's one copy, which names each case with its remedy", () => {
+    expect(wordRefusal).toBe(homeWordRefusal)
+    expect(wordRefusal(home)).toBeNull()
+    word('{"version":2,"local_delivery":"on","hidden":["research"]}', 0o644)
+    expect(wordRefusal(home)).toMatch(/^run\/local.json is not private to you \(mode 0644\)/)
+    expect(localWord(home)).toMatchObject({ on: false, hidden: [] })
+  })
+
   it('reads only a 0600 regular file: another mode or a symlink is off, with why', () => {
     word('{"version":2,"local_delivery":"on"}', 0o644)
     expect(localWord(home)).toMatchObject({ on: false, set: true, why: expect.stringContaining('0600') })

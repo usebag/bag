@@ -1468,3 +1468,154 @@ describe('a window keeps its identity through a restart (restored, from the shim
     })
   }
 })
+
+describe('the typed unbind', () => {
+  const until = async (test: () => boolean, ms = 3000): Promise<void> => {
+    const end = Date.now() + ms
+    while (!test()) {
+      if (Date.now() > end) throw new Error('timed out')
+      await new Promise((r) => setTimeout(r, 5))
+    }
+  }
+  const said = (as: string) => svc.notify('service/bound', { as, address: `ed25519:${as}`, granted: 'typed' })
+  const restores = () =>
+    svc.conns.flatMap((c) => c.got).filter((m) => m.method === 'service/use' && m.params?.via === 'restored')
+  /** A window of host 777 bound to `labels` by the service's word. */
+  const bound = async (...labels: string[]) => {
+    const h = harness(home, { hostPid: 777 })
+    await up(h)
+    for (const l of labels) said(l)
+    await until(() => h.shim.bound.length === labels.length)
+    return h
+  }
+  /** A restart, and the shim up again on the new service (the host told the tools changed). */
+  const restarted = async (h: ReturnType<typeof harness>) => {
+    const before = h.host.filter((m) => m.method === 'notifications/tools/list_changed').length
+    await svc.restart()
+    await until(() => h.host.filter((m) => m.method === 'notifications/tools/list_changed').length > before)
+    await new Promise((r) => setTimeout(r, 30))
+  }
+  const backUp = async (h: ReturnType<typeof harness>) => {
+    const before = h.host.filter((m) => m.method === 'notifications/tools/list_changed').length
+    svc.conns = []
+    await svc.start()
+    await until(() => h.host.filter((m) => m.method === 'notifications/tools/list_changed').length > before)
+    await new Promise((r) => setTimeout(r, 30))
+  }
+
+  it('a typed unbind forgets before it asks: a lost request leaves nothing to restore', async () => {
+    const h = await bound('omp', 'work')
+    svc.unbindLost = true
+    expect(await h.shim.unbind('omp')).toEqual({ code: 'lost' })
+    svc.unbindLost = false
+    await backUp(h)
+    // Only the label the person named is forgotten: work comes back, omp does not.
+    expect(restores().map((m) => m.params?.label)).toEqual(['work'])
+    // A refused request: the window is still bound now, and comes back unbound after a restart (the safe direction).
+    svc.unbindAnswer = () => ({ code: 'draining' })
+    expect(await h.shim.unbind('work')).toEqual({ code: 'draining' })
+    await restarted(h)
+    expect(restores()).toEqual([])
+    h.shim.close()
+  })
+
+  it('a typed unbind while down or restoring empties the memory and answers not-connected; the restore unbinds what it restored', async () => {
+    const h = await bound('omp', 'work')
+    await svc.crash()
+    await until(() => h.shim.phase !== 'up')
+    expect(await h.shim.unbind('omp')).toEqual({ code: 'not-connected' })
+    await backUp(h)
+    // Only the label the person named is forgotten while down: work comes back, omp does not.
+    expect(restores().map((m) => m.params?.label)).toEqual(['work'])
+    // Restoring: held in flight, then a bare unbind; the restore stops and unbinds what it had restored.
+    said('omp')
+    said('work')
+    await until(() => h.shim.bound.length === 2)
+    let open = (): void => {}
+    svc.useGate = new Promise<void>((r) => {
+      open = r
+    })
+    await svc.restart()
+    await until(() => restores().length === 1)
+    const off = h.shim.unbind()
+    open()
+    svc.useGate = null
+    expect(await off).toEqual({ code: 'not-connected' })
+    await until(() => svc.conn.got.some((m) => m.method === 'service/unbind'))
+    // The first kept label (work, kept through the named unbind of omp) was in flight; nothing after it came back.
+    expect(restores().map((m) => m.params?.label)).toEqual(['work'])
+    h.shim.close()
+  })
+
+  /** A restore of [omp, work] whose use for omp is answered and whose use for work is held; then `off` runs. */
+  const midRestore = async (off: (h: ReturnType<typeof harness>) => Promise<unknown>) => {
+    svc.boundOnUse = true
+    const h = await bound('omp', 'work')
+    let open = (): void => {}
+    svc.useGate = new Promise<void>((r) => {
+      open = r
+    })
+    svc.useGateLabel = 'work'
+    await svc.restart()
+    await until(() => restores().length === 2)
+    expect(await off(h)).toEqual({ code: 'not-connected' })
+    open()
+    await until(() => h.shim.phase === 'up')
+    await new Promise((r) => setTimeout(r, 30))
+    svc.useGate = null
+    svc.useGateLabel = null
+    return h
+  }
+
+  it('a named unbind while the restore is past that label: the service unbinds it before the window is up', async () => {
+    const h = await midRestore((w) => w.shim.unbind('omp'))
+    expect(svc.conn.got.filter((m) => m.method === 'service/unbind').map((m) => m.params)).toEqual([
+      { label: 'omp' },
+    ])
+    expect(h.shim.bound).toEqual(['work'])
+    await restarted(h)
+    expect(restores().map((m) => m.params?.label)).toEqual(['work'])
+    h.shim.close()
+  })
+
+  it('a bare unbind while the restore is past a label: every restored label is unbound before the window is up', async () => {
+    const h = await midRestore((w) => w.shim.unbind())
+    expect(svc.conn.got.filter((m) => m.method === 'service/unbind').map((m) => m.params)).toEqual([{}])
+    await restarted(h)
+    expect(restores()).toEqual([])
+    h.shim.close()
+  })
+
+  it('a named unbind of a label kept but not bound back yet (its restore answered draining) counts it as unbound', async () => {
+    const h = await bound('omp')
+    const bind = svc.useAnswer
+    svc.useAnswer = (p) => (p.via === 'restored' ? { code: 'draining' } : bind(p))
+    await restarted(h)
+    expect(restores().map((m) => m.params?.label)).toEqual(['omp'])
+    expect(h.shim.bound).toEqual([])
+    svc.unbindAnswer = () => ({ unbound: [] })
+    expect(await h.shim.unbind('omp')).toEqual({ unbound: ['omp'], as: [] })
+    await restarted(h)
+    expect(restores()).toEqual([])
+    h.shim.close()
+  })
+
+  it("a typed unbind answers what went and what stays, from the service's answer and notices", async () => {
+    const h = await bound('omp', 'work')
+    expect(await h.shim.unbind('omp')).toEqual({ unbound: ['omp'], as: ['work'] })
+    expect((await svc.next((m) => m.method === 'service/unbind')).params).toEqual({ label: 'omp' })
+    expect(svc.conn.got.map((m) => m.method)).toContain('service/typed')
+    svc.unbindAnswer = () => ({ unbound: [] }) // omp is no longer bound here
+    expect(await h.shim.unbind('omp')).toEqual({ unbound: [], as: ['work'] })
+    svc.unbindAnswer = () => ({ unbound: ['work'] })
+    expect(await h.shim.unbind()).toEqual({ unbound: ['work'], as: [] })
+    svc.unbindAnswer = () => ({ code: 'usage' })
+    expect(await h.shim.unbind('x')).toEqual({ code: 'usage' })
+    svc.unbindAnswer = () => ({ nothing: true })
+    expect(await h.shim.unbind()).toEqual({ code: 'bad-answer' })
+    // Nothing that was unbound comes back after a restart.
+    await restarted(h)
+    expect(restores()).toEqual([])
+    h.shim.close()
+  })
+})

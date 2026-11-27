@@ -426,6 +426,48 @@ export function typedName(prompt: string): string | null {
   return name !== undefined && /^[a-z0-9]/.test(name) ? name : null
 }
 
+/** The unbind word as the shim takes it (channel.ts UNBIND_WORD): the whole prompt, the name optional; else null. */
+export function unbindWord(prompt: string): { name?: string } | null {
+  const m = /^\s*unbind(?:\s+([a-z0-9][a-z0-9._-]{0,63}))?\s*$/i.exec(prompt)
+  if (m === null) return null
+  const name = m[1]
+  return name === undefined ? {} : /^[a-z0-9]/.test(name) ? { name } : null
+}
+
+const labelsOf = (v: unknown): string[] =>
+  (Array.isArray(v) ? v : typeof v === 'string' ? [v] : []).filter((l): l is string => typeof l === 'string')
+
+/**
+ * The line a typed unbind shows, from the shim's answer: {unbound, as} or {code}. The name is checked here first, so
+ * usage means a shim of 0.4.6, which knows no unbind request: the line says to restart omp. `ok`: something unbound.
+ */
+export function unbindSaid(
+  name: string | undefined,
+  a: Record<string, unknown>,
+): { said: string; ok: boolean } {
+  const gone = labelsOf(a.unbound)
+  const left = labelsOf(a.as)
+  if (Array.isArray(a.unbound) && gone.length > 0) {
+    const said =
+      left.length > 0
+        ? `bag: this session no longer acts as ${gone.join(', ')}; it still acts as ${left.join(', ')}.`
+        : `bag: this session now acts as no identity (it acted as ${gone.join(', ')}).`
+    return { said, ok: true }
+  }
+  const code = Array.isArray(a.unbound) ? 'not-bound' : typeof a.code === 'string' ? a.code : 'bad-answer'
+  const said =
+    code === 'not-bound'
+      ? name === undefined
+        ? 'bag: this session acts as no identity: nothing to unbind.'
+        : `bag: this session does not act as ${name}: nothing was unbound.`
+      : code === 'not-connected' || code === 'lost'
+        ? `bag: the bag service is not reachable (${code}); this session ${name === undefined ? 'acts as no identity' : `no longer acts as ${name}`} once it is back.`
+        : code === 'usage'
+          ? "bag: this window's bag helper is older than bag's omp extension: restart omp; nothing was unbound."
+          : `bag: unbind was refused (${code}); nothing was unbound.`
+  return { said, ok: false }
+}
+
 /**
  * The home of the shim entry (args naming bag-shim.js) omp runs, else null. The user-level mcp.json wins: a project's
  * .omp/mcp.json (a cloned repository's, or one the session's own model wrote) never points the extension at another
@@ -1010,8 +1052,21 @@ export default function bagWake(pi: Pi): void {
     ctx?.ui?.setStatus(WAKE_STATUS, undefined)
     const home = ctx === undefined ? null : (shimHomeOf(ctx.cwd) ?? targetOf(ctx.cwd)?.home ?? null)
     const ch = home === null ? null : channelOf(home)
-    if (ch === null) return undefined
-    const name = typedName(typeof e.text === 'string' ? e.text : '')
+    if (home === null || ch === null) return undefined
+    const text = typeof e.text === 'string' ? e.text : ''
+    const off = unbindWord(text)
+    if (off !== null) {
+      return askShim(ch, { kind: 'unbind', ...off }).then((a) => {
+        if (a === null) {
+          warn('unbind')
+          return undefined
+        }
+        const { said, ok } = unbindSaid(off.name, a)
+        ctx.ui?.notify?.(said, ok ? 'info' : 'warning')
+        return { handled: true }
+      })
+    }
+    const name = typedName(text)
     if (name === null) {
       // Not awaited: the service learns the speaking window, and the prompt never waits for it.
       void askShim(ch, { kind: 'typed' }).then((a) => {
@@ -1019,14 +1074,25 @@ export default function bagWake(pi: Pi): void {
       })
       return undefined
     }
+    // Read before the post and again after the answer: only a label bound before and gone after was replaced (a
+    // service that still adds keeps it, and the line must not say it went).
+    const before = (boundIn(home) ?? []).filter((l) => l !== name)
     return askShim(ch, { kind: 'use', name }).then((a) => {
       if (a === null) {
         warn('use')
         return undefined
       }
       if (a.bound === false && a.code === 'unknown-identity') return undefined
+      const after = a.bound === true ? boundIn(home) : null
+      const gone = after === null ? [] : before.filter((l) => !after.includes(l))
+      const kept = after === null ? [] : before.filter((l) => after.includes(l))
+      const tail =
+        (gone.length > 0 ? `, in place of ${gone.join(', ')}` : '') +
+        (kept.length > 0 ? `; it still acts as ${kept.join(', ')}` : '')
       const said =
-        a.bound === true ? `bag: this session now acts as ${name}` : `bag: use ${name}: ${String(a.code)}`
+        a.bound !== true
+          ? `bag: use ${name}: ${String(a.code)}`
+          : `bag: this session now acts as ${name}${tail}.`
       ctx.ui?.notify?.(said, a.bound === true ? 'info' : 'warning')
       return { handled: true }
     })

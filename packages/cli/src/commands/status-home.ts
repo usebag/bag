@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { custodyClass } from '@usebag/edge'
-import { cardAnswerers, removedRefusal, removedRefused } from '@usebag/home'
+import { cardAnswerers, removedRefusal, removedRefused, wordRefusal } from '@usebag/home'
 import { flag, parse, str, UsageError } from '../args.ts'
 import { homeDir } from '../home.ts'
 import { type Identities, keyOf, LABEL, readIdentities } from '../identities.ts'
@@ -28,8 +28,11 @@ export interface HomeIdentity {
   readonly key: string
   readonly custody: string
   readonly served: boolean
-  /** Kept apart from the home's other identities (local-delivery hide): its label is in the word's hidden list. */
-  readonly hidden: boolean
+  /**
+   * Kept apart from the home's other identities (local-delivery hide): its label is in the word's hidden list; null,
+   * unknown, while run/local.json is refused (its list cannot be read).
+   */
+  readonly hidden: boolean | null
   readonly open: boolean
   readonly spooled: number
   readonly relays: readonly string[]
@@ -43,6 +46,8 @@ export interface HomeStatus {
   readonly identities_file: string
   readonly service: ServiceHello
   readonly local_delivery: 'on' | 'off'
+  /** Present only while run/local.json is there but refused: why, and the fix (home local.ts wordRefusal). */
+  readonly local_word_refused?: string
   readonly identities: readonly HomeIdentity[]
   readonly local_pairs: readonly { readonly a: string; readonly b: string }[]
   readonly windows: readonly BoundWindow[]
@@ -97,7 +102,7 @@ export async function readHome(home: string, alive?: (pid: number) => boolean): 
       key,
       custody: custodyOf(home, key),
       served: v.served,
-      hidden: word.hidden.includes(v.label),
+      hidden: word.why === null ? word.hidden.includes(v.label) : null,
       open: bound.has(v.label),
       spooled: spooledCount(home, key),
       relays: [...v.relays],
@@ -117,6 +122,7 @@ export async function readHome(home: string, alive?: (pid: number) => boolean): 
     identities_file,
     service: await serviceHello(home),
     local_delivery: word.on ? 'on' : 'off',
+    ...(word.why === null ? {} : { local_word_refused: wordRefusal(home) ?? word.why }),
     identities,
     local_pairs,
     windows,
@@ -139,9 +145,10 @@ export function homeLines(s: HomeStatus): string[] {
     `identities_file ${s.identities_file}`,
     service,
     `local_delivery ${s.local_delivery}`,
+    ...(s.local_word_refused === undefined ? [] : [`local_word refused: ${s.local_word_refused}`]),
     ...s.identities.map(
       (i) =>
-        `identity ${i.label} key ${i.key} custody ${i.custody} served ${yes(i.served)} hidden ${yes(i.hidden)} open ${yes(i.open)} spooled ${i.spooled}${
+        `identity ${i.label} key ${i.key} custody ${i.custody} served ${yes(i.served)} hidden ${i.hidden === null ? 'unknown (run/local.json refused)' : yes(i.hidden)} open ${yes(i.open)} spooled ${i.spooled}${
           // a served entry with relays [] is local-only; an unserved key file names no relays either way
           i.served && i.relays.length === 0 ? ' relays none (this machine only)' : ''
         }`,

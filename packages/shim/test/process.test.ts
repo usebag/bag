@@ -225,7 +225,10 @@ describe('bag-shim between a host and the service', () => {
     expect(statSync(index).mode & 0o777).toBe(0o600)
     expect(statSync(join(home, 'run', 'shim')).mode & 0o777).toBe(0o700)
 
-    const bound = await runHook(home, JSON.stringify({ prompt: 'use omp-3', session_id: 's' }))
+    const bound = await runHook(
+      home,
+      JSON.stringify({ prompt: 'use omp-3', session_id: 's', source: 'user' }),
+    )
     expect(bound.code).toBe(0)
     expect(JSON.parse(bound.out)).toEqual({
       decision: 'block',
@@ -236,18 +239,88 @@ describe('bag-shim between a host and the service', () => {
       via: 'typed',
     })
 
-    expect(await runHook(home, JSON.stringify({ prompt: 'please use omp-3' }))).toEqual({ code: 0, out: '' })
+    expect(await runHook(home, JSON.stringify({ prompt: 'please use omp-3', source: 'user' }))).toEqual({
+      code: 0,
+      out: '',
+    })
     expect(await runHook(home, 'not json')).toEqual({ code: 0, out: '' })
     svc.useAnswer = () => ({ code: 'unknown-identity' })
-    expect(await runHook(home, JSON.stringify({ prompt: 'use pandas' }))).toEqual({ code: 0, out: '' })
+    expect(await runHook(home, JSON.stringify({ prompt: 'use pandas', source: 'user' }))).toEqual({
+      code: 0,
+      out: '',
+    })
     svc.useAnswer = () => ({ code: 'busy' })
-    const busy = await runHook(home, JSON.stringify({ prompt: 'USE omp' }))
+    const busy = await runHook(home, JSON.stringify({ prompt: 'USE omp', source: 'user' }))
     expect(JSON.parse(busy.out).reason).toBe('bag: this session was not bound to omp (busy).')
 
     host.child.stdin.end()
     expect(await host.exited).toBe(0)
     expect(readdirSync(join(home, 'run', 'shim'))).toEqual([])
-    expect(await runHook(home, JSON.stringify({ prompt: 'use omp' }))).toEqual({ code: 0, out: '' })
+    expect(await runHook(home, JSON.stringify({ prompt: 'use omp', source: 'user' }))).toEqual({
+      code: 0,
+      out: '',
+    })
+  })
+
+  it('an unproven `use` (no source, as Claude Code sends, or a non-user one) binds nothing: the service never hears it', async () => {
+    host = new FakeHost(home, { CLAUDECODE: '1' }, ['--input-hook'])
+    await host.initialize()
+    const sources = ['schedule_wakeup', 'loop_wakeup', 'poll_event', 'sdk', 'system', undefined, 'later']
+    for (const source of sources) {
+      const r = await runHook(home, JSON.stringify({ prompt: 'use omp-3', source }))
+      expect(r.code).toBe(0)
+      expect(JSON.parse(r.out)).toMatchObject({
+        systemMessage: "bag: answer bag's question to act as omp-3",
+        hookSpecificOutput: { hookEventName: 'UserPromptSubmit' },
+      })
+    }
+    // A plain prompt with no source still marks the speaking window (service/typed), as before.
+    expect(await runHook(home, JSON.stringify({ prompt: 'hello' }))).toEqual({ code: 0, out: '' })
+    await svc.next((m) => m.method === 'service/typed')
+    const uses = () => svc.conn.got.filter((m) => m.method === 'service/use')
+    expect(uses()).toEqual([])
+    // The same window, its typing proven (source "user"): the instant bind.
+    expect(
+      JSON.parse((await runHook(home, JSON.stringify({ prompt: 'use omp-3', source: 'user' }))).out),
+    ).toEqual({
+      decision: 'block',
+      reason: 'bag: this session now acts as omp-3.',
+    })
+    expect(uses()).toHaveLength(1)
+    host.child.stdin.end()
+    expect(await host.exited).toBe(0)
+  })
+
+  it('the hook carries unbind to its own shim and blocks the prompt with the line; the model never sees it', async () => {
+    host = new FakeHost(home, { CLAUDECODE: '1' }, ['--input-hook'])
+    await host.initialize()
+    const typed = JSON.stringify({ prompt: 'use omp-3', source: 'user' })
+    expect(JSON.parse((await runHook(home, typed)).out).reason).toBe('bag: this session now acts as omp-3.')
+    const r = await runHook(home, JSON.stringify({ prompt: 'unbind omp-3', source: 'user' }))
+    expect(r.code).toBe(0)
+    expect(JSON.parse(r.out)).toEqual({
+      decision: 'block',
+      reason: 'bag: this session now acts as no identity (it acted as omp-3).',
+    })
+    expect((await svc.next((m) => m.method === 'service/unbind')).params).toEqual({ label: 'omp-3' })
+    host.child.stdin.end()
+    expect(await host.exited).toBe(0)
+  })
+
+  it('an unproven prompt unbind (no source) still unbinds and blocks with the line; an unproven use still posts nothing', async () => {
+    host = new FakeHost(home, { CLAUDECODE: '1' }, ['--input-hook'])
+    await host.initialize()
+    svc.unbindAnswer = () => ({ unbound: [] })
+    expect(JSON.parse((await runHook(home, JSON.stringify({ prompt: 'unbind' }))).out)).toEqual({
+      decision: 'block',
+      reason: 'bag: this session acts as no identity: nothing to unbind.',
+    })
+    expect((await svc.next((m) => m.method === 'service/unbind')).params).toEqual({})
+    const use = JSON.parse((await runHook(home, JSON.stringify({ prompt: 'use omp-3' }))).out)
+    expect(use.decision).toBeUndefined()
+    expect(svc.conn.got.filter((m) => m.method === 'service/use')).toEqual([])
+    host.child.stdin.end()
+    expect(await host.exited).toBe(0)
   })
 
   it("a killed shim's leftover .bound file is never a reason to restore: a new shim of the same host pid asks nothing back", async () => {
@@ -256,7 +329,9 @@ describe('bag-shim between a host and the service', () => {
     await host.initialize()
     const killed = host.child.pid
     expect(
-      JSON.parse((await runHook(home, JSON.stringify({ prompt: 'use omp', session_id: 's' }))).out),
+      JSON.parse(
+        (await runHook(home, JSON.stringify({ prompt: 'use omp', session_id: 's', source: 'user' }))).out,
+      ),
     ).toEqual({
       decision: 'block',
       reason: 'bag: this session now acts as omp.',

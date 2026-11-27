@@ -56,8 +56,16 @@ export class FakeService {
   useRaw: Record<string, unknown> | null = null
   /** While set, every service/use waits for it before it answers (a restore held in flight). */
   useGate: Promise<void> | null = null
+  /** When set, only a service/use for this label waits for useGate. */
+  useGateLabel: string | null = null
   /** As the real service: a service/bound notice before each bind's answer (granted the via it came by). */
   boundOnUse = false
+  /** Answers to service/unbind: {unbound} (each label first notified service/unbound, as the real one) or {code}. */
+  unbindAnswer: (params: Record<string, unknown>) => Record<string, unknown> = (p) => ({
+    unbound: typeof p.label === 'string' ? [p.label] : [],
+  })
+  /** When set, a service/unbind is never answered: the service crashes on it (the request lost). */
+  unbindLost = false
   #waiters: { test: (m: Message, c: FakeConn) => boolean; resolve: (m: Message) => void }[] = []
   #seq = 0
 
@@ -222,7 +230,8 @@ export class FakeService {
       return
     }
     if (m.method === 'service/use') {
-      if (this.useGate !== null) await this.useGate
+      if (this.useGate !== null && (this.useGateLabel === null || m.params?.label === this.useGateLabel))
+        await this.useGate
       if (this.useRaw !== null) {
         c.send({ jsonrpc: '2.0', id, ...this.useRaw } as never)
         return
@@ -244,6 +253,22 @@ export class FakeService {
           })
         c.send({ jsonrpc: '2.0', id, result: a })
       }
+      return
+    }
+    if (m.method === 'service/unbind') {
+      if (this.unbindLost) return void (await this.crash())
+      const a = this.unbindAnswer(m.params ?? {})
+      if (typeof a.code === 'string') {
+        c.send({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32000, message: `${a.code}: no`, data: { code: a.code } },
+        })
+        return
+      }
+      for (const as of Array.isArray(a.unbound) ? (a.unbound as string[]) : [])
+        c.send({ jsonrpc: '2.0', method: 'service/unbound', params: { as } })
+      c.send({ jsonrpc: '2.0', id, result: a })
       return
     }
     if (m.method === 'tools/list') {

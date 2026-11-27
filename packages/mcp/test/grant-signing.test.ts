@@ -181,12 +181,20 @@ describe("an agent binding's acts sign with its connection's grant", () => {
     expect([ec.from, ec.auth]).toEqual([P.alice.address, []])
   })
 
-  it("past its exp a window's act says how to rebind, never a bare hop-expired", async () => {
+  it("past its exp a window's act says how to rebind, never a bare hop-expired; binding it again there works", async () => {
     const a = await window('research')
     await a.send()
     clock.t += 3601
     const r = await a.call('send', { to: [P.bob.address], type: 'chat.v1', body: 'hi' })
     expect(r).toMatchObject({ error: 'hop-expired', as: 'research' })
-    expect(String(r.detail)).toContain('binds the window again (unbind it, then type use research')
+    expect(String(r.detail)).toContain(
+      'your user binds this window to research again (types use research in this host or answers the bind dialog) or opens a new window, which asks the agent for a new grant',
+    )
+    expect(String(r.detail)).not.toContain('unbind')
+    // What it says works: the person's use research again in the same window asks a new grant, and the act signs.
+    table.bindByWord(a.conn, 'research')
+    expect(grants).toHaveLength(2)
+    const e = await a.send()
+    expect(e.from).toBe(grants[1])
   })
 })

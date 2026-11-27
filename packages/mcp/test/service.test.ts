@@ -1714,7 +1714,7 @@ describe('the wiring: the binding table, mail hooks and the identities file in t
       host_wire: { host: 'claude-code', folder: '/nowhere/else' },
       service: {},
     }
-    const names = tools.map((t) => t.name).filter((t) => t !== 'use')
+    const names = tools.map((t) => t.name).filter((t) => t !== 'use' && t !== 'unbind')
     expect(names).toHaveLength(28)
     const ids = await call(l, 'identities')
     expect(ids).toEqual({
@@ -2449,8 +2449,8 @@ describe('an empty home: the service starts with no identity and serves only the
     const l = await hello(s, { input_hook: true, client_capabilities: {} })
     const tools = ((await l.request('tools/list')).result as { tools: { name: string }[] }).tools
     const names = tools.map((t) => t.name).sort()
-    // The full list: every tool but delegate (no identity allows it), and use.
-    expect(names).toEqual([...TOOL_NAMES.filter((t) => t !== 'delegate'), 'use'].sort())
+    // The full list: every tool but delegate (no identity allows it), and use and unbind.
+    expect(names).toEqual([...TOOL_NAMES.filter((t) => t !== 'delegate'), 'use', 'unbind'].sort())
     const ARGS: Record<string, Json> = {
       send: { to: [P.bob.address], type: 'chat.v1', body: 'hi' },
       wait: { timeout_s: 0 },
@@ -2486,6 +2486,7 @@ describe('an empty home: the service starts with no identity and serves only the
     expect(of.get('status')).toEqual({ bound: false, note: NOT_BOUND, as: null })
     expect(of.get('identities')).toMatchObject({ identities: [] })
     expect(of.get('use')).toMatchObject({ error: 'no-elicitation' })
+    expect(of.get('unbind')).toEqual({ unbound: [], as: null })
     expect(of.get('identity_create')).toMatchObject({ error: 'no-elicitation' })
     expect(of.get('telemetry')).toMatchObject({ error: 'usage' })
     expect(of.get('host_wire')).toMatchObject({ error: 'usage' })
@@ -2825,6 +2826,97 @@ describe('a window keeps its identity through a restart (via restored)', () => {
     ).toMatchObject({ bound: true, as: 'research' })
     expect((await call(win, 'status')).as).toBe('research')
     expect((await call(third, 'status')).as).toBe('research')
+  })
+})
+
+// An unbind the window or the agent's tool asked (design 2026-11-26, section 4.4): its audit lines, from the table's
+// onEnd; a close writes none. And a tool unbind's note in a window still bound, on its next identity tool's result.
+describe('an unbind is audited per identity; a close is not', () => {
+  const unbinds = (): Json[] => log.lines.filter((x) => x.event === 'unbind').map((x) => x.fields as Json)
+  const audit = (): string => readFileSync(join(home, 'state', 'alice', 'audit.jsonl'), 'utf8')
+
+  it("an unbind writes one service-log line and one policy line in the identity's log per label; a close writes none", async () => {
+    const s = await start([['personal', P.alice]])
+    const a = await bound(s)
+    // The unit is open (its first act), so the identity's own log gets the line.
+    expect((await call(a, 'status')).as).toBe('personal')
+    const conn = lastConn(s)
+    expect((await a.request('service/unbind', {})).result).toEqual({ unbound: ['personal'] })
+    expect(unbinds()).toEqual([
+      { label: 'personal', host: 'claude-code', connection: conn.handle, via: 'window' },
+    ])
+    const lines = audit()
+      .split('\n')
+      .filter((l) => l.includes('ended by unbind'))
+    expect(lines).toHaveLength(1)
+    const line = JSON.parse(lines[0] as string) as Json
+    expect([line.event, line.decision, line.connection, JSON.parse(String(line.detail))]).toEqual([
+      'policy',
+      'route',
+      conn.handle,
+      { local: "a window's binding of personal ended by unbind", host: 'claude-code', via: 'window' },
+    ])
+    // The agent's tool (lane 2 calls the table so): via tool.
+    const b = await bound(s)
+    const other = lastConn(s)
+    expect(s.table.unbind(other, 'personal', 'tool')).toEqual(['personal'])
+    expect(unbinds().map((f) => [f.connection, f.via])).toEqual([
+      [conn.handle, 'window'],
+      [other.handle, 'tool'],
+    ])
+    // A close, and an unbind that ends nothing, write nothing.
+    const c = await bound(s)
+    expect((await b.request('service/unbind', { label: 'personal' })).result).toEqual({ unbound: [] })
+    c.socket.destroy()
+    await c.closed
+    await until(() => s.connections.size === 2)
+    expect(unbinds()).toHaveLength(2)
+    expect(audit().split('ended by unbind').length - 1).toBe(2)
+  })
+
+  it("a switch is named in both logs: ended by a bind of work in its place, never as the person's unbind", async () => {
+    const s = await start([
+      ['personal', P.alice],
+      ['work', P.carol],
+    ])
+    const a = await bound(s)
+    expect((await call(a, 'status')).as).toBe('personal')
+    const conn = lastConn(s)
+    expect((await a.request('service/use', { label: 'work', via: 'typed' })).result).toMatchObject({
+      as: 'work',
+    })
+    expect(unbinds()).toEqual([
+      { label: 'personal', host: 'claude-code', connection: conn.handle, via: 'window', in_place: 'work' },
+    ])
+    expect(audit()).toContain("a window's binding of personal ended by a bind of work in its place")
+    expect(audit()).not.toContain("a window's binding of personal ended by unbind")
+  })
+
+  it('after a tool unbind the next answer carries the notice once: on an identity tool of a window still bound', async () => {
+    const s = await start([
+      ['personal', P.alice],
+      ['research', P.carol],
+    ])
+    const w = await hello(s, { input_hook: true })
+    for (const [label, p] of [
+      ['personal', P.alice],
+      ['research', P.carol],
+    ] as const)
+      expect(
+        (await w.request('service/use', { label, via: 'restored', address: p.keys.signing.address })).result,
+      ).toMatchObject({ granted: 'restored' })
+    const conn = lastConn(s)
+    expect(s.table.unbind(conn, 'research', 'tool')).toEqual(['research'])
+    const first = await call(w, 'status')
+    expect(first.as).toBe('personal')
+    const said = (first.notice as string[]).filter((l) => l.includes('unbound by'))
+    expect(said).toEqual([
+      expect.stringMatching(
+        /^research unbound by an unbind call at \d\d:\d\d UTC: this window still acts as personal$/,
+      ),
+    ])
+    const again = await call(w, 'status')
+    expect(JSON.stringify(again.notice ?? [])).not.toContain('unbound by')
   })
 })
 

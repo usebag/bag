@@ -64,25 +64,75 @@ message:
 use omp-3
 ```
 
-with the name of one of your identities. On Claude Code and omp, bag's hook reads your typed word before the model sees
-it, so the model cannot type it for you. On Codex, and on any host where the word cannot be read that way, bag shows a
-dialog instead, the same on every host: "Act as omp-3 in this window? Its tools then act as omp-3 until it closes.
-No: not asked again in this window for 5 minutes; typing use omp-3 binds it at any time.", with one box, "Yes, act as
-omp-3": only a ticked Yes gives the window the identity. Asked with no name, the dialog is
-"Which bag identity should this window act as?", with the identity a folder offers first already chosen. A window that cannot show a
-dialog cannot take an identity. In Claude Code's VS Code extension and in Claude Desktop, the dialog is Claude Code's own
+with the name of one of your identities. Typing `use` and its name binds at once in omp, and in Claude Code with bag's
+plugin on; where the plugin is off, Claude Code asks for your Yes first. bag's hook reads the word before the model
+sees it, so the model cannot type it for you. In omp the host says which messages you typed; in Claude Code bag's
+plugin (the question card's, below) does, so a `use` that a schedule, a script or another session submits never binds
+by itself. Without the plugin bag cannot tell your typing from such a message, so `use` brings bag's question (below),
+and only your Yes binds. Two limits: another plugin loaded above bag's is installed code and is trusted like bag's
+own, and an agent you have given control of your desktop types as you. On Codex, and on any host where the word cannot
+be read that way, bag shows a dialog instead, the same on every host: "Act as omp-3 in this window? Its tools then act
+as omp-3 until it closes. No: not asked again in this window for 5 minutes; typing use omp-3 binds it at any time. Say
+Yes only if you asked for this." (the clause about typing in omp only; the last sentence, which also ends the question
+with no name, on every host but omp: on those, a message you did not type could have led the agent to ask), with one
+box, "Yes, act as omp-3": only a ticked Yes gives the window the
+identity. Asked with no name, the dialog is "Which bag identity should this window act as?", with the identity a folder
+offers first already chosen. In a window that already acts as an identity, the question names it: "Act as work in this
+window, in place of omp-3?", or "Which bag identity should this window act as, in place of omp-3?". A window that
+cannot show a dialog cannot take an identity. In Claude Code's VS Code extension and in Claude Desktop, the dialog is Claude Code's own
 question card ([below](#bags-questions-in-claude-codes-question-card)).
 
-The window then speaks as that identity until it closes, through restarts of the service: every tool answer says which
-identity it acted as (`as`). To switch, bind it to another name: by typing `use` and its name in Claude Code or omp,
-elsewhere by asking the agent to use it and saying Yes in the bind dialog. The identity a window had last time in a
-folder may be offered first, but it is never taken without your word, and nothing in a folder can choose for you: bag
-keeps no file in your project folders.
+The window then speaks as that identity, through restarts of the service, until you unbind it or the window closes:
+every tool answer says which identity it acted as (`as`). Giving it another replaces the first: the window then acts
+as the new one alone. In omp, and in Claude Code with bag's plugin on, typing `use` and its name replaces at once (omp
+says so: "bag: this session now acts as work, in place of omp-3."); in Claude Code with the plugin off, typing it
+brings bag's question, which says "in place of" the first, and only your Yes replaces it; elsewhere you ask the agent to
+use it and say Yes in the bind dialog. The identity a window had last time in a folder may be offered first, but it is never taken
+without your word, and nothing in a folder can choose for you: bag keeps no file in your project folders.
 
-A message from a peer can never give a window an identity. A model that tries to switch on a message's say-so is
+A message from a peer can never give a window an identity. A model that tries to take one on a message's say-so is
 refused unless you type the word or answer Yes.
 
-There is no word that takes an identity back from a window: closing the window ends every identity it uses.
+To take an identity back from a window, type `unbind` as the whole message in Claude Code or omp (`unbind` and a name
+ends that one only, in a window that acts as several); on any other host, ask the agent to unbind, which it does with
+its unbind tool. It asks nothing, since it only takes authority away, so in Claude Code it acts even on a message you
+did not type: at worst a window loses its identity, and you bind it again. The window then acts as no identity, as a new
+window does, and a restart of the bag service does not bring the identity back. Typed, the word does not reach the model
+while bag's helper runs in the window, and the window shows what happened: "bag: this session now acts as no identity
+(it acted as omp-3).", with another left "bag: this session no longer acts as omp-3; it still acts as work.", and with
+nothing to take back "bag: this session acts as no identity: nothing to unbind." (for a name, "bag: this session does
+not act as work: nothing was unbound."). While the bag service cannot be reached, the line says so, and the identity
+does not come back when the service does. After the agent's unbind, the window's next answer says so once: "omp-3
+unbound by an unbind call at 16:58 UTC: this window acts as no identity now". A window unbound three times within ten
+minutes says that too, with the likely cause: a scheduled prompt or a message may be doing it, and you can list the
+session's scheduled tasks. Other windows that act as the same identity keep it, and its mail keeps arriving. Closing the
+window ends every identity it uses too.
+
+A window that acts as an identity whose key is in your home or your Keychain can make a new identity and propose one
+for its folder. You are still asked, as from any window, and the question's last line names the window: "Asked from a
+window used as omp-3", every identity it acts as and every one it acted as before an unbind. After a restart of the
+bag service, that line names only the identities the window still acts as, no longer one it was unbound from before
+the restart. The new identity is not bound to the window that made it. A window of an agent or an organisation's grant
+cannot; the login agent is written only from a window that acts as no identity.
+
+A window that acts as an identity sees that identity's address in full, and your other identities by name, each with a
+short address (`ed25519:` and its first 8 and last 4 hex digits, which is no address), as a window that acts as no
+identity sees them all. The full addresses of the others are shown only after your Yes to "Show the full addresses of
+this machine's identities to this window?" in that window, until it closes. An identity you keep apart (`bag
+local-delivery hide`) is not shown at all to a window that acts as another identity: not its name, its address or that
+it exists; and a window that acts as it is shown only itself. A window that acts as no identity yet still lists every
+identity, one kept apart too, by name with its short address; a window that acts as none after an unbind is not shown
+one kept apart that it was not used as, until a restart of the bag service: after it, that window lists every
+identity again, one kept apart too.
+
+Which identities you keep apart is written in your home's `run/local.json`, a file only you may read and write (mode
+0600). If it is not (another mode, a link, or a file that does not read), bag cannot trust which ones are apart, so it
+keeps local delivery off, shows each window that acts as an identity only that identity, and refuses to write the file
+(`bag local-delivery`, a window's hide or show), until you fix it. `status` in a window and `bag status --home` say why
+and the fix for its case: for a mode, `chmod 600` and then a look at `bag status --home` before you rely on it; for a
+link, a file of another user or one that does not read, remove it, then turn local delivery off (`bag local-delivery
+off`), hide the identities you keep apart again and turn it on: with the file gone, local delivery is on and nothing is
+hidden, so off comes first.
 
 ## Pairing in a window
 
@@ -112,9 +162,11 @@ through a small plugin of bag's.
 
 **Getting the card.** `bag host install claude-code --user` stages bag's plugin, named `bag`, in
 `<home>/package/claude-code/` and turns it on in Claude Code's user settings; `bag host remove claude-code --user` takes
-it out. Reload each Claude Code window once after the install (start a new session, or run `/reload-plugins`). The
-plugin acts only in the VS Code extension and in Claude Desktop, and only on bag's questions; in a terminal it passes
-each question on untouched, and Claude Code shows its own form.
+it out. The update page runs it again for a Claude Code wired that way, and a card you switched off stays off.
+Reload each Claude Code window once after the install or the update (start a new session, or run `/reload-plugins`).
+The card acts only in the VS Code extension and in Claude Desktop, and only on bag's questions; in a terminal it
+passes each question on untouched, and Claude Code shows its own form. In every Claude Code window the plugin also tells
+bag which messages you typed, so that a typed `use` binds at once (above).
 
 **Reading a card.**
 
@@ -124,7 +176,7 @@ each question on untouched, and Claude Code shows its own form.
   "Ask me later", then "Cancel". A card answered by habit, or in its first place, grants nothing.
 - **No** (and "Cancel" on a question that asks you to type) is your No, as in any dialog: the act is refused. A No to
   "Act as omp-3 in this window?" stops the agent asking for omp-3 in that window for five minutes (typing `use omp-3`
-  still binds at once); a No to an Allow between two of your own identities holds for 24 hours, and the mail that
+  still binds at once, in omp and with bag's plugin on); a No to an Allow between two of your own identities holds for 24 hours, and the mail that
   waited on it goes back to its sender as declined.
 - **Not now**, "Ask me later" and closing the card are no answer: nothing is written, granted or refused, and the
   question can come again later. In Claude Desktop, Skip is no answer too. A card that closes faster than a person could

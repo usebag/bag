@@ -40,6 +40,7 @@ import {
   serveBindings,
   serviceMethods,
   sweepGone,
+  type UnbindVia,
 } from './binding.ts'
 import { ChainKeeper, runShell } from './chain.ts'
 import { type Config, ConfigError, type ServerConfig } from './config.ts'
@@ -64,6 +65,7 @@ import {
   spooled,
   stateOf,
   unspool,
+  wordRefusal,
   writeLocalWord,
   writePairs,
 } from './local.ts'
@@ -487,6 +489,8 @@ export class Service implements ServiceHome {
   readonly local: LocalHome = this.#localHome()
   /** The home word as the service last read it (C1), and the changes it noticed since its start, numbered. */
   #word: LocalWord | null = null
+  /** Why the word file was refused at the last read (null: it read, or is absent): told once per refusal. */
+  #wordWhy: string | null = null
   /** Changes told once to each window (C1): for `label` only when set; `about`, the identities a line names. */
   readonly #changes: {
     readonly what: string
@@ -649,6 +653,10 @@ export class Service implements ServiceHome {
     this.setEndFor((conn) => {
       this.table.unbind(conn)
       this.#dropGone()
+    })
+    // An unbind asked (the window's or the agent's tool) is audited per identity; a close writes nothing.
+    this.table.onEnd((label, conn, via, by) => {
+      if (via !== undefined) this.#unbindLine(label, conn as Connection, via, by)
     })
     this.setHolders((label) =>
       [...this.connections].filter((c) => this.#binds(c, label)).map((c) => ({ host: c.host, cwd: c.cwd })),
@@ -1504,7 +1512,11 @@ export class Service implements ServiceHome {
         return x === null ? [] : localPeersOf(this.home, x, this.#pairs())
       },
       hidden: (label) => this.#readWord().hidden.includes(label),
+      refused: () => (this.#readWord().why === null ? null : wordRefusal(this.home)),
       setHidden: (label, hide) => {
+        // A refused word file is never written over (pairing.ts refuses before the question; this holds for any caller).
+        const refused = this.#readWord().why === null ? null : wordRefusal(this.home)
+        if (refused !== null) throw new ToolError('unsafe-path', `${refused}; nothing was changed`)
         const w = this.#readWord()
         const rest = w.hidden.filter((h) => h !== label)
         writeLocalWord(this.home, w.on, hide ? [...rest, label] : rest)
@@ -1557,7 +1569,8 @@ export class Service implements ServiceHome {
           local_delivery: on ? (word.set ? 'on' : 'on (default)') : 'off',
           local,
           identities,
-          note: on ? HOME_NOTE : HOME_OFF,
+          // A refused word file: why, and the fix, in place of the off note (fail closed: nothing listed).
+          note: word.why !== null ? (wordRefusal(this.home) ?? HOME_OFF) : on ? HOME_NOTE : HOME_OFF,
         }
       },
       recipient: (label) => {
@@ -1595,8 +1608,22 @@ export class Service implements ServiceHome {
   #readWord(): LocalWord {
     const now = localWord(this.home)
     const was = this.#word
+    // A refused file is no change of the word (fail closed: off, each window its own identities): it is logged, audited
+    // and told once with its fix, and the last word read stays the baseline, so nothing reads as hidden or shown.
+    if (now.why !== null) {
+      if (this.#wordWhy !== now.why) {
+        this.#log.log('warn', 'local-word', { detail: now.why })
+        this.#policy(`local word refused: ${now.why}`)
+        this.#changes.push({
+          what: `local delivery on this machine refused: ${wordRefusal(this.home) ?? now.why}`,
+        })
+      }
+      this.#wordWhy = now.why
+      this.#word ??= now
+      return now
+    }
+    this.#wordWhy = null
     this.#word = now
-    if (now.why !== null && was?.why !== now.why) this.#log.log('warn', 'local-word', { detail: now.why })
     if (was === null) return now
     // Each change with the identity it names (a hide or a show), so one removed since is not told (v1).
     const what: [string, string[]][] = [
@@ -2862,6 +2889,30 @@ export class Service implements ServiceHome {
       })
     } catch (e) {
       this.#log.log('warn', 'audit', { label, act: 'bind-restored', code: codeOf(e) })
+    }
+  }
+
+  /**
+   * A window's binding ended by unbind, or by a bind of `by` in its place (a switch): in the service log, and a policy
+   * line in the identity's log when it is open, each naming which.
+   */
+  #unbindLine(label: string, conn: Connection, via: UnbindVia, by?: string): void {
+    const host = hostKindOf(conn.host)
+    const instead = by === undefined ? {} : { in_place: by }
+    this.#log.log('info', 'unbind', { label, host, connection: conn.handle, via, ...instead })
+    const local =
+      by === undefined
+        ? `a window's binding of ${label} ended by unbind`
+        : `a window's binding of ${label} ended by a bind of ${by} in its place`
+    try {
+      this.units.get(label)?.opened?.edge.audit.record({
+        event: 'policy',
+        decision: 'route',
+        detail: { local, host, via },
+        connection: conn.handle,
+      })
+    } catch (e) {
+      this.#log.log('warn', 'audit', { label, act: 'unbind', code: codeOf(e) })
     }
   }
 

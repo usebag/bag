@@ -1675,22 +1675,35 @@ describe('no-elicitation for a host that showed no dialog', () => {
     )
   })
 
-  it('on claude-vscode and claude-desktop the unseen texts name the question card, never a terminal, bag pair or a command line', () => {
+  it('on claude-vscode and claude-desktop the unseen texts name the question card and a terminal window, never bag pair or a command line', () => {
     for (const surface of ['claude-vscode', 'claude-desktop'])
       for (const text of [askUnseen('claude-code', surface), noDialog('claude-code', 'fast', '', surface)]) {
-        expect(text, surface).toContain("bag's questions appear in Claude Code's question card")
         expect(text, surface).toContain(
-          "once bag's plugin for Claude Code is installed and this window reloaded once.",
+          "To be asked here, your user installs bag's question card (bag's install for Claude Code, or the update page; a card switched off in /plugin is switched on there) and reloads this window once (a new session, or /reload-plugins), or uses Claude Code in a terminal window, which shows bag's questions itself.",
         )
-        expect(text, surface).toContain('Typing use and the identity name still binds in this window.')
+        expect(text, surface).not.toContain('Typing use')
         expect(text, surface).toContain('Do not call it again until your user says the question card shows.')
-        expect(text.toLowerCase(), surface).not.toContain('terminal')
         expect(text, surface).not.toContain('bag pair')
         expect(text, surface).not.toMatch(/\bbag [a-z]|host install|--user/)
       }
     // Other surfaces keep today's words.
     expect(askUnseen('claude-code', 'cli')).toBe(askUnseen('claude-code'))
     expect(askUnseen('claude-code', 'cli')).not.toContain('question card')
+  })
+
+  it('the house rule: the unseen-dialog and no-card texts give no command as the way out (a terminal window is a host)', () => {
+    const texts = [CARD_TAIL]
+    for (const surface of ['claude-vscode', 'claude-desktop', 'cli', undefined])
+      texts.push(
+        askUnseen('claude-code', surface),
+        noDialog('claude-code', 'fast', '', surface),
+        bindUnseen(surface),
+      )
+    for (const text of texts) {
+      expect(text).not.toContain('`')
+      expect(text).not.toMatch(/\bbag [a-z]/)
+      expect(text).not.toMatch(/\brun\b[^.]*\bterminal/i)
+    }
   })
 
   // P4: the numeric core against 0.113.0, any prerelease tag ignored; a compatibility gate, never a trust boundary.

@@ -13,6 +13,7 @@ import {
   INSTRUCTIONS,
   SIZE_NOTE,
   TOOL_NAMES,
+  useDescription,
 } from '../src/tools.ts'
 import {
   addressRecord,
@@ -1032,5 +1033,25 @@ describe('names: the local name book in send, ask, inbox, wait and status', () =
     expect((await bob.call('send', { to: [P.alice.address], type: 't', body: 1 })).isError).toBe(false)
     mkdirSync(join(tmp.dir, 'alice', 'names.json'))
     expect((await alice.call('status')).value).toMatchObject({ error: 'EISDIR' })
+  })
+})
+
+describe("use's description by host", () => {
+  it('omp names the typed use; Claude Code with a hook says nothing was bound and where bag can ask; no hook as before', () => {
+    expect(useDescription(true, 'omp')).toContain(
+      'no-elicitation (this host shows no dialog: your user types use and the name)',
+    )
+    const cc = useDescription(true, 'claude-code')
+    expect(cc).toContain(
+      'no-elicitation (this window showed no dialog, so nothing was bound: your user opens a new interactive session of this host, where bag can ask)',
+    )
+    expect(cc).not.toContain('types use')
+    expect(useDescription(false, 'codex')).toContain(
+      'no-elicitation (this host did not show the dialog: nothing was bound)',
+    )
+    for (const d of [useDescription(true, 'omp'), cc])
+      expect(d).toContain(
+        'In a window that already acts as an identity, the Yes replaces it (the dialog says in place of which); unbind ends it without another.',
+      )
   })
 })

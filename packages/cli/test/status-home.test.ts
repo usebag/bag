@@ -219,6 +219,35 @@ describe('status --home: the whole home, one fact per line, read-only', () => {
     ])
   })
 
+  it('names a refused word file with its fix, in the lines and in --json; a file that reads names none', async () => {
+    const { dir, io } = await home('on')
+    const file = join(dir, 'run', 'local.json')
+    writeFileSync(file, JSON.stringify({ version: 2, local_delivery: 'on', hidden: ['bob'] }), {
+      mode: 0o600,
+    })
+    const fine = await cli(io, 'status', '--home', '--json', '--dir', dir)
+    expect(JSON.parse(fine.out[0] as string)).not.toHaveProperty('local_word_refused')
+    chmodSync(file, 0o644)
+    const line =
+      'run/local.json is not private to you (mode 0644): bag keeps local delivery off, and a window acting as an ' +
+      `identity sees none of the others, until it is 0600: chmod 600 ${file}, then read \`bag status --home\` ` +
+      '(hidden and local pairs) before you rely on it'
+    const text = await cli(io, 'status', '--home', '--dir', dir)
+    expect(text.out.slice(3, 5)).toEqual(['local_delivery off', `local_word refused: ${line}`])
+    // Whether each identity is hidden cannot be read: unknown, never no.
+    expect(
+      text.out.filter((l) => l.startsWith('identity ')).map((l) => / hidden (.*) open /.exec(l)?.[1]),
+    ).toEqual([
+      'unknown (run/local.json refused)',
+      'unknown (run/local.json refused)',
+      'unknown (run/local.json refused)',
+    ])
+    const json = await cli(io, 'status', '--home', '--json', '--dir', dir)
+    const v = JSON.parse(json.out[0] as string) as { identities: { hidden: unknown }[] }
+    expect(v).toMatchObject({ local_delivery: 'off', local_word_refused: line })
+    expect(v.identities.map((i) => i.hidden)).toEqual([null, null, null])
+  })
+
   it('reads a Codex window keyed <host pid>-<session id>.bound beside a <host pid>.bound, and no other name', async () => {
     const { dir, io } = await home('on')
     const sid = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0'
