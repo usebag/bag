@@ -60,6 +60,15 @@ describe('the typed-word mark', () => {
     expect(second.bag_not_typed).toBeUndefined()
   })
 
+  test('two prompts with one prompt_id (one queued during a turn): a typed one, then one with no prompt.submit of its own: the second gets no mark', () => {
+    const r = rig()
+    r.submit('composer', 'use sam')
+    expect(r.classic('use sam', 'turn-1').bag_typed).toEqual({ v: 1, prompt_id: 'turn-1' })
+    const queued = r.classic('use sam', 'turn-1')
+    expect(queued.bag_typed).toBeUndefined()
+    expect(queued.bag_not_typed).toBeUndefined()
+  })
+
   test('a peer, an sdk, an unknown and a missing kind are not typed', () => {
     for (const kind of ['peer', 'sdk', 'later', '']) {
       const r = rig()

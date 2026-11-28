@@ -108,6 +108,11 @@ minutes says that too, with the likely cause: a scheduled prompt or a message ma
 session's scheduled tasks. Other windows that act as the same identity keep it, and its mail keeps arriving. Closing the
 window ends every identity it uses too.
 
+A message that only starts with the word is a sentence unless it names one of your identities: "use it" or "unbind
+works" reaches the agent as you typed it, and bag shows nothing. A `use` you type with the name of any of your
+identities still binds where bag knows you typed it (above). `unbind` and a name is the word only for an identity the window acts as, and `unbind` alone
+always is.
+
 A window that acts as an identity whose key is in your home or your Keychain can make a new identity and propose one
 for its folder. You are still asked, as from any window, and the question's last line names the window: "Asked from a
 window used as omp-3", every identity it acts as and every one it acted as before an unbind. After a restart of the
@@ -262,12 +267,16 @@ It runs on a terminal only and prints one line, for example `keep-alive omp-3 on
 
 ## When the service is not running
 
-- **No login agent.** The first window that needs bag starts the service. It runs while any window is connected and
-  stops a minute after the last one closes. Records then lapse while no window is open, as with bag 0.3.0.
+- **No login agent.** The first window that needs bag starts the service. It runs until you stop it or log out, also
+  after the last window closes.
 - **A login agent is loaded, and the service stopped.** A window that needs bag asks the login agent to start it, and
   does not start its own copy, so the service keeps running under the login agent. Only if the login agent's service
-  is not answering within 20 seconds does the window start one itself. If another copy holds the home when the login
-  agent's starts (one an older window started), the login agent's copy waits for it to stop and then takes over.
+  is not answering within 20 seconds does the window start one itself. If a window's own copy holds the home when the
+  login agent's starts (one an older window started, or one started while the login agent restarted the service), the
+  login agent's copy waits beside it, and from bag 0.4.8 on the window's copy hands over to it within a few seconds,
+  by itself: each window sees one short restart, as for an upgrade, and keeps its identity. The hand-over waits while
+  a pairing, a `bag` command's act or a question runs, and happens when the last one ends. A login agent's copy that
+  runs another version is not handed to (the update page's step P4 restarts it on the new one).
 - **It crashed.** The login agent starts it again. Each window keeps its identity: when the service is back, the
   window binds again to the identities you gave it, with no `use`, and its next answer says so once. Nothing is lost:
   the mail, the cursor and the records are on disk, and the service picks up where it stopped. A window opened before
@@ -359,6 +368,10 @@ to keep bag from running at all, take the shim out of your hosts as well (the ba
   service until they let go.
 
 ## Known limits
+
+- On Codex, a `writable_roots` entry that covers `<home>/run/` lets the model restart the bag service whenever a
+  window's own copy of it serves, not the login agent's; the install warns about such an entry: take it out. Whether
+  Codex's sandbox stops a command from signalling a process outside it is not known to bag.
 
 - After a window's bag process is killed (not closed) and the system gives its process number to another program,
   `bag status --home` can list that closed window as bound, and that window's wakes can be missed until it binds again.

@@ -3239,6 +3239,31 @@ describe('hidden: an identity kept apart (spec/SPEC.md 9.2 item 1)', () => {
     })
   })
 
+  it('service/sees answers what the identities tool lists to the window: a hidden one is as a label no identity has', async () => {
+    word(true)
+    hide('personal')
+    const s = await start()
+    const sees = async (l: Line, label: string) => (await l.request('service/sees', { label })).result
+    const other = await window(s, 'research')
+    for (const label of ['personal', 'nosuch']) expect(await sees(other, label)).toEqual({ sees: false })
+    expect(await sees(other, 'research')).toEqual({ sees: true })
+    // The hidden identity's own window sees itself alone; a window bound to none sees both, as identities lists them.
+    const own = await window(s, 'personal')
+    expect([await sees(own, 'personal'), await sees(own, 'research')]).toEqual([
+      { sees: true },
+      { sees: false },
+    ])
+    const loose = await connected(s, 'loose')
+    expect([await sees(loose, 'personal'), await sees(loose, 'research')]).toEqual([
+      { sees: true },
+      { sees: true },
+    ])
+    // Read-only: nothing bound, nothing asked; a bad ask is usage.
+    expect(own.dialogs).toEqual([])
+    expect((await loose.request('service/sees', {})).error).toMatchObject({ data: { code: 'usage' } })
+    expect((await call(loose, 'identities')).as).toBeNull()
+  })
+
   it("hides by its window's dialog, then refuses both ways and lists it to none; shows by a Yes", async () => {
     word(true)
     const clock = new FakeClock()

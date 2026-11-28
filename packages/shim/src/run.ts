@@ -20,6 +20,7 @@ import {
   ownerHeld,
   type PsRow,
   personTyped,
+  postSees,
   postTyped,
   postUnbind,
   postUse,
@@ -436,6 +437,7 @@ async function serve(io: ShimIo, home: string, wantHook: boolean): Promise<numbe
       {
         use: (name) => (hostLive() ? shim.use(name) : Promise.resolve({ bound: false, code: 'host-gone' })),
         unbind: (name) => (hostLive() ? shim.unbind(name) : Promise.resolve({ code: 'host-gone' })),
+        sees: (name) => (hostLive() ? shim.sees(name) : Promise.resolve(null)),
         typed: () => hostLive() && shim.typed(),
       },
       log,
@@ -537,10 +539,11 @@ function readAll(stdin: Readable): Promise<string> {
 
 /**
  * The typed-word hook. `use <name>` binds at once only where the hook input proves the person typed it (personTyped);
- * unproven, it reaches no shim and gets context leading to the use tool's dialog (only the person's Yes binds), or,
+ * unproven, it binds nothing and gets context leading to the use tool's dialog (only the person's Yes binds), or,
  * known not typed (notTyped), context that says so. Silent for any other prompt (service/typed: the person typed here,
- * unless known not typed), with no shim answering, or for a name the home lacks; else Claude Code's block decision says
- * what happened (bound, or why not).
+ * unless known not typed) and with no shim answering; else Claude Code's block decision says what happened (bound, or
+ * why not). An `unbind <name>` the window neither acts as nor keeps, and an unproven or not-typed `use <name>` its
+ * identities tool does not list (postSees), go on exactly as any other prompt: no line, no context, not blocked.
  */
 async function hook(io: ShimIo, rest: readonly string[]): Promise<number> {
   const home = homeOf(rest, io.env)
@@ -557,15 +560,22 @@ async function hook(io: ShimIo, rest: readonly string[]): Promise<number> {
   const owner = terminalOwner(hostPidOf(io.ppid, io.ps), io.env, io.ps, io.uid)
   const walk = ancestors(io.ppid, io.ps)
   const pids = owner === null ? walk : [owner, ...walk.filter((p) => p !== owner)]
+  // Any other prompt, and a word for a name this window may not see: untouched, with no line and no context.
+  const other = async (): Promise<number> => {
+    if (!notTyped(doc)) await postTyped(home, pids)
+    return 0
+  }
   const off = unbindWord(prompt)
   if (off !== null) {
     const a = await postUnbind(home, pids, off.name)
+    if (a?.pass === true) return other()
     if (a !== null)
       io.stdout.write(`${JSON.stringify({ decision: 'block', reason: unbindLine(off.name, a) })}\n`)
     return 0
   }
   const name = typedName(prompt)
   if (name !== null && !personTyped(doc)) {
+    if ((await postSees(home, pids, name)) === false) return other()
     const systemMessage = notTyped(doc)
       ? `bag: a message that was not typed by you asked this window to act as ${name}; nothing was bound.`
       : `bag: answer bag's question to act as ${name}`
@@ -576,10 +586,7 @@ async function hook(io: ShimIo, rest: readonly string[]): Promise<number> {
     io.stdout.write(`${JSON.stringify({ systemMessage, hookSpecificOutput })}\n`)
     return 0
   }
-  if (name === null) {
-    if (!notTyped(doc)) await postTyped(home, pids)
-    return 0
-  }
+  if (name === null) return other()
   const answer = await postUse(home, pids, name)
   if (answer === null || (!answer.bound && answer.code === 'unknown-identity')) return 0
   const reason = answer.bound

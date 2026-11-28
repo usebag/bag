@@ -62,8 +62,14 @@ async function home(
   return { dir, io, security }
 }
 
-/** A fake bag service at <dir>/run/service.sock that answers a hello with a start time and records each method. */
-async function service(dir: string): Promise<{ calls: string[]; close(): Promise<void> }> {
+/**
+ * A fake bag service at <dir>/run/service.sock that answers a hello with a start time (none: a service before 0.4.8,
+ * whose hello never carried one) and records each method.
+ */
+async function service(
+  dir: string,
+  started: string | null = '2026-11-13T01:00:00Z',
+): Promise<{ calls: string[]; close(): Promise<void> }> {
   writeFileSync(join(dir, 'run', 'service.token'), `${TOKEN}\n`, { mode: 0o600 })
   const calls: string[] = []
   const sockets: Socket[] = []
@@ -76,7 +82,7 @@ async function service(dir: string): Promise<{ calls: string[]; close(): Promise
         const m = JSON.parse(buf.slice(0, i)) as { id: unknown; method: string }
         buf = buf.slice(i + 1)
         calls.push(m.method)
-        const service = { version: '0.4.1', pid: 5151, started_at: '2026-11-13T01:00:00Z' }
+        const service = { version: '0.4.1', pid: 5151, ...(started === null ? {} : { started_at: started }) }
         s.write(
           `${JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { contract: 1, service, connection: 'c-1' } })}\n`,
         )
@@ -268,6 +274,21 @@ describe('status --home: the whole home, one fact per line, read-only', () => {
       { host: 4242, session: null, as: ['alice'], shim: process.pid },
       { host: 4242, session: sid, as: ['bob'], shim: process.pid },
     ])
+  })
+
+  it("prints the service's start from its hello as since <time>, and since unknown for a service whose hello has none", async () => {
+    const { dir, io } = await home('on')
+    const sock = join(dir, 'run', 'service.sock')
+    for (const [started, since] of [
+      ['2026-11-13T01:00:00Z', '2026-11-13T01:00:00Z'],
+      [null, 'unknown'],
+    ] as const) {
+      const svc = await service(dir, started)
+      const ran = await cli(io, 'status', '--home', '--dir', dir)
+      await svc.close()
+      expect(ran.code).toBe(0)
+      expect(ran.out[2]).toBe(`service bag 0.4.1 pid 5151 since ${since} contract 1 socket ${sock}`)
+    }
   })
 
   it('status --as keeps its service line, from the same hello', async () => {

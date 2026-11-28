@@ -1,5 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import type { Server, Socket } from 'node:net'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -153,6 +162,12 @@ export const STOP_REASON = 'aborted at the service stop'
 export const RETURN_WAIT_MS = 5000
 /** The retry a shim is told on draining. */
 export const RETRY_AFTER_MS = 2000
+/** How often a standby's lock poll touches its marker, and how often a holder no supervisor started reads it. */
+export const MARKER_TOUCH_MS = 1000
+/** A marker older than this is a standby that stopped polling (three missed touches): never handed to. */
+export const MARKER_FRESH_MS = 3000
+/** How long a standby pid that was handed the lock is skipped after (one that stays fresh but never takes it). */
+export const HANDOVER_AGAIN_MS = 5 * 60_000
 /** The hello capability (client_capabilities.experimental) naming an omp pid, whose questions go over its link. */
 export const CONSENT_BRIDGE = 'bag.dev/consent-bridge'
 
@@ -242,6 +257,8 @@ export interface ServiceDeps extends ManyDeps {
   readonly packageDir?: string | null
   /** How often an automatic return looks again at the CLI's identity lock (default REOPEN_MS). */
   readonly lockPollMs?: number
+  /** The service lock's wait between tries (takeServiceLock's sleep); a timer by default. */
+  readonly lockSleep?: (ms: number) => Promise<void>
   /** The macOS security tool the acts on the home read a keychain item with (tools.ts); the system's by default. */
   readonly security?: SecurityRunner
   /** Whether omp `pid` holds the other end of a registering connection (socket-owner.ts peerIs by default). */
@@ -446,6 +463,8 @@ export class Service implements ServiceHome {
   #lends = new Map<string, { conn: Connection | null; verb: string }>()
   /** service.json's started_at, taken at its first write and kept by every later one. */
   #startedAt: string | null = null
+  /** Who started this process as the login service (supervisorOf), for service.json; null for any other start. */
+  #supervisor: 'launchd' | 'systemd' | null = null
   /** service.json's text as last written: a rewrite with the same text is skipped. */
   #statusText: string | null = null
   /** Stops this service hearing its home's asks (ask.ts onAsking): set at the first write, called at the teardown. */
@@ -869,8 +888,10 @@ export class Service implements ServiceHome {
     home: string,
     deps: ServiceDeps,
     standby?: LockStandby,
+    supervisor: 'launchd' | 'systemd' | null = null,
   ): Promise<Service> {
     const s = new Service(config, home, deps)
+    s.#supervisor = supervisor
     const { paths } = s
     checkSocketPath(paths.sock)
     ensureRunDir(paths.dir, deps.uid)
@@ -882,7 +903,7 @@ export class Service implements ServiceHome {
         return 'another process'
       }
     }
-    s.#lock = await takeServiceLock(paths.lock, holder, deps.lockRetryMs, undefined, standby)
+    s.#lock = await takeServiceLock(paths.lock, holder, deps.lockRetryMs, deps.lockSleep, standby)
     // The home's table only once the lock is this service's: a start refused busy leaves the live one's in place.
     serveBindings(s.table, home)
     try {
@@ -987,6 +1008,14 @@ export class Service implements ServiceHome {
     return this.#lends.get(label)?.verb ?? null
   }
 
+  /**
+   * Q2: what a hand-over to the login service waits for, each of which its drain would cut: a pairing, a lend (a CLI's,
+   * or an identity held quiet for a window's act: quiet lends it too) or an open question. Each ends by its own timeout.
+   */
+  handoverWaits(): boolean {
+    return livePairings(this.table) > 0 || this.#lends.size > 0 || askingIn(this.home) > 0
+  }
+
   /** The binding table's handlers for its service/ methods (service/use, service/unbind, service/identities). */
   onServiceRequest(method: `service/${string}`, handler: Handler): void {
     this.#handlers.set(method, handler)
@@ -1006,7 +1035,7 @@ export class Service implements ServiceHome {
    * The drain (docs/bag-service.md, "When the service is not running"): refuse, cancel pairings, let calls finish,
    * stop, flush, release, the lock last.
    */
-  drain(reason: 'upgrade' | 'stop' = 'stop'): Promise<void> {
+  drain(reason: 'upgrade' | 'stop' | 'handover' = 'stop'): Promise<void> {
     this.#drained ??= this.#drain(reason)
     return this.#drained
   }
@@ -2200,6 +2229,7 @@ export class Service implements ServiceHome {
       contract: 1,
       version: SERVER_VERSION,
       package_dir: this.#deps.packageDir ?? null,
+      supervisor: this.#supervisor,
       draining: this.#draining,
       pairings: livePairings(this.table),
       lends: this.#lends.size,
@@ -2265,7 +2295,12 @@ export class Service implements ServiceHome {
         if (method === 'service/typed') this.#mail.typed?.(c.handle)
       },
       facts: () => ({
-        service: { version: SERVER_VERSION, pid: this.#deps.pid },
+        // started_at: service.json's, taken once at the start's first write (right after the token's, so before any hello).
+        service: {
+          version: SERVER_VERSION,
+          pid: this.#deps.pid,
+          ...(this.#startedAt === null ? {} : { started_at: this.#startedAt }),
+        },
         draining: this.#draining,
       }),
     })
@@ -3268,6 +3303,38 @@ export function printLoginAgent(
   return { status: 0, out: platform === 'darwin' ? launchAgentPlist(given) : systemdUnit(given), err }
 }
 
+/**
+ * A holder's watch for the login service's standby, every MARKER_TOUCH_MS: once handoverTo names one and nothing a
+ * drain would cut runs (Service.handoverWaits), it records the hand-over in run/handover.json, logs service-handover
+ * and calls `go`. Each skip is logged once per pid and reason.
+ */
+function watchStandby(home: string, service: Service, deps: ServiceDeps, go: () => void) {
+  const said = new Set<string>()
+  let first = 0
+  const timer = setInterval(() => {
+    const h = handoverTo(home, deps.pid, deps.alive, deps.uid)
+    if (h === null || 'skip' in h) {
+      first = 0
+      if (h !== null && !said.has(`${h.skip} ${h.pid}`)) {
+        said.add(`${h.skip} ${h.pid}`)
+        deps.log.log('info', 'service-handover-skipped', { reason: h.skip, pid: h.pid })
+      }
+      return
+    }
+    first ||= Date.now()
+    if (service.handoverWaits()) return
+    clearInterval(timer)
+    try {
+      const at = new Date().toISOString()
+      writeWhole(runPaths(home).handover, `${JSON.stringify({ pid: h.to, at, from: deps.pid })}\n`)
+    } catch {}
+    deps.log.log('info', 'service-handover', { to: h.to, by: h.by, waited_ms: Date.now() - first })
+    go()
+  }, MARKER_TOUCH_MS)
+  timer.unref()
+  return timer
+}
+
 /** The exit status after a drain for an upgrade: non-zero, so the login agent's KeepAlive starts the new package. */
 export const EXIT_UPGRADE = 75
 
@@ -3309,6 +3376,52 @@ export function supervisorOf(io: ServiceIo): 'launchd' | 'systemd' | null {
   return (cgroup ?? '').split('\n').some((l) => l.endsWith(`/${AGENT_UNIT}`)) ? 'systemd' : null
 }
 
+/** A plain 0600 file of `uid` (not a link), touched at `since` or later, parsed as a JSON object; else null. */
+function runRecord(path: string, uid: number, since: number): Record<string, unknown> | null {
+  try {
+    const st = lstatSync(path)
+    if (!st.isFile() || (uid >= 0 && st.uid !== uid) || (st.mode & 0o777) !== 0o600 || st.mtimeMs < since)
+      return null
+    const j = JSON.parse(readFileSync(path, 'utf8')) as unknown
+    return typeof j === 'object' && j !== null && !Array.isArray(j) ? (j as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+/** Q3: a standby may take over only on this version (one waiting since before an update runs the old code). */
+export const standbyFits = (version: unknown): boolean => version === SERVER_VERSION
+
+/** Whom a holder that no supervisor started hands the lock to now: a standby, one it skips, or none. */
+export type Handover =
+  | { readonly to: number; readonly by: string }
+  | { readonly skip: 'version' | 'recent'; readonly pid: number }
+  | null
+
+/**
+ * The login service's standby to hand over to (docs/bag-service.md, "The hand-over"): run/standby.json, a plain 0600
+ * file of this user touched within MARKER_FRESH_MS, naming a live pid other than `self` that launchd or systemd
+ * started, on this version, and not handed the lock in the last HANDOVER_AGAIN_MS (run/handover.json).
+ */
+export function handoverTo(
+  home: string,
+  self: number,
+  alive: (pid: number) => boolean,
+  uid: number = process.getuid?.() ?? -1,
+  now = Date.now(),
+): Handover {
+  const { standby, handover } = runPaths(home)
+  const m = runRecord(standby, uid, now - MARKER_FRESH_MS)
+  const pid = m?.pid
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0 || pid === self) return null
+  if ((m?.by !== 'launchd' && m?.by !== 'systemd') || !alive(pid)) return null
+  if (!standbyFits(m.version)) return { skip: 'version', pid }
+  const last = runRecord(handover, uid, 0)
+  if (last?.pid === pid && now - Date.parse(String(last.at)) < HANDOVER_AGAIN_MS)
+    return { skip: 'recent', pid }
+  return { to: pid, by: m.by }
+}
+
 /**
  * Runs the service until a signal drains it: SIGTERM or SIGINT (stop, exit 0), SIGUSR2 (an upgrade, exit 75). Refuses
  * an unscrubbed launch (exit 2) and a held lock (busy, exit 1).
@@ -3324,13 +3437,38 @@ export async function serveService(config: ServerConfig, deps: ServiceDeps, io: 
   // from its supervisor; every other start answers busy as before. A TERM while it stands by ends it with 0.
   const by = supervisorOf(io)
   let stopped = false
+  // While it stands by, its marker says so (handoverTo), touched from the lock's poll loop only, and removed when it
+  // takes the lock or stops, if it still names this pid.
+  const marker = runPaths(home).standby
+  let touched = 0
+  const unmark = (): void => {
+    if (runRecord(marker, deps.uid ?? process.getuid?.() ?? -1, 0)?.pid === deps.pid)
+      rmSync(marker, { force: true })
+  }
   const standby: LockStandby | undefined =
     by === null
       ? undefined
       : {
-          waiting: (holder) => deps.log.log('warn', 'service-standby', { holder, by }),
-          took: (ms) => deps.log.log('info', 'service-takeover', { waited_ms: ms }),
+          waiting: (holder) => {
+            deps.log.log('warn', 'service-standby', { holder, by })
+            const since = new Date().toISOString()
+            try {
+              writeWhole(marker, `${JSON.stringify({ pid: deps.pid, by, version: SERVER_VERSION, since })}\n`)
+              touched = Date.now()
+            } catch {}
+          },
+          took: (ms) => {
+            unmark()
+            deps.log.log('info', 'service-takeover', { waited_ms: ms })
+          },
           stopped: () => stopped,
+          tick: () => {
+            if (Date.now() - touched < MARKER_TOUCH_MS) return
+            touched = Date.now()
+            try {
+              utimesSync(marker, new Date(), new Date())
+            } catch {}
+          },
         }
   if (standby !== undefined)
     for (const s of ['SIGTERM', 'SIGINT'] as const) io.signals.once(s, () => (stopped = true))
@@ -3339,9 +3477,10 @@ export async function serveService(config: ServerConfig, deps: ServiceDeps, io: 
     const dir = runPaths(home).dir
     ensureRunDir(dir, deps.uid)
     io.chdir(dir)
-    service = await Service.start(config, home, deps, standby)
+    service = await Service.start(config, home, deps, standby, by)
   } catch (e) {
     if ((e as { standby?: unknown }).standby === 'stopped') {
+      unmark()
       deps.log.log('info', 'service-standby-stopped', {})
       return 0
     }
@@ -3353,12 +3492,23 @@ export async function serveService(config: ServerConfig, deps: ServiceDeps, io: 
     return 1
   }
   const { promise, resolve } = Promise.withResolvers<number>()
+  let reason: 'stop' | 'upgrade' | 'handover' = 'stop'
   io.signals.once('SIGTERM', () => resolve(0))
   io.signals.once('SIGINT', () => resolve(0))
-  io.signals.once('SIGUSR2', () => resolve(EXIT_UPGRADE))
+  io.signals.once('SIGUSR2', () => {
+    reason = 'upgrade'
+    resolve(EXIT_UPGRADE)
+  })
   if (stopped) resolve(0) // a TERM after the takeover, before these listeners
+  // Q1: a copy no supervisor started hands the lock to the login service's standby by itself; a supervised one never.
+  const handover = (): void => {
+    reason = 'handover'
+    resolve(0)
+  }
+  const watch = by === null ? watchStandby(home, service, deps, handover) : null
   const status = await promise
-  await service.drain(status === EXIT_UPGRADE ? 'upgrade' : 'stop')
+  if (watch !== null) clearInterval(watch)
+  await service.drain(reason)
   const { exit } = io
   // The lock is released: whatever still holds the event loop after the grace is ended, and named.
   if (exit !== undefined)

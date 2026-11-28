@@ -4,6 +4,38 @@ What changed in each published cut of bag, newest first, written for someone who
 cut adds one dated entry at the top, written from the entries of the project's change log (one entry per change, kept in
 the source repository) made since the cut before it.
 
+## v0.4.8: 2026-11-27
+
+The cut tagged v0.4.8, `@usebag/bag` 0.4.8.
+
+- **`@usebag/bag` 0.4.8**, published from this cut (`npm view @usebag/bag@0.4.8 gitHead` names it).
+
+Changes after v0.4.7.
+
+- **A sentence such as "use it" or "unbind works" reaches the agent.** A message that only starts with `use` or `unbind`
+  is no longer taken as the word: it reaches the agent as you typed it, and bag shows nothing. A `use` you type with the
+  name of any of your identities still binds (in omp, and in Claude Code with bag's plugin on); `unbind` and a name is
+  the word only for an identity the window acts as, and `unbind` alone still is. Before, such an `unbind` message was
+  held back with a line in its place, and such a `use` message could bring bag's question.
+- **`bag status --home` says when the service started.** Its service line now reads `since` and the time the bag
+  service started (in UTC); before, it read `since unknown` every time. A service that is still at 0.4.7 or older
+  still reads `since unknown` until it is updated and restarted.
+- **After an update, the login agent's copy of the bag service serves, by itself.** A window could start its own copy of
+  the bag service while the login agent restarted it, for example during an update, and the login agent's copy then
+  waited beside it until you stopped that copy yourself. Now such a copy hands over to the login agent's copy within a
+  few seconds, also for windows opened before this version once the update has restarted the bag service: each window
+  reconnects once and keeps its identity, and a window that acts as an identity whose keys an agent holds asks the agent
+  for its grant again at its next act, as after any restart. A pairing, a `bag` command's act or a question that is
+  running is not cut: the hand-over waits until it ends.
+- **A tool call with an argument the tool does not have is refused, and the refusal names the arguments it has.** Before,
+  bag dropped such an argument without a word and ran the call without it: an `inbox` call with a guessed paging value
+  read the mailbox from the start, and an `unbind` with a misspelt name ended every identity of the window. Now nothing
+  runs, and the agent reads which argument was wrong and which the tool takes, so it corrects the call at once.
+- **`inbox` takes `newest` for the latest mail, and `cursor` as another name for the paging value.** `newest` with a
+  count lists the most recent messages (the oldest of them first) without reading the mailbox from the start; older mail
+  stays unread. `cursor` takes an earlier result's `next_cursor`, as `since` does. A call without either reads the
+  mailbox oldest first, as before.
+
 ## v0.4.7: 2026-11-26
 
 The cut tagged v0.4.7, `@usebag/bag` 0.4.7.

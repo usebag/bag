@@ -110,7 +110,10 @@ Requests, one line each: `{"v":1,"kind":"use","name":"omp-3","secret":"<64 hex>"
 `{"bound":true,"as":"omp-3"}` or `{"bound":false,"code":"<bag code>"}`; `{"v":1,"kind":"typed","secret":"<64 hex>"}`,
 answered `{"typed":true|false}`; `{"v":1,"kind":"unbind","name":"sam","secret":"<64 hex>"}` (`name` absent for every
 identity of the window), answered `{"unbound":["sam"],"as":["work"]}` or `{"code":"<bag code>"}`, a name that is not a
-label `{"bound":false,"code":"usage"}`. Any other kind (0.4.1's `bridge` included) is `{"bound":false,"code":"usage"}`.
+label `{"bound":false,"code":"usage"}`; `{"v":1,"kind":"sees","name":"jane","secret":"<64 hex>"}` (0.4.8), answered
+`{"sees":true|false}`, or `{"bound":false,"code":"no-answer"}` when the service gives none. Any other kind (0.4.1's
+`bridge` included) is `{"bound":false,"code":"usage"}`. From 0.4.8 `unbind` may be answered `{"pass":true}`: the
+name is not one this window acts as or keeps (below), and nothing was done.
 The secret is compared with `timingSafeEqual`; a wrong one is `bad-auth`.
 
 `bag-shim hook` (Claude Code's UserPromptSubmit) reads the hook's JSON on stdin. A `use <name>` binds at once only
@@ -118,7 +121,7 @@ where the input proves the person typed it (`personTyped` in `src/channel.ts`: b
 `{"v":1,"prompt_id":...}` equal to the input's `prompt_id`, which plugins/claude-code-card/hooks/typed.ts adds for a
 prompt whose prompt.submit origin is `composer`; or `source` `"user"`, which Claude Code 2.1.331 never sends). Known
 not typed (`bag_not_typed`, any other origin): no shim hears it, nothing is blocked, and the model's context says it
-did not come from the person's typing. Unproven (no mark), it reaches no shim and is not blocked: the hook prints
+did not come from the person's typing. Unproven (no mark), it binds nothing and is not blocked: the hook prints
 `systemMessage` "bag: answer bag's question to act as <name>" for the person and
 `hookSpecificOutput.additionalContext` asking the model to call bag's `use` tool once with that name, whose dialog
 binds only on the person's Yes. Proven, it posts the word and prints
@@ -126,13 +129,26 @@ binds only on the person's Yes. Proven, it posts the word and prints
 It prints nothing, and the prompt goes on to the model, for any other prompt, when no shim of this window answers, and
 for `unknown-identity` (so "use pandas" still reaches the model).
 
+A word that names no identity this window may use is a sentence (0.4.8): the hook then does what it does for any
+other prompt (no line, no context, not blocked, `typed` posted unless known not typed), so "unbind works" or "use it"
+reaches the model as typed. For `unbind <name>` that is a label the shim neither acts as nor keeps to restore
+(`Shim.unbind` answers `pass` before any other step). For an unproven or not-typed `use <name>` it is a name the
+window's `identities` tool does not list: the hook asks its shim by the `sees` request, and the shim asks
+`service/sees` (read-only), so a hidden identity the window does not act as is answered exactly as a label no identity
+has, and the hook's reaction tells the model nothing that tool does not. A proven `use` is the person's own act and is
+not checked: it binds any identity of the home, a hidden one too, and a name the home lacks is already silent
+(`unknown-identity`). No answer (no shim, a service without `service/sees`) or a shim before 0.4.8 keeps the word as
+before. The bare `unbind` is always the word. omp's extension takes only prompts the host proves typed, so it has no
+unproven path and asks no `sees`.
+
 A whole prompt `unbind` or `unbind <name>` (`UNBIND_WORD`) is read before any proof of typing: it only takes authority
 away, so it acts with no dialog however the prompt came. The hook posts it to its own shim and blocks the prompt with
 what happened (`bag: this session now acts as no identity (it acted as sam).`, or why not; omp's extension shows the
-same lines, from `unbindSaid` in packages/cli/src/omp-wake.ts). The shim forgets first (`Shim.unbind`: that label, or
-every one for a bare `unbind`), so no restore after a restart brings it back, then sends `service/unbind`. With the
-service not up, or the request lost, the forgetting is all it does, and the line says so: the session acts as no
-identity, or no longer as that name, once the service is back.
+same lines, from `unbindSaid` in packages/cli/src/omp-wake.ts). For a name the window neither acts as nor keeps, the
+shim answers `pass` before anything else, and the prompt goes on untouched. Otherwise the shim forgets first
+(`Shim.unbind`: that label, or every one for a bare `unbind`), so no restore after a restart brings it back, then
+sends `service/unbind`. With the service not up, or the request lost, the forgetting is all it does, and the line says
+so: the session acts as no identity, or no longer as that name, once the service is back.
 
 **The honest limit.** Same-user is not a security boundary (`docs/bag-service.md`, "What it protects, and what it does
 not"). Any process of the user that can read `<home>/run/shim/` can read an index and post a typed word for that window,

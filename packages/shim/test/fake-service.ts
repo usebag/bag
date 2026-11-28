@@ -64,6 +64,8 @@ export class FakeService {
   unbindAnswer: (params: Record<string, unknown>) => Record<string, unknown> = (p) => ({
     unbound: typeof p.label === 'string' ? [p.label] : [],
   })
+  /** Answers to service/sees: {sees} or an error {code}; null never answers. As a 0.4.8 service: every label seen. */
+  seesAnswer: (params: Record<string, unknown>) => Record<string, unknown> | null = () => ({ sees: true })
   /** When set, a service/unbind is never answered: the service crashes on it (the request lost). */
   unbindLost = false
   #waiters: { test: (m: Message, c: FakeConn) => boolean; resolve: (m: Message) => void }[] = []
@@ -253,6 +255,14 @@ export class FakeService {
           })
         c.send({ jsonrpc: '2.0', id, result: a })
       }
+      return
+    }
+    if (m.method === 'service/sees') {
+      const a = this.seesAnswer(m.params ?? {})
+      if (a === null) return
+      const code = typeof a.code === 'string' ? a.code : null
+      const error = { code: -32000, message: `${code}: no`, data: { code } }
+      c.send(code === null ? { jsonrpc: '2.0', id, result: a } : ({ jsonrpc: '2.0', id, error } as never))
       return
     }
     if (m.method === 'service/unbind') {

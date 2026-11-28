@@ -192,6 +192,9 @@ describe('installUser and removeUser: omp and codex', () => {
     expect(out.some((l) => l.startsWith('warning: [sandbox_workspace_write] writable_roots names'))).toBe(
       true,
     )
+    expect(out.find((l) => l.startsWith('warning: [sandbox_workspace_write]'))).toContain(
+      'and so restart the bag service: take it out',
+    )
     const again: string[] = []
     installUser(w.env, p, m, w.home, 'codex', false, again)
     expect(again[0]).toBe('nothing to change')

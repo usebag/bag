@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -8,6 +9,8 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
@@ -43,7 +46,10 @@ import {
 import { parseServerConfig, type ServerConfig } from '../src/config.ts'
 import { Names } from '../src/names.ts'
 import { type PairExtra, type Pairings, shortAddress } from '../src/pairing.ts'
+import { SERVER_VERSION } from '../src/server.ts'
 import {
+  HANDOVER_AGAIN_MS,
+  handoverTo,
   launchAgentPlist,
   launchCommand,
   lockName,
@@ -321,6 +327,21 @@ describe('the hello', () => {
       error: { code: -32600, data: { code: 'usage', detail: 'service/hello first' } },
     })
     await l.closed
+  })
+
+  it("answers the service's start (service.json's started_at, an ISO time in UTC), the same at every hello", async () => {
+    const clock = new FakeClock()
+    const s = await start([['personal', P.alice]], { clock })
+    const json = JSON.parse(readFileSync(runPaths(home).json, 'utf8')) as Json
+    expect(json.started_at).toBe(new Date(T0 * 1000).toISOString())
+    const want = { version: json.version, pid: 4242, started_at: json.started_at }
+    const service = async () => {
+      const l = await connect(s)
+      return ((await l.request('service/hello', helloOf(s))).result as Json).service
+    }
+    expect(await service()).toEqual(want)
+    clock.t += 3600
+    expect(await service()).toEqual(want)
   })
 
   it('refuses a wrong token bad-auth, an unknown contract bad-version with the supported list, an unknown member usage', async () => {
@@ -1005,6 +1026,8 @@ describe('the drain ends the process within a bounded time', () => {
     })
   })
 
+  // Each step waits on its event (the token, the new token, the first's exit), each bounded at 20 s; the test's own
+  // limit is a backstop for the whole: two starts and two drains, every file write slower on a busy disk.
   it("a second service takes the free lock during the first's grace and still answers after the first's hard exit", async () => {
     const file = fileOf([['personal', P.alice]])
     const io = (on: Map<string, () => void>, exits: number[]) => ({
@@ -1017,7 +1040,7 @@ describe('the drain ends the process within a bounded time', () => {
     })
     const [on1, exits1] = [new Map<string, () => void>(), [] as number[]]
     const first = serveService(configOf(file), deps({ exitGraceMs: 400 }), io(on1, exits1))
-    await until(() => existsSync(runPaths(home).token), 5000)
+    await until(() => existsSync(runPaths(home).token), 20_000)
     const oldToken = readFileSync(runPaths(home).token, 'utf8')
     ;(on1.get('SIGTERM') as () => void)()
     expect(await first).toBe(0) // drained: the lock is free, the first's hard exit still pending
@@ -1026,7 +1049,7 @@ describe('the drain ends the process within a bounded time', () => {
     const second = serveService(configOf(file), deps({ pid: 5151 }), io(on2, exits2))
     await until(
       () => existsSync(runPaths(home).token) && readFileSync(runPaths(home).token, 'utf8') !== oldToken,
-      5000,
+      20_000,
     )
     const hello = async () => {
       const token = Buffer.from(readFileSync(runPaths(home).token, 'utf8'), 'hex')
@@ -1034,12 +1057,12 @@ describe('the drain ends the process within a bounded time', () => {
       return await l.request('service/hello', helloOf({ token } as Service, { input_hook: true }))
     }
     expect((await hello()).result).toBeDefined()
-    await until(() => exits1.length === 1, 5000) // the first's grace ends while the second serves
+    await until(() => exits1.length === 1, 20_000) // the first's grace ends while the second serves
     expect((await hello()).result).toBeDefined()
     expect(JSON.parse(readFileSync(runPaths(home).json, 'utf8'))).toMatchObject({ pid: 5151 })
     ;(on2.get('SIGTERM') as () => void)()
     expect(await second).toBe(0)
-  })
+  }, 60_000)
 })
 
 describe("the login agent's copy stands by for a held lock", () => {
@@ -1142,6 +1165,356 @@ describe("the login agent's copy stands by for a held lock", () => {
     expect(JSON.parse(readFileSync(runPaths(home).json, 'utf8'))).toMatchObject({ pid: 4242 })
     ;(on1.get('SIGTERM') as () => void)()
     expect(await first).toBe(0)
+  })
+})
+
+describe("a holder no supervisor started hands the lock to the login service's standby", () => {
+  const io = (on: Map<string, () => void>, more: Json = {}) => ({
+    env: {},
+    execArgv: ['--disable-sigusr1'],
+    chdir: () => {},
+    signals: { once: (event: string, listener: () => void) => on.set(event, listener) },
+    exit: () => {},
+    open: () => [],
+    ...more,
+  })
+  const launchd = { platform: 'darwin', env: { XPC_SERVICE_NAME: 'dev.bag.service' }, ppid: 1 }
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const tokenNot = (old: string | null) => () =>
+    existsSync(runPaths(home).token) && readFileSync(runPaths(home).token, 'utf8') !== old
+  const json = (path: string): Json => JSON.parse(readFileSync(path, 'utf8')) as Json
+  const events = (name: string) => log.lines.filter((x) => x.event === name)
+  /** A marker as a standby writes it, 0600 in a 0700 run directory, with the given members over a fresh one's. */
+  const mark = (more: Json = {}, mode = 0o600): void => {
+    mkdirSync(runPaths(home).dir, { recursive: true, mode: 0o700 })
+    const f = runPaths(home).standby
+    const body = {
+      pid: 5151,
+      by: 'launchd',
+      version: SERVER_VERSION,
+      since: new Date().toISOString(),
+      ...more,
+    }
+    writeFileSync(f, JSON.stringify(body), { mode: 0o600 })
+    chmodSync(f, mode)
+  }
+  /** Keeps the test's marker fresh, as a polling standby does; returns the stop. */
+  const keepFresh = (): (() => void) => {
+    const t = setInterval(
+      () => existsSync(runPaths(home).standby) && utimesSync(runPaths(home).standby, new Date(), new Date()),
+      200,
+    )
+    return () => clearInterval(t)
+  }
+  /** A line client of a home's service, from its token file, said hello to. */
+  const window = async (more: Json = {}): Promise<Line> => {
+    const token = Buffer.from(readFileSync(runPaths(home).token, 'utf8'), 'hex')
+    const l = await connect({ paths: runPaths(home) } as Service)
+    const hi = await l.request('service/hello', helloOf({ token } as Service, { input_hook: true, ...more }))
+    expect(hi.result, JSON.stringify(hi)).toBeDefined()
+    return l
+  }
+
+  it('handoverTo takes a fresh marker of a live pid of its version; not a stale one, a link, one not 0600, a dead pid, its own pid or another version', () => {
+    const live = (p: number) => p === 5151
+    expect(handoverTo(home, 4242, live)).toBeNull() // a home with no marker: as before
+    mark()
+    expect(handoverTo(home, 4242, live)).toEqual({ to: 5151, by: 'launchd' })
+    mark({ by: 'systemd' })
+    expect(handoverTo(home, 4242, live)).toEqual({ to: 5151, by: 'systemd' })
+    mark({ by: 'shim' })
+    expect(handoverTo(home, 4242, live)).toBeNull()
+    mark()
+    const old = (Date.now() - 4000) / 1000
+    utimesSync(runPaths(home).standby, old, old)
+    expect(handoverTo(home, 4242, live)).toBeNull()
+    mark()
+    const real = join(runPaths(home).dir, 'elsewhere.json')
+    writeFileSync(real, readFileSync(runPaths(home).standby), { mode: 0o600 })
+    rmSync(runPaths(home).standby)
+    symlinkSync(real, runPaths(home).standby)
+    expect(handoverTo(home, 4242, live)).toBeNull()
+    rmSync(runPaths(home).standby)
+    mark({}, 0o644)
+    expect(handoverTo(home, 4242, live)).toBeNull()
+    mark()
+    expect(handoverTo(home, 4242, () => false)).toBeNull()
+    expect(handoverTo(home, 5151, live)).toBeNull()
+    mark({ version: '0.0.1' })
+    expect(handoverTo(home, 4242, live)).toEqual({ skip: 'version', pid: 5151 })
+    // The last hand-over: that pid skipped within HANDOVER_AGAIN_MS, handed to again after; another pid never.
+    mark()
+    const record = (pid: number, ago: number) =>
+      writeFileSync(
+        runPaths(home).handover,
+        JSON.stringify({ pid, at: new Date(Date.now() - ago).toISOString(), from: 1 }),
+        { mode: 0o600 },
+      )
+    record(5151, 60_000)
+    expect(handoverTo(home, 4242, live)).toEqual({ skip: 'recent', pid: 5151 })
+    record(6161, 60_000)
+    expect(handoverTo(home, 4242, live)).toEqual({ to: 5151, by: 'launchd' })
+    record(5151, HANDOVER_AGAIN_MS + 1000)
+    expect(handoverTo(home, 4242, live)).toEqual({ to: 5151, by: 'launchd' })
+  })
+
+  it('a supervised standby writes run/standby.json 0600 with its pid, supervisor and version, refreshes its mtime every second, and removes it at the takeover', async () => {
+    const file = fileOf([['personal', P.alice]])
+    const on1 = new Map<string, () => void>()
+    const first = serveService(configOf(file), deps(), io(on1))
+    await until(tokenNot(null), 5000)
+    const on2 = new Map<string, () => void>()
+    const second = serveService(configOf(file), deps({ pid: 5151, lockRetryMs: 0 }), io(on2, launchd))
+    const f = runPaths(home).standby
+    await until(() => existsSync(f), 5000)
+    expect(statSync(f).mode & 0o777).toBe(0o600)
+    expect(json(f)).toMatchObject({ pid: 5151, by: 'launchd', version: SERVER_VERSION })
+    const t0 = statSync(f).mtimeMs
+    await until(() => statSync(f).mtimeMs > t0, 5000)
+    ;(on1.get('SIGTERM') as () => void)()
+    expect(await first).toBe(0)
+    await until(() => events('service-takeover').length === 1, 5000)
+    expect(existsSync(f)).toBe(false)
+    ;(on2.get('SIGTERM') as () => void)()
+    expect(await second).toBe(0)
+  })
+
+  it('a standby stopped by a TERM removes its marker; a marker naming another pid is left alone', async () => {
+    const file = fileOf([['personal', P.alice]])
+    const on1 = new Map<string, () => void>()
+    const first = serveService(configOf(file), deps(), io(on1))
+    await until(tokenNot(null), 5000)
+    for (const other of [false, true]) {
+      const on2 = new Map<string, () => void>()
+      const second = serveService(configOf(file), deps({ pid: 5151, lockRetryMs: 0 }), io(on2, launchd))
+      await until(() => existsSync(runPaths(home).standby), 5000)
+      if (other) mark({ pid: 7777 })
+      ;(on2.get('SIGTERM') as () => void)()
+      expect(await second).toBe(0)
+      expect(existsSync(runPaths(home).standby)).toBe(other)
+      rmSync(runPaths(home).standby, { force: true })
+    }
+    ;(on1.get('SIGTERM') as () => void)()
+    expect(await first).toBe(0)
+  })
+
+  it('an unsupervised holder hands over to a fresh marker of a live pid of its version: service-handover, the drain with reason handover, exit 0; a window reconnects to the standby and keeps its binding', async () => {
+    const file = fileOf([['personal', P.alice]])
+    const on1 = new Map<string, () => void>()
+    const first = serveService(configOf(file), deps({ alive: (p) => p === 5151 }), io(on1))
+    await until(tokenNot(null), 5000)
+    const oldToken = readFileSync(runPaths(home).token, 'utf8')
+    expect(json(runPaths(home).json)).toMatchObject({ pid: 4242, supervisor: null })
+    const a = await window()
+    const use = await a.request('service/use', { label: 'personal', via: 'typed' })
+    expect(use.result, JSON.stringify(use)).toMatchObject({ bound: true })
+    const address = ((await a.next((m) => m.method === 'service/bound')).params as Json).address
+    const on2 = new Map<string, () => void>()
+    const second = serveService(configOf(file), deps({ pid: 5151, lockRetryMs: 0 }), io(on2, launchd))
+    expect((await a.next((m) => m.method === 'service/draining')).params).toEqual({
+      retry_after_ms: 2000,
+      reason: 'handover',
+    })
+    expect(await first).toBe(0)
+    expect(events('service-handover').map((x) => x.fields)).toMatchObject([{ to: 5151, by: 'launchd' }])
+    expect(events('service-drain').map((x) => x.fields)).toEqual([{ reason: 'handover' }])
+    expect(json(runPaths(home).handover)).toMatchObject({ pid: 5151, from: 4242 })
+    expect(statSync(runPaths(home).handover).mode & 0o777).toBe(0o600)
+    await a.closed
+    await until(tokenNot(oldToken), 5000)
+    expect(json(runPaths(home).json)).toMatchObject({ pid: 5151, supervisor: 'launchd' })
+    expect(existsSync(runPaths(home).standby)).toBe(false)
+    // The window's helper reconnects and restores its binding, as after any restart.
+    const b = await window()
+    const r = await b.request('service/use', { label: 'personal', via: 'restored', address, subagent: false })
+    expect(r.result, JSON.stringify(r)).toMatchObject({ bound: true, as: 'personal', granted: 'restored' })
+    expect((await call(b, 'status')).as).toBe('personal')
+    ;(on2.get('SIGTERM') as () => void)()
+    expect(await second).toBe(0)
+    expect(events('service-handover')).toHaveLength(1)
+  })
+
+  it('service.json names the supervisor: launchd, systemd or null', async () => {
+    for (const by of ['systemd', 'launchd', null] as const) {
+      const s = await Service.start(configOf(fileOf([['personal', P.alice]])), home, deps(), undefined, by)
+      expect(json(runPaths(home).json)).toMatchObject({ supervisor: by })
+      await s.drain()
+    }
+  })
+
+  it('a supervised holder never hands over, whatever marker exists; a holder in a home with no marker serves on as before', async () => {
+    const file = fileOf([['personal', P.alice]])
+    for (const [more, marked] of [
+      [launchd, true],
+      [{}, false],
+    ] as const) {
+      const on = new Map<string, () => void>()
+      const drains = events('service-drain').length
+      const served = serveService(configOf(file), deps({ alive: () => true }), io(on, more))
+      await until(tokenNot(null), 5000)
+      if (marked) mark()
+      const stop = marked ? keepFresh() : () => {}
+      await sleep(2500)
+      stop()
+      expect(events('service-handover')).toHaveLength(0)
+      expect(events('service-drain')).toHaveLength(drains)
+      expect(json(runPaths(home).json)).toMatchObject({ pid: 4242, draining: false })
+      ;(on.get('SIGTERM') as () => void)()
+      expect(await served).toBe(0)
+      rmSync(runPaths(home).standby, { force: true })
+    }
+  })
+
+  it('an unsupervised holder waits while a lend runs, skips another version once, and hands over once none does', async () => {
+    const file = fileOf([['personal', P.alice]])
+    const on = new Map<string, () => void>()
+    const served = serveService(configOf(file), deps({ alive: (p) => p === 5151 }), io(on))
+    await until(tokenNot(null), 5000)
+    const cli = await window({ host: 'cli' })
+    expect((await cli.request('service/lend', { label: 'personal', verb: 'pair' })).result).toBeDefined()
+    mark({ version: '0.0.1' })
+    const stop = keepFresh()
+    await until(() => events('service-handover-skipped').length > 0, 5000)
+    expect(events('service-handover-skipped').map((x) => x.fields)).toEqual([
+      { reason: 'version', pid: 5151 },
+    ])
+    mark()
+    await sleep(2200)
+    expect(events('service-handover')).toHaveLength(0)
+    expect(json(runPaths(home).json)).toMatchObject({ pid: 4242, draining: false, lends: 1 })
+    expect((await cli.request('service/return', { label: 'personal' })).result).toMatchObject({
+      returned: true,
+    })
+    expect(await served).toBe(0)
+    stop()
+    expect(events('service-handover')).toHaveLength(1)
+    expect(events('service-handover-skipped')).toHaveLength(1)
+  })
+
+  it('a holder records each hand-over in run/handover.json; a later holder skips that pid for 5 minutes (service-handover-skipped reason recent) and hands over to it after', async () => {
+    const file = fileOf([['personal', P.alice]])
+    const record = (ago: number) =>
+      writeFileSync(
+        runPaths(home).handover,
+        JSON.stringify({ pid: 5151, at: new Date(Date.now() - ago).toISOString(), from: 3131 }),
+        { mode: 0o600 },
+      )
+    const on = new Map<string, () => void>()
+    const served = serveService(configOf(file), deps({ alive: (p) => p === 5151 }), io(on))
+    await until(tokenNot(null), 5000)
+    record(60_000)
+    mark()
+    const stop = keepFresh()
+    await until(() => events('service-handover-skipped').length > 0, 5000)
+    expect(events('service-handover')).toHaveLength(0)
+    expect(events('service-handover-skipped').map((x) => x.fields)).toEqual([{ reason: 'recent', pid: 5151 }])
+    record(HANDOVER_AGAIN_MS + 1000)
+    expect(await served).toBe(0)
+    stop()
+    expect(events('service-handover').map((x) => x.fields)).toMatchObject([{ to: 5151 }])
+    expect(json(runPaths(home).handover)).toMatchObject({ pid: 5151, from: 4242 })
+  })
+
+  it("the standby's marker is touched from the poll loop: a loop that stops polling leaves it stale within 3 s", async () => {
+    const file = fileOf([['personal', P.alice]])
+    const on1 = new Map<string, () => void>()
+    const first = serveService(configOf(file), deps(), io(on1))
+    await until(tokenNot(null), 5000)
+    // The standby's sleep between tries, held while `gate.held`: its poll loop stops, the process does not.
+    const gate = { held: false, parked: false, release: () => {} }
+    const lockSleep = (ms: number) =>
+      gate.held
+        ? new Promise<void>((r) => {
+            gate.parked = true
+            gate.release = r
+          })
+        : sleep(ms).then(() => {})
+    const on2 = new Map<string, () => void>()
+    const second = serveService(
+      configOf(file),
+      deps({ pid: 5151, lockRetryMs: 0, lockSleep }),
+      io(on2, launchd),
+    )
+    const f = runPaths(home).standby
+    await until(() => existsSync(f), 5000)
+    await until(() => handoverTo(home, 4242, () => true) !== null, 5000)
+    expect(handoverTo(home, 4242, () => true)).toEqual({ to: 5151, by: 'launchd' })
+    gate.held = true
+    await until(() => gate.parked, 5000)
+    const held = statSync(f).mtimeMs
+    await sleep(1500)
+    expect(statSync(f).mtimeMs).toBe(held)
+    await sleep(1800)
+    expect(handoverTo(home, 4242, () => true)).toBeNull()
+    gate.held = false
+    gate.release()
+    ;(on1.get('SIGTERM') as () => void)()
+    expect(await first).toBe(0)
+    await until(() => events('service-takeover').length === 1, 5000)
+    ;(on2.get('SIGTERM') as () => void)()
+    expect(await second).toBe(0)
+  })
+})
+
+describe('Service.handoverWaits: what a hand-over waits for', () => {
+  it('a pairing, a CLI lend, an identity held quiet for a window act, and an open question each hold it until they end', async () => {
+    const s = await start(
+      [
+        ['personal', P.alice],
+        ['research', P.carol],
+      ],
+      { pairPollMs: 2 },
+    )
+    expect(s.handoverWaits()).toBe(false)
+    const a = await bound(s, 'personal', { cwd: '/w/a' })
+    person(a)
+    expect(await call(a, 'pair_invite', { name: 'bob' })).toMatchObject({ invite_open: true })
+    expect(s.handoverWaits()).toBe(true)
+    expect(await call(a, 'pair_cancel')).toMatchObject({ cancelled: true })
+    expect(s.handoverWaits()).toBe(false)
+    const cli = await hello(s, { host: 'cli' })
+    expect((await cli.request('service/lend', { label: 'research', verb: 'pair' })).result).toBeDefined()
+    expect(s.handoverWaits()).toBe(true)
+    await cli.request('service/return', { label: 'research' })
+    expect(s.handoverWaits()).toBe(false)
+    // An identity held quiet for a window's act in progress (quiet lends it with no connection).
+    const end = await s.quiet('research', 'unpair')
+    expect(s.handoverWaits()).toBe(true)
+    await end()
+    expect(s.handoverWaits()).toBe(false)
+    let answer: (r: Json) => void = () => {}
+    const conn = {
+      handle: 'w-ask',
+      host: 'claude-code',
+      cwd: '/w',
+      capabilities: { elicitation: true, inputHook: false, raw: {} },
+      elicit: () =>
+        new Promise<Json>((r) => {
+          answer = r
+        }),
+    } as unknown as ServiceConnection
+    const ctx = {
+      config: { home },
+      clock: { now: () => T0 },
+      mono: (
+        (t) => () =>
+          (t += 1000)
+      )(0),
+      log: { log: () => {} },
+      opened: null,
+      timers: new ManualTimers(),
+    } as unknown as ToolContext
+    const extra = { signal: new AbortController().signal } as unknown as PairExtra
+    const asked = askPerson(
+      ctx,
+      extra,
+      { act: 'test-act', kind: 'confirm', title: 'Yes', message: 'Do it?' },
+      conn,
+    )
+    expect(s.handoverWaits()).toBe(true)
+    answer({ action: 'cancel' })
+    await asked
+    expect(s.handoverWaits()).toBe(false)
   })
 })
 
@@ -2141,6 +2514,7 @@ describe("service.json's live counts: pairings, lends and asking", () => {
       'contract',
       'version',
       'package_dir',
+      'supervisor',
       'draining',
       'pairings',
       'lends',

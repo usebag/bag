@@ -97,6 +97,11 @@ export interface InboxQuery {
   /** include (the default), exclude or only the messages on threads this server handed off. */
   readonly handedOff?: HandedOff
   readonly limit: number
+  /**
+   * The most recent this many matching messages, oldest of them first, in place of a page from the start (without
+   * after or from; limit unused): more then says older matching messages exist before them.
+   */
+  readonly newest?: number
 }
 
 /** Where a wait resumes: after an inbox cursor, until a deadline (Unix seconds), on a thread or on any. */
@@ -334,19 +339,25 @@ export class Desk {
       !this.#returned.has(r.seq) &&
       this.#store.holdGet(r.seq) !== null
     let more = false
-    for (const r of rows) {
+    // newest reads from the newest row back, stopping at the first match past its count (more: older ones are left),
+    // so it parses only the rows it needs; its page is then put in arrival order, as every page is.
+    const order = q.newest === undefined ? rows : [...rows].reverse()
+    const cap = q.newest ?? q.limit
+    for (const r of order) {
       if (r.content === null || r.state === 'received' || r.state === 'verified') continue
       if (q.after !== undefined && r.seq <= q.after && !released(r)) continue
       if (q.from !== undefined && r.receivedAt < q.from) continue
       const thread = (JSON.parse(r.content) as SealedContent).thread.id
       if (q.thread !== undefined && thread !== q.thread) continue
       if (handedOff !== 'include' && (this.handedOffTo(thread) !== null) !== (handedOff === 'only')) continue
-      if (picked.length === q.limit) {
+      if (picked.length === cap) {
         more = true
         break
       }
       picked.push(r)
     }
+    // Only the rows picked are marked read below: newest never marks the older matches it left.
+    if (q.newest !== undefined) picked.reverse()
     const messages = picked.map((r) => {
       const before = this.#returned.get(r.seq)
       this.#mark(r.seq, connection ?? SOLO)
@@ -363,6 +374,8 @@ export class Desk {
       settled = Math.max(settled, r.seq)
     }
     const last = picked.at(-1)?.seq ?? 0
+    // newest's more says older matches were left before the page: its next_cursor (its newest message's, with more)
+    // continues after the newest returned, never before it.
     return { messages, next_cursor: more ? Math.max(last, q.after ?? 0) : Math.max(last, settled), more }
   }
 

@@ -11,7 +11,14 @@ import { NAME } from './names.ts'
 import { bindUnseen, cardSaid, type Pairings, shortAddress, silentSurface, unseenAnswer } from './pairing.ts'
 import type { GrantSlot } from './regrant.ts'
 import { type ConnectionGrant, type WindowGrant, windowGrant } from './session.ts'
-import { NO_ANSWER_IN_TIME, type ToolContext, ToolError, timedOut } from './tools.ts'
+import {
+  type LocalHome,
+  listedTo,
+  NO_ANSWER_IN_TIME,
+  type ToolContext,
+  ToolError,
+  timedOut,
+} from './tools.ts'
 
 // The binding table of the bag service (docs/bag-service.md, "How a window gets its identity"): which identity each
 // socket connection acts as. A binding belongs to its connection and dies with it; nothing re-attaches one by any id.
@@ -73,6 +80,8 @@ export interface ServiceHome {
   readonly home: string
   identities(): readonly HomeIdentity[]
   readonly draining: boolean
+  /** Which identities are hidden (service.ts local): read by shows, as the identities tool reads it. */
+  readonly local?: Pick<LocalHome, 'hidden' | 'refused'>
 }
 
 /** A home's custody class as the service names it (kept in step with packages/edge/src/custody/home.ts). */
@@ -756,6 +765,22 @@ export class Bindings {
   }
 
   /**
+   * Whether the identities tool lists `label` to `conn` (tools.ts listedTo): service/sees, the check a shim makes before
+   * it takes a typed `use <label>` as the word. Read-only. A hidden identity this window does not act as is false, as
+   * a label no identity has is: the answer tells the window nothing its identities tool does not.
+   */
+  shows(conn: ServiceConnection, label: string): boolean {
+    const own = this.boundTo(conn)
+    const all = this.#home.identities().map((i) => i.label)
+    return listedTo(
+      all,
+      own.length === 0 ? null : own,
+      own.length === 0 ? this.usedAs(conn) : [],
+      this.#home.local,
+    ).includes(label)
+  }
+
+  /**
    * Every identity `conn` acts as now (bind order), then every one it acted as earlier since it opened: the asker line
    * of a maker's question and the hidden listing. D4 (design 2026-11-26, section 8), built as recommended: the earlier
    * ones too; boundTo alone is the alternative, here only.
@@ -932,7 +957,7 @@ export class Bindings {
   }
 }
 
-/** The binding table's service methods (service/identities, service/use, service/unbind), for onServiceRequest. */
+/** The binding table's service methods (service/identities, service/use, service/sees, service/unbind), for onServiceRequest. */
 export function serviceMethods(
   table: Bindings,
 ): Record<string, (conn: ServiceConnection, params: Readonly<Record<string, unknown>>) => Promise<object>> {
@@ -959,6 +984,11 @@ export function serviceMethods(
             ? table.bindByRestore(conn, label, address)
             : await table.bindByDialog(conn, label)
       return { bound: true, as: b.label, address: b.address, custody: b.custody, granted: b.granted }
+    },
+    'service/sees': async (conn, params) => {
+      only(params, ['label'])
+      if (typeof params.label !== 'string') throw new ToolError('usage', 'service/sees takes label')
+      return { sees: table.shows(conn, params.label) }
     },
     'service/unbind': async (conn, params) => {
       only(params, ['label'])

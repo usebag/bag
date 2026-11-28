@@ -42,7 +42,10 @@ export function socketPathMax(platform: NodeJS.Platform = process.platform): num
   return (platform === 'linux' ? 108 : 104) - 1
 }
 
-/** The run directory, the socket, the lock, the token and the status file of a home. */
+/**
+ * The run directory, the socket, the lock, the token and the status file of a home; the login service's standby marker
+ * and the last hand-over's record (service.ts handoverTo).
+ */
 export function runPaths(home: string) {
   const dir = join(home, 'run')
   return {
@@ -51,6 +54,8 @@ export function runPaths(home: string) {
     lock: join(dir, 'service.lock'),
     token: join(dir, 'service.token'),
     json: join(dir, 'service.json'),
+    standby: join(dir, 'standby.json'),
+    handover: join(dir, 'handover.json'),
   }
 }
 
@@ -95,12 +100,14 @@ export interface ServiceLock {
 
 /**
  * A supervised start's wait for a held lock (service.ts serveService): told once when the wait begins, with the
- * holder, and once when the lock is taken; `stopped` ends the wait (a TERM), with an error.
+ * holder, and once when the lock is taken; `stopped` ends the wait (a TERM), with an error. `tick` runs after each
+ * failed try of the wait, from this loop only, so what it refreshes proves that the loop that takes the lock runs.
  */
 export interface LockStandby {
   readonly waiting: (holder: string) => void
   readonly took: (waitedMs: number) => void
   readonly stopped: () => boolean
+  readonly tick: () => void
 }
 
 /** The lock loop's interval: also a standby's, which must try again well before a shim's copy could (the PR body). */
@@ -137,6 +144,7 @@ export async function takeServiceLock(
           waitedFrom = Date.now()
           standby.waiting(holder())
         }
+        standby.tick()
       } else if (Date.now() >= deadline || !held || standby?.stopped() === true) {
         db.close()
         if (standby?.stopped() === true)
