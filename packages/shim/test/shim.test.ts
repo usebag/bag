@@ -1,8 +1,11 @@
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { openChannel } from '../src/channel.ts'
 import type { Message } from '../src/frames.ts'
 import type { Ring } from '../src/ring.ts'
+import { run } from '../src/run.ts'
 import { socketConnect } from '../src/service.ts'
 import {
   ASK_WAIT_MS,
@@ -1605,17 +1608,191 @@ describe('the typed unbind', () => {
     expect(await h.shim.unbind('omp')).toEqual({ unbound: ['omp'], as: ['work'] })
     expect((await svc.next((m) => m.method === 'service/unbind')).params).toEqual({ label: 'omp' })
     expect(svc.conn.got.map((m) => m.method)).toContain('service/typed')
-    svc.unbindAnswer = () => ({ unbound: [] }) // omp is no longer bound here
-    expect(await h.shim.unbind('omp')).toEqual({ unbound: [], as: ['work'] })
+    // omp is no longer bound here nor kept: the word names no identity of this window, so nothing is asked.
+    const asked = () => svc.conn.got.filter((m) => m.method === 'service/unbind').length
+    const before = asked()
+    expect(await h.shim.unbind('omp')).toEqual({ pass: true })
+    expect(asked()).toBe(before)
+    svc.unbindAnswer = () => ({ code: 'usage' })
+    expect(await h.shim.unbind('work')).toEqual({ code: 'usage' })
     svc.unbindAnswer = () => ({ unbound: ['work'] })
     expect(await h.shim.unbind()).toEqual({ unbound: ['work'], as: [] })
-    svc.unbindAnswer = () => ({ code: 'usage' })
-    expect(await h.shim.unbind('x')).toEqual({ code: 'usage' })
     svc.unbindAnswer = () => ({ nothing: true })
     expect(await h.shim.unbind()).toEqual({ code: 'bad-answer' })
     // Nothing that was unbound comes back after a restart.
     await restarted(h)
     expect(restores()).toEqual([])
     h.shim.close()
+  })
+})
+
+describe('a typed word for a name this window may not use is a sentence', () => {
+  const until = async (test: () => boolean, ms = 3000): Promise<void> => {
+    const end = Date.now() + ms
+    while (!test()) {
+      if (Date.now() > end) throw new Error('timed out')
+      await new Promise((r) => setTimeout(r, 5))
+    }
+  }
+  /** What this window's identities tool lists, as the service answers service/sees: jane is hidden from it. */
+  let view = ['sam', 'work']
+  /** The home's identities, jane hidden, as service/use takes them: any other label is unknown-identity. */
+  const homeOf = ['sam', 'work', 'jane']
+  const typed = { source: 'user' }
+  const unproven = {}
+  const notTyped = { prompt_id: 'p-1', bag_not_typed: { v: 1, prompt_id: 'p-1' } }
+  const asks = (method: string) => svc.conns.flatMap((c) => c.got).filter((m) => m.method === method)
+
+  /** A window of host 777 acting as sam, its channel served by a real Shim as run.ts wires it, and its hook. */
+  const window = async () => {
+    view = ['sam', 'work']
+    svc.seesAnswer = (p) => ({ sees: view.includes(String(p.label)) })
+    svc.useAnswer = (p) =>
+      homeOf.includes(String(p.label))
+        ? { bound: true, as: p.label, address: 'ed25519:00', custody: 'home-key', granted: 'typed' }
+        : { code: 'unknown-identity' }
+    const h = harness(home, { hostPid: 777 })
+    await up(h)
+    svc.notify('service/bound', { as: 'sam', address: 'ed25519:sam', granted: 'typed' })
+    await until(() => h.shim.bound.length === 1)
+    const on = {
+      use: (n: string) => h.shim.use(n),
+      unbind: (n?: string) => h.shim.unbind(n),
+      sees: (n: string) => h.shim.sees(n),
+      typed: () => h.shim.typed(),
+    }
+    const ch = await openChannel(home, 777, 4242, on, () => {}, 103)
+    const close = (): void => {
+      ch?.close()
+      h.shim.close()
+    }
+    return { h, close }
+  }
+  const hook = async (prompt: string, more: object = typed): Promise<string> => {
+    const stdin = new PassThrough()
+    const stdout = new PassThrough()
+    const done = run({
+      argv: ['hook', '--dir', home],
+      env: {},
+      cwd: home,
+      pid: 1,
+      ppid: 777,
+      stdin,
+      stdout,
+      stderr: { write: () => true },
+      signals: { once: () => {}, on: () => {}, removeListener: () => {} },
+      ps: () => null,
+    })
+    stdin.end(JSON.stringify({ prompt, ...more }))
+    expect(await done).toBe(0)
+    return String(stdout.read() ?? '')
+  }
+  /** A restart, then what the shim asked back from its memory. */
+  const restored = async () => {
+    await svc.restart()
+    await until(() => asks('service/use').some((m) => m.params?.via === 'restored'))
+    return asks('service/use')
+      .filter((m) => m.params?.via === 'restored')
+      .map((m) => m.params?.label)
+  }
+
+  it('"unbind works" and "use it": no line, no context, not blocked on every path; nothing bound, nothing forgotten', async () => {
+    const w = await window()
+    for (const more of [typed, unproven, notTyped])
+      for (const prompt of ['unbind works', 'use it', 'unbind everything', 'use this'])
+        expect([prompt, more, await hook(prompt, more)]).toEqual([prompt, more, ''])
+    expect(asks('service/unbind')).toEqual([])
+    // Proven, `use` is the person's word: asked, and silent by unknown-identity; unproven, never asked.
+    expect(asks('service/use').map((m) => m.params?.label)).toEqual(['it', 'this'])
+    // As any other prompt: the person typed here (twice, the typed then the unproven round), never the not-typed one.
+    expect(asks('service/typed').length).toBe(8)
+    expect(w.h.shim.bound).toEqual(['sam'])
+    expect(await restored()).toEqual(['sam'])
+    w.close()
+  })
+
+  it('`unbind sam` in a window acting as sam unbinds as before, and the bare `unbind` is the word', async () => {
+    const w = await window()
+    expect(JSON.parse(await hook('unbind sam'))).toEqual({
+      decision: 'block',
+      reason: 'bag: this session now acts as no identity (it acted as sam).',
+    })
+    expect(asks('service/unbind').map((m) => m.params)).toEqual([{ label: 'sam' }])
+    svc.unbindAnswer = () => ({ unbound: [] })
+    expect(JSON.parse(await hook('unbind'))).toEqual({
+      decision: 'block',
+      reason: 'bag: this session acts as no identity: nothing to unbind.',
+    })
+    expect(asks('service/unbind').map((m) => m.params)).toEqual([{ label: 'sam' }, {}])
+    w.close()
+  })
+
+  it('`use jane`, hidden from this window, unproven or not typed: the very bytes `use nosuch` gives', async () => {
+    const w = await window()
+    for (const more of [unproven, notTyped]) {
+      const jane = await hook('use jane', more)
+      const nosuch = await hook('use nosuch', more)
+      expect([more, jane]).toEqual([more, nosuch])
+      expect(jane).toBe('')
+    }
+    expect(asks('service/use')).toEqual([])
+    expect(asks('service/sees').map((m) => m.params?.label)).toEqual(['jane', 'nosuch', 'jane', 'nosuch'])
+    w.close()
+  })
+
+  it('`use jane` typed by the person, their own hidden identity, binds at once; no service/sees is asked', async () => {
+    const w = await window()
+    expect(JSON.parse(await hook('use jane'))).toEqual({
+      decision: 'block',
+      reason: 'bag: this session now acts as jane.',
+    })
+    expect(asks('service/use').map((m) => m.params)).toEqual([{ label: 'jane', via: 'typed' }])
+    expect(asks('service/sees')).toEqual([])
+    w.close()
+  })
+
+  it('while the local file is refused (the window sees only its own): a typed `use work` binds, an unproven one passes', async () => {
+    const w = await window()
+    view = ['sam']
+    expect(await hook('use work', unproven)).toBe(await hook('use nosuch', unproven))
+    expect(asks('service/use')).toEqual([])
+    expect(JSON.parse(await hook('use work'))).toEqual({
+      decision: 'block',
+      reason: 'bag: this session now acts as work.',
+    })
+    w.close()
+  })
+
+  it("a name this window sees keeps the three hook answers: bound at once, the use tool, not the person's word", async () => {
+    const w = await window()
+    expect(JSON.parse(await hook('use work'))).toEqual({
+      decision: 'block',
+      reason: 'bag: this session now acts as work.',
+    })
+    const lead = JSON.parse(await hook('use work', unproven))
+    expect(lead.systemMessage).toBe("bag: answer bag's question to act as work")
+    expect(lead.hookSpecificOutput.additionalContext).toContain("call bag's use tool once with name work")
+    expect(JSON.parse(await hook('use work', notTyped)).systemMessage).toBe(
+      'bag: a message that was not typed by you asked this window to act as work; nothing was bound.',
+    )
+    expect(asks('service/use').map((m) => m.params)).toEqual([{ label: 'work', via: 'typed' }])
+    w.close()
+  })
+
+  it('no answer from the service (an older one has no service/sees) keeps the word as before', async () => {
+    const w = await window()
+    svc.seesAnswer = () => ({ code: 'unknown-method' })
+    const lead = JSON.parse(await hook('use it', unproven))
+    expect(lead.systemMessage).toBe("bag: answer bag's question to act as it")
+    svc.useAnswer = () => ({ code: 'unknown-identity' })
+    expect(await hook('use it')).toBe('')
+    expect(asks('service/use').map((m) => m.params)).toEqual([{ label: 'it', via: 'typed' }])
+    w.close()
+  })
+
+  it('no helper answering the hook keeps the word as before: the use tool for an unproven `use`', async () => {
+    const lead = JSON.parse(await hook('use it', unproven))
+    expect(lead.systemMessage).toBe("bag: answer bag's question to act as it")
+    expect(await hook('unbind works')).toBe('')
   })
 })

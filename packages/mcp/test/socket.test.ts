@@ -79,6 +79,36 @@ describe('the single-service lock', () => {
     expect(Date.now() - t2).toBeGreaterThanOrEqual(900)
     long.child.kill('SIGKILL')
   })
+
+  it("a standby's tick runs from the poll loop after each failed try of its wait, and stops while the loop's sleep does", async () => {
+    const path = join(dir, 'service.lock')
+    const lock = await takeServiceLock(path)
+    let ticks = 0
+    let waited = 0
+    const gate = { held: false, release: () => {} }
+    const sleep = (ms: number) =>
+      gate.held ? new Promise<void>((r) => (gate.release = r)) : new Promise<void>((r) => setTimeout(r, ms))
+    const standby = {
+      waiting: () => waited++,
+      took: () => {},
+      stopped: () => false,
+      tick: () => ticks++,
+    }
+    const taken = takeServiceLock(path, undefined, 0, sleep, standby)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(waited).toBe(1)
+    expect(ticks).toBeGreaterThan(2)
+    gate.held = true
+    await new Promise((r) => setTimeout(r, 100))
+    const at = ticks
+    await new Promise((r) => setTimeout(r, 300))
+    expect(ticks).toBe(at)
+    lock.release()
+    gate.held = false
+    gate.release()
+    ;(await taken).release()
+    expect(ticks).toBe(at)
+  })
 })
 
 describe('the run directory', () => {

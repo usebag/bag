@@ -143,6 +143,25 @@ describe('accepted: a frame, recover() at start and a release each reach the des
     expect(again.value.messages).toEqual([])
   })
 
+  it("newest, then a release: the row held is listed once past the newest page's next_cursor, and not again", async () => {
+    const alice = await start('alice', [])
+    const frame = await waitingAtRelay(alice)
+    seedBob(frame, true)
+    const { bob } = await bobServer()
+    const later = await alice.call('send', { to: [P.bob.address], type: 'chat.v1', body: 'later' })
+    await until('the later delivery', () => bob.running.desk.counts().counts.unread === 1)
+    const first = await bob.call('inbox', { newest: 1 })
+    expect((first.value.messages as { id: string }[]).map((m) => m.id)).toEqual([later.value.id])
+    const cursor = first.value.next_cursor as number
+    clock.t = T0 + 5
+    const released = bob.running.opened.store.inboxList(['quarantined'])[0]
+    await bob.running.opened.edge.receiver.release(released?.seq as number)
+    const past = await bob.call('inbox', { since: cursor })
+    expect((past.value.messages as { id: string }[]).map((m) => m.id)).toEqual([frame.id])
+    const again = await bob.call('inbox', { since: cursor })
+    expect(again.value.messages).toEqual([])
+  })
+
   it('a row released before the row a cursor names arrived is not listed again past that cursor', async () => {
     const alice = await start('alice', [])
     const frame = await waitingAtRelay(alice)

@@ -2727,7 +2727,12 @@ describe('the compare, the codes and the listing', () => {
   it('a --session, --auth or --chain-cmd server lists no pair tool; a server of its own identity lists all three', async () => {
     const listed = (config: Record<string, unknown>): string[] => {
       const names: string[] = []
-      const server = { registerTool: (name: string) => names.push(name) }
+      // registerTools closes the arguments at the server's tools/call handler (tools.ts closeArguments): one is there.
+      const handlers = new Map([['tools/call', async () => ({})]])
+      const server = {
+        registerTool: (name: string) => names.push(name),
+        server: { _requestHandlers: handlers },
+      }
       const base = { session: null, auth: null, chainCmd: null, allowDelegate: false }
       registerTools(server as never, { config: { ...base, ...config } } as unknown as ToolContext)
       return names.filter((n) => n.startsWith('pair_'))

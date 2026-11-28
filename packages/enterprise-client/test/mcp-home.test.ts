@@ -138,3 +138,28 @@ describe('identitiesAnswer', () => {
     })
   })
 })
+
+describe('the standalone server refuses an argument a tool does not define, before it runs', () => {
+  it('each listed tool, called with a misspelt key whose value is a marker: usage naming the key and its own names', async () => {
+    const marker = 'MARKER-standalone-never-echoed'
+    let read = 0
+    const counted: HomeReads = {
+      ...TWO,
+      identities: (h) => {
+        read++
+        return TWO.identities(h)
+      },
+    }
+    const { client, call } = await setup(counted)
+    const { tools } = await client.listTools()
+    expect(tools.map((t) => t.name)).toEqual(['connect', 'sign_in', 'status', 'identities'])
+    for (const t of tools) {
+      const keys = Object.keys(t.inputSchema.properties ?? {})
+      const r = await call(t.name, { cdoe: marker })
+      const takes = keys.length === 0 ? 'no argument' : keys.join(', ')
+      expect([r.isError, r.text]).toEqual([true, `usage: unknown argument "cdoe": ${t.name} takes ${takes}`])
+    }
+    // Nothing ran: the home's identities were never read.
+    expect(read).toBe(0)
+  })
+})

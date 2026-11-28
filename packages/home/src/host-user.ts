@@ -433,7 +433,7 @@ export function userNotes(env: Env, home: string, host: Host, sandbox: boolean):
       ...(covered.length === 0
         ? []
         : [
-            `warning: [sandbox_workspace_write] writable_roots names ${covered.join(', ')}, which lets the model write ${run} or ${join(home, 'package')}: take it out`,
+            `warning: [sandbox_workspace_write] writable_roots names ${covered.join(', ')}, which lets the model write ${run} or ${join(home, 'package')}, and so restart the bag service: take it out`,
           ]),
     ]
   }

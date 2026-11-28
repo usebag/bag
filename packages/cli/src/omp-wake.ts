@@ -1054,6 +1054,14 @@ export default function bagWake(pi: Pi): void {
     const ch = home === null ? null : channelOf(home)
     if (home === null || ch === null) return undefined
     const text = typeof e.text === 'string' ? e.text : ''
+    // Any other prompt, and an unbind of a name this window neither acts as nor keeps (the shim's pass): the service
+    // learns the speaking window, not awaited, so the prompt never waits for it; it goes on untouched, with no line.
+    const other = (): undefined => {
+      void askShim(ch, { kind: 'typed' }).then((a) => {
+        if (a === null) warn('typed')
+      })
+      return undefined
+    }
     const off = unbindWord(text)
     if (off !== null) {
       return askShim(ch, { kind: 'unbind', ...off }).then((a) => {
@@ -1061,19 +1069,14 @@ export default function bagWake(pi: Pi): void {
           warn('unbind')
           return undefined
         }
+        if (a.pass === true) return other()
         const { said, ok } = unbindSaid(off.name, a)
         ctx.ui?.notify?.(said, ok ? 'info' : 'warning')
         return { handled: true }
       })
     }
     const name = typedName(text)
-    if (name === null) {
-      // Not awaited: the service learns the speaking window, and the prompt never waits for it.
-      void askShim(ch, { kind: 'typed' }).then((a) => {
-        if (a === null) warn('typed')
-      })
-      return undefined
-    }
+    if (name === null) return other()
     // Read before the post and again after the answer: only a label bound before and gone after was replaced (a
     // service that still adds keeps it, and the line must not say it went).
     const before = (boundIn(home) ?? []).filter((l) => l !== name)

@@ -171,6 +171,26 @@ function failure(e: unknown): string {
   return message.startsWith(`${c}: `) ? message : `${c}: ${message}`
 }
 
+/** The keys an argument refusal echoes, at most, and each one's length at most: keys only, never a value. */
+const SHOWN_KEYS = 8
+const KEY_CHARS = 64
+
+/**
+ * The refusal of a call whose arguments hold a key the tool's schema does not define: the keys (printable ones, each
+ * cut to 64 characters, at most 8, and how many more) and the tool's own argument names, from its schema; never a value.
+ */
+export function unknownArguments(tool: string, keys: readonly string[], unknown: readonly string[]): string {
+  const printable = unknown.filter((k) => /^[\x20-\x7e]+$/.test(k))
+  const shown = printable.slice(0, SHOWN_KEYS).map((k) => JSON.stringify(k.slice(0, KEY_CHARS)))
+  const rest = unknown.length - shown.length
+  const named =
+    shown.length === 0
+      ? `(${rest} not printable)`
+      : `${shown.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`
+  const takes = keys.length === 0 ? `${tool} takes no argument` : `${tool} takes ${keys.join(', ')}`
+  return `unknown argument${unknown.length === 1 ? '' : 's'} ${named}: ${takes}`
+}
+
 async function callTool(
   ports: EnterprisePorts,
   home: string,
@@ -178,6 +198,11 @@ async function callTool(
   args: Record<string, unknown>,
 ): Promise<Result> {
   const lines: string[] = []
+  // A key the tool's schema does not define is refused before anything runs: named, never its value.
+  const tool = toolsOf(ports).find((t) => t.name === name)
+  const keys = Object.keys(tool?.inputSchema.properties ?? {})
+  const unknown = tool === undefined ? [] : Object.keys(args).filter((k) => !keys.includes(k))
+  if (unknown.length > 0) return result([`usage: ${unknownArguments(name, keys, unknown)}`], true, null)
   if (name === 'connect') {
     const code = typeof args.code === 'string' ? args.code : ''
     if (code.trim() === '') return result(['usage: no code: paste the code from the console'], true, null)

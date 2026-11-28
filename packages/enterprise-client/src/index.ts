@@ -55,7 +55,7 @@ export {
   reportedHash,
   statePreimage,
 } from './layer-auth.ts'
-export { createMcpServer, MCP_TOOLS, serveMcp } from './mcp.ts'
+export { createMcpServer, MCP_TOOLS, serveMcp, unknownArguments } from './mcp.ts'
 export {
   endLinks,
   newPairs,

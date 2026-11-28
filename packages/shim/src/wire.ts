@@ -19,6 +19,8 @@ export const DRAINING = 'service/draining'
 export const TYPED = 'service/typed'
 /** A bind the shim asks again after a reconnect (service/use's via), the service's drop of one binding, and unbind. */
 export const [RESTORED, UNBOUND, UNBIND] = ['restored', 'service/unbound', 'service/unbind'] as const
+/** Shim to service, read-only: whether this window's identities tool lists a label ({label} to {sees}). */
+export const SEES = 'service/sees'
 /** Where a dialog carries its per-connection handle, and where the answer echoes it (packages/shim/README.md, "Dialogs"). */
 export const HANDLE_META = 'bag.dev/dialog'
 /**

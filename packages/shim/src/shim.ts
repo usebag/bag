@@ -28,6 +28,7 @@ import {
   handleOf,
   RESTORED,
   RING,
+  SEES,
   SHIM_VERSION,
   socketPathProblem,
   TYPED,
@@ -293,6 +294,17 @@ export class Shim {
   }
 
   /**
+   * Whether this window's identities tool lists `label` (service/sees, read-only): false only on the service's own
+   * answer; null with no answer (not connected, lost, an error, or a service that has no such method).
+   */
+  async sees(label: string): Promise<boolean | null> {
+    if (this.#phase !== 'up' || this.#conn === null) return null
+    const r = await this.#request(SEES, { label }).catch(() => null)
+    const sees = (r?.result as { sees?: unknown } | undefined)?.sees
+    return r?.error === undefined && typeof sees === 'boolean' ? sees : null
+  }
+
+  /**
    * The person's typed `use <name>` from the host's input hook (channel.ts): a bind by typed word on this connection;
    * one typed while no service answers leaves nothing to restore. Resolves what the hook tells: bound, or the code.
    */
@@ -320,9 +332,13 @@ export class Shim {
   /**
    * The person's typed `unbind` or `unbind <name>` (channel.ts): forgets first (that label alone, or the whole memory),
    * so no restore brings it back, then asks the service. A label the memory held counts as unbound even when the
-   * service has not bound it back yet (a restore still on its way to it).
+   * service has not bound it back yet (a restore still on its way to it). A name this window neither acts as nor keeps
+   * is pass, before any other step: the prompt is a sentence, and nothing is forgotten or asked.
    */
-  async unbind(label?: string): Promise<{ unbound: string[]; as: string[] } | { code: string }> {
+  async unbind(
+    label?: string,
+  ): Promise<{ unbound: string[]; as: string[] } | { code: string } | { pass: true }> {
+    if (label !== undefined && !this.#as.includes(label) && !this.#keep.has(label)) return { pass: true }
     const had = label !== undefined && this.#keep.delete(label)
     if (label === undefined) this.#keep = new Map()
     if (this.#phase !== 'up' || this.#conn === null) return { code: 'not-connected' }

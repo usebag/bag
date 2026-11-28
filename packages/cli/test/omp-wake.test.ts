@@ -880,6 +880,72 @@ describe('the service: channel, bridge and ring', () => {
     expect(o.levels).toEqual(['warning', 'warning'])
   })
 
+  // As packages/shim/src/channel.ts answers from 0.4.8 in a window acting as sam, in a home of sam, work and jane (jane
+  // hidden from this window): an unbind of a name it neither acts as nor keeps is pass; omp proves typing, so every
+  // `use` here is the person's own and binds any identity of the home, and a name the home lacks is unknown-identity.
+  const seeing = (r: Record<string, unknown>) =>
+    r.kind === 'typed'
+      ? { typed: true }
+      : r.kind === 'unbind'
+        ? r.name === undefined || r.name === 'sam'
+          ? { unbound: ['sam'], as: [] }
+          : { pass: true }
+        : ['sam', 'work', 'jane'].includes(String(r.name))
+          ? { bound: true, as: r.name }
+          : { bound: false, code: 'unknown-identity' }
+
+  it('"unbind works" and "use it" go on to the model untouched, no line, the person typed here', async () => {
+    const s = await shim(seeing)
+    const o = session(project(s.home))
+    for (const p of ['unbind works', 'use it', 'unbind everything', 'use this'])
+      expect(await o.input(p)).toBeUndefined()
+    await until(() => s.got.filter((r) => r.kind === 'typed').length === 2)
+    expect(s.got.map((r) => [r.kind, r.name])).toEqual([
+      ['unbind', 'works'],
+      ['typed', undefined],
+      ['use', 'it'],
+      ['unbind', 'everything'],
+      ['typed', undefined],
+      ['use', 'this'],
+    ])
+    expect(o.notes).toEqual([])
+  })
+
+  it('`unbind sam` in a window acting as sam unbinds as before; the bare word too; `use work` binds', async () => {
+    const s = await shim(seeing)
+    const o = session(project(s.home))
+    expect(await o.input('unbind sam')).toEqual({ handled: true })
+    expect(await o.input('unbind')).toEqual({ handled: true })
+    expect(await o.input('use work')).toEqual({ handled: true })
+    expect(o.notes).toEqual([
+      'bag: this session now acts as no identity (it acted as sam).',
+      'bag: this session now acts as no identity (it acted as sam).',
+      'bag: this session now acts as work.',
+    ])
+  })
+
+  it("`use jane`, the person's own hidden identity, binds: omp proves typing; `use nosuch` goes on to the model", async () => {
+    const s = await shim(seeing)
+    const o = session(project(s.home))
+    expect(await o.input('use jane')).toEqual({ handled: true })
+    expect(await o.input('use nosuch')).toBeUndefined()
+    expect(o.notes).toEqual(['bag: this session now acts as jane.'])
+    expect(s.got.map((r) => r.kind)).toEqual(['use', 'use'])
+  })
+
+  it('a shim of 0.4.7 (no pass) keeps the word as before: `use it` is bound, `unbind works` says nothing went', async () => {
+    const s = await shim((r) =>
+      r.kind === 'unbind' ? { unbound: [], as: ['sam'] } : { bound: true, as: r.name },
+    )
+    const o = session(project(s.home))
+    expect(await o.input('use it')).toEqual({ handled: true })
+    expect(await o.input('unbind works')).toEqual({ handled: true })
+    expect(o.notes).toEqual([
+      'bag: this session now acts as it.',
+      'bag: this session does not act as works: nothing was unbound.',
+    ])
+  })
+
   it('a typed use on a bound omp window notifies now acts as work, in place of sam', async () => {
     let x: ReturnType<typeof files> | undefined
     // What the service leaves bound after the bind: it replaces (0.4.7), adds (0.4.6), or keeps some (mixed).

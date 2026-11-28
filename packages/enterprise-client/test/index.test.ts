@@ -88,6 +88,7 @@ describe('@usebag/enterprise-client: the public API', () => {
       'syncSourcedTrust',
       'systemPorts',
       'tick',
+      'unknownArguments',
       'withSession',
       'writeJson',
       'writeTrustFile',
